@@ -1,11 +1,11 @@
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 import '../models/inverter_data.dart';
 
 class EnergyFlowDiagram extends StatefulWidget {
   final InverterData data;
-  final bool isEn;
 
-  const EnergyFlowDiagram({super.key, required this.data, this.isEn = true});
+  const EnergyFlowDiagram({super.key, required this.data});
 
   @override
   State<EnergyFlowDiagram> createState() => _EnergyFlowDiagramState();
@@ -55,7 +55,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
           return CustomPaint(
             painter: _FlowPainter(
                 animationValue: _controller.value, data: widget.data),
-            child: _buildNodes(
+            child: _buildNodes(context,
                 widget.data, Theme.of(context).scaffoldBackgroundColor),
           );
         },
@@ -63,7 +63,8 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
     );
   }
 
-  Widget _buildNodes(InverterData data, Color centerColor) {
+  Widget _buildNodes(BuildContext context, InverterData data, Color centerColor) {
+    final l10n = AppLocalizations.of(context)!;
     return Stack(
       children: [
         Align(
@@ -71,28 +72,28 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
             child: _NodeWidget(
                 icon: Icons.solar_power,
                 color: Colors.amber,
-                title: widget.isEn ? 'Solar' : 'Сонце',
+                title: l10n.solar,
                 value: '${data.pvPower.toStringAsFixed(0)} W')),
         Align(
             alignment: Alignment.topRight,
             child: _NodeWidget(
                 icon: Icons.electric_bolt,
                 color: Colors.blueAccent,
-                title: widget.isEn ? 'Grid' : 'Мережа',
+                title: l10n.grid,
                 value: '${data.gridVoltage.toStringAsFixed(1)} V')),
         Align(
             alignment: Alignment.bottomLeft,
             child: _NodeWidget(
                 icon: Icons.battery_charging_full,
                 color: Colors.greenAccent,
-                title: widget.isEn ? 'Battery' : 'АКБ',
+                title: l10n.battery,
                 value: '${data.batterySoc.toStringAsFixed(0)}%')),
         Align(
             alignment: Alignment.bottomRight,
             child: _NodeWidget(
                 icon: Icons.home_rounded,
                 color: Colors.purpleAccent,
-                title: widget.isEn ? 'Load' : 'Будинок',
+                title: l10n.load,
                 value: '${data.loadPower.toStringAsFixed(0)} W')),
         Align(
           alignment: Alignment.center,

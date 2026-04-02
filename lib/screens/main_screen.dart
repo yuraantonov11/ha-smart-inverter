@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import 'dashboard_tab.dart';
 import 'automation_tab.dart';
@@ -26,14 +27,14 @@ class _MainScreenState extends State<MainScreen> {
     final provider = context.watch<AppStateProvider>();
     final data = provider.data;
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isEn = provider.isEn;
+    final l10n = AppLocalizations.of(context)!;
 
     return DefaultTabController(
       length: 4,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Smart Inverter',
-              style: TextStyle(fontWeight: FontWeight.bold)),
+          title: Text(l10n.appTitle,
+              style: const TextStyle(fontWeight: FontWeight.bold)),
           actions: [
             IconButton(
               icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
@@ -50,16 +51,16 @@ class _MainScreenState extends State<MainScreen> {
             tabs: [
               Tab(
                   icon: const Icon(Icons.dashboard_rounded),
-                  text: isEn ? 'Dashboard' : 'Дашборд'),
+                  text: l10n.dashboard),
               Tab(
                   icon: const Icon(Icons.smart_toy_rounded),
-                  text: isEn ? 'Automation' : 'Автоматика'),
+                  text: l10n.automation),
               Tab(
                   icon: const Icon(Icons.list_alt_rounded),
-                  text: isEn ? 'Data' : 'Дані'),
+                  text: l10n.data),
               Tab(
                   icon: const Icon(Icons.settings),
-                  text: isEn ? 'Settings' : 'Налаштування'),
+                  text: l10n.settings),
             ],
           ),
         ),

@@ -5,9 +5,10 @@
   "settings": "Налаштування",
   "theme": "Тема",
   "language": "Мова",
-  "dashboard": "Панель",
+  "dashboard": "Дашборд",
   "details": "Деталі",
-  "automation": "Автоматизація",
+  "automation": "Автоматика",
+  "data": "Дані",
   "smartModes": "Смарт Режими",
   "modeOff": "Вимкнення",
   "modeWinter": "Зимовий Режим",
@@ -28,5 +29,76 @@
   "sat": "Сб",
   "sun": "Нд",
   "battery": "Батарея",
-  "grid": "Мережа"
+  "grid": "Мережа",
+  "modeAdaptive": "Адаптивний інтелект (Авто)",
+  "modeAdaptiveSubtitle": "Баланс автономності та економії (SBU)",
+  "modeAdaptiveDesc": "Інвертор самостійно маневрує між сонячною енергією та батареєю. Мережа використовується лише при критичному розряді.",
+  "modeArbitrage": "Нічний арбітраж",
+  "modeArbitrageSubtitle": "Максимальна фінансова економія",
+  "modeArbitrageDesc": "О 23:00 інвертор плавно заряджає батарею за нічним тарифом. Вдень пріоритет віддається сонцю. Налаштовано динамічне відключення бойлера при низькому заряді.",
+  "modeStorm": "Резерв / Шторм",
+  "modeStormSubtitle": "Підготовка до віялових відключень",
+  "modeStormDesc": "Фінансова економія ігнорується. Батарея примусово підтримується на 100% від мережі (режим USB). Готовність до непередбачуваних відключень.",
+  "account": "Акаунт",
+  "appSettings": "Налаштування застосунку",
+  "editProfile": "Редагувати профіль",
+  "cancel": "Скасувати",
+  "save": "Зберегти",
+  "userNameDefault": "Користувач",
+  "userId": "ID: {id}",
+  "@userId": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "inverterMode": "Режим інвертора",
+  "advancedSettings": "Розширені налаштування",
+  "outputSourcePriority": "Пріоритет виходу (Output)",
+  "chargerSourcePriority": "Пріоритет зарядки (Charger)",
+  "sbuPriority": "SBU Priority",
+  "onlySolar": "Тільки Сонце (OSO)",
+  "solarFirst": "Сонце в першу чергу (CSO)",
+  "hemsTitle": "Інтелектуальні HEMS режими",
+  "gotIt": "Зрозуміло",
+  "welcomeBack": "З поверненням",
+  "email": "Електронна пошта",
+  "password": "Пароль",
+  "loginError": "Неправильний логін або пароль",
+  "startWithWindows": "Автозапуск з Windows",
+  "name": "Ім'я",
+  "solarSbu": "СОНЦЕ (SBU)",
+  "gridUsb": "МЕРЕЖА (USB)",
+  "utilityFirstUsb": "Мережа (Utility First / USB)",
+  "solarFirstSub": "Сонце (Solar First / SUB)",
+  "solarUtilitySnu": "Сонце + Мережа (SNU)",
+  "signInCloud": "Увійдіть до Siseli Cloud",
+  "loginFailed": "Помилка входу. Перевірте дані.",
+  "today": "Сьогодні",
+  "total": "Всього",
+  "solar": "Сонце",
+  "load": "Будинок",
+  "updatedAt": "Оновлено о {time}",
+  "@updatedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "updateFailed": "Помилка оновлення",
+  "updated": "Оновлено!",
+  "enableSolar": "Увімкнути СОНЦЕ (SBU)",
+  "enableGrid": "Увімкнути МЕРЕЖУ (USB)",
+  "showApp": "Показати вікно",
+  "exit": "Вийти",
+  "batteryLevel": "АКБ: {level}%",
+  "@batteryLevel": {
+    "placeholders": {
+      "level": {
+        "type": "String"
+      }
+    }
+  }
 }

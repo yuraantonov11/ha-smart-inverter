@@ -5,6 +5,7 @@ import 'package:system_tray/system_tray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:window_manager/window_manager.dart'; // Використовуємо window_manager для трея
+import '../l10n/app_localizations.dart';
 import '../services/inverter_service.dart';
 import '../services/hems_algorithm.dart';
 import '../models/inverter_data.dart';
@@ -31,6 +32,7 @@ class AppStateProvider extends ChangeNotifier {
   bool get isEn => lang == 'en';
   bool isAutostartEnabled = false;
   String? savedEmail;
+  String? userName;
 
   // Змінні для правильного реактивного роутингу (Логін <-> Дашборд)
   bool isAuthenticated = false;
@@ -42,6 +44,10 @@ class AppStateProvider extends ChangeNotifier {
     hemsService = HemsAlgorithmService(this);
   }
 
+  Future<AppLocalizations> _getL10n() async {
+    return await AppLocalizations.delegate.load(Locale(lang));
+  }
+
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
 
@@ -51,6 +57,8 @@ class AppStateProvider extends ChangeNotifier {
     smartMode = prefs.getInt('smart_mode') ?? 0;
     lang = prefs.getString('app_lang') ?? 'en';
     isAutostartEnabled = await launchAtStartup.isEnabled();
+    final l10n = await _getL10n();
+    userName = prefs.getString('user_name') ?? l10n.userNameDefault;
     savedEmail = prefs.getString('saved_email');
 
     // Перевірка автологіну при старті
@@ -62,7 +70,7 @@ class AppStateProvider extends ChangeNotifier {
       startTimers();
     }
 
-    _updateStatusMessage(true);
+    await _updateStatusMessage(true);
     notifyListeners();
   }
 
@@ -85,18 +93,18 @@ class AppStateProvider extends ChangeNotifier {
     lang = newLang;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('app_lang', lang);
-    _updateStatusMessage(true);
+    await _updateStatusMessage(true);
     if (isAuthenticated) await _updateTrayMenu();
     notifyListeners();
   }
 
-  void _updateStatusMessage(bool isSuccess) {
+  Future<void> _updateStatusMessage(bool isSuccess) async {
+    final l10n = await _getL10n();
     if (isSuccess) {
-      statusMessage = isEn
-          ? 'Updated at ${DateTime.now().toString().substring(11, 19)}'
-          : 'Оновлено о ${DateTime.now().toString().substring(11, 19)}';
+      final time = DateTime.now().toString().substring(11, 19);
+      statusMessage = l10n.updatedAt(time);
     } else {
-      statusMessage = isEn ? 'Update failed' : 'Помилка оновлення';
+      statusMessage = l10n.updateFailed;
     }
   }
 
@@ -125,6 +133,15 @@ class AppStateProvider extends ChangeNotifier {
     if (isAuthenticated) await _updateTrayMenu();
     notifyListeners();
   }
+
+  Future<void> updateProfile(String newName) async {
+    userName = newName;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('user_name', newName);
+    notifyListeners();
+  }
+
+  String get userId => service.userId ?? 'N/A';
 
   Future<bool> autoLogin() async {
     final prefs = await SharedPreferences.getInstance();
@@ -179,29 +196,30 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> _updateTrayMenu() async {
+    final l10n = await _getL10n();
     final menu = Menu();
     await menu.buildFrom([
       MenuItemLabel(
-          label: isEn ? 'Enable SOLAR (SBU)' : 'Увімкнути СОНЦЕ (SBU)',
+          label: l10n.enableSolar,
           onClicked: (_) => setMode(2)),
       MenuItemLabel(
-          label: isEn ? 'Enable GRID (USB)' : 'Увімкнути МЕРЕЖУ (USB)',
+          label: l10n.enableGrid,
           onClicked: (_) => setMode(0)),
       MenuSeparator(),
       MenuItemCheckbox(
-        label: isEn ? 'Start with Windows' : 'Автозапуск з Windows',
+        label: l10n.startWithWindows,
         checked: isAutostartEnabled,
         onClicked: (item) async => await toggleAutostart(!isAutostartEnabled),
       ),
       MenuSeparator(),
       MenuItemLabel(
-          label: isEn ? 'Show App' : 'Показати вікно',
+          label: l10n.showApp,
           onClicked: (_) async {
             await windowManager.show();
             await windowManager.focus();
           }),
       MenuItemLabel(
-          label: isEn ? 'Exit' : 'Вийти',
+          label: l10n.exit,
           onClicked: (_) async {
             stopTimers();
             await windowManager.destroy();
@@ -209,8 +227,7 @@ class AppStateProvider extends ChangeNotifier {
           }),
     ]);
     await systemTray.setContextMenu(menu);
-    await systemTray.setTitle(
-        '${isEn ? 'Battery' : 'АКБ'}: ${data?.batterySoc.toStringAsFixed(0) ?? '--'}%');
+    await systemTray.setTitle(l10n.batteryLevel(data?.batterySoc.toStringAsFixed(0) ?? '--'));
   }
 
   Future<void> fetchData() async {
@@ -222,10 +239,10 @@ class AppStateProvider extends ChangeNotifier {
     final newData = await service.getRealTimeData();
     if (newData != null) {
       data = newData;
-      _updateStatusMessage(true);
+      await _updateStatusMessage(true);
       if (isAuthenticated) await _updateTrayMenu();
     } else {
-      _updateStatusMessage(false);
+      await _updateStatusMessage(false);
     }
 
     isDataLoading = false;
@@ -233,6 +250,7 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> changeSetting(String key, String value) async {
+    final l10n = await _getL10n();
     // 1. Копіюємо старий стан для відкату
     final oldFields = data?.rawFields != null
         ? Map<String, dynamic>.from(data!.rawFields)
@@ -249,14 +267,14 @@ class AppStateProvider extends ChangeNotifier {
     var success = await service.setConfigItem(key, value);
 
     if (success) {
-      statusMessage = isEn ? 'Updated!' : 'Оновлено!';
+      statusMessage = l10n.updated;
       await fetchData(); // Підтверджуємо дані з сервера
     } else {
       // 4. В разі помилки повертаємо як було
       if (oldFields != null && data != null) {
         data!.rawFields = oldFields;
       }
-      statusMessage = isEn ? 'Failed to update' : 'Помилка оновлення';
+      statusMessage = l10n.updateFailed;
       notifyListeners();
     }
   }

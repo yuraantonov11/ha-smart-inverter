@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 
 class AutomationTab extends StatelessWidget {
@@ -9,52 +10,50 @@ class AutomationTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final l10n = AppLocalizations.of(context)!;
 
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         Padding(
           padding: const EdgeInsets.only(bottom: 20, left: 4),
-          child: Text('Інтелектуальні HEMS режими',
+          child: Text(l10n.hemsTitle,
               style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
                   color: isDark ? Colors.white70 : Colors.grey[800])),
         ),
         _SmartModeCard(
-          title: 'Адаптивний інтелект (Авто)',
-          subtitle: 'Баланс автономності та економії (SBU)',
+          title: l10n.modeAdaptive,
+          subtitle: l10n.modeAdaptiveSubtitle,
           icon: Icons.auto_awesome,
           color: Colors.blueAccent,
           value: 0,
           groupValue: provider.smartMode,
           onChanged: (val) => provider.setSmartMode(val!),
-          tooltipText:
-              'Інвертор самостійно маневрує між сонячною енергією та батареєю. Мережа використовується лише при критичному розряді.',
+          tooltipText: l10n.modeAdaptiveDesc,
         ),
         const SizedBox(height: 16),
         _SmartModeCard(
-          title: 'Нічний арбітраж',
-          subtitle: 'Максимальна фінансова економія',
+          title: l10n.modeArbitrage,
+          subtitle: l10n.modeArbitrageSubtitle,
           icon: Icons.nights_stay_rounded,
           color: Colors.purpleAccent,
           value: 1,
           groupValue: provider.smartMode,
           onChanged: (val) => provider.setSmartMode(val!),
-          tooltipText:
-              'О 23:00 інвертор плавно заряджає батарею за нічним тарифом. Вдень пріоритет віддається сонцю. Налаштовано динамічне відключення бойлера при низькому заряді.',
+          tooltipText: l10n.modeArbitrageDesc,
         ),
         const SizedBox(height: 16),
         _SmartModeCard(
-          title: 'Резерв / Шторм',
-          subtitle: 'Підготовка до віялових відключень',
+          title: l10n.modeStorm,
+          subtitle: l10n.modeStormSubtitle,
           icon: Icons.thunderstorm_rounded,
           color: Colors.amber,
           value: 2,
           groupValue: provider.smartMode,
           onChanged: (val) => provider.setSmartMode(val!),
-          tooltipText:
-              'Фінансова економія ігнорується. Батарея примусово підтримується на 100% від мережі (режим USB). Готовність до непередбачуваних відключень.',
+          tooltipText: l10n.modeStormDesc,
         ),
       ],
     );
@@ -83,6 +82,7 @@ class _SmartModeCard extends StatelessWidget {
   });
 
   void _showInfo(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     showModalBottomSheet(
       context: context,
       shape: const RoundedRectangleBorder(
@@ -116,8 +116,8 @@ class _SmartModeCard extends StatelessWidget {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12)),
                 ),
-                child: const Text('Зрозуміло',
-                    style: TextStyle(color: Colors.white)),
+                child: Text(l10n.gotIt,
+                    style: const TextStyle(color: Colors.white)),
               ),
             )
           ],
@@ -181,9 +181,10 @@ class _SmartModeCard extends StatelessWidget {
               icon: const Icon(Icons.info_outline_rounded, color: Colors.grey),
               onPressed: () => _showInfo(context),
             ),
-            // Тепер Radio не потребує groupValue та onChanged
             Radio<int>(
               value: value,
+              groupValue: groupValue,
+              onChanged: onChanged,
               activeColor: color,
             ),
           ],

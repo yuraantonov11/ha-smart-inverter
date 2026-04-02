@@ -8,6 +8,7 @@
   "dashboard": "Dashboard",
   "details": "Details",
   "automation": "Automation",
+  "data": "Data",
   "smartModes": "Smart Modes",
   "modeOff": "Off",
   "modeWinter": "Winter Mode",
@@ -28,5 +29,76 @@
   "sat": "Sat",
   "sun": "Sun",
   "battery": "Battery",
-  "grid": "Grid"
+  "grid": "Grid",
+  "modeAdaptive": "Adaptive Intelligence (Auto)",
+  "modeAdaptiveSubtitle": "Balance of autonomy and savings (SBU)",
+  "modeAdaptiveDesc": "Inverter independently maneuvers between solar energy and battery. Grid is used only at critical discharge.",
+  "modeArbitrage": "Night Arbitrage",
+  "modeArbitrageSubtitle": "Maximum financial savings",
+  "modeArbitrageDesc": "At 23:00, inverter smoothly charges battery at night tariff. During the day, priority is given to sun. Dynamic boiler shutdown is configured at low charge.",
+  "modeStorm": "Reserve / Storm",
+  "modeStormSubtitle": "Preparation for rolling blackouts",
+  "modeStormDesc": "Financial savings are ignored. Battery is forcibly maintained at 100% from grid (USB mode). Readiness for unpredictable blackouts.",
+  "account": "Account",
+  "appSettings": "Application Settings",
+  "editProfile": "Edit Profile",
+  "cancel": "Cancel",
+  "save": "Save",
+  "userNameDefault": "User",
+  "userId": "ID: {id}",
+  "@userId": {
+    "placeholders": {
+      "id": {
+        "type": "String"
+      }
+    }
+  },
+  "inverterMode": "Inverter Mode",
+  "advancedSettings": "Advanced Settings",
+  "outputSourcePriority": "Output Source Priority",
+  "chargerSourcePriority": "Charger Source Priority",
+  "sbuPriority": "SBU Priority",
+  "onlySolar": "Only Solar (OSO)",
+  "solarFirst": "Solar First (CSO)",
+  "hemsTitle": "Intelligent HEMS Modes",
+  "gotIt": "Got it",
+  "welcomeBack": "Welcome Back",
+  "email": "Email",
+  "password": "Password",
+  "loginError": "Invalid login or password",
+  "startWithWindows": "Start with Windows",
+  "name": "Name",
+  "solarSbu": "SOLAR (SBU)",
+  "gridUsb": "GRID (USB)",
+  "utilityFirstUsb": "Utility First (USB)",
+  "solarFirstSub": "Solar First (SUB)",
+  "solarUtilitySnu": "Solar + Utility (SNU)",
+  "signInCloud": "Sign in to Siseli Cloud",
+  "loginFailed": "Login failed. Check credentials.",
+  "today": "Today",
+  "total": "Total",
+  "solar": "Solar",
+  "load": "Load",
+  "updatedAt": "Updated at {time}",
+  "@updatedAt": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "updateFailed": "Update failed",
+  "updated": "Updated!",
+  "enableSolar": "Enable SOLAR (SBU)",
+  "enableGrid": "Enable GRID (USB)",
+  "showApp": "Show App",
+  "exit": "Exit",
+  "batteryLevel": "Battery: {level}%",
+  "@batteryLevel": {
+    "placeholders": {
+      "level": {
+        "type": "String"
+      }
+    }
+  }
 }

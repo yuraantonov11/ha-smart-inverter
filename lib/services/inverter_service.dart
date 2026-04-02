@@ -57,6 +57,12 @@ class InverterService {
         });
         return handler.next(options);
       },
+      onError: (DioException e, handler) {
+        if (kDebugMode) {
+          print('🔴 Помилка мережі: ${e.message}');
+        }
+        return handler.next(e);
+      },
     ));
   }
 

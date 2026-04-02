@@ -25,7 +25,7 @@ class DashboardTab extends StatelessWidget {
         children: [
           _buildStatusBanner(provider.statusMessage),
           const SizedBox(height: 16),
-          EnergyFlowDiagram(data: data, isEn: provider.isEn),
+          EnergyFlowDiagram(data: data),
           const SizedBox(height: 16),
           _HistoricalStatsWidget(provider: provider),
           const SizedBox(height: 16),
@@ -71,7 +71,7 @@ class _HistoricalStatsWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isEn = provider.isEn;
+    final l10n = AppLocalizations.of(context)!;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     final daily = provider.service.dailyEnergy.toStringAsFixed(1);
@@ -81,14 +81,14 @@ class _HistoricalStatsWidget extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: _buildStatCard(context, isEn ? 'Today' : 'Сьогодні',
+          child: _buildStatCard(context, l10n.today,
               '$daily kWh', Icons.today_rounded, Colors.blueAccent, isDark),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: _buildStatCard(
               context,
-              isEn ? 'Total' : 'Всього',
+              l10n.total,
               '$total kWh',
               Icons.account_balance_wallet_rounded,
               Colors.amber,

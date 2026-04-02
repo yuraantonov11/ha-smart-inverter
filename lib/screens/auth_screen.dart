@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 
 class AuthScreen extends StatefulWidget {
@@ -23,6 +24,7 @@ class _AuthScreenState extends State<AuthScreen> {
     setState(() => _isLoading = true);
 
     final provider = context.read<AppStateProvider>();
+    final l10n = AppLocalizations.of(context)!;
     var success = await provider.login(
       _emailController.text.trim(),
       _passwordController.text.trim(),
@@ -34,21 +36,17 @@ class _AuthScreenState extends State<AuthScreen> {
     if (!success) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(provider.isEn
-              ? 'Login failed. Check credentials.'
-              : 'Помилка входу. Перевірте дані.'),
+          content: Text(l10n.loginFailed),
           backgroundColor: Colors.redAccent,
         ),
       );
     }
-    // Навігація не потрібна! Якщо success == true, main.dart сам покаже MainScreen
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final provider = context.watch<AppStateProvider>();
-    final isEn = provider.isEn;
+    final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
       body: Center(
@@ -73,19 +71,19 @@ class _AuthScreenState extends State<AuthScreen> {
                 const Icon(Icons.solar_power_rounded,
                     size: 64, color: Colors.amber),
                 const SizedBox(height: 16),
-                const Text('Smart Inverter',
+                Text(l10n.appTitle,
                     style:
-                        TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                        const TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 8),
                 Text(
-                  isEn ? 'Sign in to Siseli Cloud' : 'Увійдіть до Siseli Cloud',
+                  l10n.signInCloud,
                   style: const TextStyle(color: Colors.grey),
                 ),
                 const SizedBox(height: 32),
                 TextField(
                   controller: _emailController,
                   decoration: InputDecoration(
-                    labelText: 'Email',
+                    labelText: l10n.email,
                     prefixIcon: const Icon(Icons.email_outlined),
                     border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(16)),
@@ -96,7 +94,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   controller: _passwordController,
                   obscureText: _obscurePassword,
                   decoration: InputDecoration(
-                    labelText: isEn ? 'Password' : 'Пароль',
+                    labelText: l10n.password,
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       icon: Icon(_obscurePassword
@@ -128,7 +126,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             height: 24,
                             child: CircularProgressIndicator(
                                 color: Colors.black87, strokeWidth: 2))
-                        : Text(isEn ? 'Login' : 'Увійти',
+                        : Text(l10n.login,
                             style: const TextStyle(
                                 fontSize: 16, fontWeight: FontWeight.bold)),
                   ),

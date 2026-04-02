@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 
 class ControlPanel extends StatelessWidget {
@@ -28,7 +29,7 @@ class ControlPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isEn = provider.isEn;
+    final l10n = AppLocalizations.of(context)!;
     final currentOutputPriority = provider
             .data?.rawFields['outputSourcePriority']?['value']
             ?.toString() ??
@@ -52,12 +53,12 @@ class ControlPanel extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(isEn ? 'Inverter Mode' : 'Режим інвертора',
+              Text(l10n.inverterMode,
                   style: const TextStyle(
                       fontSize: 18, fontWeight: FontWeight.bold)),
               IconButton(
                 icon: const Icon(Icons.settings_outlined, color: Colors.grey),
-                tooltip: isEn ? 'Advanced Settings' : 'Розширені налаштування',
+                tooltip: l10n.advancedSettings,
                 onPressed: () => _showSettingsModal(context),
               )
             ],
@@ -67,7 +68,7 @@ class ControlPanel extends StatelessWidget {
             children: [
               Expanded(
                 child: _SwitchCard(
-                  title: isEn ? 'SOLAR (SBU)' : 'СОНЦЕ (SBU)',
+                  title: l10n.solarSbu,
                   icon: Icons.wb_sunny_rounded,
                   isActive: currentOutputPriority == '2',
                   activeColor: Colors.amber,
@@ -77,7 +78,7 @@ class ControlPanel extends StatelessWidget {
               const SizedBox(width: 16),
               Expanded(
                 child: _SwitchCard(
-                  title: isEn ? 'GRID (USB)' : 'МЕРЕЖА (USB)',
+                  title: l10n.gridUsb,
                   icon: Icons.power_rounded,
                   isActive: currentOutputPriority == '0',
                   activeColor: Colors.blueAccent,
@@ -154,7 +155,7 @@ class _SettingsModal extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isEn = provider.isEn;
+    final l10n = AppLocalizations.of(context)!;
     final fields = provider.data?.rawFields ?? {};
     final outputPriority =
         fields['outputSourcePriority']?['value']?.toString() ?? '2';
@@ -167,11 +168,11 @@ class _SettingsModal extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(isEn ? 'Advanced Settings' : 'Розширені налаштування',
+          Text(l10n.advancedSettings,
               style:
                   const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
           const SizedBox(height: 24),
-          Text(isEn ? 'Output Source Priority' : 'Пріоритет виходу (Output)',
+          Text(l10n.outputSourcePriority,
               style: const TextStyle(fontSize: 14, color: Colors.grey)),
           const SizedBox(height: 8),
           _buildDropdown(
@@ -180,15 +181,11 @@ class _SettingsModal extends StatelessWidget {
             items: [
               DropdownMenuItem(
                   value: '0',
-                  child: Text(isEn
-                      ? 'Utility First (USB)'
-                      : 'Мережа (Utility First / USB)')),
+                  child: Text(l10n.utilityFirstUsb)),
               DropdownMenuItem(
                   value: '1',
-                  child: Text(isEn
-                      ? 'Solar First (SUB)'
-                      : 'Сонце (Solar First / SUB)')),
-              DropdownMenuItem(value: '2', child: Text('SBU Priority')),
+                  child: Text(l10n.solarFirstSub)),
+              DropdownMenuItem(value: '2', child: Text(l10n.sbuPriority)),
             ],
             onChanged: (val) {
               if (val != null) {
@@ -198,7 +195,7 @@ class _SettingsModal extends StatelessWidget {
             },
           ),
           const SizedBox(height: 24),
-          Text(isEn ? 'Charger Source Priority' : 'Пріоритет зарядки (Charger)',
+          Text(l10n.chargerSourcePriority,
               style: const TextStyle(fontSize: 14, color: Colors.grey)),
           const SizedBox(height: 8),
           _buildDropdown(
@@ -207,16 +204,14 @@ class _SettingsModal extends StatelessWidget {
             items: [
               DropdownMenuItem(
                   value: '0',
-                  child: Text(
-                      isEn ? 'Solar First (CSO)' : 'Сонце пріоритет (CSO)')),
+                  child: Text(l10n.solarFirst)),
               DropdownMenuItem(
                   value: '1',
-                  child: Text(
-                      isEn ? 'Solar + Utility (SNU)' : 'Сонце + Мережа (SNU)')),
+                  child: Text(l10n.solarUtilitySnu)),
               DropdownMenuItem(
                   value: '2',
                   child:
-                      Text(isEn ? 'Only Solar (OSO)' : 'Тільки Сонце (OSO)')),
+                      Text(l10n.onlySolar)),
             ],
             onChanged: (val) {
               if (val != null) {
