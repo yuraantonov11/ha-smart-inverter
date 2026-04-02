@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../models/inverter_data.dart';
 
-// ВИПРАВЛЕНО: Прибрано "_" щоб зробити клас публічним
+// ВИПРАВЛЕНО: Прибрано '_' щоб зробити клас публічним
 class DetailsTab extends StatelessWidget {
   final InverterData data;
   const DetailsTab({super.key, required this.data});
@@ -19,14 +19,16 @@ class DetailsTab extends StatelessWidget {
         final key = keys[index];
         final fieldData = fields[key];
 
-        String name = key;
-        String val = "N/A";
-        String unit = "";
+        var name = key;
+        var val = 'N/A';
+        var unit = '';
 
         if (fieldData is Map) {
           name = fieldData['nameDisplay'] ?? key;
-          val = fieldData['valueDisplay']?.toString() ?? fieldData['value']?.toString() ?? "N/A";
-          unit = fieldData['unit']?.toString() ?? "";
+          val = fieldData['valueDisplay']?.toString() ??
+              fieldData['value']?.toString() ??
+              'N/A';
+          unit = fieldData['unit']?.toString() ?? '';
         } else {
           val = fieldData.toString();
         }
@@ -35,8 +37,13 @@ class DetailsTab extends StatelessWidget {
           color: const Color(0xFF1E293B),
           margin: const EdgeInsets.only(bottom: 8),
           child: ListTile(
-            title: Text(name, style: const TextStyle(fontSize: 14, color: Colors.white70)),
-            trailing: Text("$val $unit".trim(), style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.amber)),
+            title: Text(name,
+                style: const TextStyle(fontSize: 14, color: Colors.white70)),
+            trailing: Text('$val $unit'.trim(),
+                style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.amber)),
           ),
         );
       },

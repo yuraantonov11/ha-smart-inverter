@@ -36,13 +36,14 @@ class InverterData {
 
   static double _parseDouble(dynamic fieldObject, {bool isKw = false}) {
     if (fieldObject == null) return 0.0;
-    double val = 0.0;
+    var val = 0.0;
     if (fieldObject is num) {
       val = fieldObject.toDouble();
     } else if (fieldObject is String) {
       val = double.tryParse(fieldObject) ?? 0.0;
     } else if (fieldObject is Map) {
-      final rawValue = fieldObject['value'] ?? fieldObject['valueDisplay'] ?? 0.0;
+      final rawValue =
+          fieldObject['value'] ?? fieldObject['valueDisplay'] ?? 0.0;
       if (rawValue is num) val = rawValue.toDouble();
       if (rawValue is String) val = double.tryParse(rawValue) ?? 0.0;
     }
@@ -50,33 +51,38 @@ class InverterData {
   }
 
   static String _parseString(dynamic fieldObject) {
-    if (fieldObject == null) return "N/A";
+    if (fieldObject == null) return 'N/A';
     if (fieldObject is String) return fieldObject;
     if (fieldObject is Map) {
-      return fieldObject['valueDisplay']?.toString() ?? fieldObject['value']?.toString() ?? "N/A";
+      return fieldObject['valueDisplay']?.toString() ??
+          fieldObject['value']?.toString() ??
+          'N/A';
     }
     return fieldObject.toString();
   }
 
-  factory InverterData.fromJson(Map<String, dynamic> json, String deviceSn, String currentModeStr) {
+  factory InverterData.fromJson(
+      Map<String, dynamic> json, String deviceSn, String currentModeStr) {
     final fields = json['deviceAttributeState']?['fields'] ?? {};
 
-    double pv = _parseDouble(fields['pvInputPower'] ?? fields['generationPower']);
-    double load = _parseDouble(fields['acOutputActivePower'], isKw: true);
-    double soc = _parseDouble(fields['batteryCapacity']);
+    var pv = _parseDouble(fields['pvInputPower'] ?? fields['generationPower']);
+    var load = _parseDouble(fields['acOutputActivePower'], isKw: true);
+    var soc = _parseDouble(fields['batteryCapacity']);
 
-    double gridVolt = _parseDouble(fields['acInputVoltage']);
-    double loadPct = _parseDouble(fields['loadPercentage']);
-    double batVolt = _parseDouble(fields['batteryVoltage']);
-    double pvVolt = _parseDouble(fields['pvInputVoltage']);
+    var gridVolt = _parseDouble(fields['acInputVoltage']);
+    var loadPct = _parseDouble(fields['loadPercentage']);
+    var batVolt = _parseDouble(fields['batteryVoltage']);
+    var pvVolt = _parseDouble(fields['pvInputVoltage']);
 
     // Розрахунок мережі (споживання або віддача)
-    double grid = gridVolt > 0 ? (load - pv > 0 ? load - pv : 0.0) : 0.0;
+    var grid = gridVolt > 0 ? (load - pv > 0 ? load - pv : 0.0) : 0.0;
 
     // Струм батареї (заряд або розряд)
-    double batCharge = _parseDouble(fields['batteryChargingCurrent']);
-    double batDischarge = _parseDouble(fields['batteryDischargeCurrent']);
-    double batPower = (batCharge > 0) ? batCharge * batVolt : (batDischarge > 0 ? -batDischarge * batVolt : 0.0);
+    var batCharge = _parseDouble(fields['batteryChargingCurrent']);
+    var batDischarge = _parseDouble(fields['batteryDischargeCurrent']);
+    var batPower = (batCharge > 0)
+        ? batCharge * batVolt
+        : (batDischarge > 0 ? -batDischarge * batVolt : 0.0);
 
     return InverterData(
       pvPower: pv,

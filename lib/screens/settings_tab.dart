@@ -14,7 +14,7 @@ class SettingsTab extends StatelessWidget {
       padding: const EdgeInsets.all(20),
       children: [
         // Блок Акаунта
-        _buildSectionTitle(isEn ? "Account" : "Акаунт"),
+        _buildSectionTitle(isEn ? 'Account' : 'Акаунт'),
         Container(
           padding: const EdgeInsets.all(20),
           decoration: BoxDecoration(
@@ -29,7 +29,7 @@ class SettingsTab extends StatelessWidget {
                 child: Icon(Icons.person, size: 40, color: Colors.black),
               ),
               const SizedBox(height: 16),
-              Text(provider.savedEmail ?? "User",
+              Text(provider.savedEmail ?? 'User',
                   style: const TextStyle(
                       fontSize: 18, fontWeight: FontWeight.bold)),
               const SizedBox(height: 20),
@@ -38,7 +38,7 @@ class SettingsTab extends StatelessWidget {
                 child: OutlinedButton.icon(
                   onPressed: () => provider.logout(),
                   icon: const Icon(Icons.logout, color: Colors.redAccent),
-                  label: Text(isEn ? "Log Out" : "Вийти з акаунту",
+                  label: Text(isEn ? 'Log Out' : 'Вийти з акаунту',
                       style: const TextStyle(color: Colors.redAccent)),
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(color: Colors.redAccent),
@@ -56,7 +56,7 @@ class SettingsTab extends StatelessWidget {
 
         // Блок Налаштувань Додатка
         _buildSectionTitle(
-            isEn ? "Application Settings" : "Налаштування застосунку"),
+            isEn ? 'Application Settings' : 'Налаштування застосунку'),
         Container(
           decoration: BoxDecoration(
             color: Theme.of(context).cardColor,
@@ -72,14 +72,14 @@ class SettingsTab extends StatelessWidget {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                   leading: const Icon(Icons.language, color: Colors.blueAccent),
-                  title: Text(isEn ? "Language" : "Мова"),
+                  title: Text(isEn ? 'Language' : 'Мова'),
                   trailing: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       value: provider.lang,
                       items: const [
-                        DropdownMenuItem(value: 'en', child: Text("English")),
+                        DropdownMenuItem(value: 'en', child: Text('English')),
                         DropdownMenuItem(
-                            value: 'uk', child: Text("Українська")),
+                            value: 'uk', child: Text('Українська')),
                       ],
                       onChanged: (val) {
                         if (val != null) provider.setLanguage(val);
@@ -95,7 +95,7 @@ class SettingsTab extends StatelessWidget {
                   secondary: const Icon(Icons.power_settings_new,
                       color: Colors.greenAccent),
                   title: Text(
-                      isEn ? "Start with Windows" : "Автозапуск з Windows"),
+                      isEn ? 'Start with Windows' : 'Автозапуск з Windows'),
                   value: provider.isAutostartEnabled,
                   activeThumbColor: Colors.greenAccent,
                   activeTrackColor: Colors.greenAccent.withValues(alpha: 0.3),
@@ -113,7 +113,7 @@ class SettingsTab extends StatelessWidget {
           child: Column(
             children: [
               Text(
-                "Smart Inverter Desktop",
+                'Smart Inverter Desktop',
                 style: TextStyle(
                   color: Colors.grey.withValues(alpha: 0.5),
                   fontSize: 14,
@@ -122,7 +122,7 @@ class SettingsTab extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                "v${AppStateProvider.appVersion}",
+                'v${AppStateProvider.appVersion}',
                 style: TextStyle(
                   color: Colors.grey.withValues(alpha: 0.5),
                   fontSize: 12,

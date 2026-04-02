@@ -17,10 +17,10 @@ A modern, fast, and elegant desktop application built with Flutter for monitorin
 - **Encrypt & Crypto** for secure SmartESS API signature generation
 
 ## Installation 📥
-Download the latest version from the [Releases](https://github.com/yuraantonov11/smart_inverter/releases) page. Currently supports Windows (x64).
+Download the latest version from the [Releases](https://github.com/yuraantonov11/siseli-app/releases) page. Currently supports Windows (x64).
 
 ## Versioning 📌
-We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/yuraantonov11/smart_inverter/tags).
+We use [SemVer](http://semver.org/) for versioning. For the versions available, see the [tags on this repository](https://github.com/yuraantonov11/siseli-app/tags).
 
 ## Contributing 🤝
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct, and the process for submitting pull requests to us.

@@ -4,8 +4,8 @@ publish_to: 'none'
 version: 1.0.0+1
 
 # Repository and homepage
-repository: https://github.com/yuraantonov11/smart_inverter
-homepage: https://github.com/yuraantonov11/smart_inverter
+repository: https://github.com/yuraantonov11/siseli-app
+homepage: https://github.com/yuraantonov11/siseli-app
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

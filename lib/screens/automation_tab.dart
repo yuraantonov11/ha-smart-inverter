@@ -26,7 +26,7 @@ class AutomationTab extends StatelessWidget {
         _buildRadioCard(
           context,
           title: l10n.modeOff,
-          subtitle: "",
+          subtitle: '',
           icon: Icons.pan_tool_rounded,
           color: Colors.grey,
           value: 0,

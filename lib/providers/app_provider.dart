@@ -15,7 +15,7 @@ class AppStateProvider extends ChangeNotifier {
 
   InverterData? data;
   bool isDataLoading = false;
-  String statusMessage = "";
+  String statusMessage = '';
 
   Timer? _dataTimer;
   Timer? _automationTimer;
@@ -24,6 +24,7 @@ class AppStateProvider extends ChangeNotifier {
 
   ThemeMode themeMode = ThemeMode.dark;
   String lang = 'en';
+
   bool get isEn => lang == 'en';
   bool isAutostartEnabled = false;
   String? savedEmail;
@@ -56,10 +57,10 @@ class AppStateProvider extends ChangeNotifier {
   void _updateStatusMessage(bool isSuccess) {
     if (isSuccess) {
       statusMessage = isEn
-          ? "Updated at ${DateTime.now().toString().substring(11, 19)}"
-          : "Оновлено о ${DateTime.now().toString().substring(11, 19)}";
+          ? 'Updated at ${DateTime.now().toString().substring(11, 19)}'
+          : 'Оновлено о ${DateTime.now().toString().substring(11, 19)}';
     } else {
-      statusMessage = isEn ? "Update failed" : "Помилка оновлення";
+      statusMessage = isEn ? 'Update failed' : 'Помилка оновлення';
     }
   }
 
@@ -98,7 +99,7 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<bool> login(String email, String pass) async {
-    bool success = await service.login(email, pass);
+    var success = await service.login(email, pass);
     if (success) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_email', email);
@@ -132,7 +133,7 @@ class AppStateProvider extends ChangeNotifier {
     if (newData != null) {
       data = newData;
       _updateStatusMessage(true);
-      _updateTrayMenu();
+      await _updateTrayMenu();
     } else {
       _updateStatusMessage(false);
     }
@@ -141,24 +142,24 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> setMode(int mode) async {
-    bool success = await service.setMode(mode);
+    var success = await service.setMode(mode);
     if (success) {
       await fetchData();
     } else {
-      statusMessage = isEn ? "Mode change failed" : "Помилка зміни режиму";
+      statusMessage = isEn ? 'Mode change failed' : 'Помилка зміни режиму';
       notifyListeners();
     }
   }
 
   Future<void> changeSetting(String key, String value) async {
-    bool success = await service.setConfigItem(key, value);
+    var success = await service.setConfigItem(key, value);
     if (success) {
       statusMessage =
-          isEn ? "Settings updated!" : "Налаштування успішно змінено!";
+          isEn ? 'Settings updated!' : 'Налаштування успішно змінено!';
       await fetchData();
     } else {
       statusMessage =
-          isEn ? "Settings update failed" : "Не вдалося змінити налаштування";
+          isEn ? 'Settings update failed' : 'Не вдалося змінити налаштування';
       notifyListeners();
     }
   }
@@ -177,27 +178,27 @@ class AppStateProvider extends ChangeNotifier {
     if (smartMode == 1) {
       // --- ЗИМОВИЙ СЦЕНАРІЙ ---
       if (isNight) {
-        if (currentOutput != "0") setMode(0); // USB
-        if (currentCharger != "1") {
-          changeSetting("chargerSourcePrioritySetting", "1"); // SNU
+        if (currentOutput != '0') setMode(0); // USB
+        if (currentCharger != '1') {
+          changeSetting('chargerSourcePrioritySetting', '1'); // SNU
         }
       } else {
-        if (currentOutput != "2") setMode(2); // SBU
-        if (currentCharger != "0") {
-          changeSetting("chargerSourcePrioritySetting", "0"); // CSO
+        if (currentOutput != '2') setMode(2); // SBU
+        if (currentCharger != '0') {
+          changeSetting('chargerSourcePrioritySetting', '0'); // CSO
         }
       }
     } else if (smartMode == 2) {
       // --- ЛІТНІЙ СЦЕНАРІЙ ---
       if (isNight) {
-        if (currentOutput != "0") setMode(0); // USB
-        if (currentCharger != "2") {
-          changeSetting("chargerSourcePrioritySetting", "2"); // OSO
+        if (currentOutput != '0') setMode(0); // USB
+        if (currentCharger != '2') {
+          changeSetting('chargerSourcePrioritySetting', '2'); // OSO
         }
       } else {
-        if (currentOutput != "2") setMode(2); // SBU
-        if (currentCharger != "2") {
-          changeSetting("chargerSourcePrioritySetting", "2"); // OSO
+        if (currentOutput != '2') setMode(2); // SBU
+        if (currentCharger != '2') {
+          changeSetting('chargerSourcePrioritySetting', '2'); // OSO
         }
       }
     }
@@ -205,15 +206,16 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<void> _initTray() async {
     await systemTray.initSystemTray(
-      title: "Inverter",
+      title: 'Inverter',
       iconPath:
           Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
     );
     systemTray.registerSystemTrayEventHandler((eventName) {
       if (eventName == kSystemTrayEventClick) {
         Platform.isWindows ? appWindow.show() : systemTray.popUpContextMenu();
-      } else if (eventName == kSystemTrayEventRightClick)
+      } else if (eventName == kSystemTrayEventRightClick) {
         systemTray.popUpContextMenu();
+      }
     });
   }
 
@@ -240,7 +242,7 @@ class AppStateProvider extends ChangeNotifier {
     ]);
     await systemTray.setContextMenu(menu);
     await systemTray.setTitle(
-        "${isEn ? 'Battery' : 'Заряд'}: ${data?.batterySoc.toStringAsFixed(0) ?? '--'}%");
+        '${isEn ? 'Battery' : 'Заряд'}: ${data?.batterySoc.toStringAsFixed(0) ?? '--'}%');
   }
 
   Future<void> logout() async {

@@ -32,13 +32,15 @@ class _MainScreenState extends State<MainScreen> {
       length: 4,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text("Smart Inverter", style: TextStyle(fontWeight: FontWeight.bold)),
+          title: const Text('Smart Inverter',
+              style: TextStyle(fontWeight: FontWeight.bold)),
           actions: [
             IconButton(
               icon: Icon(isDark ? Icons.light_mode : Icons.dark_mode),
               onPressed: provider.toggleTheme,
             ),
-            IconButton(icon: const Icon(Icons.refresh), onPressed: provider.fetchData),
+            IconButton(
+                icon: const Icon(Icons.refresh), onPressed: provider.fetchData),
           ],
           bottom: TabBar(
             isScrollable: true,
@@ -46,23 +48,32 @@ class _MainScreenState extends State<MainScreen> {
             indicatorColor: Colors.amber,
             labelColor: Colors.amber,
             tabs: [
-              Tab(icon: const Icon(Icons.dashboard_rounded), text: isEn ? "Dashboard" : "Дашборд"),
-              Tab(icon: const Icon(Icons.smart_toy_rounded), text: isEn ? "Automation" : "Автоматика"),
-              Tab(icon: const Icon(Icons.list_alt_rounded), text: isEn ? "Data" : "Дані"),
-              Tab(icon: const Icon(Icons.settings), text: isEn ? "Settings" : "Налаштування"),
+              Tab(
+                  icon: const Icon(Icons.dashboard_rounded),
+                  text: isEn ? 'Dashboard' : 'Дашборд'),
+              Tab(
+                  icon: const Icon(Icons.smart_toy_rounded),
+                  text: isEn ? 'Automation' : 'Автоматика'),
+              Tab(
+                  icon: const Icon(Icons.list_alt_rounded),
+                  text: isEn ? 'Data' : 'Дані'),
+              Tab(
+                  icon: const Icon(Icons.settings),
+                  text: isEn ? 'Settings' : 'Налаштування'),
             ],
           ),
         ),
         body: data == null
-            ? const Center(child: CircularProgressIndicator(color: Colors.amber))
+            ? const Center(
+                child: CircularProgressIndicator(color: Colors.amber))
             : TabBarView(
-          children: [
-            DashboardTab(provider: provider, data: data),
-            AutomationTab(provider: provider),
-            DetailsTab(data: data),
-            SettingsTab(provider: provider),
-          ],
-        ),
+                children: [
+                  DashboardTab(provider: provider, data: data),
+                  AutomationTab(provider: provider),
+                  DetailsTab(data: data),
+                  SettingsTab(provider: provider),
+                ],
+              ),
       ),
     );
   }

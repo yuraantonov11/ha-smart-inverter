@@ -16,14 +16,18 @@ class _AuthGateState extends State<AuthGate> {
     context.read<AppStateProvider>().autoLogin().then((success) {
       if (!mounted) return;
       if (success) {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const MainScreen()));
+        Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const MainScreen()));
       } else {
-        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
+        Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => const LoginScreen()));
       }
     });
   }
+
   @override
-  Widget build(BuildContext context) => const Scaffold(body: Center(child: CircularProgressIndicator(color: Colors.amber)));
+  Widget build(BuildContext context) => const Scaffold(
+      body: Center(child: CircularProgressIndicator(color: Colors.amber)));
 }
 
 class LoginScreen extends StatefulWidget {
@@ -39,13 +43,17 @@ class _LoginScreenState extends State<LoginScreen> {
 
   void _doLogin() async {
     setState(() => _isLoading = true);
-    final success = await context.read<AppStateProvider>().login(_emailController.text.trim(), _passController.text);
+    final success = await context
+        .read<AppStateProvider>()
+        .login(_emailController.text.trim(), _passController.text);
     if (!mounted) return;
     setState(() => _isLoading = false);
     if (success) {
-      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const MainScreen()));
+      await Navigator.of(context).pushReplacement(
+          MaterialPageRoute(builder: (_) => const MainScreen()));
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Помилка авторизації.")));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Помилка авторизації.')));
     }
   }
 
@@ -59,26 +67,54 @@ class _LoginScreenState extends State<LoginScreen> {
           decoration: BoxDecoration(
             color: Theme.of(context).cardColor,
             borderRadius: BorderRadius.circular(24),
-            boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 20, offset: const Offset(0, 10))],
+            boxShadow: [
+              BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.5),
+                  blurRadius: 20,
+                  offset: const Offset(0, 10))
+            ],
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.solar_power_rounded, size: 80, color: Colors.amber),
+              const Icon(Icons.solar_power_rounded,
+                  size: 80, color: Colors.amber),
               const SizedBox(height: 20),
-              const Text("Smart Inverter", style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
+              const Text('Smart Inverter',
+                  style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
               const SizedBox(height: 30),
-              TextField(controller: _emailController, decoration: InputDecoration(labelText: "Email", prefixIcon: const Icon(Icons.email_outlined), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+              TextField(
+                  controller: _emailController,
+                  decoration: InputDecoration(
+                      labelText: 'Email',
+                      prefixIcon: const Icon(Icons.email_outlined),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12)))),
               const SizedBox(height: 16),
-              TextField(controller: _passController, obscureText: true, decoration: InputDecoration(labelText: "Пароль", prefixIcon: const Icon(Icons.lock_outline), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+              TextField(
+                  controller: _passController,
+                  obscureText: true,
+                  decoration: InputDecoration(
+                      labelText: 'Пароль',
+                      prefixIcon: const Icon(Icons.lock_outline),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12)))),
               const SizedBox(height: 30),
               SizedBox(
                 width: double.infinity,
                 height: 50,
                 child: FilledButton(
                   onPressed: _isLoading ? null : _doLogin,
-                  style: FilledButton.styleFrom(backgroundColor: Colors.amber, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-                  child: _isLoading ? const CircularProgressIndicator(color: Colors.black) : const Text("УВІЙТИ", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  style: FilledButton.styleFrom(
+                      backgroundColor: Colors.amber,
+                      foregroundColor: Colors.black,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12))),
+                  child: _isLoading
+                      ? const CircularProgressIndicator(color: Colors.black)
+                      : const Text('УВІЙТИ',
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 16)),
                 ),
               ),
             ],
