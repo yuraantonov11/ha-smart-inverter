@@ -1,0 +1,46 @@
+name: smart_inverter
+description: A modern desktop application for monitoring and controlling PowMr / SmartESS solar inverters.
+publish_to: 'none'
+version: 1.0.0+1
+
+# Repository and homepage
+repository: https://github.com/your-username/smart_inverter
+homepage: https://github.com/your-username/smart_inverter
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  dio: ^5.4.0
+  crypto: ^3.0.3
+  encrypt: ^5.0.3
+  system_tray: ^2.0.2
+  shared_preferences: ^2.2.2
+  provider: ^6.1.1
+  launch_at_startup: ^0.2.2 # Пакет для автозапуску з Windows
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.13.1 # Пакет для генерації іконок
+  flutter_lints: ^5.0.0 # Пакет для перевірки коду
+
+# Налаштування генератора іконок
+flutter_icons:
+  android: true
+  ios: true
+  image_path: "assets/app_icon.png"
+  windows:
+    generate: true
+    image_path: "assets/app_icon.png"
+    icon_size: 256
+
+flutter:
+  uses-material-design: true
+  generate: true
+  assets:
+    - assets/

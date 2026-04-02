@@ -1,0 +1,17 @@
+{
+  "appTitle": "Smart Inverter",
+  "login": "Login",
+  "logout": "Logout",
+  "settings": "Settings",
+  "theme": "Theme",
+  "language": "Language",
+  "dashboard": "Dashboard",
+  "details": "Details",
+  "automation": "Automation",
+  "smartModes": "Smart Modes",
+  "modeOff": "Off",
+  "modeWinter": "Winter Mode",
+  "modeWinterDesc": "Description for winter",
+  "modeSummer": "Summer Mode",
+  "modeSummerDesc": "Description for summer"
+}

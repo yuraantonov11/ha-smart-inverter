@@ -1,0 +1,17 @@
+{
+  "appTitle": "Смарт Інвертор",
+  "login": "Увійти",
+  "logout": "Вийти",
+  "settings": "Налаштування",
+  "theme": "Тема",
+  "language": "Мова",
+  "dashboard": "Панель",
+  "details": "Деталі",
+  "automation": "Автоматизація",
+  "smartModes": "Смарт Режими",
+  "modeOff": "Вимкнення",
+  "modeWinter": "Зимовий Режим",
+  "modeWinterDesc": "Опис для Зимового Режиму",
+  "modeSummer": "Літній Режим",
+  "modeSummerDesc": "Опис для Літнього Режиму"
+ }

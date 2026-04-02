@@ -1,0 +1,26 @@
+# IDE settings
+.idea/
+.vscode/
+.vs/
+*.iml
+*.ipr
+*.iws
+
+# Flutter and Dart related
+.dart_tool/
+.flutter-plugins-dependencies
+.metadata
+.pub-cache/
+.pub/
+/build/
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
