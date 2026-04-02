@@ -4,6 +4,7 @@ import '../models/inverter_data.dart';
 class EnergyFlowDiagram extends StatefulWidget {
   final InverterData data;
   final bool isEn;
+
   const EnergyFlowDiagram({super.key, required this.data, this.isEn = true});
 
   @override
@@ -18,7 +19,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
   void initState() {
     super.initState();
     _controller =
-        AnimationController(vsync: this, duration: const Duration(seconds: 2))
+        AnimationController(vsync: this, duration: const Duration(seconds: 10))
           ..repeat();
   }
 
@@ -110,7 +111,8 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                     spreadRadius: 5),
               ],
             ),
-            child: const Icon(Icons.sync_alt, size: 28, color: Colors.amber),
+            child: const Icon(Icons.developer_board,
+                size: 28, color: Colors.amber),
           ),
         ),
       ],

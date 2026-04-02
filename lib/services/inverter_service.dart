@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
+import 'package:fl_chart/fl_chart.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/inverter_data.dart';
 
@@ -221,5 +223,107 @@ class InverterService {
       return true;
     }
     return false;
+  }
+
+// ==============================================================
+  // НОВИЙ МЕТОД: Витягування ВСІХ точних даних (Сонце, Будинок, Батарея, Мережа)
+  // ==============================================================
+  Future<Map<String, List<FlSpot>>> getChartData(int range) async {
+    if (accessToken == null) return {};
+
+    // range: 0 = Day, 1 = Week, 2 = Month
+    var endpoint =
+        '/apis/ownerOverView/station/stateAttributeSummary/category/';
+
+    final now = DateTime.now();
+    var dateStr = '';
+
+    if (range == 0) {
+      endpoint += 'daily?summaryCategoryKey=pvInverterPowerClass';
+      dateStr =
+          "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+    } else if (range == 1) {
+      // API для місяця (тижневі дані вирізаємо з нього)
+      endpoint += 'monthly?summaryCategoryKey=pvInverterPowerClass';
+      dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}";
+    } else {
+      // API для року (або цілого місяця)
+      endpoint += 'monthly?summaryCategoryKey=pvInverterPowerClass';
+      dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}";
+    }
+
+    try {
+      // Відправляємо запит ТІЛЬКИ з датою, як у твоєму HAR файлі
+      final response = await _dio.post(endpoint, data: {'time': dateStr});
+
+      var result = <String, List<FlSpot>>{
+        'generationPower': [],
+        'loadPower': [],
+        'batteryPower': [],
+        'gridPower': []
+      };
+
+      if ((response.data['code'] == 0 || response.data['success'] == true) &&
+          response.data['data'] != null) {
+        List properties = response.data['data']['properties'] ?? [];
+
+        for (var prop in properties) {
+          String key = prop['property']
+              ['key']; // generationPower, loadPower, batteryPower, gridPower
+          List pts = prop['timePoints'] ?? [];
+
+          var spots = <FlSpot>[];
+          for (var i = 0; i < pts.length; i++) {
+            var pt = pts[i];
+            var value = _parseDouble(pt['value']) * 1000; // конвертуємо kW у W
+            String timeDisplay = pt['timeDisplay'] ?? '';
+
+            var x = i.toDouble();
+            if (timeDisplay.contains(':')) {
+              var parts = timeDisplay.split(':');
+              x = double.parse(parts[0]) +
+                  (double.parse(parts[1]) / 60.0); // 14:30 -> 14.5
+            } else if (timeDisplay.contains('-')) {
+              x = double.tryParse(timeDisplay.split('-').last) ??
+                  x; // 2026-04-02 -> 2.0
+            } else {
+              x = double.tryParse(timeDisplay) ?? x;
+            }
+
+            spots.add(FlSpot(x, value));
+          }
+
+          // Якщо вибрано тиждень, обрізаємо дані місяця до 7 останніх днів
+          if (range == 1 && spots.length > 7) {
+            var todayIndex = now.day - 1; // 0-based
+            var start = (todayIndex - 6) < 0 ? 0 : todayIndex - 6;
+            if (todayIndex < spots.length) {
+              spots = spots.sublist(start, todayIndex + 1);
+              // Перебудовуємо вісь X (0-6)
+              for (var i = 0; i < spots.length; i++) {
+                spots[i] = FlSpot(i.toDouble(), spots[i].y);
+              }
+            }
+          }
+
+          if (result.containsKey(key)) {
+            result[key] = spots;
+          }
+        }
+      }
+      return result;
+    } catch (e) {
+      if (kDebugMode) {
+        print('getChartData error: $e');
+      }
+      return {};
+    }
+  }
+
+  double _parseDouble(dynamic value) {
+    if (value == null) return 0.0;
+    if (value is num) return value.toDouble();
+    if (value is String) return double.tryParse(value) ?? 0.0;
+    return 0.0;
   }
 }

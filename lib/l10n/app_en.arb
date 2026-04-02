@@ -26,5 +26,7 @@
   "thu": "Thu",
   "fri": "Fri",
   "sat": "Sat",
-  "sun": "Sun"
+  "sun": "Sun",
+  "battery": "Battery",
+  "grid": "Grid"
 }

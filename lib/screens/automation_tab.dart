@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 
 class AutomationTab extends StatelessWidget {
@@ -9,70 +8,143 @@ class AutomationTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Звертаємося до файлу локалізації
-    final l10n = AppLocalizations.of(context)!;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
         Padding(
-          padding: const EdgeInsets.only(bottom: 12, left: 4),
-          child: Text(l10n.smartModes,
-              style: const TextStyle(
-                  fontSize: 16,
+          padding: const EdgeInsets.only(bottom: 20, left: 4),
+          child: Text('Інтелектуальні HEMS режими',
+              style: TextStyle(
+                  fontSize: 18,
                   fontWeight: FontWeight.bold,
-                  color: Colors.grey)),
+                  color: isDark ? Colors.white70 : Colors.grey[800])),
         ),
-        _buildRadioCard(
-          context,
-          title: l10n.modeOff,
-          subtitle: '',
-          icon: Icons.pan_tool_rounded,
-          color: Colors.grey,
+        _SmartModeCard(
+          title: 'Адаптивний інтелект (Авто)',
+          subtitle: 'Баланс автономності та економії (SBU)',
+          icon: Icons.auto_awesome,
+          color: Colors.blueAccent,
           value: 0,
+          groupValue: provider.smartMode,
+          onChanged: (val) => provider.setSmartMode(val!),
+          tooltipText:
+              'Інвертор самостійно маневрує між сонячною енергією та батареєю. Мережа використовується лише при критичному розряді.',
         ),
         const SizedBox(height: 16),
-        _buildRadioCard(
-          context,
-          title: l10n.modeWinter,
-          subtitle: l10n.modeWinterDesc,
-          icon: Icons.ac_unit_rounded,
-          color: Colors.lightBlueAccent,
+        _SmartModeCard(
+          title: 'Нічний арбітраж',
+          subtitle: 'Максимальна фінансова економія',
+          icon: Icons.nights_stay_rounded,
+          color: Colors.purpleAccent,
           value: 1,
+          groupValue: provider.smartMode,
+          onChanged: (val) => provider.setSmartMode(val!),
+          tooltipText:
+              'О 23:00 інвертор плавно заряджає батарею за нічним тарифом. Вдень пріоритет віддається сонцю. Налаштовано динамічне відключення бойлера при низькому заряді.',
         ),
         const SizedBox(height: 16),
-        _buildRadioCard(
-          context,
-          title: l10n.modeSummer,
-          subtitle: l10n.modeSummerDesc,
-          icon: Icons.wb_sunny_rounded,
+        _SmartModeCard(
+          title: 'Резерв / Шторм',
+          subtitle: 'Підготовка до віялових відключень',
+          icon: Icons.thunderstorm_rounded,
           color: Colors.amber,
           value: 2,
+          groupValue: provider.smartMode,
+          onChanged: (val) => provider.setSmartMode(val!),
+          tooltipText:
+              'Фінансова економія ігнорується. Батарея примусово підтримується на 100% від мережі (режим USB). Готовність до непередбачуваних відключень.',
         ),
       ],
     );
   }
+}
 
-  Widget _buildRadioCard(BuildContext context,
-      {required String title,
-      required String subtitle,
-      required IconData icon,
-      required Color color,
-      required int value}) {
-    final isSelected = provider.smartMode == value;
+class _SmartModeCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Color color;
+  final int value;
+  final int groupValue;
+  final ValueChanged<int?> onChanged;
+  final String tooltipText;
+
+  const _SmartModeCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.color,
+    required this.value,
+    required this.groupValue,
+    required this.onChanged,
+    required this.tooltipText,
+  });
+
+  void _showInfo(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (context) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color, size: 28),
+                const SizedBox(width: 12),
+                Expanded(
+                    child: Text(title,
+                        style: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold))),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Text(tooltipText,
+                style: const TextStyle(fontSize: 15, height: 1.5)),
+            const SizedBox(height: 24),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton(
+                onPressed: () => Navigator.pop(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: color,
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
+                ),
+                child: const Text('Зрозуміло',
+                    style: TextStyle(color: Colors.white)),
+              ),
+            )
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isSelected = value == groupValue;
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     return GestureDetector(
-      onTap: () => provider.setSmartMode(value),
+      onTap: () => onChanged(value),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
+        duration: const Duration(milliseconds: 300),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: isSelected
               ? color.withValues(alpha: 0.1)
               : Theme.of(context).cardColor,
-          borderRadius: BorderRadius.circular(24),
+          borderRadius: BorderRadius.circular(20),
           border: Border.all(
-              color: isSelected ? color : Colors.transparent, width: 2),
+            color: isSelected ? color : Colors.transparent,
+            width: 2,
+          ),
           boxShadow: isDark
               ? []
               : [
@@ -81,50 +153,40 @@ class AutomationTab extends StatelessWidget {
                       blurRadius: 10)
                 ],
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.15),
-                    shape: BoxShape.circle),
-                child: Icon(icon, color: color),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
               ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SizedBox(height: 8),
-                    Text(title,
-                        style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                            color: isSelected ? color : null)),
-                    if (subtitle.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(subtitle,
-                          style: const TextStyle(
-                              fontSize: 13, height: 1.4, color: Colors.grey)),
-                    ]
-                  ],
-                ),
+              child: Icon(icon, color: color, size: 24),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, fontSize: 16)),
+                  const SizedBox(height: 4),
+                  Text(subtitle,
+                      style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                ],
               ),
-              // Кастомна іконка замість deprecated Radio
-              Padding(
-                padding: const EdgeInsets.only(top: 8.0),
-                child: Icon(
-                  isSelected
-                      ? Icons.radio_button_checked
-                      : Icons.radio_button_unchecked,
-                  color: isSelected ? color : Colors.grey,
-                ),
-              ),
-            ],
-          ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.info_outline_rounded, color: Colors.grey),
+              onPressed: () => _showInfo(context),
+            ),
+            // Тепер Radio не потребує groupValue та onChanged
+            Radio<int>(
+              value: value,
+              activeColor: color,
+            ),
+          ],
         ),
       ),
     );

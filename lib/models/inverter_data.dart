@@ -64,8 +64,7 @@ class InverterData {
     final fields = json['deviceAttributeState']?['fields'] ?? {};
 
     // Усі потужності зводимо до Ват (W)
-    var pv =
-        _parseDouble(fields['pvInputPower'] ?? fields['generationPower']);
+    var pv = _parseDouble(fields['pvInputPower'] ?? fields['generationPower']);
     var load = _parseDouble(fields['acOutputActivePower'], isKw: true);
     var soc = _parseDouble(fields['batteryCapacity']);
     var gridVolt = _parseDouble(fields['acInputVoltage']);
@@ -82,8 +81,7 @@ class InverterData {
 
     // Логіка визначення потоку з мережі (Grid Power)
     var workingState = _parseString(fields['workingStates']);
-    var workingStateVal =
-        fields['workingStates']?['value']?.toString() ?? '';
+    var workingStateVal = fields['workingStates']?['value']?.toString() ?? '';
 
     // Якщо інвертор в режимі "Line Mode" (Мережа) - зазвичай це код 4
     var isLineMode =

@@ -1,38 +1,94 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:window_manager/window_manager.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'l10n/app_localizations.dart';
-import 'providers/app_provider.dart';
 import 'theme/app_theme.dart';
+import 'providers/app_provider.dart';
 import 'screens/auth_screen.dart';
+import 'screens/main_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  launchAtStartup.setup(
-    appName: 'SmartInverter',
-    appPath: Platform.resolvedExecutable,
+  // 1. Ініціалізація автозапуску (тепер безпечно)
+  try {
+    var packageInfo = await PackageInfo.fromPlatform();
+    launchAtStartup.setup(
+      appName: packageInfo.appName,
+      appPath: Platform.resolvedExecutable,
+    );
+  } catch (e) {
+    debugPrint('Помилка ініціалізації автозапуску: $e');
+  }
+
+  // 2. Ініціалізація керування вікном
+  await windowManager.ensureInitialized();
+
+  const windowOptions = WindowOptions(
+    size: Size(1100, 800),
+    minimumSize: Size(900, 650),
+    center: true,
+    title: 'Smart Inverter',
+    backgroundColor: Colors.transparent,
   );
 
-  final provider = AppStateProvider();
-  await provider.loadSettings();
+  await windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+    await windowManager.setPreventClose(true);
+  });
 
+  // 3. Запуск додатку
   runApp(
     MultiProvider(
-      providers: [ChangeNotifierProvider.value(value: provider)],
-      child: const InverterApp(),
+      providers: [
+        ChangeNotifierProvider(
+          create: (_) => AppStateProvider()..loadSettings(),
+        ),
+      ],
+      child: const MyApp(), // Тут тепер не має бути помилки
     ),
   );
+} // <--- ПЕРЕВІРТЕ: Ця дужка має закривати функцію main()
+
+// --- КЛАС МАЄ ПОЧИНАТИСЯ ПІСЛЯ ЗАКРИТТЯ main() ---
+
+class MyApp extends StatefulWidget {
+  const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
 }
 
-class InverterApp extends StatelessWidget {
-  const InverterApp({super.key});
+class _MyAppState extends State<MyApp> with WindowListener {
+  @override
+  void initState() {
+    windowManager.addListener(this);
+    super.initState();
+  }
+
+  @override
+  void dispose() {
+    windowManager.removeListener(this);
+    super.dispose();
+  }
+
+  @override
+  void onWindowClose() async {
+    var isPreventClose = await windowManager.isPreventClose();
+    if (isPreventClose) {
+      await windowManager.hide();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    // Використовуємо select або watch для реактивності
     final provider = context.watch<AppStateProvider>();
 
     return MaterialApp(
@@ -41,8 +97,6 @@ class InverterApp extends StatelessWidget {
       themeMode: provider.themeMode,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
-
-      // Налаштування локалізації
       locale: Locale(provider.lang),
       localizationsDelegates: const [
         AppLocalizations.delegate,
@@ -54,8 +108,15 @@ class InverterApp extends StatelessWidget {
         Locale('en', ''),
         Locale('uk', ''),
       ],
-
-      home: const AuthGate(),
+      home: provider.isCheckingAuth
+          ? const Scaffold(
+              body: Center(
+                child: CircularProgressIndicator(color: Colors.amber),
+              ),
+            )
+          : (provider.isAuthenticated
+              ? const MainScreen()
+              : const AuthScreen()),
     );
   }
 }

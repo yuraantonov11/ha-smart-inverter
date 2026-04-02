@@ -21,15 +21,17 @@ dependencies:
   system_tray: ^2.0.2
   shared_preferences: ^2.2.2
   provider: ^6.1.1
-  launch_at_startup: ^0.2.2 # Пакет для автозапуску з Windows
+  launch_at_startup: ^0.5.1 # Пакет для автозапуску з Windows
 
   intl: any
   fl_chart: ^1.2.0
+  window_manager: ^0.5.1
+  package_info_plus: ^9.0.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_launcher_icons: ^0.13.1 # Пакет для генерації іконок
-  flutter_lints: ^5.0.0 # Пакет для перевірки коду
+  flutter_launcher_icons: ^0.14.4 # Пакет для генерації іконок
+  flutter_lints: ^6.0.0 # Пакет для перевірки коду
 
 # Налаштування генератора іконок
 flutter_icons:

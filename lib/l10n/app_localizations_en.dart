@@ -91,4 +91,10 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get sun => 'Sun';
+
+  @override
+  String get battery => 'Battery';
+
+  @override
+  String get grid => 'Grid';
 }

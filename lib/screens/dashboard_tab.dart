@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:provider/provider.dart';
+
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import '../models/inverter_data.dart';
@@ -27,7 +29,7 @@ class DashboardTab extends StatelessWidget {
           const SizedBox(height: 16),
           _HistoricalStatsWidget(provider: provider),
           const SizedBox(height: 16),
-          const _EnergyLineChartWidget(),
+          const _EnergyLineChartWidget(), // Графік сам керує своїми даними
           const SizedBox(height: 16),
           ControlPanel(provider: provider),
         ],
@@ -64,6 +66,7 @@ class DashboardTab extends StatelessWidget {
 
 class _HistoricalStatsWidget extends StatelessWidget {
   final AppStateProvider provider;
+
   const _HistoricalStatsWidget({required this.provider});
 
   @override
@@ -140,16 +143,80 @@ class _EnergyLineChartWidget extends StatefulWidget {
 
 class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
   int _selectedRange = 0; // 0 = Day, 1 = Week, 2 = Month
+
+  // 4 Тумблери відображення
   bool _showProduction = true;
   bool _showConsumption = true;
+  bool _showBattery = true;
+  bool _showGrid =
+      false; // Вимкнено за замовчуванням, щоб не перевантажувати графік
+
+  bool _isLoading = true;
+  List<FlSpot> _productionData = [];
+  List<FlSpot> _consumptionData = [];
+  List<FlSpot> _batteryData = [];
+  List<FlSpot> _gridData = [];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _fetchChartData();
+    });
+  }
+
+  Future<void> _fetchChartData() async {
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+
+    final provider = context.read<AppStateProvider>();
+    final result = await provider.service.getChartData(_selectedRange);
+
+    if (mounted) {
+      setState(() {
+        _productionData = result['generationPower'] ?? [];
+        _consumptionData = result['loadPower'] ?? [];
+        _batteryData = result['batteryPower'] ?? [];
+        _gridData = result['gridPower'] ?? [];
+        _isLoading = false;
+      });
+    }
+  }
+
+  void _onRangeChanged(int index) {
+    if (_selectedRange == index) return;
+    setState(() => _selectedRange = index);
+    _fetchChartData();
+  }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final l10n = AppLocalizations.of(context)!;
 
+    // Формуємо масив ліній та кольорів для тултипів
+    var lines = <LineChartBarData>[];
+    var visibleColors = <Color>[];
+
+    if (_showProduction && _productionData.isNotEmpty) {
+      lines.add(_buildLineData(_productionData, Colors.amber));
+      visibleColors.add(Colors.amber);
+    }
+    if (_showConsumption && _consumptionData.isNotEmpty) {
+      lines.add(_buildLineData(_consumptionData, Colors.purpleAccent));
+      visibleColors.add(Colors.purpleAccent);
+    }
+    if (_showBattery && _batteryData.isNotEmpty) {
+      lines.add(_buildLineData(_batteryData, Colors.greenAccent));
+      visibleColors.add(Colors.greenAccent);
+    }
+    if (_showGrid && _gridData.isNotEmpty) {
+      lines.add(_buildLineData(_gridData, Colors.blueAccent));
+      visibleColors.add(Colors.blueAccent);
+    }
+
     return Container(
-      height: 360,
+      height: 400, // Збільшено висоту для легенди
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
@@ -174,91 +241,108 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
             ],
           ),
           const SizedBox(height: 16),
-          Row(
+          // Wrap гарантує, що кнопки плавно перейдуть на новий рядок, якщо не помістяться
+          Wrap(
+            spacing: 16,
+            runSpacing: 12,
             children: [
               _buildLegendItem(Colors.amber, l10n.production, _showProduction,
                   () => setState(() => _showProduction = !_showProduction)),
-              const SizedBox(width: 20),
               _buildLegendItem(
                   Colors.purpleAccent,
                   l10n.consumption,
                   _showConsumption,
                   () => setState(() => _showConsumption = !_showConsumption)),
+              _buildLegendItem(Colors.greenAccent, l10n.battery, _showBattery,
+                  () => setState(() => _showBattery = !_showBattery)),
+              _buildLegendItem(Colors.blueAccent, l10n.grid, _showGrid,
+                  () => setState(() => _showGrid = !_showGrid)),
             ],
           ),
           const SizedBox(height: 24),
           Expanded(
-            child: LineChart(
-              LineChartData(
-                minY: 0,
-                maxY: _getMaxY(),
-                lineTouchData: LineTouchData(
-                  touchTooltipData: LineTouchTooltipData(
-                    getTooltipColor: (spot) =>
-                        Theme.of(context).cardColor.withValues(alpha: 0.9),
-                    getTooltipItems: (spots) => spots.map((spot) {
-                      final isProd = spot.barIndex == 0;
-                      return LineTooltipItem(
-                        _selectedRange == 0
-                            ? Formatters.formatPower(spot.y)
-                            : Formatters.formatEnergy(spot.y),
-                        TextStyle(
-                            color: isProd ? Colors.amber : Colors.purpleAccent,
-                            fontWeight: FontWeight.bold),
-                      );
-                    }).toList(),
-                  ),
-                ),
-                gridData: FlGridData(
-                  show: true,
-                  drawVerticalLine: false,
-                  getDrawingHorizontalLine: (value) => FlLine(
-                      color: Colors.grey.withValues(alpha: 0.1),
-                      strokeWidth: 1),
-                ),
-                titlesData: FlTitlesData(
-                  show: true,
-                  rightTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  topTitles: const AxisTitles(
-                      sideTitles: SideTitles(showTitles: false)),
-                  leftTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      reservedSize: 50,
-                      getTitlesWidget: (value, meta) {
-                        if (value == 0) return const SizedBox.shrink();
-                        return SideTitleWidget(
-                          meta: meta,
-                          child: Text(
+            child: Stack(
+              children: [
+                LineChart(
+                  LineChartData(
+                    minY:
+                        _getMinY(), // Дозволяє графіку опускатись нижче нуля (розряд батареї)
+                    maxY: _getMaxY(),
+                    lineTouchData: LineTouchData(
+                      touchTooltipData: LineTouchTooltipData(
+                        getTooltipColor: (spot) =>
+                            Theme.of(context).cardColor.withValues(alpha: 0.9),
+                        getTooltipItems: (spots) => spots.map((spot) {
+                          // Знаходимо правильний колір завдяки масиву visibleColors
+                          final color = visibleColors[spot.barIndex];
+                          return LineTooltipItem(
                             _selectedRange == 0
-                                ? Formatters.formatPower(value)
-                                : Formatters.formatEnergy(value),
-                            style: const TextStyle(
-                                color: Colors.grey, fontSize: 9),
-                          ),
-                        );
-                      },
+                                ? Formatters.formatPower(spot.y)
+                                : Formatters.formatEnergy(spot.y),
+                            TextStyle(
+                                color: color, fontWeight: FontWeight.bold),
+                          );
+                        }).toList(),
+                      ),
                     ),
-                  ),
-                  bottomTitles: AxisTitles(
-                    sideTitles: SideTitles(
-                      showTitles: true,
-                      interval: _selectedRange == 0 ? 4 : 1,
-                      getTitlesWidget: (value, meta) =>
-                          _getBottomTitles(value, meta, l10n),
+                    gridData: FlGridData(
+                      show: true,
+                      drawVerticalLine: false,
+                      // Жирніша лінія на рівні нуля
+                      getDrawingHorizontalLine: (value) => FlLine(
+                          color: value == 0
+                              ? Colors.grey.withValues(alpha: 0.3)
+                              : Colors.grey.withValues(alpha: 0.1),
+                          strokeWidth: value == 0 ? 2 : 1),
                     ),
+                    titlesData: FlTitlesData(
+                      show: true,
+                      rightTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false)),
+                      topTitles: const AxisTitles(
+                          sideTitles: SideTitles(showTitles: false)),
+                      leftTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          reservedSize: 50,
+                          getTitlesWidget: (value, meta) {
+                            if (value == 0 && _getMinY() == 0) {
+                              return const SizedBox.shrink();
+                            }
+                            return SideTitleWidget(
+                              meta: meta,
+                              child: Text(
+                                _selectedRange == 0
+                                    ? Formatters.formatPower(value)
+                                    : Formatters.formatEnergy(value),
+                                style: const TextStyle(
+                                    color: Colors.grey, fontSize: 9),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                      bottomTitles: AxisTitles(
+                        sideTitles: SideTitles(
+                          showTitles: true,
+                          interval: _selectedRange == 0 ? 4 : 1,
+                          getTitlesWidget: (value, meta) =>
+                              _getBottomTitles(value, meta, l10n),
+                        ),
+                      ),
+                    ),
+                    borderData: FlBorderData(show: false),
+                    lineBarsData: lines, // Передаємо зібраний список
                   ),
+                  duration: const Duration(milliseconds: 400),
                 ),
-                borderData: FlBorderData(show: false),
-                lineBarsData: [
-                  if (_showProduction)
-                    _buildLineData(_getProductionData(), Colors.amber),
-                  if (_showConsumption)
-                    _buildLineData(_getConsumptionData(), Colors.purpleAccent),
-                ],
-              ),
-              duration: const Duration(milliseconds: 400),
+                if (_isLoading)
+                  Container(
+                    color: Theme.of(context).cardColor.withValues(alpha: 0.3),
+                    child: const Center(
+                        child: CircularProgressIndicator(color: Colors.amber)),
+                  ),
+              ],
             ),
           ),
         ],
@@ -274,6 +358,7 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
         child: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             AnimatedContainer(
               duration: const Duration(milliseconds: 300),
@@ -312,7 +397,7 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
           _selectedRange == 1,
           _selectedRange == 2
         ],
-        onPressed: (index) => setState(() => _selectedRange = index),
+        onPressed: _onRangeChanged,
         borderRadius: BorderRadius.circular(16),
         fillColor: Theme.of(context).colorScheme.primary.withValues(alpha: 0.1),
         selectedColor: Theme.of(context).colorScheme.primary,
@@ -389,33 +474,29 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     return const SizedBox.shrink();
   }
 
+  List<FlSpot> _getVisibleSpots() {
+    var all = <FlSpot>[];
+    if (_showProduction) all.addAll(_productionData);
+    if (_showConsumption) all.addAll(_consumptionData);
+    if (_showBattery) all.addAll(_batteryData);
+    if (_showGrid) all.addAll(_gridData);
+    return all;
+  }
+
   double _getMaxY() {
-    return _selectedRange == 0 ? 6000 : 40000;
+    var maxVal = 0.0;
+    for (var spot in _getVisibleSpots()) {
+      if (spot.y > maxVal) maxVal = spot.y;
+    }
+    return maxVal == 0 ? 100 : maxVal * 1.2;
   }
 
-  List<FlSpot> _getProductionData() {
-    if (_selectedRange == 0) {
-      return List.generate(24, (h) {
-        var val = 0.0;
-        if (h > 5 && h < 19) {
-          val = 4500.0 * (1.0 - (h - 12).abs() / 7.0);
-        }
-        return FlSpot(h.toDouble(), val < 0 ? 0.0 : val);
-      });
+  double _getMinY() {
+    var minVal = 0.0;
+    for (var spot in _getVisibleSpots()) {
+      if (spot.y < minVal) minVal = spot.y;
     }
-    return List.generate(
-        7, (i) => FlSpot(i.toDouble(), 15000.0 + (i % 3) * 5000.0));
-  }
-
-  List<FlSpot> _getConsumptionData() {
-    if (_selectedRange == 0) {
-      return List.generate(24, (h) {
-        var val = 500 + (h == 8 || h == 9 || h == 19 || h == 20 ? 2500 : 300);
-        // Тут ми гарантуємо, що передаємо double у FlSpot:
-        return FlSpot(h.toDouble(), val.toDouble());
-      });
-    }
-    return List.generate(
-        7, (i) => FlSpot(i.toDouble(), 18000.0 + (i % 2) * 4000.0));
+    // Якщо мінімальне значення менше нуля (наприклад, розряджається батарея -2000 W)
+    return minVal >= 0 ? 0 : minVal * 1.2;
   }
 }

@@ -91,4 +91,10 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get sun => 'Нд';
+
+  @override
+  String get battery => 'Батарея';
+
+  @override
+  String get grid => 'Мережа';
 }

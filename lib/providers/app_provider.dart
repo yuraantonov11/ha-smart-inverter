@@ -4,14 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:system_tray/system_tray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
+import 'package:window_manager/window_manager.dart'; // Використовуємо window_manager для трея
 import '../services/inverter_service.dart';
+import '../services/hems_algorithm.dart';
 import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
   static const String appVersion = '1.0.0';
-  InverterService service = InverterService();
+  final InverterService service = InverterService();
+  late HemsAlgorithmService hemsService;
   final SystemTray systemTray = SystemTray();
-  final AppWindow appWindow = AppWindow();
 
   InverterData? data;
   bool isDataLoading = false;
@@ -20,7 +22,8 @@ class AppStateProvider extends ChangeNotifier {
   Timer? _dataTimer;
   Timer? _automationTimer;
 
-  int smartMode = 0; // 0 = Off, 1 = Winter, 2 = Summer
+  // 0 = Адаптивний (Auto), 1 = Нічний арбітраж, 2 = Шторм/Резерв
+  int smartMode = 0;
 
   ThemeMode themeMode = ThemeMode.dark;
   String lang = 'en';
@@ -28,6 +31,16 @@ class AppStateProvider extends ChangeNotifier {
   bool get isEn => lang == 'en';
   bool isAutostartEnabled = false;
   String? savedEmail;
+
+  // Змінні для правильного реактивного роутингу (Логін <-> Дашборд)
+  bool isAuthenticated = false;
+  bool isCheckingAuth = true;
+
+  AppStateProvider() {
+    // Ініціалізуємо сервіс алгоритмів, передаючи посилання на провайдер
+    // для доступу до методу changeSetting та оптимістичного оновлення UI
+    hemsService = HemsAlgorithmService(this);
+  }
 
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
@@ -37,12 +50,35 @@ class AppStateProvider extends ChangeNotifier {
 
     smartMode = prefs.getInt('smart_mode') ?? 0;
     lang = prefs.getString('app_lang') ?? 'en';
-
     isAutostartEnabled = await launchAtStartup.isEnabled();
     savedEmail = prefs.getString('saved_email');
 
+    // Перевірка автологіну при старті
+    var loggedIn = await autoLogin();
+    isAuthenticated = loggedIn;
+    isCheckingAuth = false;
+
+    if (loggedIn) {
+      startTimers();
+    }
+
     _updateStatusMessage(true);
     notifyListeners();
+  }
+
+  void startTimers() {
+    _initTray();
+    fetchData();
+    _dataTimer =
+        Timer.periodic(const Duration(seconds: 15), (_) => fetchData());
+    _automationTimer =
+        Timer.periodic(const Duration(minutes: 1), (_) => _checkAutomations());
+  }
+
+  void stopTimers() {
+    _dataTimer?.cancel();
+    _automationTimer?.cancel();
+    systemTray.destroy();
   }
 
   Future<void> setLanguage(String newLang) async {
@@ -50,7 +86,7 @@ class AppStateProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('app_lang', lang);
     _updateStatusMessage(true);
-    await _updateTrayMenu();
+    if (isAuthenticated) await _updateTrayMenu();
     notifyListeners();
   }
 
@@ -76,7 +112,7 @@ class AppStateProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('smart_mode', mode);
     notifyListeners();
-    _checkAutomations(); // Одразу перевіряємо правила
+    await _checkAutomations(); // Одразу перевіряємо правила після зміни режиму
   }
 
   Future<void> toggleAutostart(bool val) async {
@@ -86,7 +122,7 @@ class AppStateProvider extends ChangeNotifier {
       await launchAtStartup.disable();
     }
     isAutostartEnabled = await launchAtStartup.isEnabled();
-    await _updateTrayMenu();
+    if (isAuthenticated) await _updateTrayMenu();
     notifyListeners();
   }
 
@@ -105,27 +141,81 @@ class AppStateProvider extends ChangeNotifier {
       await prefs.setString('saved_email', email);
       await prefs.setString('saved_pass', pass);
       savedEmail = email;
+
+      isAuthenticated = true;
+      startTimers();
+      notifyListeners();
     }
     return success;
   }
 
-  void startTimers() {
-    _initTray();
-    fetchData();
-    _dataTimer =
-        Timer.periodic(const Duration(seconds: 15), (_) => fetchData());
-    _automationTimer =
-        Timer.periodic(const Duration(minutes: 1), (_) => _checkAutomations());
+  Future<void> logout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('saved_email');
+    await prefs.remove('saved_pass');
+    savedEmail = null;
+    service.accessToken = null;
+    service.userId = null;
+    data = null;
+
+    stopTimers();
+    isAuthenticated = false;
+    notifyListeners();
   }
 
-  void stopTimers() {
-    _dataTimer?.cancel();
-    _automationTimer?.cancel();
-    systemTray.destroy();
+  Future<void> _initTray() async {
+    await systemTray.initSystemTray(
+      title: 'Inverter',
+      iconPath:
+          Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
+    );
+    systemTray.registerSystemTrayEventHandler((eventName) {
+      if (eventName == kSystemTrayEventClick) {
+        windowManager.show();
+      } else if (eventName == kSystemTrayEventRightClick) {
+        systemTray.popUpContextMenu();
+      }
+    });
+  }
+
+  Future<void> _updateTrayMenu() async {
+    final menu = Menu();
+    await menu.buildFrom([
+      MenuItemLabel(
+          label: isEn ? 'Enable SOLAR (SBU)' : 'Увімкнути СОНЦЕ (SBU)',
+          onClicked: (_) => setMode(2)),
+      MenuItemLabel(
+          label: isEn ? 'Enable GRID (USB)' : 'Увімкнути МЕРЕЖУ (USB)',
+          onClicked: (_) => setMode(0)),
+      MenuSeparator(),
+      MenuItemCheckbox(
+        label: isEn ? 'Start with Windows' : 'Автозапуск з Windows',
+        checked: isAutostartEnabled,
+        onClicked: (item) async => await toggleAutostart(!isAutostartEnabled),
+      ),
+      MenuSeparator(),
+      MenuItemLabel(
+          label: isEn ? 'Show App' : 'Показати вікно',
+          onClicked: (_) async {
+            await windowManager.show();
+            await windowManager.focus();
+          }),
+      MenuItemLabel(
+          label: isEn ? 'Exit' : 'Вийти',
+          onClicked: (_) async {
+            stopTimers();
+            await windowManager.destroy();
+            exit(0);
+          }),
+    ]);
+    await systemTray.setContextMenu(menu);
+    await systemTray.setTitle(
+        '${isEn ? 'Battery' : 'АКБ'}: ${data?.batterySoc.toStringAsFixed(0) ?? '--'}%');
   }
 
   Future<void> fetchData() async {
     if (service.deviceSn == null) return;
+
     isDataLoading = true;
     notifyListeners();
 
@@ -133,10 +223,11 @@ class AppStateProvider extends ChangeNotifier {
     if (newData != null) {
       data = newData;
       _updateStatusMessage(true);
-      await _updateTrayMenu();
+      if (isAuthenticated) await _updateTrayMenu();
     } else {
       _updateStatusMessage(false);
     }
+
     isDataLoading = false;
     notifyListeners();
   }
@@ -174,94 +265,25 @@ class AppStateProvider extends ChangeNotifier {
     await changeSetting('outputSourcePrioritySetting', mode.toString());
   }
 
-  void _checkAutomations() {
-    if (smartMode == 0 || data == null) return;
+  Future<void> _checkAutomations() async {
+    if (data == null) return;
 
-    final now = DateTime.now();
-    final isNight = now.hour >= 23 || now.hour < 7;
+    // Вкажіть реальну ємність вашої збірки, наприклад 230Ah
+    const myBatteryCapacityAh = 230.0;
 
-    final currentOutput =
-        data!.rawFields['outputSourcePriority']?['value']?.toString();
-    final currentCharger =
-        data!.rawFields['chargerSourcePriority']?['value']?.toString();
+    await hemsService.enforceAcousticComfort(data!);
 
-    if (smartMode == 1) {
-      // --- ЗИМОВИЙ СЦЕНАРІЙ ---
-      if (isNight) {
-        if (currentOutput != '0') setMode(0); // USB
-        if (currentCharger != '1') {
-          changeSetting('chargerSourcePrioritySetting', '1'); // SNU
-        }
-      } else {
-        if (currentOutput != '2') setMode(2); // SBU
-        if (currentCharger != '0') {
-          changeSetting('chargerSourcePrioritySetting', '0'); // CSO
-        }
-      }
-    } else if (smartMode == 2) {
-      // --- ЛІТНІЙ СЦЕНАРІЙ ---
-      if (isNight) {
-        if (currentOutput != '0') setMode(0); // USB
-        if (currentCharger != '2') {
-          changeSetting('chargerSourcePrioritySetting', '2'); // OSO
-        }
-      } else {
-        if (currentOutput != '2') setMode(2); // SBU
-        if (currentCharger != '2') {
-          changeSetting('chargerSourcePrioritySetting', '2'); // OSO
-        }
-      }
+    switch (smartMode) {
+      case 0: // Предиктивний Адаптивний інтелект
+        await hemsService.executeAdaptiveMode(data!, myBatteryCapacityAh);
+        break;
+      case 1: // Нічний арбітраж
+        await hemsService.executeNightArbitrage(data!, myBatteryCapacityAh);
+        await hemsService.executeSmartLoadShedding(data!);
+        break;
+      case 2: // Резерв / Шторм
+        await hemsService.executeStormMode(data!);
+        break;
     }
-  }
-
-  Future<void> _initTray() async {
-    await systemTray.initSystemTray(
-      title: 'Inverter',
-      iconPath:
-          Platform.isWindows ? 'assets/app_icon.ico' : 'assets/app_icon.png',
-    );
-    systemTray.registerSystemTrayEventHandler((eventName) {
-      if (eventName == kSystemTrayEventClick) {
-        Platform.isWindows ? appWindow.show() : systemTray.popUpContextMenu();
-      } else if (eventName == kSystemTrayEventRightClick) {
-        systemTray.popUpContextMenu();
-      }
-    });
-  }
-
-  Future<void> _updateTrayMenu() async {
-    final menu = Menu();
-    await menu.buildFrom([
-      MenuItemLabel(
-          label: isEn ? 'Enable SOLAR (SBU)' : 'Увімкнути СОНЦЕ (SBU)',
-          onClicked: (_) => setMode(2)),
-      MenuItemLabel(
-          label: isEn ? 'Enable GRID (USB)' : 'Увімкнути МЕРЕЖУ (USB)',
-          onClicked: (_) => setMode(0)),
-      MenuSeparator(),
-      MenuItemCheckbox(
-        label: isEn ? 'Start with Windows' : 'Автозапуск з Windows',
-        checked: isAutostartEnabled,
-        onClicked: (item) async => await toggleAutostart(!isAutostartEnabled),
-      ),
-      MenuSeparator(),
-      MenuItemLabel(
-          label: isEn ? 'Show App' : 'Показати вікно',
-          onClicked: (_) => appWindow.show()),
-      MenuItemLabel(label: isEn ? 'Exit' : 'Вийти', onClicked: (_) => exit(0)),
-    ]);
-    await systemTray.setContextMenu(menu);
-    await systemTray.setTitle(
-        '${isEn ? 'Battery' : 'Заряд'}: ${data?.batterySoc.toStringAsFixed(0) ?? '--'}%');
-  }
-
-  Future<void> logout() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('saved_email');
-    await prefs.remove('saved_pass');
-    savedEmail = null;
-    stopTimers();
-    service.accessToken = null;
-    notifyListeners();
   }
 }
