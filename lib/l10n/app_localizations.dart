@@ -187,6 +187,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Description for summer'**
   String get modeSummerDesc;
+
+  /// No description provided for @energyOverview.
+  ///
+  /// In en, this message translates to:
+  /// **'Energy Overview'**
+  String get energyOverview;
+
+  /// No description provided for @production.
+  ///
+  /// In en, this message translates to:
+  /// **'Production'**
+  String get production;
+
+  /// No description provided for @consumption.
+  ///
+  /// In en, this message translates to:
+  /// **'Consumption'**
+  String get consumption;
+
+  /// No description provided for @day.
+  ///
+  /// In en, this message translates to:
+  /// **'Day'**
+  String get day;
+
+  /// No description provided for @week.
+  ///
+  /// In en, this message translates to:
+  /// **'Week'**
+  String get week;
+
+  /// No description provided for @month.
+  ///
+  /// In en, this message translates to:
+  /// **'Month'**
+  String get month;
+
+  /// No description provided for @mon.
+  ///
+  /// In en, this message translates to:
+  /// **'Mon'**
+  String get mon;
+
+  /// No description provided for @tue.
+  ///
+  /// In en, this message translates to:
+  /// **'Tue'**
+  String get tue;
+
+  /// No description provided for @wed.
+  ///
+  /// In en, this message translates to:
+  /// **'Wed'**
+  String get wed;
+
+  /// No description provided for @thu.
+  ///
+  /// In en, this message translates to:
+  /// **'Thu'**
+  String get thu;
+
+  /// No description provided for @fri.
+  ///
+  /// In en, this message translates to:
+  /// **'Fri'**
+  String get fri;
+
+  /// No description provided for @sat.
+  ///
+  /// In en, this message translates to:
+  /// **'Sat'**
+  String get sat;
+
+  /// No description provided for @sun.
+  ///
+  /// In en, this message translates to:
+  /// **'Sun'**
+  String get sun;
 }
 
 class _AppLocalizationsDelegate

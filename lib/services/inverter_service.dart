@@ -17,6 +17,10 @@ class InverterService {
   String? deviceSn;
   int? currentMode;
 
+  double dailyEnergy = 0.0;
+  double totalEnergy = 0.0;
+  double co2Reduction = 0.0;
+
   late final String _appSecret = _decryptAppSecret(_appId, _encryptedAppSecret);
 
   InverterService() {
@@ -156,6 +160,15 @@ class InverterService {
                 []);
         if (devices.isNotEmpty) {
           final firstDevice = devices[0];
+
+          // ЗБЕРІГАЄМО ІСТОРИЧНІ ДАНІ ЗІ СПИСКУ ПРИСТРОЇВ
+          dailyEnergy =
+              (firstDevice['dailyProducedQuantity'] ?? 0.0).toDouble();
+          totalEnergy =
+              (firstDevice['totalProducedQuantity'] ?? 0.0).toDouble();
+          co2Reduction =
+              (firstDevice['co2EmissionReduction'] ?? 0.0).toDouble();
+
           final extractedId = firstDevice['id']?.toString() ??
               firstDevice['deviceId']?.toString() ??
               firstDevice['deviceSn']?.toString();

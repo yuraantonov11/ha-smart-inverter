@@ -105,33 +105,6 @@ class SettingsTab extends StatelessWidget {
             ),
           ),
         ),
-
-        const SizedBox(height: 40),
-
-        // Версія застосунку
-        Center(
-          child: Column(
-            children: [
-              Text(
-                'Smart Inverter Desktop',
-                style: TextStyle(
-                  color: Colors.grey.withValues(alpha: 0.5),
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'v${AppStateProvider.appVersion}',
-                style: TextStyle(
-                  color: Colors.grey.withValues(alpha: 0.5),
-                  fontSize: 12,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
       ],
     );
   }

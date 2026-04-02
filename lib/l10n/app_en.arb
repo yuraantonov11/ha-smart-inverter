@@ -13,5 +13,18 @@
   "modeWinter": "Winter Mode",
   "modeWinterDesc": "Description for winter",
   "modeSummer": "Summer Mode",
-  "modeSummerDesc": "Description for summer"
+  "modeSummerDesc": "Description for summer",
+  "energyOverview": "Energy Overview",
+  "production": "Production",
+  "consumption": "Consumption",
+  "day": "Day",
+  "week": "Week",
+  "month": "Month",
+  "mon": "Mon",
+  "tue": "Tue",
+  "wed": "Wed",
+  "thu": "Thu",
+  "fri": "Fri",
+  "sat": "Sat",
+  "sun": "Sun"
 }

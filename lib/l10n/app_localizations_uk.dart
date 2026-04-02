@@ -52,4 +52,43 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get modeSummerDesc => 'Опис для Літнього Режиму';
+
+  @override
+  String get energyOverview => 'Огляд енергії';
+
+  @override
+  String get production => 'Виробництво';
+
+  @override
+  String get consumption => 'Споживання';
+
+  @override
+  String get day => 'День';
+
+  @override
+  String get week => 'Тиждень';
+
+  @override
+  String get month => 'Місяць';
+
+  @override
+  String get mon => 'Пн';
+
+  @override
+  String get tue => 'Вт';
+
+  @override
+  String get wed => 'Ср';
+
+  @override
+  String get thu => 'Чт';
+
+  @override
+  String get fri => 'Пт';
+
+  @override
+  String get sat => 'Сб';
+
+  @override
+  String get sun => 'Нд';
 }

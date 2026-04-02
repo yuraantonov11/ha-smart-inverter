@@ -13,5 +13,18 @@
   "modeWinter": "Зимовий Режим",
   "modeWinterDesc": "Опис для Зимового Режиму",
   "modeSummer": "Літній Режим",
-  "modeSummerDesc": "Опис для Літнього Режиму"
- }
+  "modeSummerDesc": "Опис для Літнього Режиму",
+  "energyOverview": "Огляд енергії",
+  "production": "Виробництво",
+  "consumption": "Споживання",
+  "day": "День",
+  "week": "Тиждень",
+  "month": "Місяць",
+  "mon": "Пн",
+  "tue": "Вт",
+  "wed": "Ср",
+  "thu": "Чт",
+  "fri": "Пт",
+  "sat": "Сб",
+  "sun": "Нд"
+}

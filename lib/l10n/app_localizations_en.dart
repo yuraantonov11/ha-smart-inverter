@@ -52,4 +52,43 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get modeSummerDesc => 'Description for summer';
+
+  @override
+  String get energyOverview => 'Energy Overview';
+
+  @override
+  String get production => 'Production';
+
+  @override
+  String get consumption => 'Consumption';
+
+  @override
+  String get day => 'Day';
+
+  @override
+  String get week => 'Week';
+
+  @override
+  String get month => 'Month';
+
+  @override
+  String get mon => 'Mon';
+
+  @override
+  String get tue => 'Tue';
+
+  @override
+  String get wed => 'Wed';
+
+  @override
+  String get thu => 'Thu';
+
+  @override
+  String get fri => 'Fri';
+
+  @override
+  String get sat => 'Sat';
+
+  @override
+  String get sun => 'Sun';
 }

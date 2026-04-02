@@ -23,6 +23,8 @@ dependencies:
   provider: ^6.1.1
   launch_at_startup: ^0.2.2 # Пакет для автозапуску з Windows
 
+  intl: any
+  fl_chart: ^1.2.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

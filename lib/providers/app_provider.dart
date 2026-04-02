@@ -9,7 +9,7 @@ import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
   static const String appVersion = '1.0.0';
-  final InverterService service = InverterService();
+  InverterService service = InverterService();
   final SystemTray systemTray = SystemTray();
   final AppWindow appWindow = AppWindow();
 
@@ -141,27 +141,37 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setMode(int mode) async {
-    var success = await service.setMode(mode);
+  Future<void> changeSetting(String key, String value) async {
+    // 1. Копіюємо старий стан для відкату
+    final oldFields = data?.rawFields != null
+        ? Map<String, dynamic>.from(data!.rawFields)
+        : null;
+
+    // 2. ОПТИМІСТИЧНЕ ОНОВЛЕННЯ: миттєво міняємо колір кнопок в UI
+    final localKey = key.replaceAll('Setting', '');
+    if (data != null && data!.rawFields.containsKey(localKey)) {
+      data!.rawFields[localKey]['value'] = value;
+      notifyListeners();
+    }
+
+    // 3. Запит до сервера
+    var success = await service.setConfigItem(key, value);
+
     if (success) {
-      await fetchData();
+      statusMessage = isEn ? 'Updated!' : 'Оновлено!';
+      await fetchData(); // Підтверджуємо дані з сервера
     } else {
-      statusMessage = isEn ? 'Mode change failed' : 'Помилка зміни режиму';
+      // 4. В разі помилки повертаємо як було
+      if (oldFields != null && data != null) {
+        data!.rawFields = oldFields;
+      }
+      statusMessage = isEn ? 'Failed to update' : 'Помилка оновлення';
       notifyListeners();
     }
   }
 
-  Future<void> changeSetting(String key, String value) async {
-    var success = await service.setConfigItem(key, value);
-    if (success) {
-      statusMessage =
-          isEn ? 'Settings updated!' : 'Налаштування успішно змінено!';
-      await fetchData();
-    } else {
-      statusMessage =
-          isEn ? 'Settings update failed' : 'Не вдалося змінити налаштування';
-      notifyListeners();
-    }
+  Future<void> setMode(int mode) async {
+    await changeSetting('outputSourcePrioritySetting', mode.toString());
   }
 
   void _checkAutomations() {
