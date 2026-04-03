@@ -30,7 +30,7 @@ jobs:
         run: flutter build windows --release
 
       - name: Generate MSIX Installer
-        run: dart run msix:create --display-name "Smart Inverter" --publisher-display-name "Yura Antonov" --msix-version 1.1.0.0
+        run: dart run msix:create
 
       - name: Package Release Files
         shell: pwsh
