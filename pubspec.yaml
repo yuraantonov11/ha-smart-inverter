@@ -1,7 +1,7 @@
 name: smart_inverter
 description: A modern desktop application for monitoring and controlling PowMr / SmartESS solar inverters.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.1.0+3
 
 # Repository and homepage
 repository: https://github.com/yuraantonov11/siseli-app
@@ -32,6 +32,7 @@ dev_dependencies:
     sdk: flutter
   flutter_launcher_icons: ^0.14.4 # Пакет для генерації іконок
   flutter_lints: ^6.0.0 # Пакет для перевірки коду
+  msix: ^3.16.7
 
 # Налаштування генератора іконок
 flutter_icons:
@@ -42,6 +43,16 @@ flutter_icons:
     generate: true
     image_path: "assets/app_icon.png"
     icon_size: 256
+
+msix_config:
+  display_name: Smart Inverter
+  publisher_display_name: Yura Antonov
+  publisher: CN=A887A8A8-8888-8888-8888-888888888888
+  identity_name: com.yuraantonov.smartinverter
+  msix_version: 1.1.0.0
+  logo_path: assets/app_icon.png
+  capabilities: internetClient, privateNetworkClientServer
+  install_certificate: false
 
 flutter:
   uses-material-design: true

@@ -23,8 +23,7 @@ class HemsAlgorithmService {
     final voltage = data.rawFields['batteryVoltage']?['value'] ?? 50.0;
 
     // Критичні показники (20% заряду або напруга нижче 47.5V)
-    final isCriticallyLow =
-        soc < 20.0 || (voltage is num && voltage < 47.5);
+    final isCriticallyLow = soc < 20.0 || (voltage is num && voltage < 47.5);
 
     if (isCriticallyLow) {
       debugPrint('🚨 КРИТИЧНИЙ СТАН: SOC=$soc%. Активація режиму виживання!');
@@ -149,6 +148,69 @@ class HemsAlgorithmService {
           await provider.changeSetting(
               'chargerSourcePrioritySetting', '0'); // CSO
         }
+      }
+    }
+  }
+
+  Future<void> executeSmartModeWithForecast(
+      InverterData data,
+      Map<String, double> solarForecast, // передаємо прогноз
+      double batteryCapacityAh) async {
+    final now = DateTime.now();
+    final currentHour = now.hour;
+
+    // Розраховуємо реальний SOC
+    final realSoc = InverterData.getRealSoc(data.batterySoc,
+        data.rawFields['batteryVoltage']?['value'] ?? 51.2, data.loadPower);
+
+    final currentOutput =
+        data.rawFields['outputSourcePriority']?['value']?.toString();
+    final currentCharger =
+        data.rawFields['chargerSourcePriority']?['value']?.toString();
+
+    // Аналізуємо скільки сонця буде завтра (сума кВт*год з 7:00 до 18:00)
+    double expectedSolarKwhTomorrow = 0;
+    var tomorrowPrefix = now
+        .add(const Duration(days: 1))
+        .toString()
+        .substring(0, 10); // "2026-04-04"
+
+    solarForecast.forEach((time, kw) {
+      if (time.startsWith(tomorrowPrefix) && kw > 0) {
+        expectedSolarKwhTomorrow += kw; // сумуємо потужність за кожну годину
+      }
+    });
+
+    final isNightTariff = currentHour >= 23 || currentHour < 7;
+
+    if (isNightTariff) {
+      if (currentOutput != '0') {
+        await provider.setMode(0); // Вночі будинок від мережі (дешево)
+      }
+
+      // РОЗУМНЕ РІШЕННЯ: Заряджати чи ні?
+      // Ваша батарея 230Ah * 51.2V = ~11.7 кВт*год.
+      if (expectedSolarKwhTomorrow > 10.0 && realSoc > 15.0) {
+        // Завтра буде багато сонця, залишаємо місце в батареї (Тільки сонце)
+        debugPrint(
+            '☀️ Завтра очікується ${expectedSolarKwhTomorrow.toStringAsFixed(1)} кВт*год. Скасовую нічну зарядку від мережі.');
+        if (currentCharger != '3' && currentCharger != '2') {
+          await provider.changeSetting(
+              'chargerSourcePrioritySetting', '2'); // OSO (Тільки сонце)
+        }
+      } else {
+        // Завтра похмуро або батарея пуста - заряджаємо вночі
+        debugPrint('☁️ Завтра мало сонця. Заряджаю батарею вночі.');
+        if (currentCharger != '1') {
+          await provider.changeSetting(
+              'chargerSourcePrioritySetting', '1'); // SNU (Сонце + Мережа)
+        }
+      }
+    } else {
+      // Денний алгоритм... (як у вашому попередньому коді)
+
+      if (realSoc > 95.0) {
+        if (currentOutput != '2') await provider.setMode(2); // SBU
       }
     }
   }

@@ -4,6 +4,7 @@ import 'package:fl_chart/fl_chart.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import '../models/inverter_data.dart';
+import '../services/weather_service.dart';
 import '../widgets/energy_flow.dart';
 import '../widgets/control_panel.dart';
 import '../utils/formatters.dart';
@@ -152,6 +153,9 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
   List<FlSpot> _batteryData = [];
   List<FlSpot> _gridData = [];
 
+  List<FlSpot> _forecastData = [];
+  late bool _showForecast = true;
+
   @override
   void initState() {
     super.initState();
@@ -159,9 +163,22 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
   }
 
   Future<void> _fetchChartData() async {
-    // Передаємо _selectedRange та _currentDate
+    if (mounted && !_isLoading) setState(() => _isLoading = true);
+
+    // 1. Отримуємо дані з інвертора (реальні лінії графіка)
     final data = await widget.provider.service
         .getChartData(_selectedRange, _currentDate);
+
+    // 2. Розумний прогноз (лише для денного графіка)
+    var forecast = <String, double>{};
+    if (_selectedRange == 0) {
+      // Спочатку витягуємо історію
+      final histPv =
+          await widget.provider.service.getHistoricalPvMapForForecast();
+      // Передаємо історію в сервіс погоди для навчання
+      forecast = await WeatherService().fetchDynamicForecast(histPv);
+    }
+
     if (mounted) {
       setState(() {
         _productionData = data['pv'] ?? [];
@@ -170,7 +187,34 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
         _gridData = data['grid'] ?? [];
         _isLoading = false;
       });
+
+      if (_selectedRange == 0) {
+        _loadForecastForToday(forecast);
+      } else {
+        setState(() => _forecastData = []);
+      }
     }
+  }
+
+  void _loadForecastForToday(Map<String, double> forecast) {
+    var spots = <FlSpot>[];
+    var todayPrefix =
+        "${_currentDate.year}-${_currentDate.month.toString().padLeft(2, '0')}-${_currentDate.day.toString().padLeft(2, '0')}";
+
+    forecast.forEach((timeStr, predictedWatts) {
+      if (timeStr.startsWith(todayPrefix)) {
+        final timeParts = timeStr.split('T');
+        if (timeParts.length > 1) {
+          final hour = double.tryParse(timeParts[1].split(':')[0]) ?? 0.0;
+          // Одразу додаємо predictedWatts, бо парсер погоди вже видав Вати
+          spots.add(FlSpot(hour, predictedWatts));
+        }
+      }
+    });
+
+    setState(() {
+      _forecastData = spots;
+    });
   }
 
   void _onRangeChanged(int index) {
@@ -302,6 +346,19 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     }
     if (_showGrid && _gridData.isNotEmpty) {
       lines.add(_buildLineData(_gridData, Colors.blueAccent));
+    }
+
+    if (_showForecast && _forecastData.isNotEmpty && _selectedRange == 0) {
+      lines.add(LineChartBarData(
+        spots: _forecastData,
+        isCurved: true,
+        color: Colors.amber
+            .withValues(alpha: 0.6), // Напівпрозорий жовтий для прогнозу
+        barWidth: 2,
+        dotData: const FlDotData(show: false),
+        dashArray: [5, 5], // РОБИТЬ ЛІНІЮ ПУНКТИРНОЮ
+        belowBarData: BarAreaData(show: false), // Без заливки знизу
+      ));
     }
 
     return LineChart(
@@ -472,6 +529,9 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     if (_showConsumption) all.addAll(_consumptionData);
     if (_showBattery) all.addAll(_batteryData);
     if (_showGrid) all.addAll(_gridData);
+
+    if (_showForecast && _selectedRange == 0) all.addAll(_forecastData);
+
     return all;
   }
 
@@ -503,6 +563,12 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
             () => setState(() => _showBattery = !_showBattery)),
         _buildLegendItem(Colors.blueAccent, l10n.grid, _showGrid,
             () => setState(() => _showGrid = !_showGrid)),
+        if (_selectedRange == 0) // Показувати кнопку тільки на денному графіку
+          _buildLegendItem(
+              Colors.amber.withValues(alpha: 0.6),
+              'Прогноз (Сонце)',
+              _showForecast,
+              () => setState(() => _showForecast = !_showForecast))
       ],
     );
   }

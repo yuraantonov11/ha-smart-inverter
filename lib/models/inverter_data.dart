@@ -32,6 +32,27 @@ class InverterData {
     required this.rawFields,
   });
 
+  static double getRealSoc(
+      double reportedSoc, double voltage, double loadPower) {
+    // Якщо інвертор має BMS-кабель, reportedSoc точний, повертаємо його.
+    // Якщо ні, обчислюємо приблизно за напругою 16S:
+    if (voltage <= 0) return reportedSoc;
+
+    // Компенсуємо просадку напруги під навантаженням (приблизно 0.5V на кожні 2kW)
+    var compensatedVoltage = voltage + (loadPower / 2000.0) * 0.5;
+
+    if (compensatedVoltage >= 53.5) return 100.0;
+    if (compensatedVoltage >= 53.0) return 90.0;
+    if (compensatedVoltage >= 52.8) return 80.0;
+    if (compensatedVoltage >= 52.5) return 60.0;
+    if (compensatedVoltage >= 52.0) return 40.0;
+    if (compensatedVoltage >= 51.2) return 20.0;
+    if (compensatedVoltage >= 49.0) return 10.0;
+    if (compensatedVoltage < 48.0) return 0.0;
+
+    return reportedSoc;
+  }
+
   static double _parseDouble(dynamic fieldObject, {bool isKw = false}) {
     if (fieldObject == null) return 0.0;
     var val = 0.0;

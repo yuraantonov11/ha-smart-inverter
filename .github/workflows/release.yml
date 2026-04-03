@@ -4,10 +4,10 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: # Дозволяє запускати білд вручну через інтерфейс GitHub
+  workflow_dispatch:
 
 permissions:
-  contents: write # Необхідно для створення релізу та завантаження файлів
+  contents: write
 
 jobs:
   build:
@@ -29,18 +29,28 @@ jobs:
       - name: Build Windows
         run: flutter build windows --release
 
-      - name: Package Windows
+      - name: Generate MSIX Installer
+        run: flutter pub run msix:create --display-name "Smart Inverter" --publisher-display-name "Yura Antonov" --msix-version 1.1.0.0
+
+      - name: Package Release Files
         run: |
           $version = "${{ github.ref_name }}"
           if ($version -eq "main") { $version = "latest" }
-          mkdir release
-          copy-item -Path "build\windows\x64\runner\Release\*" -Destination "release" -Recurse
-          compress-archive -Path "release\*" -DestinationPath "smart_inverter_windows_$version.zip"
+          
+          # Prepare ZIP
+          mkdir release_zip
+          copy-item -Path "build\windows\x64\runner\Release\*" -Destination "release_zip" -Recurse
+          compress-archive -Path "release_zip\*" -DestinationPath "smart_inverter_windows_$version.zip"
+          
+          # Move MSIX
+          move-item -Path "build\windows\x64\runner\Release\*.msix" -Destination "smart_inverter_installer_$version.msix"
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
-          files: smart_inverter_windows_${{ github.ref_name }}.zip
+          files: |
+            smart_inverter_windows_${{ github.ref_name }}.zip
+            smart_inverter_installer_${{ github.ref_name }}.msix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

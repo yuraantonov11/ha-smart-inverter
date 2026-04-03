@@ -32,6 +32,21 @@ class SettingsTab extends StatelessWidget {
                     child: Icon(Icons.person, size: 40, color: Colors.black),
                   ),
                   const SizedBox(height: 16),
+                  Positioned(
+                    right: 0,
+                    bottom: 0,
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: const BoxDecoration(
+                          color: Colors.blue, shape: BoxShape.circle),
+                      child: InkWell(
+                        onTap: () => _showEditProfileDialog(context),
+                        child: const Icon(Icons.edit,
+                            size: 16, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   Text(
                     provider.displayName, // "yuraantonov11" з профілю
                     style: const TextStyle(

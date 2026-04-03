@@ -158,6 +158,7 @@ class _SmartModeCard extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
+                // Використовуємо ваш стиль з alpha
                 color: color.withValues(alpha: 0.15),
                 shape: BoxShape.circle,
               ),
@@ -181,11 +182,11 @@ class _SmartModeCard extends StatelessWidget {
               icon: const Icon(Icons.info_outline_rounded, color: Colors.grey),
               onPressed: () => _showInfo(context),
             ),
+            // ВИПРАВЛЕНИЙ RADIO:
             Radio<int>(
-              value: value,
-              groupValue: groupValue,
-              onChanged: onChanged,
+              value: value, // Унікальне значення цього елемента
               activeColor: color,
+              // groupValue та onChanged тут БІЛЬШЕ НЕ ПОТРІБНІ
             ),
           ],
         ),

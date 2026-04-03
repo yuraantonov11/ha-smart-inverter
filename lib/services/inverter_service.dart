@@ -182,42 +182,218 @@ class InverterService {
     return null;
   }
 
+// Оновлений гібридний метод завантаження даних
   Future<Map<String, List<FlSpot>>> getChartData(
       int range, DateTime targetDate) async {
-    if (currentStationId == null) {
+    if (currentStationId == null || deviceSn == null) {
       return {'pv': [], 'load': [], 'grid': [], 'battery': []};
     }
 
-    var category = range == 0 ? 'daily' : (range == 1 ? 'monthly' : 'yearly');
-    var type = range == 0
-        ? 'pvInverterPowerClass'
-        : 'pvInverterElectricityQuantityClass';
+    if (range == 0) {
+      // ========================================================
+      // 1. НОВИЙ ПІДХІД ДЛЯ ДНЯ (Телеметрія кожні 5 хв)
+      // ========================================================
+      final endpoint = '/apis/deviceState/simple/attribute/keys/history/v1';
 
-    final endpoint =
-        '/apis/ownerOverView/station/stateAttributeSummary/category/$category?summaryCategoryKey=$type';
+      // Форматуємо дати. Визначаємо зсув часового поясу (наприклад, +03:00 або +02:00 для Києва)
+      final offsetHours =
+          targetDate.timeZoneOffset.inHours.toString().padLeft(2, '0');
+      final offsetString = targetDate.timeZoneOffset.isNegative
+          ? '-$offsetHours:00'
+          : '+$offsetHours:00';
 
-    String timeStr;
-    if (category == 'daily') {
-      timeStr =
+      final dayStr =
           "${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}-${targetDate.day.toString().padLeft(2, '0')}";
-    } else if (category == 'monthly') {
-      timeStr =
-          "${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}";
+
+      final payload = {
+        'deviceId': deviceSn,
+        'count': 1500,
+        'page': 1,
+        'fromTime': '${dayStr}T00:00:00$offsetString',
+        'toTime': '${dayStr}T23:59:59$offsetString',
+        'orderByTimeAsc': true,
+        'keys': [
+          'generationPower',
+          'loadPower',
+          'acOutputActivePower',
+          'batteryPower',
+          'gridPower',
+          'acInputActivePower'
+        ]
+      };
+
+      try {
+        final response = await _dio.post(endpoint, data: payload);
+        if (response.data['code'] == 0) {
+          return _parseHistoryData(response.data['data'] ?? {});
+        }
+      } catch (e) {
+        debugPrint('Daily history error: $e');
+      }
     } else {
-      timeStr = '${targetDate.year}';
+      // ========================================================
+      // 2. СТАРИЙ ПІДХІД ДЛЯ МІСЯЦЯ/РОКУ (Агрегація енергії кВт*год)
+      // ========================================================
+      var category = range == 1 ? 'monthly' : 'yearly';
+      final endpoint =
+          '/apis/ownerOverView/station/stateAttributeSummary/category/$category?summaryCategoryKey=pvInverterElectricityQuantityClass';
+
+      var timeStr = range == 1
+          ? "${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}"
+          : '${targetDate.year}';
+
+      try {
+        final response = await _dio.post(endpoint,
+            data: {'time': timeStr, 'stationId': currentStationId});
+        if (response.data['code'] == 0) {
+          return _parseHarChartData(response.data['data'] ?? {});
+        }
+      } catch (e) {
+        debugPrint('Chart error: $e');
+      }
     }
+
+    return {'pv': [], 'load': [], 'grid': [], 'battery': []};
+  }
+
+// --- Збір історії для машинного навчання прогнозу ---
+  Future<Map<String, double>> getHistoricalPvMapForForecast() async {
+    if (deviceSn == null) return {};
+
+    final now = DateTime.now();
+    final offsetHours = now.timeZoneOffset.inHours.toString().padLeft(2, '0');
+    final offsetString =
+        now.timeZoneOffset.isNegative ? '-$offsetHours:00' : '+$offsetHours:00';
+
+    // Беремо останні 3 дні для аналізу
+    final fromDate = now.subtract(const Duration(days: 3));
+    final fromStr =
+        "${fromDate.year}-${fromDate.month.toString().padLeft(2, '0')}-${fromDate.day.toString().padLeft(2, '0')}";
+    final toStr =
+        "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
+
+    final payload = {
+      'deviceId': deviceSn,
+      'count': 1500, // Ліміт дозволяє взяти 3 дні (864 точки)
+      'page': 1,
+      'fromTime': '${fromStr}T00:00:00$offsetString',
+      'toTime': '${toStr}T23:59:59$offsetString',
+      'orderByTimeAsc': true,
+      'keys': ['generationPower']
+    };
+
+    var hourlyGroups = <String, List<double>>{};
 
     try {
-      final response = await _dio.post(endpoint,
-          data: {'time': timeStr, 'stationId': currentStationId});
-
+      final response = await _dio.post(
+          '/apis/deviceState/simple/attribute/keys/history/v1',
+          data: payload);
       if (response.data['code'] == 0) {
-        return _parseHarChartData(response.data['data'] ?? {});
+        final payloadData = response.data['data']['payload'];
+        if (payloadData != null) {
+          final timeSeries = payloadData['timeSeries'] as List<dynamic>? ?? [];
+          final fields = payloadData['fields'] as Map<String, dynamic>? ?? {};
+          final genPower = fields['generationPower'] as List<dynamic>? ?? [];
+
+          for (var i = 0; i < timeSeries.length; i++) {
+            if (i < genPower.length && genPower[i] != null) {
+              final dt = DateTime.tryParse(timeSeries[i].toString())?.toLocal();
+              if (dt != null) {
+                // Групуємо 5-хвилинні дані в години. Формат як у Open-Meteo: "YYYY-MM-DDTHH:00"
+                var hourKey =
+                    "${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}T${dt.hour.toString().padLeft(2, '0')}:00";
+                var valWatts =
+                    (genPower[i] as num).toDouble() * 1000.0; // у Вати
+
+                if (!hourlyGroups.containsKey(hourKey)) {
+                  hourlyGroups[hourKey] = [];
+                }
+                hourlyGroups[hourKey]!.add(valWatts);
+              }
+            }
+          }
+        }
       }
     } catch (e) {
-      debugPrint('Chart error: $e');
+      debugPrint('Помилка завантаження історії для прогнозу: $e');
     }
-    return {'pv': [], 'load': [], 'grid': [], 'battery': []};
+
+    // Усереднюємо дані (отримуємо середню потужність за кожну годину)
+    var result = <String, double>{};
+    hourlyGroups.forEach((hourKey, values) {
+      var sum = values.reduce((a, b) => a + b);
+      result[hourKey] = sum / values.length;
+    });
+
+    return result;
+  }
+
+  Map<String, List<FlSpot>> _parseHistoryData(Map<String, dynamic> data) {
+    var pv = <FlSpot>[];
+    var load = <FlSpot>[];
+    var battery = <FlSpot>[];
+    var grid = <FlSpot>[];
+
+    final payload = data['payload'] as Map<String, dynamic>?;
+    if (payload == null) {
+      return {'pv': pv, 'load': load, 'grid': grid, 'battery': battery};
+    }
+
+    final timeSeries = payload['timeSeries'] as List<dynamic>? ?? [];
+    final fields = payload['fields'] as Map<String, dynamic>? ?? {};
+
+    // РОЗУМНИЙ ПОШУК: Шукає перший масив, у якому є хоча б одне не-null значення
+    List<dynamic> extractList(List<String> possibleKeys) {
+      for (var key in possibleKeys) {
+        if (fields.containsKey(key)) {
+          var list = fields[key] as List<dynamic>;
+          if (list.any((element) => element != null)) {
+            return list;
+          }
+        }
+      }
+      return [];
+    }
+
+    // Витягуємо дані за пріоритетом ключів
+    final genPower = extractList(['generationPower']);
+    final loadPwr = extractList([
+      'acOutputActivePower',
+      'loadPower'
+    ]); // PowMr зазвичай юзає acOutput...
+    final batPower = extractList(['batteryPower']);
+    final gridPwr = extractList(['acInputActivePower', 'gridPower']);
+
+    for (var i = 0; i < timeSeries.length; i++) {
+      final dtStr = timeSeries[i].toString();
+      final dt = DateTime.tryParse(dtStr)?.toLocal();
+      if (dt == null) continue;
+
+      var xValue = dt.hour + (dt.minute / 60.0);
+
+      // Додаємо точки ТІЛЬКИ якщо значення існує
+      if (i < genPower.length && genPower[i] != null) {
+        pv.add(FlSpot(xValue, (genPower[i] as num).toDouble() * 1000));
+      }
+      if (i < loadPwr.length && loadPwr[i] != null) {
+        load.add(FlSpot(xValue, (loadPwr[i] as num).toDouble() * 1000));
+      }
+      if (i < batPower.length && batPower[i] != null) {
+        battery.add(FlSpot(xValue, (batPower[i] as num).toDouble() * 1000));
+      }
+      if (i < gridPwr.length && gridPwr[i] != null) {
+        grid.add(FlSpot(xValue, (gridPwr[i] as num).toDouble() * 1000));
+      }
+    }
+
+    // СОРТУВАННЯ: fl_chart вимагає, щоб точки йшли строго зліва направо (за зростанням X).
+    // Це захищає від крашу, якщо сервер віддав точки вперемішку або при зміні часового поясу.
+    pv.sort((a, b) => a.x.compareTo(b.x));
+    load.sort((a, b) => a.x.compareTo(b.x));
+    battery.sort((a, b) => a.x.compareTo(b.x));
+    grid.sort((a, b) => a.x.compareTo(b.x));
+
+    return {'pv': pv, 'load': load, 'grid': grid, 'battery': battery};
   }
 
   Map<String, List<FlSpot>> _parseHarChartData(Map<String, dynamic> dataMap) {
