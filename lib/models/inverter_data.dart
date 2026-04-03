@@ -14,7 +14,7 @@ class InverterData {
 
   final String deviceSn;
   final String currentModeStr;
-  var rawFields;
+  Map<String, dynamic> rawFields;
 
   InverterData({
     required this.pvPower,
@@ -37,9 +37,9 @@ class InverterData {
     var val = 0.0;
     if (fieldObject is num) {
       val = fieldObject.toDouble();
-    } else if (fieldObject is String)
+    } else if (fieldObject is String) {
       val = double.tryParse(fieldObject) ?? 0.0;
-    else if (fieldObject is Map) {
+    } else if (fieldObject is Map) {
       final rawValue =
           fieldObject['value'] ?? fieldObject['valueDisplay'] ?? 0.0;
       if (rawValue is num) val = rawValue.toDouble();

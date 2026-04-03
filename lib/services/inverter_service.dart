@@ -17,6 +17,7 @@ class InverterService {
   String? accessToken;
   String? userId;
   String? deviceSn;
+  String? currentStationId;
   int? currentMode;
 
   double dailyEnergy = 0.0;
@@ -51,21 +52,18 @@ class InverterService {
           'IOT-Time-Zone': 'Europe/Kyiv',
           'Accept': 'application/json, text/plain, */*',
           'Content-Type': 'application/json; charset=utf-8',
-          'Origin': 'https://solar.siseli.com',
-          'Referer': 'https://solar.siseli.com/',
           'IOT-Token': (accessToken?.isNotEmpty == true) ? accessToken : 'null',
         });
         return handler.next(options);
       },
       onError: (DioException e, handler) {
-        if (kDebugMode) {
-          print('🔴 Помилка мережі: ${e.message}');
-        }
+        if (kDebugMode) print('🔴 Помилка мережі: ${e.message}');
         return handler.next(e);
       },
     ));
   }
 
+  // --- Хелпери для безпеки ---
   String _generateNonce(int length) {
     const chars =
         'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -119,6 +117,7 @@ class InverterService {
         .toLowerCase();
   }
 
+  // --- Основні методи API ---
   Future<bool> login(String email, String password) async {
     try {
       final passwordMd5 = (password.length == 32)
@@ -127,96 +126,202 @@ class InverterService {
       final response = await _dio.post('/apis/login/account',
           data: {'account': email, 'password': passwordMd5});
 
-      if (response.data['code'] == 0 || response.data['success'] == true) {
+      if (response.data['code'] == 0) {
         final data = response.data['data'];
         accessToken = data['accessToken'] ?? data['token'];
         userId = data['userId']?.toString();
         await _fetchDeviceList();
         return true;
       }
-      return false;
-    } catch (_) {
-      return false;
+    } catch (e) {
+      if (kDebugMode) print('Login error: $e');
     }
+    return false;
   }
 
   Future<void> _fetchDeviceList() async {
     if (userId == null) return;
     try {
       final prefs = await SharedPreferences.getInstance();
-      deviceSn = prefs.getString('saved_device_sn');
+      final response = await _dio.post('/apis/device/list',
+          data: {'page': 1, 'count': 10, 'applyModeCategory': 1});
 
-      final response = await _dio.post('/apis/device/list', data: {
-        'page': 1,
-        'count': 10,
-        'serialNumber': '',
-        'name': '',
-        'stationId': '',
-        'state': '',
-        'exportType': 0,
-        'applyModeCategory': 1
-      });
-
-      if ((response.data['code'] == 0 || response.data['success'] == true) &&
-          response.data['data'] != null) {
-        final dataInfo = response.data['data'];
-        List devices = dataInfo is List
-            ? dataInfo
-            : (dataInfo['list'] ??
-                dataInfo['records'] ??
-                dataInfo['data'] ??
-                []);
+      if (response.data['code'] == 0 && response.data['data'] != null) {
+        final devices = response.data['data']['list'] ?? [];
         if (devices.isNotEmpty) {
-          final firstDevice = devices[0];
+          final dev = devices[0];
+          deviceSn = dev['id']?.toString();
+          currentStationId = dev['stationId']?.toString();
 
-          // ЗБЕРІГАЄМО ІСТОРИЧНІ ДАНІ ЗІ СПИСКУ ПРИСТРОЇВ
-          dailyEnergy =
-              (firstDevice['dailyProducedQuantity'] ?? 0.0).toDouble();
-          totalEnergy =
-              (firstDevice['totalProducedQuantity'] ?? 0.0).toDouble();
-          co2Reduction =
-              (firstDevice['co2EmissionReduction'] ?? 0.0).toDouble();
+          dailyEnergy = _parseDouble(dev['dailyProducedQuantity']);
+          totalEnergy = _parseDouble(dev['totalProducedQuantity']);
+          co2Reduction = _parseDouble(dev['co2EmissionReduction']);
 
-          final extractedId = firstDevice['id']?.toString() ??
-              firstDevice['deviceId']?.toString() ??
-              firstDevice['deviceSn']?.toString();
-          if (extractedId != null && extractedId.isNotEmpty) {
-            deviceSn = extractedId;
+          if (deviceSn != null) {
             await prefs.setString('saved_device_sn', deviceSn!);
           }
         }
       }
-    } catch (_) {}
+    } catch (e) {
+      if (kDebugMode) print('Device list error: $e');
+    }
   }
 
   Future<InverterData?> getRealTimeData() async {
-    if (userId == null || deviceSn == null || deviceSn!.isEmpty) return null;
+    if (deviceSn == null) return null;
     try {
-      final response = await _dio
-          .get('/apis/deviceState/simple/energy/flow/v1', queryParameters: {
-        'deviceId': deviceSn,
-        'dataSource': 1,
-      });
-
-      if ((response.data['code'] == 0 || response.data['success'] == true) &&
-          response.data['data'] != null) {
+      final response = await _dio.get('/apis/deviceState/simple/energy/flow/v1',
+          queryParameters: {'deviceId': deviceSn, 'dataSource': 1});
+      if (response.data['code'] == 0) {
         return InverterData.fromJson(
             response.data['data'], deviceSn!, currentMode?.toString() ?? '');
       }
-    } catch (_) {}
+    } catch (e) {
+      if (kDebugMode) print('Realtime data error: $e');
+    }
     return null;
   }
 
+  Future<Map<String, List<FlSpot>>> getChartData(
+      int range, DateTime targetDate) async {
+    if (currentStationId == null) {
+      return {'pv': [], 'load': [], 'grid': [], 'battery': []};
+    }
+
+    var category = range == 0 ? 'daily' : (range == 1 ? 'monthly' : 'yearly');
+    var type = range == 0
+        ? 'pvInverterPowerClass'
+        : 'pvInverterElectricityQuantityClass';
+
+    final endpoint =
+        '/apis/ownerOverView/station/stateAttributeSummary/category/$category?summaryCategoryKey=$type';
+
+    String timeStr;
+    if (category == 'daily') {
+      timeStr =
+          "${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}-${targetDate.day.toString().padLeft(2, '0')}";
+    } else if (category == 'monthly') {
+      timeStr =
+          "${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}";
+    } else {
+      timeStr = '${targetDate.year}';
+    }
+
+    try {
+      final response = await _dio.post(endpoint,
+          data: {'time': timeStr, 'stationId': currentStationId});
+
+      if (response.data['code'] == 0) {
+        return _parseHarChartData(response.data['data'] ?? {});
+      }
+    } catch (e) {
+      debugPrint('Chart error: $e');
+    }
+    return {'pv': [], 'load': [], 'grid': [], 'battery': []};
+  }
+
+  Map<String, List<FlSpot>> _parseHarChartData(Map<String, dynamic> dataMap) {
+    var productionData = <FlSpot>[];
+    var consumptionData = <FlSpot>[];
+    var batteryData = <FlSpot>[];
+    var gridData = <FlSpot>[];
+
+    final properties = dataMap['properties'] as List<dynamic>?;
+    if (properties == null) {
+      return {'pv': [], 'load': [], 'grid': [], 'battery': []};
+    }
+
+    for (var propItem in properties) {
+      final propertyMeta = propItem['property'] as Map<String, dynamic>?;
+      final timePoints = propItem['timePoints'] as List<dynamic>?;
+
+      if (propertyMeta == null || timePoints == null) continue;
+
+      final key = propertyMeta['key'] as String?;
+      if (key == null) continue;
+
+      final keyLower = key.toLowerCase();
+
+      for (var i = 0; i < timePoints.length; i++) {
+        final tp = timePoints[i];
+        final value = (tp['value'] as num?)?.toDouble() ?? 0.0;
+
+        // Використовуємо timeDisplay для осі X (розумне парсування)
+        var timeDisp = tp['timeDisplay']?.toString() ?? '';
+        var xValue = i.toDouble();
+
+        if (timeDisp.isNotEmpty) {
+          if (timeDisp.contains(':')) {
+            // Розбиваємо "07:30" на години та хвилини
+            final parts = timeDisp.split(':');
+            final hours = double.tryParse(parts[0]) ?? i.toDouble();
+            final minutes =
+                parts.length > 1 ? (double.tryParse(parts[1]) ?? 0.0) : 0.0;
+
+            // Якщо 30 хвилин, то xValue буде .5 (наприклад, 7.5)
+            xValue = hours + (minutes / 60.0);
+          } else {
+            // Якщо формат "01", "31", "12" -> беремо як є (для місяця і року)
+            xValue = double.tryParse(timeDisp) ?? i.toDouble();
+          }
+        }
+
+        final spot = FlSpot(xValue, value);
+
+        // Універсальна перевірка ключів (працює і для місяця/року, і для дня)
+        if (key == 'pvGeneratedEnergy' ||
+            keyLower.contains(
+                'generationpower') || // <-- ДОДАНО: Ключ генерації для дня
+            keyLower.contains('pvpower') ||
+            keyLower.contains('pvinverterpower')) {
+          productionData.add(spot);
+        } else if (key == 'consumeElectricityQuantity' ||
+            keyLower.contains('loadpower') ||
+            keyLower.contains('usepower') ||
+            keyLower.contains('consumepower')) {
+          consumptionData.add(spot);
+        } else if (key == 'chargeElectricityQuantity' ||
+            keyLower.contains('batterypower') ||
+            keyLower.contains('chargepower')) {
+          batteryData.add(spot);
+        } else if (key == 'buyElectricityQuantity' ||
+            keyLower.contains('gridpower') ||
+            keyLower.contains('buypower')) {
+          gridData.add(spot);
+        }
+      }
+    }
+
+    return {
+      'pv': productionData,
+      'load': consumptionData,
+      'battery': batteryData,
+      'grid': gridData,
+    };
+  }
+
+  Future<Map<String, dynamic>> getUserInfo(String userId) async {
+    try {
+      final response = await _dio
+          .post('/apis/user/select/iotUserInfo?iotUserId=$userId', data: {});
+      return response.data['code'] == 0 ? (response.data['data'] ?? {}) : {};
+    } catch (e) {
+      debugPrint('UserInfo error: $e');
+    }
+    return {};
+  }
+
+  // --- Керування та конфігурація ---
   Future<bool> setConfigItem(String key, String value) async {
-    if (accessToken == null || deviceSn == null) return false;
+    if (deviceSn == null) return false;
     try {
       final response = await _dio.post(
         '/apis/remote/device/config/write',
         queryParameters: {'deviceId': deviceSn},
         data: {'id': deviceSn, 'key': key, 'value': value},
       );
-      return response.data['code'] == 0 || response.data['success'] == true;
-    } catch (_) {
+      return response.data['code'] == 0;
+    } catch (e) {
       return false;
     }
   }
@@ -231,105 +336,9 @@ class InverterService {
     return false;
   }
 
-// ==============================================================
-  // НОВИЙ МЕТОД: Витягування ВСІХ точних даних (Сонце, Будинок, Батарея, Мережа)
-  // ==============================================================
-  Future<Map<String, List<FlSpot>>> getChartData(int range) async {
-    if (accessToken == null) return {};
-
-    // range: 0 = Day, 1 = Week, 2 = Month
-    var endpoint =
-        '/apis/ownerOverView/station/stateAttributeSummary/category/';
-
-    final now = DateTime.now();
-    var dateStr = '';
-
-    if (range == 0) {
-      endpoint += 'daily?summaryCategoryKey=pvInverterPowerClass';
-      dateStr =
-          "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}";
-    } else if (range == 1) {
-      // API для місяця (тижневі дані вирізаємо з нього)
-      endpoint += 'monthly?summaryCategoryKey=pvInverterPowerClass';
-      dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}";
-    } else {
-      // API для року (або цілого місяця)
-      endpoint += 'monthly?summaryCategoryKey=pvInverterPowerClass';
-      dateStr = "${now.year}-${now.month.toString().padLeft(2, '0')}";
-    }
-
-    try {
-      // Відправляємо запит ТІЛЬКИ з датою, як у твоєму HAR файлі
-      final response = await _dio.post(endpoint, data: {'time': dateStr});
-
-      var result = <String, List<FlSpot>>{
-        'generationPower': [],
-        'loadPower': [],
-        'batteryPower': [],
-        'gridPower': []
-      };
-
-      if ((response.data['code'] == 0 || response.data['success'] == true) &&
-          response.data['data'] != null) {
-        List properties = response.data['data']['properties'] ?? [];
-
-        for (var prop in properties) {
-          String key = prop['property']
-              ['key']; // generationPower, loadPower, batteryPower, gridPower
-          List pts = prop['timePoints'] ?? [];
-
-          var spots = <FlSpot>[];
-          for (var i = 0; i < pts.length; i++) {
-            var pt = pts[i];
-            var value = _parseDouble(pt['value']) * 1000; // конвертуємо kW у W
-            String timeDisplay = pt['timeDisplay'] ?? '';
-
-            var x = i.toDouble();
-            if (timeDisplay.contains(':')) {
-              var parts = timeDisplay.split(':');
-              x = double.parse(parts[0]) +
-                  (double.parse(parts[1]) / 60.0); // 14:30 -> 14.5
-            } else if (timeDisplay.contains('-')) {
-              x = double.tryParse(timeDisplay.split('-').last) ??
-                  x; // 2026-04-02 -> 2.0
-            } else {
-              x = double.tryParse(timeDisplay) ?? x;
-            }
-
-            spots.add(FlSpot(x, value));
-          }
-
-          // Якщо вибрано тиждень, обрізаємо дані місяця до 7 останніх днів
-          if (range == 1 && spots.length > 7) {
-            var todayIndex = now.day - 1; // 0-based
-            var start = (todayIndex - 6) < 0 ? 0 : todayIndex - 6;
-            if (todayIndex < spots.length) {
-              spots = spots.sublist(start, todayIndex + 1);
-              // Перебудовуємо вісь X (0-6)
-              for (var i = 0; i < spots.length; i++) {
-                spots[i] = FlSpot(i.toDouble(), spots[i].y);
-              }
-            }
-          }
-
-          if (result.containsKey(key)) {
-            result[key] = spots;
-          }
-        }
-      }
-      return result;
-    } catch (e) {
-      if (kDebugMode) {
-        print('getChartData error: $e');
-      }
-      return {};
-    }
-  }
-
   double _parseDouble(dynamic value) {
     if (value == null) return 0.0;
     if (value is num) return value.toDouble();
-    if (value is String) return double.tryParse(value) ?? 0.0;
-    return 0.0;
+    return double.tryParse(value.toString()) ?? 0.0;
   }
 }

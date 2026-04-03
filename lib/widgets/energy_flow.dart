@@ -55,15 +55,16 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
           return CustomPaint(
             painter: _FlowPainter(
                 animationValue: _controller.value, data: widget.data),
-            child: _buildNodes(context,
-                widget.data, Theme.of(context).scaffoldBackgroundColor),
+            child: _buildNodes(context, widget.data,
+                Theme.of(context).scaffoldBackgroundColor),
           );
         },
       ),
     );
   }
 
-  Widget _buildNodes(BuildContext context, InverterData data, Color centerColor) {
+  Widget _buildNodes(
+      BuildContext context, InverterData data, Color centerColor) {
     final l10n = AppLocalizations.of(context)!;
     return Stack(
       children: [
@@ -197,6 +198,7 @@ class _FlowPainter extends CustomPainter {
     final gridPath = _createSPath(gridPos, center);
     final batPath = _createSPath(batPos, center);
     final loadPath = _createSPath(center, loadPos);
+    final centerToBatPath = _createSPath(center, batPos);
 
     // Малюємо базові напівпрозорі лінії
     final linePaint = Paint()
@@ -223,8 +225,8 @@ class _FlowPainter extends CustomPainter {
 
     if (data.batteryPower > 0) {
       // Заряджається (Центр -> Батарея)
-      final chargePath = _createSPath(center, batPos);
-      _drawParticles(canvas, chargePath, Colors.greenAccent, animationValue);
+      _drawParticles(
+          canvas, centerToBatPath, Colors.greenAccent, animationValue);
     } else if (data.batteryPower < 0) {
       // Розряджається (Батарея -> Центр)
       _drawParticles(canvas, batPath, Colors.greenAccent, animationValue);
@@ -243,13 +245,17 @@ class _FlowPainter extends CustomPainter {
       ..style = PaintingStyle.fill
       ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
 
-    for (var i = 0; i < 3; i++) {
-      var progress = (animationValue + (i * 0.33)) % 1.0;
+    // Змінна для кількості частинок. Легко змінити на 4, 5 тощо.
+    const particleCount = 3;
+
+    for (var i = 0; i < particleCount; i++) {
+      // Динамічний розрахунок відступів замість 0.33
+      var progress = (animationValue + (i * (1.0 / particleCount))) % 1.0;
+
       final pos = metric.getTangentForOffset(length * progress)?.position;
       if (pos != null) {
-        canvas.drawCircle(pos, 4, particlePaint); // Сяюча аура
-        canvas.drawCircle(
-            pos, 1.5, Paint()..color = Colors.white); // Біле ядро точки
+        // Зверніть увагу: якщо у вас був інший радіус замість 4.0, залиште свій
+        canvas.drawCircle(pos, 4.0, particlePaint);
       }
     }
   }

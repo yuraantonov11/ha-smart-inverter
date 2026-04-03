@@ -34,7 +34,8 @@ class AppStateProvider extends ChangeNotifier {
   String? savedEmail;
   String? userName;
 
-  // Змінні для правильного реактивного роутингу (Логін <-> Дашборд)
+  Map<String, dynamic>? userData;
+
   bool isAuthenticated = false;
   bool isCheckingAuth = true;
 
@@ -46,6 +47,16 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<AppLocalizations> _getL10n() async {
     return await AppLocalizations.delegate.load(Locale(lang));
+  }
+
+  Future<void> fetchProfile() async {
+    if (service.userId == null) return;
+
+    final data = await service.getUserInfo(service.userId!);
+    if (data.isNotEmpty) {
+      userData = data;
+      notifyListeners();
+    }
   }
 
   Future<void> loadSettings() async {
@@ -74,11 +85,15 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  String get displayAccount => userData?['account'] ?? 'N/A';
+  String get displayName => userData?['name'] ?? 'N/A';
+  String get displayEmail => userData?['email'] ?? '';
+  String get displayPhone => userData?['cellphone'] ?? '';
+
   void startTimers() {
     _initTray();
     fetchData();
-    _dataTimer =
-        Timer.periodic(const Duration(seconds: 15), (_) => fetchData());
+    _dataTimer = Timer.periodic(const Duration(minutes: 1), (_) => fetchData());
     _automationTimer =
         Timer.periodic(const Duration(minutes: 1), (_) => _checkAutomations());
   }
@@ -199,12 +214,8 @@ class AppStateProvider extends ChangeNotifier {
     final l10n = await _getL10n();
     final menu = Menu();
     await menu.buildFrom([
-      MenuItemLabel(
-          label: l10n.enableSolar,
-          onClicked: (_) => setMode(2)),
-      MenuItemLabel(
-          label: l10n.enableGrid,
-          onClicked: (_) => setMode(0)),
+      MenuItemLabel(label: l10n.enableSolar, onClicked: (_) => setMode(2)),
+      MenuItemLabel(label: l10n.enableGrid, onClicked: (_) => setMode(0)),
       MenuSeparator(),
       MenuItemCheckbox(
         label: l10n.startWithWindows,
@@ -227,7 +238,8 @@ class AppStateProvider extends ChangeNotifier {
           }),
     ]);
     await systemTray.setContextMenu(menu);
-    await systemTray.setTitle(l10n.batteryLevel(data?.batterySoc.toStringAsFixed(0) ?? '--'));
+    await systemTray.setTitle(
+        l10n.batteryLevel(data?.batterySoc.toStringAsFixed(0) ?? '--'));
   }
 
   Future<void> fetchData() async {
@@ -285,21 +297,29 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<void> _checkAutomations() async {
     if (data == null) return;
-
-    // Вкажіть реальну ємність вашої збірки, наприклад 230Ah
     const myBatteryCapacityAh = 230.0;
 
+    // 1. Акустичний комфорт (може працювати завжди)
     await hemsService.enforceAcousticComfort(data!);
 
+    // 2. ПЕРЕВІРКА НА БЛЕКАУТ. Якщо стан критичний - блокуємо решту логіки!
+    final isSurvivalActive = await hemsService.enforceSurvivalMode(data!);
+    if (isSurvivalActive) {
+      return; // Виходимо, щоб не перезаписати налаштування виживання
+    }
+
+    // 3. ПЕРЕВІРКА НА ПЕРЕВАНТАЖЕННЯ (Grid Assist)
+    await hemsService.executeSmartLoadShedding(data!);
+
+    // 4. ОСНОВНІ РЕЖИМИ
     switch (smartMode) {
-      case 0: // Предиктивний Адаптивний інтелект
+      case 0:
         await hemsService.executeAdaptiveMode(data!, myBatteryCapacityAh);
         break;
-      case 1: // Нічний арбітраж
-        await hemsService.executeNightArbitrage(data!, myBatteryCapacityAh);
-        await hemsService.executeSmartLoadShedding(data!);
+      case 1:
+        await hemsService.executeNightArbitrage(data!);
         break;
-      case 2: // Резерв / Шторм
+      case 2:
         await hemsService.executeStormMode(data!);
         break;
     }

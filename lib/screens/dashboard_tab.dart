@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:provider/provider.dart';
 
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
@@ -29,7 +28,7 @@ class DashboardTab extends StatelessWidget {
           const SizedBox(height: 16),
           _HistoricalStatsWidget(provider: provider),
           const SizedBox(height: 16),
-          const _EnergyLineChartWidget(), // Графік сам керує своїми даними
+          _EnergyLineChartWidget(provider: provider),
           const SizedBox(height: 16),
           ControlPanel(provider: provider),
         ],
@@ -81,18 +80,13 @@ class _HistoricalStatsWidget extends StatelessWidget {
     return Row(
       children: [
         Expanded(
-          child: _buildStatCard(context, l10n.today,
-              '$daily kWh', Icons.today_rounded, Colors.blueAccent, isDark),
+          child: _buildStatCard(context, l10n.today, '$daily kWh',
+              Icons.today_rounded, Colors.blueAccent, isDark),
         ),
         const SizedBox(width: 12),
         Expanded(
-          child: _buildStatCard(
-              context,
-              l10n.total,
-              '$total kWh',
-              Icons.account_balance_wallet_rounded,
-              Colors.amber,
-              isDark),
+          child: _buildStatCard(context, l10n.total, '$total kWh',
+              Icons.account_balance_wallet_rounded, Colors.amber, isDark),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -135,7 +129,9 @@ class _HistoricalStatsWidget extends StatelessWidget {
 }
 
 class _EnergyLineChartWidget extends StatefulWidget {
-  const _EnergyLineChartWidget();
+  final AppStateProvider provider;
+
+  const _EnergyLineChartWidget({required this.provider});
 
   @override
   State<_EnergyLineChartWidget> createState() => _EnergyLineChartWidgetState();
@@ -143,13 +139,12 @@ class _EnergyLineChartWidget extends StatefulWidget {
 
 class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
   int _selectedRange = 0; // 0 = Day, 1 = Week, 2 = Month
+  DateTime _currentDate = DateTime.now();
 
-  // 4 Тумблери відображення
   bool _showProduction = true;
   bool _showConsumption = true;
   bool _showBattery = true;
-  bool _showGrid =
-      false; // Вимкнено за замовчуванням, щоб не перевантажувати графік
+  bool _showGrid = false;
 
   bool _isLoading = true;
   List<FlSpot> _productionData = [];
@@ -160,24 +155,19 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _fetchChartData();
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchChartData());
   }
 
   Future<void> _fetchChartData() async {
-    if (!mounted) return;
-    setState(() => _isLoading = true);
-
-    final provider = context.read<AppStateProvider>();
-    final result = await provider.service.getChartData(_selectedRange);
-
+    // Передаємо _selectedRange та _currentDate
+    final data = await widget.provider.service
+        .getChartData(_selectedRange, _currentDate);
     if (mounted) {
       setState(() {
-        _productionData = result['generationPower'] ?? [];
-        _consumptionData = result['loadPower'] ?? [];
-        _batteryData = result['batteryPower'] ?? [];
-        _gridData = result['gridPower'] ?? [];
+        _productionData = data['pv'] ?? [];
+        _consumptionData = data['load'] ?? [];
+        _batteryData = data['battery'] ?? [];
+        _gridData = data['grid'] ?? [];
         _isLoading = false;
       });
     }
@@ -189,34 +179,67 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     _fetchChartData();
   }
 
+  void _changeDate(int offset) {
+    setState(() {
+      if (_selectedRange == 0) {
+        // День
+        _currentDate = _currentDate.add(Duration(days: offset));
+      } else if (_selectedRange == 1) {
+        // Місяць
+        _currentDate =
+            DateTime(_currentDate.year, _currentDate.month + offset, 1);
+      } else {
+        // Рік
+        _currentDate = DateTime(_currentDate.year + offset, 1, 1);
+      }
+    });
+    _fetchChartData(); // Завантажуємо нові дані
+  }
+
+  String _getDateText() {
+    if (_selectedRange == 0) {
+      return '${_currentDate.day.toString().padLeft(2, '0')}.${_currentDate.month.toString().padLeft(2, '0')}.${_currentDate.year}';
+    } else if (_selectedRange == 1) {
+      return '${_currentDate.month.toString().padLeft(2, '0')}.${_currentDate.year}';
+    } else {
+      return '${_currentDate.year}';
+    }
+  }
+
+  Widget _buildDateSelector() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        IconButton(
+          icon: const Icon(Icons.chevron_left, color: Colors.white),
+          onPressed: () => _changeDate(-1),
+        ),
+        Text(
+          _getDateText(),
+          style: const TextStyle(
+              fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white),
+        ),
+        IconButton(
+          icon: const Icon(Icons.chevron_right, color: Colors.white),
+          // Блокуємо перехід у майбутнє, якщо потрібно
+          onPressed: _currentDate.isBefore(
+                      DateTime.now().subtract(const Duration(days: 1))) ||
+                  (_selectedRange > 0 &&
+                      _currentDate.year <= DateTime.now().year)
+              ? () => _changeDate(1)
+              : null,
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final l10n = AppLocalizations.of(context)!;
 
-    // Формуємо масив ліній та кольорів для тултипів
-    var lines = <LineChartBarData>[];
-    var visibleColors = <Color>[];
-
-    if (_showProduction && _productionData.isNotEmpty) {
-      lines.add(_buildLineData(_productionData, Colors.amber));
-      visibleColors.add(Colors.amber);
-    }
-    if (_showConsumption && _consumptionData.isNotEmpty) {
-      lines.add(_buildLineData(_consumptionData, Colors.purpleAccent));
-      visibleColors.add(Colors.purpleAccent);
-    }
-    if (_showBattery && _batteryData.isNotEmpty) {
-      lines.add(_buildLineData(_batteryData, Colors.greenAccent));
-      visibleColors.add(Colors.greenAccent);
-    }
-    if (_showGrid && _gridData.isNotEmpty) {
-      lines.add(_buildLineData(_gridData, Colors.blueAccent));
-      visibleColors.add(Colors.blueAccent);
-    }
-
     return Container(
-      height: 400, // Збільшено висоту для легенди
+      height: 450, // Трохи збільшимо висоту
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
         color: Theme.of(context).cardColor,
@@ -240,113 +263,247 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
               _buildTimeSelector(isDark, l10n),
             ],
           ),
-          const SizedBox(height: 16),
-          // Wrap гарантує, що кнопки плавно перейдуть на новий рядок, якщо не помістяться
-          Wrap(
-            spacing: 16,
-            runSpacing: 12,
-            children: [
-              _buildLegendItem(Colors.amber, l10n.production, _showProduction,
-                  () => setState(() => _showProduction = !_showProduction)),
-              _buildLegendItem(
-                  Colors.purpleAccent,
-                  l10n.consumption,
-                  _showConsumption,
-                  () => setState(() => _showConsumption = !_showConsumption)),
-              _buildLegendItem(Colors.greenAccent, l10n.battery, _showBattery,
-                  () => setState(() => _showBattery = !_showBattery)),
-              _buildLegendItem(Colors.blueAccent, l10n.grid, _showGrid,
-                  () => setState(() => _showGrid = !_showGrid)),
-            ],
-          ),
+          const SizedBox(height: 8),
+          _buildDateSelector(),
+          const SizedBox(height: 8),
+          _buildLegend(l10n),
           const SizedBox(height: 24),
           Expanded(
             child: Stack(
               children: [
-                LineChart(
-                  LineChartData(
-                    minY:
-                        _getMinY(), // Дозволяє графіку опускатись нижче нуля (розряд батареї)
-                    maxY: _getMaxY(),
-                    lineTouchData: LineTouchData(
-                      touchTooltipData: LineTouchTooltipData(
-                        getTooltipColor: (spot) =>
-                            Theme.of(context).cardColor.withValues(alpha: 0.9),
-                        getTooltipItems: (spots) => spots.map((spot) {
-                          // Знаходимо правильний колір завдяки масиву visibleColors
-                          final color = visibleColors[spot.barIndex];
-                          return LineTooltipItem(
-                            _selectedRange == 0
-                                ? Formatters.formatPower(spot.y)
-                                : Formatters.formatEnergy(spot.y),
-                            TextStyle(
-                                color: color, fontWeight: FontWeight.bold),
-                          );
-                        }).toList(),
-                      ),
-                    ),
-                    gridData: FlGridData(
-                      show: true,
-                      drawVerticalLine: false,
-                      // Жирніша лінія на рівні нуля
-                      getDrawingHorizontalLine: (value) => FlLine(
-                          color: value == 0
-                              ? Colors.grey.withValues(alpha: 0.3)
-                              : Colors.grey.withValues(alpha: 0.1),
-                          strokeWidth: value == 0 ? 2 : 1),
-                    ),
-                    titlesData: FlTitlesData(
-                      show: true,
-                      rightTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: false)),
-                      topTitles: const AxisTitles(
-                          sideTitles: SideTitles(showTitles: false)),
-                      leftTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          reservedSize: 50,
-                          getTitlesWidget: (value, meta) {
-                            if (value == 0 && _getMinY() == 0) {
-                              return const SizedBox.shrink();
-                            }
-                            return SideTitleWidget(
-                              meta: meta,
-                              child: Text(
-                                _selectedRange == 0
-                                    ? Formatters.formatPower(value)
-                                    : Formatters.formatEnergy(value),
-                                style: const TextStyle(
-                                    color: Colors.grey, fontSize: 9),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      bottomTitles: AxisTitles(
-                        sideTitles: SideTitles(
-                          showTitles: true,
-                          interval: _selectedRange == 0 ? 4 : 1,
-                          getTitlesWidget: (value, meta) =>
-                              _getBottomTitles(value, meta, l10n),
-                        ),
-                      ),
-                    ),
-                    borderData: FlBorderData(show: false),
-                    lineBarsData: lines, // Передаємо зібраний список
-                  ),
-                  duration: const Duration(milliseconds: 400),
-                ),
+                // ВИБІР ТИПУ ГРАФІКА
+                _selectedRange == 0
+                    ? _buildLineChart(context, l10n)
+                    : _buildBarChart(context, l10n),
                 if (_isLoading)
-                  Container(
-                    color: Theme.of(context).cardColor.withValues(alpha: 0.3),
-                    child: const Center(
-                        child: CircularProgressIndicator(color: Colors.amber)),
-                  ),
+                  const Center(
+                      child: CircularProgressIndicator(color: Colors.amber)),
               ],
             ),
           ),
         ],
       ),
+    );
+  }
+
+// --- МЕТОД ДЛЯ ЛІНІЙНОГО ГРАФІКА (ДЕНЬ) ---
+  Widget _buildLineChart(BuildContext context, AppLocalizations l10n) {
+    var lines = <LineChartBarData>[];
+
+    // ДОДАНО: Перевірка .isNotEmpty, щоб уникнути крашу графіка через порожні масиви
+    if (_showProduction && _productionData.isNotEmpty) {
+      lines.add(_buildLineData(_productionData, Colors.amber));
+    }
+    if (_showConsumption && _consumptionData.isNotEmpty) {
+      lines.add(_buildLineData(_consumptionData, Colors.purpleAccent));
+    }
+    if (_showBattery && _batteryData.isNotEmpty) {
+      lines.add(_buildLineData(_batteryData, Colors.greenAccent));
+    }
+    if (_showGrid && _gridData.isNotEmpty) {
+      lines.add(_buildLineData(_gridData, Colors.blueAccent));
+    }
+
+    return LineChart(
+      LineChartData(
+        minX: 0, // ФІКСУЄМО початок доби (00:00)
+        maxX: 23, // ФІКСУЄМО кінець доби (23:00)
+        minY: _getMinY(),
+        maxY: _getMaxY(),
+        lineTouchData: LineTouchData(
+          touchTooltipData: LineTouchTooltipData(
+            getTooltipColor: (spot) => Theme.of(context).cardColor,
+            getTooltipItems: (spots) => spots
+                .map((spot) => LineTooltipItem(
+                      Formatters.formatPower(spot.y),
+                      TextStyle(
+                          color: spot.bar.color, fontWeight: FontWeight.bold),
+                    ))
+                .toList(),
+          ),
+        ),
+        titlesData: _buildTitlesData(l10n),
+        gridData: _buildGridData(),
+        borderData: FlBorderData(show: false),
+        lineBarsData: lines,
+      ),
+    );
+  }
+
+  int _getMaxDataLength() {
+    var maxLen = 0;
+    if (_productionData.length > maxLen) maxLen = _productionData.length;
+    if (_consumptionData.length > maxLen) maxLen = _consumptionData.length;
+    if (_batteryData.length > maxLen) maxLen = _batteryData.length;
+    if (_gridData.length > maxLen) maxLen = _gridData.length;
+    return maxLen;
+  }
+
+// --- МЕТОД ДЛЯ СТОВПЧИКОВОГО ГРАФІКА (ТИЖДЕНЬ/МІСЯЦЬ) ---
+  Widget _buildBarChart(BuildContext context, AppLocalizations l10n) {
+    final maxLen =
+        _getMaxDataLength(); // Отримуємо правильну кількість елементів
+
+    return BarChart(
+      BarChartData(
+        alignment: BarChartAlignment.spaceAround,
+        maxY: _getMaxY(),
+        minY: _getMinY(),
+        barTouchData: BarTouchData(
+          touchTooltipData: BarTouchTooltipData(
+            getTooltipColor: (group) => Theme.of(context).cardColor,
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              return BarTooltipItem(
+                '${rod.toY.toStringAsFixed(2)} kWh',
+                TextStyle(color: rod.color, fontWeight: FontWeight.bold),
+              );
+            },
+          ),
+        ),
+        titlesData: _buildTitlesData(l10n),
+        gridData: _buildGridData(),
+        borderData: FlBorderData(show: false),
+        barGroups: List.generate(maxLen, (index) {
+          // ВИПРАВЛЕНО ТУТ
+          return BarChartGroupData(
+            x: index,
+            barRods: _buildBarRods(index),
+          );
+        }),
+      ),
+    );
+  }
+
+  List<BarChartRodData> _buildBarRods(int index) {
+    var rods = <BarChartRodData>[];
+
+    // Вказуємо значення як double явно (додаємо .0)
+    var width = _selectedRange == 1 ? 8.0 : 4.0;
+
+    if (_showProduction && index < _productionData.length) {
+      rods.add(BarChartRodData(
+        toY: _productionData[index].y.toDouble(), // Додаємо toDouble()
+        color: Colors.amber,
+        width: width,
+      ));
+    }
+    if (_showConsumption && index < _consumptionData.length) {
+      rods.add(BarChartRodData(
+        toY: _consumptionData[index].y.toDouble(),
+        color: Colors.purpleAccent,
+        width: width,
+      ));
+    }
+    if (_showBattery && index < _batteryData.length) {
+      rods.add(BarChartRodData(
+        toY: _batteryData[index].y.toDouble(),
+        color: Colors.greenAccent,
+        width: width,
+      ));
+    }
+    if (_showGrid && index < _gridData.length) {
+      rods.add(BarChartRodData(
+        toY: _gridData[index].y.toDouble(),
+        color: Colors.blueAccent,
+        width: width,
+      ));
+    }
+    return rods;
+  }
+
+  FlTitlesData _buildTitlesData(AppLocalizations l10n) {
+    return FlTitlesData(
+      show: true,
+      rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+      topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+      leftTitles: AxisTitles(
+        sideTitles: SideTitles(
+          showTitles: true,
+          reservedSize: 45,
+          getTitlesWidget: (value, meta) {
+            // Щоб не було 0 kWh всюди, використовуємо toStringAsFixed
+            var text = _selectedRange == 0
+                ? Formatters.formatPower(value)
+                : value.toStringAsFixed(1);
+            return SideTitleWidget(
+                meta: meta,
+                child: Text(text,
+                    style: const TextStyle(color: Colors.grey, fontSize: 9)));
+          },
+        ),
+      ),
+      bottomTitles: AxisTitles(
+        sideTitles: SideTitles(
+          showTitles: true,
+          interval: _selectedRange == 0 ? 4 : (_selectedRange == 1 ? 1 : 5),
+          getTitlesWidget: (value, meta) => _getBottomTitles(value, meta, l10n),
+        ),
+      ),
+    );
+  }
+
+  FlGridData _buildGridData() {
+    return FlGridData(
+      show: true,
+      drawVerticalLine: false,
+      horizontalInterval: (_getMaxY() - _getMinY()) / 5,
+      // Динамічний крок сітки
+      getDrawingHorizontalLine: (value) => FlLine(
+        color: value == 0
+            ? Colors.grey.withValues(alpha: 0.5)
+            : Colors.grey.withValues(alpha: 0.1),
+        strokeWidth: value == 0 ? 1.5 : 1,
+      ),
+    );
+  }
+
+  // ... (решта допоміжних методів: _buildLegend, _buildTimeSelector, _getBottomTitles, _getMaxY, _getMinY) ...
+  // У методі _getMaxY обов'язково додайте перевірку:
+  double _getMaxY() {
+    var spots = _getVisibleSpots();
+    if (spots.isEmpty) return 10.0;
+    var max = spots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
+    return max == 0 ? 10.0 : max * 1.15;
+  }
+
+  List<FlSpot> _getVisibleSpots() {
+    var all = <FlSpot>[];
+    if (_showProduction) all.addAll(_productionData);
+    if (_showConsumption) all.addAll(_consumptionData);
+    if (_showBattery) all.addAll(_batteryData);
+    if (_showGrid) all.addAll(_gridData);
+    return all;
+  }
+
+  LineChartBarData _buildLineData(List<FlSpot> spots, Color color) {
+    return LineChartBarData(
+      spots: spots,
+      isCurved: true,
+      color: color,
+      barWidth: 3,
+      dotData: const FlDotData(show: false),
+      belowBarData:
+          BarAreaData(show: true, color: color.withValues(alpha: 0.1)),
+    );
+  }
+
+  Widget _buildLegend(AppLocalizations l10n) {
+    return Wrap(
+      spacing: 16,
+      runSpacing: 12,
+      children: [
+        _buildLegendItem(Colors.amber, l10n.production, _showProduction,
+            () => setState(() => _showProduction = !_showProduction)),
+        _buildLegendItem(
+            Colors.purpleAccent,
+            l10n.consumption,
+            _showConsumption,
+            () => setState(() => _showConsumption = !_showConsumption)),
+        _buildLegendItem(Colors.greenAccent, l10n.battery, _showBattery,
+            () => setState(() => _showBattery = !_showBattery)),
+        _buildLegendItem(Colors.blueAccent, l10n.grid, _showGrid,
+            () => setState(() => _showGrid = !_showGrid)),
+      ],
     );
   }
 
@@ -418,29 +575,11 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     );
   }
 
-  LineChartBarData _buildLineData(List<FlSpot> spots, Color color) {
-    return LineChartBarData(
-      spots: spots,
-      isCurved: true,
-      curveSmoothness: 0.3,
-      color: color,
-      barWidth: 3,
-      isStrokeCapRound: true,
-      dotData: const FlDotData(show: false),
-      belowBarData: BarAreaData(
-        show: true,
-        gradient: LinearGradient(
-          colors: [color.withValues(alpha: 0.2), color.withValues(alpha: 0.0)],
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-        ),
-      ),
-    );
-  }
-
   Widget _getBottomTitles(double value, TitleMeta meta, AppLocalizations l10n) {
     const style = TextStyle(color: Colors.grey, fontSize: 10);
+
     if (_selectedRange == 0) {
+      // ДЕНЬ: показуємо години (кожні 4 години)
       if (value % 4 == 0) {
         return SideTitleWidget(
             meta: meta,
@@ -448,47 +587,20 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
             child: Text('${value.toInt()}:00', style: style));
       }
     } else if (_selectedRange == 1) {
-      final days = [
-        l10n.mon,
-        l10n.tue,
-        l10n.wed,
-        l10n.thu,
-        l10n.fri,
-        l10n.sat,
-        l10n.sun
-      ];
-      if (value >= 0 && value < 7) {
-        return SideTitleWidget(
-            meta: meta,
-            space: 10,
-            child: Text(days[value.toInt()], style: style));
-      }
-    } else {
+      // МІСЯЦЬ: показуємо дні місяця (1, 5, 10, 15...)
       if (value % 5 == 0 || value == 1) {
+        // Прибрано +1, бо парсер тепер сам ставить правильний день
         return SideTitleWidget(
             meta: meta,
             space: 10,
             child: Text('${value.toInt()}', style: style));
       }
+    } else {
+      // РІК: показуємо місяці (1, 2, 3...)
+      return SideTitleWidget(
+          meta: meta, space: 10, child: Text('${value.toInt()}', style: style));
     }
     return const SizedBox.shrink();
-  }
-
-  List<FlSpot> _getVisibleSpots() {
-    var all = <FlSpot>[];
-    if (_showProduction) all.addAll(_productionData);
-    if (_showConsumption) all.addAll(_consumptionData);
-    if (_showBattery) all.addAll(_batteryData);
-    if (_showGrid) all.addAll(_gridData);
-    return all;
-  }
-
-  double _getMaxY() {
-    var maxVal = 0.0;
-    for (var spot in _getVisibleSpots()) {
-      if (spot.y > maxVal) maxVal = spot.y;
-    }
-    return maxVal == 0 ? 100 : maxVal * 1.2;
   }
 
   double _getMinY() {

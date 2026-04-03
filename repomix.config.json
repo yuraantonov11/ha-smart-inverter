@@ -1,0 +1,26 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "output": {
+    "filePath": "repomix-output.md",
+    "style": "markdown",
+    "removeComments": true,
+    "removeEmptyLines": true,
+    "showLineNumbers": true,
+    "copyToClipboard": false
+  },
+  "include": [
+    "lib/**/*"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      "**/tests/**",
+      "*.log",
+      "lib/l10n/app_localizations*"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  }
+}

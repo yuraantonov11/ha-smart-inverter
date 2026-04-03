@@ -31,31 +31,52 @@ class SettingsTab extends StatelessWidget {
                     backgroundColor: Colors.amber,
                     child: Icon(Icons.person, size: 40, color: Colors.black),
                   ),
-                  Positioned(
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: const BoxDecoration(
-                          color: Colors.blue, shape: BoxShape.circle),
-                      child: InkWell(
-                        onTap: () => _showEditProfileDialog(context),
-                        child: const Icon(Icons.edit,
-                            size: 16, color: Colors.white),
+                  const SizedBox(height: 16),
+                  Text(
+                    provider.displayName, // "yuraantonov11" з профілю
+                    style: const TextStyle(
+                        fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  Text(
+                    provider.displayEmail, // "y************@gmail.com"
+                    style: const TextStyle(color: Colors.grey),
+                  ),
+                  if (provider.displayPhone.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        'Тел: ${provider.displayPhone}', // "380*****8414"
+                        style:
+                            const TextStyle(color: Colors.grey, fontSize: 13),
                       ),
+                    ),
+                  const SizedBox(height: 12),
+                  // Вивід ID користувача з HAR
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: Colors.blueGrey.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      "UID: ${provider.userData?['uid'] ?? '...'}", // "5xjt6zu9gq"
+                      style: const TextStyle(
+                          fontSize: 11, fontFamily: 'monospace'),
                     ),
                   ),
                 ],
               ),
               const SizedBox(height: 16),
               Text(
-                  provider.userName ?? l10n.userNameDefault, // Використання динамічного імені
+                  provider.userName ??
+                      l10n.userNameDefault, // Використання динамічного імені
                   style: const TextStyle(
                       fontSize: 18, fontWeight: FontWeight.bold)),
               Text(provider.savedEmail ?? '',
                   style: const TextStyle(color: Colors.grey, fontSize: 14)),
               const SizedBox(height: 8),
-              Text(l10n.userId(provider.userId ?? ''), // Відображення ID з провайдера
+              Text(l10n.userId(provider.userId), // Відображення ID з провайдера
                   style: const TextStyle(color: Colors.grey, fontSize: 12)),
               const SizedBox(height: 20),
               // Кнопка Виходу
@@ -117,7 +138,8 @@ class SettingsTab extends StatelessWidget {
                 ListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: const Icon(Icons.palette, color: Colors.orangeAccent),
+                  leading:
+                      const Icon(Icons.palette, color: Colors.orangeAccent),
                   title: Text(l10n.theme),
                   trailing: Switch(
                     value: provider.themeMode == ThemeMode.dark,

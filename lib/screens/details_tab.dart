@@ -2,9 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../models/inverter_data.dart';
 
-// ВИПРАВЛЕНО: Прибрано '_' щоб зробити клас публічним
 class DetailsTab extends StatelessWidget {
   final InverterData data;
+
   const DetailsTab({super.key, required this.data});
 
   @override
