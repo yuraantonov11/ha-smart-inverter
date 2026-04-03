@@ -30,27 +30,35 @@ jobs:
         run: flutter build windows --release
 
       - name: Generate MSIX Installer
-        run: flutter pub run msix:create --display-name "Smart Inverter" --publisher-display-name "Yura Antonov" --msix-version 1.1.0.0
+        run: dart run msix:create --display-name "Smart Inverter" --publisher-display-name "Yura Antonov" --msix-version 1.1.0.0
 
       - name: Package Release Files
+        shell: pwsh
         run: |
           $version = "${{ github.ref_name }}"
-          if ($version -eq "main") { $version = "latest" }
+          if ($version -eq "" -or $version -match "main") { $version = "latest" }
           
           # Prepare ZIP
+          $release_dir = "build\windows\x64\runner\Release"
           mkdir release_zip
-          copy-item -Path "build\windows\x64\runner\Release\*" -Destination "release_zip" -Recurse
+          copy-item -Path "$release_dir\*" -Destination "release_zip" -Recurse -Exclude "*.msix"
           compress-archive -Path "release_zip\*" -DestinationPath "smart_inverter_windows_$version.zip"
           
-          # Move MSIX
-          move-item -Path "build\windows\x64\runner\Release\*.msix" -Destination "smart_inverter_installer_$version.msix"
+          # Find and move MSIX
+          $msix_file = Get-ChildItem -Path "$release_dir\*.msix" | Select-Object -First 1
+          if ($msix_file) {
+            Move-Item -Path $msix_file.FullName -Destination "smart_inverter_installer_$version.msix"
+          } else {
+            Write-Error "MSIX file not found in $release_dir"
+            exit 1
+          }
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            smart_inverter_windows_${{ github.ref_name }}.zip
-            smart_inverter_installer_${{ github.ref_name }}.msix
+            smart_inverter_windows_*.zip
+            smart_inverter_installer_*.msix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
