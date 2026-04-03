@@ -1,7 +1,7 @@
 name: smart_inverter
 description: A modern desktop application for monitoring and controlling PowMr / SmartESS solar inverters.
 publish_to: 'none'
-version: 1.1.4+5
+version: 1.1.5+6
 
 # Repository and homepage
 repository: https://github.com/yuraantonov11/siseli-app
