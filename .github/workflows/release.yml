@@ -29,8 +29,10 @@ jobs:
       - name: Build Windows
         run: flutter build windows --release
 
-      - name: Generate MSIX Installer
-        run: dart run msix:create
+      - name: Build Inno Setup Installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows\installer_script.iss
 
       - name: Package Release Files
         shell: pwsh
@@ -38,27 +40,21 @@ jobs:
           $version = "${{ github.ref_name }}"
           if ($version -eq "" -or $version -match "main") { $version = "latest" }
           
-          # Prepare ZIP
+          # Rename setup file to include version
+          Move-Item -Path "windows\Output\smart_inverter_setup.exe" -Destination "smart_inverter_setup_$version.exe"
+          
+          # Prepare ZIP for manual installation
           $release_dir = "build\windows\x64\runner\Release"
           mkdir release_zip
           copy-item -Path "$release_dir\*" -Destination "release_zip" -Recurse -Exclude "*.msix"
           compress-archive -Path "release_zip\*" -DestinationPath "smart_inverter_windows_$version.zip"
-          
-          # Find and move MSIX
-          $msix_file = Get-ChildItem -Path "$release_dir\*.msix" | Select-Object -First 1
-          if ($msix_file) {
-            Move-Item -Path $msix_file.FullName -Destination "smart_inverter_installer_$version.msix"
-          } else {
-            Write-Error "MSIX file not found in $release_dir"
-            exit 1
-          }
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v1
         with:
           files: |
+            smart_inverter_setup_*.exe
             smart_inverter_windows_*.zip
-            smart_inverter_installer_*.msix
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
