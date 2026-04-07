@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.6] - 2024-04-07
+### Changed
+- Bumped version to 1.1.6 to test auto-update functionality.
+
 ## [1.0.0] - 2024-04-02
 ### Added
 - Initial release of Smart Inverter Desktop.
