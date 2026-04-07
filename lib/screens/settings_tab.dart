@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
+import '../services/log_service.dart';
 
 class SettingsTab extends StatelessWidget {
   final AppStateProvider provider;
@@ -175,6 +176,36 @@ class SettingsTab extends StatelessWidget {
                   activeTrackColor: Colors.greenAccent.withValues(alpha: 0.3),
                   onChanged: provider.toggleAutostart,
                 ),
+                // 1. Секція внизу списку
+                if (provider.isDeveloperMode) ...[
+                  _buildSectionTitle('Debug Logs'),
+                  Container(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).cardColor,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: ListTile(
+                      leading:
+                          const Icon(Icons.bug_report, color: Colors.redAccent),
+                      title: const Text('View System Logs'),
+                      subtitle: const Text('Analyze app errors and API calls'),
+                      trailing: const Icon(Icons.chevron_right),
+                      onTap: () => _showLogsDialog(context),
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 32),
+                GestureDetector(
+                  onTap: provider.handleVersionClick, // Ті самі 7 кліків
+                  child: Center(
+                    child: Text(
+                      'Version 1.0.4+26',
+                      style: TextStyle(
+                          color: Colors.grey.withValues(alpha: 0.5), fontSize: 12),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -189,6 +220,33 @@ class SettingsTab extends StatelessWidget {
       child: Text(title,
           style: const TextStyle(
               fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey)),
+    );
+  }
+
+  void _showLogsDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('App Logs'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: ListView.builder(
+            itemCount: LogService.allLogs.length,
+            itemBuilder: (context, i) => Text(
+              LogService.allLogs[i],
+              style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => LogService.clear(), child: const Text('Clear')),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close')),
+        ],
+      ),
     );
   }
 

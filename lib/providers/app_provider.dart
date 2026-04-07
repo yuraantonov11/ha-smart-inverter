@@ -39,6 +39,9 @@ class AppStateProvider extends ChangeNotifier {
   bool isAuthenticated = false;
   bool isCheckingAuth = true;
 
+  bool isDeveloperMode = false;
+  int _versionClickCount = 0;
+
   AppStateProvider() {
     // Ініціалізуємо сервіс алгоритмів, передаючи посилання на провайдер
     // для доступу до методу changeSetting та оптимістичного оновлення UI
@@ -62,6 +65,8 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
 
+    isDeveloperMode = prefs.getBool('is_developer_mode') ?? false;
+
     final isDark = prefs.getBool('is_dark_theme') ?? true;
     themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
 
@@ -83,6 +88,17 @@ class AppStateProvider extends ChangeNotifier {
 
     await _updateStatusMessage(true);
     notifyListeners();
+  }
+
+  void handleVersionClick() async {
+    _versionClickCount++;
+    if (_versionClickCount >= 7 && !isDeveloperMode) {
+      isDeveloperMode = true;
+      _versionClickCount = 0;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool('is_developer_mode', true);
+      notifyListeners();
+    }
   }
 
   String get displayAccount => userData?['account'] ?? 'N/A';

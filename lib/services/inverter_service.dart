@@ -1,3 +1,5 @@
+import 'dart:developer' as LogService;
+
 import 'package:dio/dio.dart';
 import 'dart:convert';
 import 'dart:math';
@@ -5,7 +7,6 @@ import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import '../models/inverter_data.dart';
 
 class InverterService {
@@ -57,7 +58,8 @@ class InverterService {
         return handler.next(options);
       },
       onError: (DioException e, handler) {
-        if (kDebugMode) print('🔴 Помилка мережі: ${e.message}');
+        LogService.log('🔴 API Error at ${e.requestOptions.path}',
+            error: '${e.message} | ${e.response?.data}');
         return handler.next(e);
       },
     ));
@@ -125,6 +127,7 @@ class InverterService {
           : md5.convert(utf8.encode(password)).toString().toLowerCase();
       final response = await _dio.post('/apis/login/account',
           data: {'account': email, 'password': passwordMd5});
+      LogService.log('Login Response: ${response.data}');
 
       if (response.data['code'] == 0) {
         final data = response.data['data'];
@@ -134,7 +137,8 @@ class InverterService {
         return true;
       }
     } catch (e) {
-      if (kDebugMode) print('Login error: $e');
+      LogService.log('Login Exception', error: e);
+      return false;
     }
     return false;
   }
@@ -142,28 +146,20 @@ class InverterService {
   Future<void> _fetchDeviceList() async {
     if (userId == null) return;
     try {
-      final prefs = await SharedPreferences.getInstance();
       final response = await _dio.post('/apis/device/list',
           data: {'page': 1, 'count': 10, 'applyModeCategory': 1});
-
       if (response.data['code'] == 0 && response.data['data'] != null) {
         final devices = response.data['data']['list'] ?? [];
         if (devices.isNotEmpty) {
           final dev = devices[0];
           deviceSn = dev['id']?.toString();
           currentStationId = dev['stationId']?.toString();
-
           dailyEnergy = _parseDouble(dev['dailyProducedQuantity']);
           totalEnergy = _parseDouble(dev['totalProducedQuantity']);
-          co2Reduction = _parseDouble(dev['co2EmissionReduction']);
-
-          if (deviceSn != null) {
-            await prefs.setString('saved_device_sn', deviceSn!);
-          }
         }
       }
     } catch (e) {
-      if (kDebugMode) print('Device list error: $e');
+      LogService.log('Device list error', error: e);
     }
   }
 
@@ -223,12 +219,14 @@ class InverterService {
       };
 
       try {
+        LogService.log('Fetching chart data for range: $range at $endpoint');
         final response = await _dio.post(endpoint, data: payload);
         if (response.data['code'] == 0) {
           return _parseHistoryData(response.data['data'] ?? {});
         }
       } catch (e) {
-        debugPrint('Daily history error: $e');
+        LogService.log('getChartData Exception', error: e);
+        return {};
       }
     } else {
       // ========================================================
@@ -249,7 +247,7 @@ class InverterService {
           return _parseHarChartData(response.data['data'] ?? {});
         }
       } catch (e) {
-        debugPrint('Chart error: $e');
+        debugPrint('Помилка статистики: $e');
       }
     }
 
@@ -315,7 +313,8 @@ class InverterService {
         }
       }
     } catch (e) {
-      debugPrint('Помилка завантаження історії для прогнозу: $e');
+      debugPrint('HistoricalPvMapForForecast error: $e');
+      return {};
     }
 
     // Усереднюємо дані (отримуємо середню потужність за кожну годину)

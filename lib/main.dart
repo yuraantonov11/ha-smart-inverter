@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:window_manager/window_manager.dart';
@@ -11,9 +12,24 @@ import 'theme/app_theme.dart';
 import 'providers/app_provider.dart';
 import 'screens/auth_screen.dart';
 import 'screens/main_screen.dart';
+import 'services/log_service.dart';
 
 void main() async {
+  FlutterError.onError = (details) {
+    LogService.log('FLUTTER ERROR',
+        error: details.exception, stack: details.stack);
+    FlutterError.presentError(details);
+  };
+
+  // Перехоплення асинхронних помилок поза Flutter
+  PlatformDispatcher.instance.onError = (error, stack) {
+    LogService.log('PLATFORM ERROR', error: error, stack: stack);
+    return true;
+  };
+
   WidgetsFlutterBinding.ensureInitialized();
+
+  LogService.log('Додаток запускається...');
 
   // 1. Ініціалізація автозапуску (тепер безпечно)
   try {
