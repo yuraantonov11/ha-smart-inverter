@@ -34,16 +34,18 @@ class DetailsTab extends StatelessWidget {
         }
 
         return Card(
-          color: const Color(0xFF1E293B),
           margin: const EdgeInsets.only(bottom: 8),
-          child: ListTile(
-            title: Text(name,
-                style: const TextStyle(fontSize: 14, color: Colors.white70)),
-            trailing: Text('$val $unit'.trim(),
-                style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.amber)),
+          child: Material(
+            color: Colors.transparent,
+            child: ListTile(
+              title: Text(name,
+                  style: const TextStyle(fontSize: 14, color: Colors.white70)),
+              trailing: Text('$val $unit'.trim(),
+                  style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.amber)),
+            ),
           ),
         );
       },

@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import '../services/log_service.dart';
+import '../services/update_service.dart';
 
 class SettingsTab extends StatelessWidget {
   final AppStateProvider provider;
@@ -92,7 +94,9 @@ class SettingsTab extends StatelessWidget {
               Text(provider.savedEmail ?? '',
                   style: const TextStyle(color: Colors.grey, fontSize: 14)),
               const SizedBox(height: 8),
-              Text(l10n.userId(provider.userId), // Відображення ID з провайдера
+              Text(
+                  l10n.userId(provider.userId
+                      .toString()), // Відображення ID з провайдера
                   style: const TextStyle(color: Colors.grey, fontSize: 12)),
               const SizedBox(height: 20),
               // Кнопка Виходу
@@ -176,6 +180,17 @@ class SettingsTab extends StatelessWidget {
                   activeTrackColor: Colors.greenAccent.withValues(alpha: 0.3),
                   onChanged: provider.toggleAutostart,
                 ),
+                const Divider(height: 1),
+                // Перевірка оновлень
+                ListTile(
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+                  leading: const Icon(Icons.update, color: Colors.blueAccent),
+                  title: const Text('Check for Updates'),
+                  subtitle: const Text('Check and install latest version'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => _checkForUpdates(context),
+                ),
                 // 1. Секція внизу списку
                 if (provider.isDeveloperMode) ...[
                   _buildSectionTitle('Debug Logs'),
@@ -184,13 +199,17 @@ class SettingsTab extends StatelessWidget {
                       color: Theme.of(context).cardColor,
                       borderRadius: BorderRadius.circular(20),
                     ),
-                    child: ListTile(
-                      leading:
-                          const Icon(Icons.bug_report, color: Colors.redAccent),
-                      title: const Text('View System Logs'),
-                      subtitle: const Text('Analyze app errors and API calls'),
-                      trailing: const Icon(Icons.chevron_right),
-                      onTap: () => _showLogsDialog(context),
+                    child: Material(
+                      color: Colors.transparent,
+                      child: ListTile(
+                        leading: const Icon(Icons.bug_report,
+                            color: Colors.redAccent),
+                        title: const Text('View System Logs'),
+                        subtitle:
+                            const Text('Analyze app errors and API calls'),
+                        trailing: const Icon(Icons.chevron_right),
+                        onTap: () => _showLogsDialog(context),
+                      ),
                     ),
                   ),
                 ],
@@ -202,7 +221,8 @@ class SettingsTab extends StatelessWidget {
                     child: Text(
                       'Version 1.0.4+26',
                       style: TextStyle(
-                          color: Colors.grey.withValues(alpha: 0.5), fontSize: 12),
+                          color: Colors.grey.withValues(alpha: 0.5),
+                          fontSize: 12),
                     ),
                   ),
                 ),
@@ -279,5 +299,107 @@ class SettingsTab extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  void _checkForUpdates(BuildContext context) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('Checking for updates...'),
+          ],
+        ),
+      ),
+    );
+
+    final hasUpdate = await UpdateService.checkForUpdate();
+    Navigator.pop(context); // Close loading dialog
+
+    if (hasUpdate) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Update Available'),
+          content: const Text(
+              'A new version is available. Do you want to download and install it?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context); // Close update dialog
+                await _downloadAndInstallUpdate(context);
+              },
+              child: const Text('Update'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('You are up to date!')),
+      );
+    }
+  }
+
+  Future<void> _downloadAndInstallUpdate(BuildContext context) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const AlertDialog(
+        content: Row(
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(width: 16),
+            Text('Downloading update...'),
+          ],
+        ),
+      ),
+    );
+
+    final path = await UpdateService.downloadUpdate();
+    Navigator.pop(context); // Close downloading dialog
+
+    if (path != null) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Install Update'),
+          content: const Text(
+              'Update downloaded. Install now? The app will close during installation.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                final success = await UpdateService.installUpdate(path);
+                if (success) {
+                  // Exit app
+                  exit(0);
+                } else {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Installation failed.')),
+                  );
+                }
+              },
+              child: const Text('Install'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Download failed.')),
+      );
+    }
   }
 }
