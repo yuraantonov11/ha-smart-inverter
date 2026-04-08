@@ -203,18 +203,21 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
 
     forecast.forEach((timeStr, predictedWatts) {
       if (timeStr.startsWith(todayPrefix)) {
-        final timeParts = timeStr.split('T');
+        // Формат: "2026-04-08 13:00" (зі пробілом, не 'T')
+        final timeParts = timeStr.split(' ');
         if (timeParts.length > 1) {
+          // timeParts[1] = "13:00"
           final hour = double.tryParse(timeParts[1].split(':')[0]) ?? 0.0;
-          // Одразу додаємо predictedWatts, бо парсер погоди вже видав Вати
           spots.add(FlSpot(hour, predictedWatts));
         }
       }
     });
 
-    setState(() {
-      _forecastData = spots;
-    });
+    if (mounted) {
+      setState(() {
+        _forecastData = spots;
+      });
+    }
   }
 
   void _onRangeChanged(int index) {
@@ -356,7 +359,7 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
             .withValues(alpha: 0.6), // Напівпрозорий жовтий для прогнозу
         barWidth: 2,
         dotData: const FlDotData(show: false),
-        dashArray: [5, 5], // РОБИТЬ ЛІНІЮ ПУНКТИРНОЮ
+        dashArray: [5, 5], // РОБИТИ ЛІНІЮ ПУНКТИРНОЮ
         belowBarData: BarAreaData(show: false), // Без заливки знизу
       ));
     }

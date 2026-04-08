@@ -8,11 +8,13 @@ import 'package:window_manager/window_manager.dart'; // Використовує
 import '../l10n/app_localizations.dart';
 import '../services/inverter_service.dart';
 import '../services/hems_algorithm.dart';
+import '../services/weather_service.dart';
 import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
   static const String appVersion = '1.0.0';
   final InverterService service = InverterService();
+  final WeatherService weatherService = WeatherService();
   late HemsAlgorithmService hemsService;
   final SystemTray systemTray = SystemTray();
 
@@ -22,9 +24,14 @@ class AppStateProvider extends ChangeNotifier {
 
   Timer? _dataTimer;
   Timer? _automationTimer;
+  Timer? _weatherTimer;
 
   // 0 = Адаптивний (Auto), 1 = Нічний арбітраж, 2 = Шторм/Резерв
   int smartMode = 0;
+  double batteryCapacityAh = 230.0; // Вкажіть реальну ємність вашої збірки
+  double _tomorrowForecastWh = 0.0;
+
+  Map<String, double> historicalPvData = {};
 
   ThemeMode themeMode = ThemeMode.dark;
   String lang = 'en';
@@ -41,6 +48,10 @@ class AppStateProvider extends ChangeNotifier {
 
   bool isDeveloperMode = false;
   int _versionClickCount = 0;
+
+  bool _isSettingChanging = false;
+
+  bool get isSettingChanging => _isSettingChanging;
 
   AppStateProvider() {
     // Ініціалізуємо сервіс алгоритмів, передаючи посилання на провайдер
@@ -90,6 +101,44 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _updateWeatherForecast() async {
+    try {
+      if (historicalPvData.isEmpty) {
+        return;
+      }
+
+      final forecast =
+          await weatherService.fetchDynamicForecast(historicalPvData);
+
+      // Екстрактуємо прогноз на завтра з карти та сумуємо
+      final tomorrow = DateTime.now().add(const Duration(days: 1));
+      final tomorrowString =
+          "${tomorrow.year}-${tomorrow.month.toString().padLeft(2, '0')}-${tomorrow.day.toString().padLeft(2, '0')}";
+
+      _tomorrowForecastWh = 0.0;
+
+      forecast.forEach((timeKey, wh) {
+        if (timeKey.startsWith(tomorrowString)) {
+          _tomorrowForecastWh += wh;
+        }
+      });
+      notifyListeners(); // Оновлюємо UI
+    } catch (e) {
+      // Якщо сталася помилка, скидаємо прогноз на 0, щоб UI не впав
+      _tomorrowForecastWh = 0.0;
+    }
+  }
+
+  void _recordPvHistory(InverterData currentData) {
+    // Зберігаємо поточну генерацію з ключем часу. Наприклад "2026-04-08T13:00"
+    final now = DateTime.now();
+    final timeKey =
+        "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}T${now.hour.toString().padLeft(2, '0')}:00";
+
+    // Оновлюємо середню генерацію за цю годину
+    historicalPvData[timeKey] = currentData.pvPower;
+  }
+
   void handleVersionClick() async {
     _versionClickCount++;
     if (_versionClickCount >= 7 && !isDeveloperMode) {
@@ -102,8 +151,11 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   String get displayAccount => userData?['account'] ?? 'N/A';
+
   String get displayName => userData?['name'] ?? 'N/A';
+
   String get displayEmail => userData?['email'] ?? '';
+
   String get displayPhone => userData?['cellphone'] ?? '';
 
   void startTimers() {
@@ -112,11 +164,14 @@ class AppStateProvider extends ChangeNotifier {
     _dataTimer = Timer.periodic(const Duration(minutes: 1), (_) => fetchData());
     _automationTimer =
         Timer.periodic(const Duration(minutes: 1), (_) => _checkAutomations());
+    _weatherTimer = Timer.periodic(
+        const Duration(hours: 1), (_) => _updateWeatherForecast());
   }
 
   void stopTimers() {
     _dataTimer?.cancel();
     _automationTimer?.cancel();
+    _weatherTimer?.cancel();
     systemTray.destroy();
   }
 
@@ -151,7 +206,7 @@ class AppStateProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('smart_mode', mode);
     notifyListeners();
-    await _checkAutomations(); // Одразу перевіряємо правила після зміни режиму
+    await _checkAutomations(isManualTrigger: true);
   }
 
   Future<void> toggleAutostart(bool val) async {
@@ -259,22 +314,70 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> fetchData() async {
-    if (service.deviceSn == null) return;
+    // Якщо дані вже вантажаться - виходимо
+    if (isDataLoading || service.deviceSn == null) return;
 
     isDataLoading = true;
     notifyListeners();
 
+    // 1. ШВИДКА СМУГА: Отримуємо миттєві базові дані (займає < 1 сек)
     final newData = await service.getRealTimeData();
+
     if (newData != null) {
       data = newData;
+      _recordPvHistory(newData);
       await _updateStatusMessage(true);
       if (isAuthenticated) await _updateTrayMenu();
     } else {
       await _updateStatusMessage(false);
     }
 
+    // МИТТЄВО РОЗБЛОКОВУЄМО UI!
+    // Це дозволить графікам і прогнозу одразу почати відмальовуватися
     isDataLoading = false;
     notifyListeners();
+
+    // 2. ФОНОВА СМУГА: Витягуємо конфіги тихо на фоні
+    if (newData != null) {
+      _fetchConfigsInBackground(newData);
+    }
+  }
+
+  // Окремий фоновий метод
+  Future<void> _fetchConfigsInBackground(InverterData currentData) async {
+    // Чекаємо 2 секунди, щоб графіки встигли без перешкод завантажити свою історію
+    await Future.delayed(const Duration(seconds: 2));
+
+    final fullConfigs = await service.getDeviceFullConfigs();
+    if (fullConfigs != null) {
+      currentData.rawFields['fullConfigs'] = fullConfigs;
+      // Коли дані прийдуть, UI тихенько оновить стрілочки потоків
+      notifyListeners();
+    }
+  }
+
+  Future<void> changeInverterSetting(String key, String value) async {
+    _isSettingChanging = true;
+    notifyListeners();
+
+    final success = await service.updateSetting(key, value);
+
+    if (success) {
+      // Після успішного запису сервер Siseli блокує читання на 60 сек (помилка 70021)
+      // Тому ми вручну оновлюємо локальний кеш, щоб UI відразу змінився
+      if (data?.rawFields['fullConfigs'] != null) {
+        data!.rawFields['fullConfigs'][key] = value;
+      }
+
+      // Показуємо користувачеві, що треба зачекати
+      await Future.delayed(const Duration(seconds: 5));
+    }
+
+    _isSettingChanging = false;
+    notifyListeners();
+
+    // Через 65 секунд можна спробувати отримати свіжі дані з інвертора
+    Future.delayed(const Duration(seconds: 65), () => fetchData());
   }
 
   Future<void> changeSetting(String key, String value) async {
@@ -311,31 +414,23 @@ class AppStateProvider extends ChangeNotifier {
     await changeSetting('outputSourcePrioritySetting', mode.toString());
   }
 
-  Future<void> _checkAutomations() async {
+  Future<void> _checkAutomations({bool isManualTrigger = false}) async {
     if (data == null) return;
-    const myBatteryCapacityAh = 230.0;
 
-    // 1. Акустичний комфорт (може працювати завжди)
-    await hemsService.enforceAcousticComfort(data!);
-
-    // 2. ПЕРЕВІРКА НА БЛЕКАУТ. Якщо стан критичний - блокуємо решту логіки!
-    final isSurvivalActive = await hemsService.enforceSurvivalMode(data!);
-    if (isSurvivalActive) {
-      return; // Виходимо, щоб не перезаписати налаштування виживання
+    // Завжди вимикаємо звук вночі
+    if (!isManualTrigger) {
+      await hemsService.enforceAcousticComfort(data!);
     }
 
-    // 3. ПЕРЕВІРКА НА ПЕРЕВАНТАЖЕННЯ (Grid Assist)
-    await hemsService.executeSmartLoadShedding(data!);
-
-    // 4. ОСНОВНІ РЕЖИМИ
     switch (smartMode) {
-      case 0:
-        await hemsService.executeAdaptiveMode(data!, myBatteryCapacityAh);
+      case 0: // Адаптивний (Прогноз + Піки)
+        await hemsService.executeAdaptiveMode(
+            data!, batteryCapacityAh, _tomorrowForecastWh);
         break;
-      case 1:
+      case 1: // Нічний арбітраж
         await hemsService.executeNightArbitrage(data!);
         break;
-      case 2:
+      case 2: // Шторм / Резерв
         await hemsService.executeStormMode(data!);
         break;
     }

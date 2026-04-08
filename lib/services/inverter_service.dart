@@ -1,4 +1,4 @@
-import 'dart:developer' as LogService;
+import 'dart:developer' as log_service;
 
 import 'package:dio/dio.dart';
 import 'dart:convert';
@@ -24,6 +24,10 @@ class InverterService {
   double dailyEnergy = 0.0;
   double totalEnergy = 0.0;
   double co2Reduction = 0.0;
+
+  Map<String, dynamic>? _cachedFullConfigs;
+  DateTime? _lastConfigFetchTime;
+  bool _isConfigFetching = false;
 
   late final String _appSecret = _decryptAppSecret(_appId, _encryptedAppSecret);
 
@@ -58,7 +62,7 @@ class InverterService {
         return handler.next(options);
       },
       onError: (DioException e, handler) {
-        LogService.log('🔴 API Error at ${e.requestOptions.path}',
+        log_service.log('🔴 API Error at ${e.requestOptions.path}',
             error: '${e.message} | ${e.response?.data}');
         return handler.next(e);
       },
@@ -127,7 +131,7 @@ class InverterService {
           : md5.convert(utf8.encode(password)).toString().toLowerCase();
       final response = await _dio.post('/apis/login/account',
           data: {'account': email, 'password': passwordMd5});
-      LogService.log('Login Response: ${response.data}');
+      log_service.log('Login Response: ${response.data}');
 
       if (response.data['code'] == 0) {
         final data = response.data['data'];
@@ -137,7 +141,7 @@ class InverterService {
         return true;
       }
     } catch (e) {
-      LogService.log('Login Exception', error: e);
+      log_service.log('Login Exception', error: e);
       return false;
     }
     return false;
@@ -159,7 +163,7 @@ class InverterService {
         }
       }
     } catch (e) {
-      LogService.log('Device list error', error: e);
+      log_service.log('Device list error', error: e);
     }
   }
 
@@ -219,13 +223,13 @@ class InverterService {
       };
 
       try {
-        LogService.log('Fetching chart data for range: $range at $endpoint');
+        log_service.log('Fetching chart data for range: $range at $endpoint');
         final response = await _dio.post(endpoint, data: payload);
         if (response.data['code'] == 0) {
           return _parseHistoryData(response.data['data'] ?? {});
         }
       } catch (e) {
-        LogService.log('getChartData Exception', error: e);
+        log_service.log('getChartData Exception', error: e);
         return {};
       }
     } else {
@@ -252,6 +256,101 @@ class InverterService {
     }
 
     return {'pv': [], 'load': [], 'grid': [], 'battery': []};
+  }
+
+  Future<Map<String, dynamic>?> getDeviceFullConfigs() async {
+    if (deviceSn == null) return _cachedFullConfigs;
+
+    final now = DateTime.now();
+
+    // ПЕРЕВІРКА КУЛДАУНУ (Не смикаємо інвертор частіше ніж раз на 65 сек)
+    if (_lastConfigFetchTime != null &&
+        now.difference(_lastConfigFetchTime!).inSeconds < 65) {
+      return _cachedFullConfigs;
+    }
+
+    if (_isConfigFetching) return _cachedFullConfigs;
+    _isConfigFetching = true;
+
+    try {
+      for (var i = 0; i < 1; i++) {
+        final response = await _dio.post(
+          '/apis/remote/device/configs/read?deviceId=$deviceSn',
+          data: {},
+        );
+
+        if (response.statusCode == 200) {
+          final code = response.data['code'];
+
+          if (code == 0) {
+            final respData = response.data['data'];
+            if (respData != null && respData['targetConfig'] != null) {
+              final target = respData['targetConfig'];
+
+              Map<String, dynamic>? parsed;
+              if (target is String && target.isNotEmpty) {
+                parsed = jsonDecode(target) as Map<String, dynamic>;
+              } else if (target is Map<String, dynamic>) {
+                parsed = target;
+              }
+
+              if (parsed != null) {
+                _cachedFullConfigs = parsed;
+                _lastConfigFetchTime = DateTime.now();
+                _isConfigFetching = false;
+                // УСПІХ! Дані отримані.
+                return parsed;
+              }
+            } else {
+              // Сервер дав команду, але інвертор ще не відповів
+              debugPrint(
+                  '⏳ Інвертор збирає дані. Чекаємо 5 сек (Спроба ${i + 1}/4)...');
+              await Future.delayed(const Duration(seconds: 5));
+              continue; // Пробуємо ще раз
+            }
+          } else if (code == 70021) {
+            // Batch in progress
+            debugPrint(
+                '⏳ Інвертор зайнятий читанням. Чекаємо 5 сек (Спроба ${i + 1}/4)...');
+            await Future.delayed(const Duration(seconds: 5));
+            continue;
+          } else {
+            debugPrint('⚠️ Помилка API Configs: ${response.data}');
+            break; // Виходимо з циклу при критичній помилці
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('⚠️ Помилка мережі: $e');
+    }
+
+    _lastConfigFetchTime =
+        DateTime.now(); // Оновлюємо час навіть після невдачі, щоб не спамити
+    _isConfigFetching = false;
+
+    // Якщо за 4 спроби інвертор так і не віддав дані, повертаємо старі
+    return _cachedFullConfigs;
+  }
+
+  Future<bool> updateSetting(String key, String value) async {
+    if (deviceSn == null) return false;
+    try {
+      final response = await _dio.post(
+        '/apis/remote/device/config/write',
+        queryParameters: {'deviceId': deviceSn},
+        data: {
+          'id': deviceSn, // ID пристрою
+          'key': key, // Наприклад, 'buzzerSwitchSetting'
+          'value': value // Значення рядком: '0' або '1'
+        },
+      );
+
+      // Код 0 означає, що команда прийнята сервером і відправлена на інвертор
+      return response.statusCode == 200 && response.data['code'] == 0;
+    } catch (e) {
+      debugPrint('Помилка запису налаштування $key: $e');
+      return false;
+    }
   }
 
 // --- Збір історії для машинного навчання прогнозу ---

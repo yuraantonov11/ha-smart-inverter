@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'log_service.dart';
 
 class UpdateService {
   static const String repoUrl =
@@ -25,7 +26,7 @@ class UpdateService {
         return _isVersionNewer(latestClean, currentVersion);
       }
     } catch (e) {
-      print('Error checking for update: $e');
+      LogService.log('Error checking for update', error: e);
     }
     return false;
   }
@@ -66,7 +67,7 @@ class UpdateService {
         }
       }
     } catch (e) {
-      print('Error downloading update: $e');
+      LogService.log('Error downloading update', error: e);
     }
     return null;
   }
@@ -77,7 +78,7 @@ class UpdateService {
           await Process.run('msiexec', ['/i', path, '/quiet', '/norestart']);
       return result.exitCode == 0;
     } catch (e) {
-      print('Error installing update: $e');
+      LogService.log('Error installing update', error: e);
       return false;
     }
   }

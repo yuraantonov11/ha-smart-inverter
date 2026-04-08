@@ -31,6 +31,33 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
 
   @override
   Widget build(BuildContext context) {
+// 1. БЕЗПЕЧНЕ вилучення даних з кешу
+    final fullConfigs =
+        widget.data.rawFields['fullConfigs'] as Map<String, dynamic>?;
+
+    // 2. Зчитуємо потоки (Siseli віддає потужність у кВт, тому множимо на 1000 для Вт)
+    // Якщо fullConfigs ще null, плавно використовуємо старі дані, щоб графік не падав
+    final double pvPower = fullConfigs != null
+        ? (fullConfigs['pvFlow']?['value']?['value'] ?? 0.0).toDouble() * 1000
+        : widget.data.pvPower.toDouble();
+
+    final double loadPower = fullConfigs != null
+        ? (fullConfigs['loadFlow']?['value']?['value'] ?? 0.0).toDouble() * 1000
+        : widget.data.loadPower.toDouble();
+
+    final int batterySoc = fullConfigs != null
+        ? (fullConfigs['batteryFlow']?['value']?['value'] ?? 0).toInt()
+        : widget.data.batterySoc.toInt();
+
+    // 1 - Заряд, 2 - Розряд (fallback на старі дані струму)
+    final isBatCharging = fullConfigs != null
+        ? (fullConfigs['batteryFlow']?['flowDirection'] == 1)
+        : widget.data.batteryPower > 0;
+
+    final isBatDischarging = fullConfigs != null
+        ? (fullConfigs['batteryFlow']?['flowDirection'] == 2) // Додано дужки
+        : widget.data.batteryPower < 0;
+
     return Container(
       height: 240,
       padding: const EdgeInsets.all(16),
@@ -53,18 +80,24 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
         animation: _controller,
         builder: (context, child) {
           return CustomPaint(
+            // Передаємо безпечні змінні у Painter замість сирого widget.data
             painter: _FlowPainter(
-                animationValue: _controller.value, data: widget.data),
-            child: _buildNodes(context, widget.data,
-                Theme.of(context).scaffoldBackgroundColor),
+              animationValue: _controller.value,
+              pvPower: pvPower,
+              loadPower: loadPower,
+              isBatCharging: isBatCharging,
+              isBatDischarging: isBatDischarging,
+            ),
+            child: _buildNodes(context, pvPower, loadPower, batterySoc,
+                widget.data.gridVoltage.toDouble()),
           );
         },
       ),
     );
   }
 
-  Widget _buildNodes(
-      BuildContext context, InverterData data, Color centerColor) {
+  Widget _buildNodes(BuildContext context, double pvPower, double loadPower,
+      int batterySoc, double gridVoltage) {
     final l10n = AppLocalizations.of(context)!;
     return Stack(
       children: [
@@ -74,47 +107,47 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                 icon: Icons.solar_power,
                 color: Colors.amber,
                 title: l10n.solar,
-                value: '${data.pvPower.toStringAsFixed(0)} W')),
+                value: '${pvPower.toStringAsFixed(0)} W')),
+        // Безпечний PV
         Align(
             alignment: Alignment.topRight,
             child: _NodeWidget(
                 icon: Icons.electric_bolt,
                 color: Colors.blueAccent,
                 title: l10n.grid,
-                value: '${data.gridVoltage.toStringAsFixed(1)} V')),
+                value: '${gridVoltage.toStringAsFixed(1)} V')),
         Align(
             alignment: Alignment.bottomLeft,
             child: _NodeWidget(
                 icon: Icons.battery_charging_full,
                 color: Colors.greenAccent,
                 title: l10n.battery,
-                value: '${data.batterySoc.toStringAsFixed(0)}%')),
+                value: '$batterySoc%')),
+        // Безпечний SOC
         Align(
             alignment: Alignment.bottomRight,
             child: _NodeWidget(
                 icon: Icons.home_rounded,
                 color: Colors.purpleAccent,
                 title: l10n.load,
-                value: '${data.loadPower.toStringAsFixed(0)} W')),
+                value: '${loadPower.toStringAsFixed(0)} W')),
+        // Безпечне Навантаження
+
+        // Центральний хаб
         Align(
           alignment: Alignment.center,
           child: Container(
-            width: 64,
-            height: 64,
+            width: 60,
+            height: 60,
             decoration: BoxDecoration(
+              color: Theme.of(context).scaffoldBackgroundColor,
               shape: BoxShape.circle,
-              color: centerColor,
-              border: Border.all(
-                  color: Colors.amber.withValues(alpha: 0.4), width: 2),
               boxShadow: [
                 BoxShadow(
-                    color: Colors.amber.withValues(alpha: 0.15),
-                    blurRadius: 20,
-                    spreadRadius: 5),
+                    color: Colors.black.withValues(alpha: 0.1), blurRadius: 10)
               ],
             ),
-            child: const Icon(Icons.developer_board,
-                size: 28, color: Colors.amber),
+            child: const Icon(Icons.swap_horiz, size: 32, color: Colors.grey),
           ),
         ),
       ],
@@ -168,9 +201,18 @@ class _NodeWidget extends StatelessWidget {
 
 class _FlowPainter extends CustomPainter {
   final double animationValue;
-  final InverterData data;
+  final double pvPower;
+  final double loadPower;
+  final bool isBatCharging;
+  final bool isBatDischarging;
 
-  _FlowPainter({required this.animationValue, required this.data});
+  _FlowPainter({
+    required this.animationValue,
+    required this.pvPower,
+    required this.loadPower,
+    required this.isBatCharging,
+    required this.isBatDischarging,
+  });
 
   Path _createSPath(Offset start, Offset end) {
     final path = Path();
@@ -213,21 +255,21 @@ class _FlowPainter extends CustomPainter {
     canvas.drawPath(loadPath, linePaint);
 
     // Малюємо анімовані точки чітко за фізикою
-    if (data.pvPower > 0) {
+    if (pvPower > 0) {
       _drawParticles(canvas, pvPath, Colors.amber, animationValue);
     }
-    if (data.gridPower > 0) {
-      _drawParticles(canvas, gridPath, Colors.blueAccent, animationValue);
-    }
-    if (data.loadPower > 0) {
+    // if (gridPower > 0) {
+    //   _drawParticles(canvas, gridPath, Colors.blueAccent, animationValue);
+    // }
+    if (loadPower > 0) {
       _drawParticles(canvas, loadPath, Colors.purpleAccent, animationValue);
     }
 
-    if (data.batteryPower > 0) {
+    if (isBatCharging) {
       // Заряджається (Центр -> Батарея)
       _drawParticles(
           canvas, centerToBatPath, Colors.greenAccent, animationValue);
-    } else if (data.batteryPower < 0) {
+    } else if (isBatDischarging) {
       // Розряджається (Батарея -> Центр)
       _drawParticles(canvas, batPath, Colors.greenAccent, animationValue);
     }

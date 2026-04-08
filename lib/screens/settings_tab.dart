@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
@@ -128,6 +129,31 @@ class SettingsTab extends StatelessWidget {
             color: Theme.of(context).cardColor,
             borderRadius: BorderRadius.circular(24),
           ),
+          child: Column(
+            children: [
+              _buildSettingTile(
+                context: context,
+                title: 'Звуковий сигнал',
+                subtitle: 'Увімкнути/вимкнути системну пищалку',
+                // Перевіряємо ключ (в Siseli зазвичай 'buzzerSwitchSetting' або 'buzzerSwitch')
+                currentValue: provider.data?.rawFields['fullConfigs']
+                        ?['buzzerSwitchSetting'] ==
+                    '1',
+                onChanged: (val) {
+                  provider.changeInverterSetting(
+                      'buzzerSwitchSetting', val ? '1' : '0');
+                },
+              ),
+              const Divider(height: 1),
+            ],
+          ),
+        ),
+        const SizedBox(height: 24),
+        Container(
+          decoration: BoxDecoration(
+            color: Theme.of(context).cardColor,
+            borderRadius: BorderRadius.circular(24),
+          ),
           // Додано Material з прозорим фоном для уникнення помилки ListTile
           child: Material(
             color: Colors.transparent,
@@ -243,6 +269,32 @@ class SettingsTab extends StatelessWidget {
     );
   }
 
+  Widget _buildSettingTile({
+    required String title,
+    required String subtitle,
+    required bool currentValue,
+    required Function(bool) onChanged,
+    required BuildContext context,
+  }) {
+    return ListTile(
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
+      subtitle: Text(subtitle,
+          style: const TextStyle(fontSize: 12, color: Colors.grey)),
+      trailing: provider.isSettingChanging
+          ? const SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Colors.amber),
+            )
+          : Switch(
+              value: currentValue,
+              activeThumbColor: Colors.amber,
+              onChanged: onChanged,
+            ),
+    );
+  }
+
   void _showLogsDialog(BuildContext context) {
     showDialog(
       context: context,
@@ -302,7 +354,9 @@ class SettingsTab extends StatelessWidget {
   }
 
   void _checkForUpdates(BuildContext context) async {
-    showDialog(
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+
+    unawaited(showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => const AlertDialog(
@@ -314,13 +368,15 @@ class SettingsTab extends StatelessWidget {
           ],
         ),
       ),
-    );
+    ));
 
     final hasUpdate = await UpdateService.checkForUpdate();
+    if (!context.mounted) return;
     Navigator.pop(context); // Close loading dialog
 
     if (hasUpdate) {
-      showDialog(
+      if (!context.mounted) return;
+      unawaited(showDialog(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Update Available'),
@@ -340,16 +396,18 @@ class SettingsTab extends StatelessWidget {
             ),
           ],
         ),
-      );
+      ));
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
+      scaffoldMessenger.showSnackBar(
         const SnackBar(content: Text('You are up to date!')),
       );
     }
   }
 
   Future<void> _downloadAndInstallUpdate(BuildContext context) async {
-    showDialog(
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+
+    unawaited(showDialog(
       context: context,
       barrierDismissible: false,
       builder: (context) => const AlertDialog(
@@ -361,13 +419,15 @@ class SettingsTab extends StatelessWidget {
           ],
         ),
       ),
-    );
+    ));
 
     final path = await UpdateService.downloadUpdate();
+    if (!context.mounted) return;
     Navigator.pop(context); // Close downloading dialog
 
     if (path != null) {
-      showDialog(
+      if (!context.mounted) return;
+      unawaited(showDialog(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Install Update'),
@@ -386,7 +446,7 @@ class SettingsTab extends StatelessWidget {
                   // Exit app
                   exit(0);
                 } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  scaffoldMessenger.showSnackBar(
                     const SnackBar(content: Text('Installation failed.')),
                   );
                 }
@@ -395,9 +455,9 @@ class SettingsTab extends StatelessWidget {
             ),
           ],
         ),
-      );
+      ));
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
+      scaffoldMessenger.showSnackBar(
         const SnackBar(content: Text('Download failed.')),
       );
     }

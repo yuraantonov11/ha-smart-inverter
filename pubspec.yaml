@@ -29,14 +29,15 @@ dependencies:
   package_info_plus: ^9.0.1
   url_launcher: ^6.3.2
   http: ^1.2.1
-  path_provider: ^2.1.3
+  path_provider: ^2.1.5
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_launcher_icons: ^0.14.4 # Пакет для генерації іконок
   flutter_lints: ^6.0.0 # Пакет для перевірки коду
   msix: ^3.16.7
-
+dependency_overrides:
+  path_provider_android: 2.2.1
 # Налаштування генератора іконок
 flutter_icons:
   android: true
