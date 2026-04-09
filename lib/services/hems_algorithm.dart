@@ -11,17 +11,23 @@ class HemsAlgorithmService {
     final hour = DateTime.now().hour;
     final isNight = hour >= 22 || hour < 7;
 
-    final currentBuzzer = data.rawFields['buzzerSwitch']?['value']?.toString();
+    // Дістаємо налаштування за НОВИМ ключем
+    final buzzerConfig = data.rawFields['fullConfigs']?['buzzerAlarmSetting'];
+
+    // Важливо: Siseli повертає значення як int (1 або 0)
+    final currentBuzzer = buzzerConfig?['value']?.toString();
     final desiredBuzzer = isNight ? '0' : '1';
 
-    if (currentBuzzer != desiredBuzzer) {
-      await provider.changeSetting('buzzerSwitchSetting', desiredBuzzer);
+    if (currentBuzzer != null && currentBuzzer != desiredBuzzer) {
+      await provider.changeSetting('buzzerAlarmSetting', desiredBuzzer);
     }
   }
 
   /// 2. Адаптивний режим (зрізання піків + прогноз погоди)
+  /// 2. Предиктивний адаптивний режим (Звільнення місця для сонця + Резерв на вечір)
   Future<void> executeAdaptiveMode(InverterData data, double batteryCapacityAh,
-      double expectedSolarTomorrowWh) async {
+      double expectedSolarTodayWh // Прогноз Solcast на ПОТОЧНИЙ день
+      ) async {
     final now = DateTime.now();
     final currentHour = now.hour;
 
@@ -30,69 +36,81 @@ class HemsAlgorithmService {
     final currentCharger =
         data.rawFields['chargerSourcePriority']?['value']?.toString();
 
+    // 1. Фізичні параметри
     const systemVoltage = 51.2;
     final batteryCapacityWh = batteryCapacityAh * systemVoltage;
-    const reserveSoc = 20.0;
+    const reserveSoc = 20.0; // Залишаємо 20% для здоров'я АКБ
 
     final availableSoc = data.batterySoc - reserveSoc;
     final availableEnergyWh =
         (availableSoc > 0) ? (batteryCapacityWh * (availableSoc / 100.0)) : 0.0;
 
-    final predictedAvgLoad = data.loadPower > 400 ? data.loadPower : 400.0;
+    // Середнє споживання за годину (беремо поточне, але не менше 400 Вт для страховки)
+    final avgHourlyLoad = data.loadPower > 400 ? data.loadPower : 400.0;
 
-    final isNightTariff = currentHour >= 23 || currentHour < 7;
-    final isEveningPeak = currentHour >= 19 && currentHour < 23;
-    final isDay = currentHour >= 7 && currentHour < 19;
-
-    if (isNightTariff) {
+    if (currentHour >= 23 || currentHour < 7) {
       // --- НІЧНИЙ ТАРИФ (23:00 - 07:00) ---
-      final expectedDailyConsumptionWh =
-          predictedAvgLoad * 16.0; // Потреба на завтрашній день
+      // Живимо будинок від мережі (дешево)
+      if (currentOutput != '0') await provider.setMode(0); // USB
 
-      if (currentOutput != '0') {
-        await provider.setMode(0); // USB (Живлення від мережі)
-      }
+      // Скільки нам знадобиться на завтра? (з 07:00 до 23:00 = 16 годин)
+      final dailyNeedWh = avgHourlyLoad * 16.0;
+      // Дефіцит = Потреба - Прогноз сонця
+      final deficitWh = dailyNeedWh - expectedSolarTodayWh;
 
-      // ПРИЙНЯТТЯ РІШЕННЯ НА ОСНОВІ ПРОГНОЗУ:
-      if (expectedSolarTomorrowWh >= expectedDailyConsumptionWh) {
-        // Завтра багато сонця. Заряджаємо батарею тільки сонцем (OSO), економимо гроші.
-        if (currentCharger != '2') {
-          await provider.changeSetting('chargerSourcePrioritySetting', '2');
+      if (deficitWh > 0 && availableEnergyWh < deficitWh) {
+        // [ЗАРЯДЖАЄМО] Енергії не вистачить. Заряджаємо з мережі до рівня дефіциту.
+        if (currentCharger != '1') {
+          await provider.changeSetting(
+              'chargerSourcePrioritySetting', '1'); // SNU
         }
       } else {
-        // Завтра хмарно. Заряджаємо батарею від мережі (SNU), бо сонця не вистачить.
-        if (currentCharger != '1') {
-          await provider.changeSetting('chargerSourcePrioritySetting', '1');
-        }
-      }
-    } else if (isEveningPeak) {
-      // --- ВЕЧІРНІЙ ПІК (19:00 - 23:00) ---
-      if (currentOutput != '2') {
-        await provider.setMode(2); // SBU (Живлення від батареї)
-      }
-      if (currentCharger != '2') {
-        await provider.changeSetting(
-            'chargerSourcePrioritySetting', '2'); // OSO
-      }
-    } else if (isDay) {
-      // --- ДЕНЬ (07:00 - 19:00) ---
-      final peakEnergyRequiredWh =
-          predictedAvgLoad * 4.0; // Енергія для вечірнього піку
-
-      if (availableEnergyWh <= peakEnergyRequiredWh) {
-        // Резервуємо енергію! Зупиняємо розряд і переходимо на денний тариф мережі.
-        if (currentOutput != '0') await provider.setMode(0); // USB
+        // [СТОП ЗАРЯД] В акумуляторі ВЖЕ достатньо місця/енергії. Вимикаємо мережу.
         if (currentCharger != '2') {
           await provider.changeSetting(
               'chargerSourcePrioritySetting', '2'); // OSO
         }
-      } else {
-        // Енергії достатньо, працюємо автономно.
+      }
+    } else if (currentHour >= 19 && currentHour < 23) {
+      // --- ВЕЧІРНЯ ПІДГОТОВКА (19:00 - 23:00) ---
+      // Очікується скоро нічний тариф. АГРЕСИВНО РОЗРЯДЖАЄМО до 20%.
+      if (currentOutput != '2') await provider.setMode(2); // SBU
+      if (currentCharger != '2') {
+        await provider.changeSetting(
+            'chargerSourcePrioritySetting', '2'); // OSO
+      }
+    } else {
+      // --- ДЕНЬ (07:00 - 19:00) ---
+
+      // 1. Скільки годин залишилося жити до 23:00?
+      final hoursTillNight = 23.0 - currentHour;
+      final energyNeededTillNightWh = avgHourlyLoad * hoursTillNight;
+
+      // 2. Скільки сонячної енергії з прогнозу ще має надійти сьогодні?
+      // (Проста пропорція: чим ближче до 19:00, тим менша частка прогнозу залишилась)
+      final percentOfDayRemaining = (19.0 - currentHour) / 12.0;
+      final remainingSolarWh = expectedSolarTodayWh *
+          (percentOfDayRemaining > 0 ? percentOfDayRemaining : 0);
+
+      // 3. Загальний баланс виживання
+      final totalAvailableEnergyWh = availableEnergyWh + remainingSolarWh;
+
+      if (totalAvailableEnergyWh >= energyNeededTillNightWh) {
+        // [ЗВІЛЬНЮЄМО МІСЦЕ]
+        // Сума заряду та очікуваного сонця ПЕРЕВИЩУЄ наші потреби!
+        // Працюємо від батареї (SBU), щоб звільнити місце для сонця, інакше воно пропаде дарма.
         if (currentOutput != '2') await provider.setMode(2); // SBU
-        if (currentCharger != '0') {
-          await provider.changeSetting(
-              'chargerSourcePrioritySetting', '0'); // CSO (Сонце першочергово)
-        }
+      } else {
+        // [ТРИМАЄМО АКУМУЛЯТОР ЗАРЯДЖЕНИМ]
+        // Прогноз сонця впав або акумулятор пустий. Якщо розрядимо зараз, до 23:00 не дотягнемо.
+        // Перемикаємо будинок на мережу (USB), щоб "заморозити" залишок в АКБ для вечірнього піку.
+        if (currentOutput != '0') await provider.setMode(0); // USB
+      }
+
+      // Вдень категорично забороняємо заряджати акумулятор від мережі, навіть якщо похмуро!
+      if (currentCharger != '2') {
+        await provider.changeSetting(
+            'chargerSourcePrioritySetting', '2'); // OSO
       }
     }
   }
@@ -104,7 +122,8 @@ class HemsAlgorithmService {
       if (data.rawFields['outputSourcePriority']?['value']?.toString() != '0') {
         await provider.setMode(0); // USB
       }
-      if (data.rawFields['chargerSourcePriority']?['value']?.toString() != '1') {
+      if (data.rawFields['chargerSourcePriority']?['value']?.toString() !=
+          '1') {
         await provider.changeSetting(
             'chargerSourcePrioritySetting', '1'); // SNU
       }
@@ -112,7 +131,8 @@ class HemsAlgorithmService {
       if (data.rawFields['outputSourcePriority']?['value']?.toString() != '2') {
         await provider.setMode(2); // SBU
       }
-      if (data.rawFields['chargerSourcePriority']?['value']?.toString() != '2') {
+      if (data.rawFields['chargerSourcePriority']?['value']?.toString() !=
+          '2') {
         await provider.changeSetting(
             'chargerSourcePrioritySetting', '2'); // OSO
       }

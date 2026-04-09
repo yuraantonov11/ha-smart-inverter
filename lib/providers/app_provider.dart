@@ -28,8 +28,13 @@ class AppStateProvider extends ChangeNotifier {
 
   // 0 = Адаптивний (Auto), 1 = Нічний арбітраж, 2 = Шторм/Резерв
   int smartMode = 0;
-  double batteryCapacityAh = 230.0; // Вкажіть реальну ємність вашої збірки
+  double batteryCapacityAh = 230.0;
+  double pvTotalCapacityW = 3000.0;
+  double inverterMaxPowerW = 5000.0;
   double _tomorrowForecastWh = 0.0;
+
+  String solcastApiKey = '';
+  String solcastResourceId = '';
 
   Map<String, double> historicalPvData = {};
 
@@ -81,6 +86,15 @@ class AppStateProvider extends ChangeNotifier {
     final isDark = prefs.getBool('is_dark_theme') ?? true;
     themeMode = isDark ? ThemeMode.dark : ThemeMode.light;
 
+    batteryCapacityAh = prefs.getDouble('battery_capacity_ah') ?? 230.0;
+    pvTotalCapacityW = prefs.getDouble('pv_total_capacity_w') ?? 3000.0;
+    inverterMaxPowerW = prefs.getDouble('inverter_max_power_w') ?? 5000.0;
+
+    solcastApiKey = prefs.getString('solcast_api_key') ??
+        '2VEPTJd53ZSHJyNF3ZcY4o2kusVLi52N';
+    solcastResourceId =
+        prefs.getString('solcast_resource_id') ?? '12e1-6b6b-cf67-00bd';
+
     smartMode = prefs.getInt('smart_mode') ?? 0;
     lang = prefs.getString('app_lang') ?? 'en';
     isAutostartEnabled = await launchAtStartup.isEnabled();
@@ -97,36 +111,61 @@ class AppStateProvider extends ChangeNotifier {
       startTimers();
     }
 
+    _updateWeatherForecast();
     await _updateStatusMessage(true);
     notifyListeners();
   }
 
+  Future<void> saveSolcastSettings(String apiKey, String resourceId) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    solcastApiKey = apiKey;
+    solcastResourceId = resourceId;
+
+    await prefs.setString('solcast_api_key', apiKey);
+    await prefs.setString('solcast_resource_id', resourceId);
+
+    // Після введення нових ключів, видаляємо кеш, щоб примусово завантажити новий прогноз
+    final todayStr = DateTime.now().toIso8601String().substring(0, 10);
+    await prefs.remove('solcast_cache_$todayStr');
+
+    notifyListeners();
+    _updateWeatherForecast();
+  }
+
+  Future<void> saveHardwareSettings(
+      double battery, double pv, double inverter) async {
+    final prefs = await SharedPreferences.getInstance();
+    batteryCapacityAh = battery;
+    pvTotalCapacityW = pv;
+    inverterMaxPowerW = inverter;
+    await prefs.setDouble('battery_capacity_ah', battery);
+    await prefs.setDouble('pv_total_capacity_w', pv);
+    await prefs.setDouble('inverter_max_power_w', inverter);
+    notifyListeners();
+    _updateWeatherForecast(); // Recalculate forecast immediately
+  }
+
   Future<void> _updateWeatherForecast() async {
-    try {
-      if (historicalPvData.isEmpty) {
-        return;
+    // Тепер передаємо ключі доступу замість історії
+    final dynamicForecastMap = await weatherService.fetchSolcastForecast(
+        solcastApiKey, solcastResourceId);
+
+    final now = DateTime.now();
+    final tomorrow = now.add(const Duration(days: 1));
+    // Шукаємо по даті завтрашнього дня
+    final tomorrowString =
+        "${tomorrow.year}-${tomorrow.month.toString().padLeft(2, '0')}-${tomorrow.day.toString().padLeft(2, '0')}";
+
+    var totalWh = 0.0;
+    dynamicForecastMap.forEach((key, value) {
+      if (key.startsWith(tomorrowString)) {
+        totalWh += value;
       }
+    });
 
-      final forecast =
-          await weatherService.fetchDynamicForecast(historicalPvData);
-
-      // Екстрактуємо прогноз на завтра з карти та сумуємо
-      final tomorrow = DateTime.now().add(const Duration(days: 1));
-      final tomorrowString =
-          "${tomorrow.year}-${tomorrow.month.toString().padLeft(2, '0')}-${tomorrow.day.toString().padLeft(2, '0')}";
-
-      _tomorrowForecastWh = 0.0;
-
-      forecast.forEach((timeKey, wh) {
-        if (timeKey.startsWith(tomorrowString)) {
-          _tomorrowForecastWh += wh;
-        }
-      });
-      notifyListeners(); // Оновлюємо UI
-    } catch (e) {
-      // Якщо сталася помилка, скидаємо прогноз на 0, щоб UI не впав
-      _tomorrowForecastWh = 0.0;
-    }
+    _tomorrowForecastWh = totalWh;
+    notifyListeners();
   }
 
   void _recordPvHistory(InverterData currentData) {

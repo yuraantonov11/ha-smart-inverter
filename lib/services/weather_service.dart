@@ -1,78 +1,106 @@
+import 'dart:convert';
 import 'package:dio/dio.dart';
-import 'log_service.dart'; // Імпортуємо ваш сервіс логів
+import 'package:shared_preferences/shared_preferences.dart';
+import 'log_service.dart';
 
 class WeatherService {
-  // Налаштовуємо Dio з таймаутами
   final Dio _dio = Dio(BaseOptions(
     connectTimeout: const Duration(seconds: 10),
     receiveTimeout: const Duration(seconds: 10),
   ));
 
-  final double lat = 49.7132;
-  final double lon = 23.9056;
+  /// Отримує прогноз від Solcast з жорстким кешуванням на 1 день
+  Future<Map<String, double>> fetchSolcastForecast(
+      String apiKey, String resourceId) async {
+    final prefs = await SharedPreferences.getInstance();
 
-  double _dynamicConversionRatio = 3.5;
+    // Створюємо унікальний ключ кешу для поточного дня (наприклад: solcast_2026-04-10)
+    final todayStr = DateTime.now().toIso8601String().substring(0, 10);
+    final cacheKey = 'solcast_cache_$todayStr';
 
-  Future<Map<String, double>> fetchDynamicForecast(
-      Map<String, double> historicalPvData) async {
-    final url = 'https://api.open-meteo.com/v1/forecast'
-        '?latitude=$lat&longitude=$lon'
-        '&hourly=shortwave_radiation'
-        '&timezone=Europe%2FKyiv'
-        '&past_days=3'
-        '&forecast_days=2';
+    // 1. ПЕРЕВІРКА КЕШУ
+    final cachedData = prefs.getString(cacheKey);
+    if (cachedData != null) {
+      LogService.log('☀️ Беремо прогноз Solcast з кешу (економимо API ліміт)');
+      return _parseSolcastData(json.decode(cachedData));
+    }
 
-    var radiationMap = <String, double>{};
-    var forecast = <String, double>{};
+    // 2. ЯКЩО КЕШУ НЕМАЄ АБО ДЕНЬ ЗМІНИВСЯ - РОБИМО ЗАПИТ
+    if (apiKey.isEmpty || resourceId.isEmpty) {
+      LogService.log(
+          '⚠️ Solcast API Key або Resource ID не вказано в налаштуваннях!');
+      return {};
+    }
+
+    final url =
+        'https://api.solcast.com.au/rooftop_sites/$resourceId/forecasts?format=json';
 
     try {
-      final response = await _dio.get(url);
+      final response = await _dio.get(
+        url,
+        options: Options(
+          headers: {'Authorization': 'Bearer $apiKey'},
+        ),
+      );
 
       if (response.statusCode == 200) {
-        final hourly = response.data['hourly'];
-        final times = hourly['time'] as List<dynamic>;
-        final rads = hourly['shortwave_radiation'] as List<dynamic>;
+        final responseData = response.data;
 
-        for (var i = 0; i < times.length; i++) {
-          final timeKey = (times[i] as String).replaceFirst('T', ' ');
-          final radValue = (rads[i] as num).toDouble();
-          radiationMap[timeKey] = radValue;
-        }
+        // Зберігаємо новий прогноз у пам'ять
+        await prefs.setString(cacheKey, json.encode(responseData));
 
-        // --- АНАЛІЗ ТА НАВЧАННЯ ---
-        var sumRealPvWatts = 0.0;
-        var sumWeatherRad = 0.0;
+        // Очищаємо старі кеші (за вчорашні дні), щоб не забивати пам'ять пристрою
+        _clearOldCaches(prefs, cacheKey);
 
-        historicalPvData.forEach((timeKey, pvWatts) {
-          if (radiationMap.containsKey(timeKey)) {
-            var rad = radiationMap[timeKey]!;
-            if (rad > 100 && pvWatts > 50) {
-              sumRealPvWatts += pvWatts;
-              sumWeatherRad += rad;
-            }
-          }
-        });
-
-        if (sumWeatherRad > 0) {
-          _dynamicConversionRatio = sumRealPvWatts / sumWeatherRad;
-          // Використовуємо LogService замість debugPrint
-          LogService.log(
-              '🧠 Динамічний прогноз навчився! Коефіцієнт: ${_dynamicConversionRatio.toStringAsFixed(3)} (за ${historicalPvData.length} годинами)');
-        }
-
-        // --- ФОРМУВАННЯ ПРОГНОЗУ ---
-        radiationMap.forEach((timeKey, radW) {
-          forecast[timeKey] = radW * _dynamicConversionRatio;
-        });
+        LogService.log('✅ Успішно завантажено новий прогноз Solcast!');
+        return _parseSolcastData(responseData);
       }
     } on DioException catch (e) {
-      // Спеціальна обробка для помилок мережі (502, 504, таймаут)
-      LogService.log('Помилка API погоди: ${e.type}', error: e.message);
+      if (e.response?.statusCode == 429) {
+        LogService.log('❌ Ліміт Solcast API вичерпано (429 Too Many Requests)');
+      } else {
+        LogService.log('Помилка API Solcast: ${e.response?.statusCode}',
+            error: e.message);
+      }
     } catch (e, stack) {
-      LogService.log('Непередбачена помилка в WeatherService',
-          error: e, stack: stack);
+      LogService.log('Непередбачена помилка Solcast', error: e, stack: stack);
+    }
+
+    return {};
+  }
+
+  /// Парсер даних Solcast (перетворює kW за 30 хв у Wh)
+  Map<String, double> _parseSolcastData(Map<String, dynamic> data) {
+    var forecast = <String, double>{};
+    final forecastsList = data['forecasts'] as List<dynamic>? ?? [];
+
+    for (var item in forecastsList) {
+      // Solcast повертає час в форматі: "2024-07-18T01:30:00.0000000Z"
+      final String periodEnd = item['period_end'];
+
+      // Відрізаємо зайве, залишаємо ключ формату "YYYY-MM-DD HH:mm" (для сумісності з вашим старим кодом)
+      final timeKey = periodEnd.replaceFirst('T', ' ').substring(0, 16);
+
+      // pv_estimate повертається в кВт (kW).
+      final pvEstimateKW = (item['pv_estimate'] as num).toDouble();
+
+      // Оскільки період PT30M (30 хвилин або 0.5 години),
+      // Енергія в кВт⋅год = Потужність(кВт) * Час(год) => pvEstimateKW * 0.5
+      // Енергія в Вт⋅год (Wh) = кВт⋅год * 1000 => pvEstimateKW * 500
+      final pvEstimateWh = pvEstimateKW * 500.0;
+
+      forecast[timeKey] = pvEstimateWh;
     }
 
     return forecast;
+  }
+
+  void _clearOldCaches(SharedPreferences prefs, String currentCacheKey) {
+    final keys = prefs.getKeys();
+    for (var key in keys) {
+      if (key.startsWith('solcast_cache_') && key != currentCacheKey) {
+        prefs.remove(key);
+      }
+    }
   }
 }

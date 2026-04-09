@@ -4,7 +4,6 @@ import 'package:fl_chart/fl_chart.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import '../models/inverter_data.dart';
-import '../services/weather_service.dart';
 import '../widgets/energy_flow.dart';
 import '../widgets/control_panel.dart';
 import '../utils/formatters.dart';
@@ -27,6 +26,9 @@ class DashboardTab extends StatelessWidget {
           const SizedBox(height: 16),
           EnergyFlowDiagram(data: data),
           const SizedBox(height: 16),
+          const SizedBox(height: 16),
+          // НОВИЙ ВІДЖЕТ: Візуалізація лімітів обладнання
+          _SystemCapacityWidget(provider: provider, data: data),
           _HistoricalStatsWidget(provider: provider),
           const SizedBox(height: 16),
           _EnergyLineChartWidget(provider: provider),
@@ -172,11 +174,9 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     // 2. Розумний прогноз (лише для денного графіка)
     var forecast = <String, double>{};
     if (_selectedRange == 0) {
-      // Спочатку витягуємо історію
-      final histPv =
-          await widget.provider.service.getHistoricalPvMapForForecast();
-      // Передаємо історію в сервіс погоди для навчання
-      forecast = await WeatherService().fetchDynamicForecast(histPv);
+      // Отримуємо прогноз від Solcast
+      forecast = await widget.provider.weatherService.fetchSolcastForecast(
+          widget.provider.solcastApiKey, widget.provider.solcastResourceId);
     }
 
     if (mounted) {
@@ -201,14 +201,18 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     var todayPrefix =
         "${_currentDate.year}-${_currentDate.month.toString().padLeft(2, '0')}-${_currentDate.day.toString().padLeft(2, '0')}";
 
-    forecast.forEach((timeStr, predictedWatts) {
+    forecast.forEach((timeStr, value) {
       if (timeStr.startsWith(todayPrefix)) {
-        // Формат: "2026-04-08 13:00" (зі пробілом, не 'T')
+        // Формат: "2026-04-08 13:00" or "2026-04-08 13:30"
         final timeParts = timeStr.split(' ');
         if (timeParts.length > 1) {
-          // timeParts[1] = "13:00"
-          final hour = double.tryParse(timeParts[1].split(':')[0]) ?? 0.0;
-          spots.add(FlSpot(hour, predictedWatts));
+          final hourStr = timeParts[1].split(':')[0];
+          final minStr = timeParts[1].split(':')[1];
+          final hour = double.tryParse(hourStr) ?? 0.0;
+          final min = double.tryParse(minStr) ?? 0.0;
+          final hourDouble = hour + min / 60.0;
+          final predictedWatts = value * 2.0; // Convert Wh to average W
+          spots.add(FlSpot(hourDouble, predictedWatts));
         }
       }
     });
@@ -679,5 +683,172 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     }
     // Якщо мінімальне значення менше нуля (наприклад, розряджається батарея -2000 W)
     return minVal >= 0 ? 0 : minVal * 1.2;
+  }
+}
+
+class _SystemCapacityWidget extends StatelessWidget {
+  final AppStateProvider provider;
+  final InverterData data;
+
+  const _SystemCapacityWidget({
+    required this.provider,
+    required this.data,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    // Розрахунок відсотків (clamp гарантує, що значення не вийде за межі 0.0 - 1.0)
+    final loadPercent = provider.inverterMaxPowerW > 0
+        ? (data.loadPower / provider.inverterMaxPowerW).clamp(0.0, 1.0)
+        : 0.0;
+
+    final pvPercent = provider.pvTotalCapacityW > 0
+        ? (data.pvPower / provider.pvTotalCapacityW).clamp(0.0, 1.0)
+        : 0.0;
+
+    return Card(
+      elevation: 0,
+      color: isDark ? Colors.grey[900] : Colors.grey[100],
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(
+            color: isDark ? Colors.grey[800]! : Colors.grey[300]!, width: 1),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.speed_rounded,
+                    size: 20, color: isDark ? Colors.white70 : Colors.black87),
+                const SizedBox(width: 8),
+                Text(
+                  'Статус обладнання',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: isDark ? Colors.white : Colors.black87),
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+
+            // Смуга навантаження інвертора
+            _buildCapacityBar(
+              context: context,
+              title: 'Навантаження інвертора',
+              currentValue: data.loadPower,
+              maxValue: provider.inverterMaxPowerW,
+              percent: loadPercent,
+              color: _getLoadColor(loadPercent),
+              icon: Icons.bolt_rounded,
+            ),
+
+            const SizedBox(height: 20),
+
+            // Смуга ефективності сонячних панелей
+            _buildCapacityBar(
+              context: context,
+              title: 'Генерація PV (Ефективність)',
+              currentValue: data.pvPower,
+              maxValue: provider.pvTotalCapacityW,
+              percent: pvPercent,
+              color: Colors.amber,
+              icon: Icons.solar_power_rounded,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Динамічний колір залежно від рівня навантаження
+  Color _getLoadColor(double percent) {
+    if (percent > 0.85) {
+      return Colors.redAccent; // Критичне завантаження (> 85%)
+    }
+    if (percent > 0.65) {
+      return Colors.orangeAccent; // Високе завантаження (> 65%)
+    }
+    return Colors.greenAccent; // Норма
+  }
+
+  Widget _buildCapacityBar({
+    required BuildContext context,
+    required String title,
+    required double currentValue,
+    required double maxValue,
+    required double percent,
+    required Color color,
+    required IconData icon,
+  }) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 16, color: color),
+                const SizedBox(width: 6),
+                Text(title,
+                    style: TextStyle(
+                        fontSize: 13,
+                        color: isDark ? Colors.grey[400] : Colors.grey[700])),
+              ],
+            ),
+            RichText(
+              text: TextSpan(
+                style: TextStyle(
+                    fontSize: 13,
+                    fontFamily: 'monospace',
+                    color: isDark ? Colors.white : Colors.black87),
+                children: [
+                  TextSpan(
+                      text: '${currentValue.toInt()} ',
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                  TextSpan(
+                      text: '/ ${maxValue.toInt()} W',
+                      style: const TextStyle(color: Colors.grey)),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Stack(
+          alignment: Alignment.centerRight,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: LinearProgressIndicator(
+                value: percent,
+                backgroundColor: color.withValues(alpha: 0.15),
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+                minHeight: 12,
+              ),
+            ),
+            // Показуємо відсоток прямо на смузі
+            Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: Text(
+                '${(percent * 100).toInt()}%',
+                style: const TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
   }
 }
