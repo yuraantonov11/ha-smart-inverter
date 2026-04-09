@@ -125,9 +125,11 @@ class _MyAppState extends State<MyApp> with WindowListener {
         Locale('uk', ''),
       ],
       home: provider.isCheckingAuth
-          ? const Scaffold(
+          ? Scaffold(
               body: Center(
-                child: CircularProgressIndicator(color: Colors.amber),
+                child: CircularProgressIndicator(
+                  color: Theme.of(context).colorScheme.primary,
+                ),
               ),
             )
           : (provider.isAuthenticated

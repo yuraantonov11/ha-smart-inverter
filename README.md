@@ -32,8 +32,8 @@ A modern, fast, and elegant desktop application built with Flutter for monitorin
 ## 🧠 Smart Algorithm (HEMS) How It Works
 The Home Energy Management System (HEMS) makes decisions based on family habits and weather forecasts.
 
-### Mode 1: Adaptive (Digital Twin + Solcast)
-Analyzes consumption patterns from the past 7 days and matches them against the **Solcast API** solar forecast.
+### Mode 1: Adaptive (Digital Twin + Open-Meteo)
+Analyzes consumption patterns from the past 7 days and matches them against the **Open-Meteo API** solar forecast.
 * **Cloudy Day:** Automatically charges from the grid at night (cheap tariff) if solar won't be enough.
 * **Sunny Day:** Disables grid charging to leave "room" in the battery for free solar energy.
 * **Peak Preservation:** Switches to grid during the day if the battery is needed for the expensive 17:00-23:00 peak.
@@ -48,9 +48,7 @@ Keeps the battery at 100% using all available sources (Utility + Solar) in prepa
 Automatically mutes the inverter buzzer from 22:00 to 07:00 for a peaceful sleep.
 
 ## Setup
-1.  **Solcast API Key:** Register at [Solcast](https://solcast.com/) for a free Hobbyist account.
-2.  **Resource ID:** Create a "Rooftop Site" in Solcast to get your ID.
-3.  **Hardware Config:** Enter your battery Ah and PV capacity in the app settings.
+1.  **Hardware Configuration:** Enter your battery Ah and PV capacity in the app settings.
 
 ---
 
@@ -65,8 +63,8 @@ Automatically mutes the inverter buzzer from 22:00 to 07:00 for a peaceful sleep
 ## 🧠 Розумний Алгоритм (HEMS) – Як це працює?
 HEMS — це система, що приймає рішення на основі прогнозів погоди та ваших енергетичних звичок.
 
-### Режим 1: Адаптивний (Digital Twin + Прогноз Solcast)
-Програма аналізує споживання за останні 7 днів і порівнює його з прогнозом від **Solcast API**.
+### Режим 1: Адаптивний (Digital Twin + Прогноз Open-Meteo)
+Програма аналізує споживання за останні 7 днів і порівнює його з прогнозом від **Open-Meteo API**.
 * **Якщо завтра хмарно:** Система вночі дозарядить АКБ по дешевому тарифу.
 * **Якщо завтра сонце:** Зарядка вночі вимкнеться, щоб лишити місце для «безкоштовних» ватів від сонця.
 * **Збереження на пік:** Якщо в обід сонця мало, програма перемкне будинок на мережу, щоб зберегти заряд АКБ на дорогий вечір (17:00-23:00).
@@ -81,9 +79,7 @@ HEMS — це система, що приймає рішення на основ
 Щодня о 22:00 програма вимикає звук (buzzer) інвертора, щоб він не заважав спати вашій родині. О 07:00 звук повертається.
 
 ## Налаштування
-1.  **Ключ Solcast:** Отримайте безкоштовний ключ на сайті Solcast.
-2.  **Resource ID:** Створіть свій об'єкт (дах) у Solcast для точного прогнозу.
-3.  **Параметри заліза:** Вкажіть ємність АКБ (Ah) та потужність панелей у налаштуваннях додатка.
+1.  **Параметри заліза:** Вкажіть ємність АКБ (Ah) та потужність панелей у налаштуваннях додатка.
 
 ---
 

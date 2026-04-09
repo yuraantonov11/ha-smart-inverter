@@ -218,7 +218,11 @@ class InverterService {
           'acOutputActivePower',
           'batteryPower',
           'gridPower',
-          'acInputActivePower'
+          'acInputActivePower',
+          'batteryChargingCurrent',
+          'batteryDischargeCurrent',
+          'batteryVoltage',
+          'acInputVoltage',
         ]
       };
 
@@ -258,77 +262,97 @@ class InverterService {
     return {'pv': [], 'load': [], 'grid': [], 'battery': []};
   }
 
+  /// Invalidates the config cache so the next call forces a re-fetch
+  void invalidateConfigCache() {
+    _lastConfigFetchTime = null;
+    _cachedFullConfigs = null;
+  }
+
+  /// Single API call — triggers the batch read or returns current result.
+  /// Respects cooldown. Does NOT wait/retry.
   Future<Map<String, dynamic>?> getDeviceFullConfigs() async {
     if (deviceSn == null) return _cachedFullConfigs;
 
     final now = DateTime.now();
-
-    // ПЕРЕВІРКА КУЛДАУНУ (Не смикаємо інвертор частіше ніж раз на 65 сек)
     if (_lastConfigFetchTime != null &&
         now.difference(_lastConfigFetchTime!).inSeconds < 65) {
       return _cachedFullConfigs;
     }
-
     if (_isConfigFetching) return _cachedFullConfigs;
+
     _isConfigFetching = true;
+    _lastConfigFetchTime = DateTime.now(); // set cooldown up-front
 
     try {
-      for (var i = 0; i < 1; i++) {
+      final response = await _dio.post(
+        '/apis/remote/device/configs/read?deviceId=$deviceSn',
+        data: {},
+      );
+      _isConfigFetching = false;
+
+      if (response.statusCode == 200 && response.data['code'] == 0) {
+        final respData = response.data['data'];
+        if (respData != null) {
+          final configStates = respData['configAttributeStates'];
+          if (configStates is Map<String, dynamic> && configStates.isNotEmpty) {
+            _cachedFullConfigs = configStates;
+            return configStates;
+          }
+          final target = respData['targetConfig'];
+          if (target is Map<String, dynamic> && target.isNotEmpty) {
+            _cachedFullConfigs = target;
+            return target;
+          }
+          debugPrint('⏳ Config batch triggered, data pending...');
+        }
+      } else {
+        final code = response.data['code'];
+        debugPrint('⏳ Config API code=$code, will retry later...');
+      }
+    } catch (e) {
+      _isConfigFetching = false;
+      debugPrint('getDeviceFullConfigs error: $e');
+    }
+    return _cachedFullConfigs;
+  }
+
+  /// Background poller — no cooldown guard, call AFTER getDeviceFullConfigs
+  /// returned null (batch triggered). Polls up to [maxAttempts] times.
+  Future<Map<String, dynamic>?> pollForConfigsBackground({
+    int maxAttempts = 12,
+    Duration delay = const Duration(seconds: 5),
+  }) async {
+    for (var i = 0; i < maxAttempts; i++) {
+      await Future.delayed(delay);
+      try {
         final response = await _dio.post(
           '/apis/remote/device/configs/read?deviceId=$deviceSn',
           data: {},
         );
-
-        if (response.statusCode == 200) {
-          final code = response.data['code'];
-
-          if (code == 0) {
-            final respData = response.data['data'];
-            if (respData != null && respData['targetConfig'] != null) {
-              final target = respData['targetConfig'];
-
-              Map<String, dynamic>? parsed;
-              if (target is String && target.isNotEmpty) {
-                parsed = jsonDecode(target) as Map<String, dynamic>;
-              } else if (target is Map<String, dynamic>) {
-                parsed = target;
-              }
-
-              if (parsed != null) {
-                _cachedFullConfigs = parsed;
-                _lastConfigFetchTime = DateTime.now();
-                _isConfigFetching = false;
-                // УСПІХ! Дані отримані.
-                return parsed;
-              }
-            } else {
-              // Сервер дав команду, але інвертор ще не відповів
-              debugPrint(
-                  '⏳ Інвертор збирає дані. Чекаємо 5 сек (Спроба ${i + 1}/4)...');
-              await Future.delayed(const Duration(seconds: 5));
-              continue; // Пробуємо ще раз
+        if (response.statusCode == 200 && response.data['code'] == 0) {
+          final respData = response.data['data'];
+          if (respData != null) {
+            final configStates = respData['configAttributeStates'];
+            if (configStates is Map<String, dynamic> &&
+                configStates.isNotEmpty) {
+              _cachedFullConfigs = configStates;
+              _lastConfigFetchTime = DateTime.now();
+              debugPrint('✅ Конфіги отримано (спроба ${i + 1}/$maxAttempts)');
+              return configStates;
             }
-          } else if (code == 70021) {
-            // Batch in progress
-            debugPrint(
-                '⏳ Інвертор зайнятий читанням. Чекаємо 5 сек (Спроба ${i + 1}/4)...');
-            await Future.delayed(const Duration(seconds: 5));
-            continue;
-          } else {
-            debugPrint('⚠️ Помилка API Configs: ${response.data}');
-            break; // Виходимо з циклу при критичній помилці
+            final target = respData['targetConfig'];
+            if (target is Map<String, dynamic> && target.isNotEmpty) {
+              _cachedFullConfigs = target;
+              _lastConfigFetchTime = DateTime.now();
+              return target;
+            }
           }
         }
+        debugPrint('⏳ Конфіги не готові (${i + 1}/$maxAttempts)...');
+      } catch (e) {
+        debugPrint('pollForConfigsBackground error: $e');
       }
-    } catch (e) {
-      debugPrint('⚠️ Помилка мережі: $e');
     }
-
-    _lastConfigFetchTime =
-        DateTime.now(); // Оновлюємо час навіть після невдачі, щоб не спамити
-    _isConfigFetching = false;
-
-    // Якщо за 4 спроби інвертор так і не віддав дані, повертаємо старі
     return _cachedFullConfigs;
   }
 
@@ -432,13 +456,13 @@ class InverterService {
     var battery = <FlSpot>[];
     var grid = <FlSpot>[];
 
-    final payload = data['payload'] as Map<String, dynamic>?;
-    if (payload == null) {
-      return {'pv': pv, 'load': load, 'grid': grid, 'battery': battery};
-    }
+    final payload = (data['payload'] as Map<String, dynamic>?) ?? data;
 
     final timeSeries = payload['timeSeries'] as List<dynamic>? ?? [];
     final fields = payload['fields'] as Map<String, dynamic>? ?? {};
+
+    log_service.log(
+        '📊 _parseHistoryData: timeSeries=${timeSeries.length}, fields keys=${fields.keys.join(', ')}');
 
     // РОЗУМНИЙ ПОШУК: Шукає перший масив, у якому є хоча б одне не-null значення
     List<dynamic> extractList(List<String> possibleKeys) {
@@ -446,10 +470,14 @@ class InverterService {
         if (fields.containsKey(key)) {
           var list = fields[key] as List<dynamic>;
           if (list.any((element) => element != null)) {
+            log_service.log(
+                '✅ Використано ключ $key для ${possibleKeys.join('/')}: ${list.where((e) => e != null).length} не-null значень');
             return list;
           }
         }
       }
+      log_service.log(
+          '❌ Не знайдено валідних даних для ключів: ${possibleKeys.join(', ')}');
       return [];
     }
 
@@ -459,8 +487,20 @@ class InverterService {
       'acOutputActivePower',
       'loadPower'
     ]); // PowMr зазвичай юзає acOutput...
-    final batPower = extractList(['batteryPower']);
-    final gridPwr = extractList(['acInputActivePower', 'gridPower']);
+    final batPower = extractList([
+      'batteryPower',
+      'batteryActivePower',
+      'batteryChargePower',
+      'batteryDischargePower'
+    ]);
+    final gridPwr = extractList(
+        ['acInputActivePower', 'gridPower', 'utilityPower', 'acInputPower']);
+    final batChargeCurrent = extractList(['batteryChargingCurrent']);
+    final batDischargeCurrent = extractList(['batteryDischargeCurrent']);
+    final batVoltage = extractList(['batteryVoltage']);
+
+    log_service.log(
+        '📊 Розпарсені масиви: genPower=${genPower.length}, loadPwr=${loadPwr.length}, batPower=${batPower.length}, gridPwr=${gridPwr.length}');
 
     for (var i = 0; i < timeSeries.length; i++) {
       final dtStr = timeSeries[i].toString();
@@ -476,13 +516,52 @@ class InverterService {
       if (i < loadPwr.length && loadPwr[i] != null) {
         load.add(FlSpot(xValue, (loadPwr[i] as num).toDouble() * 1000));
       }
+      double? batteryW;
       if (i < batPower.length && batPower[i] != null) {
-        battery.add(FlSpot(xValue, (batPower[i] as num).toDouble() * 1000));
+        batteryW = (batPower[i] as num).toDouble() * 1000;
+      } else if (i < batVoltage.length && batVoltage[i] != null) {
+        final v = (batVoltage[i] as num).toDouble();
+        final ch = i < batChargeCurrent.length && batChargeCurrent[i] != null
+            ? (batChargeCurrent[i] as num).toDouble()
+            : 0.0;
+        final dis =
+            i < batDischargeCurrent.length && batDischargeCurrent[i] != null
+                ? (batDischargeCurrent[i] as num).toDouble()
+                : 0.0;
+        if (ch > 0) {
+          batteryW = v * ch;
+        } else if (dis > 0) {
+          batteryW = -(v * dis);
+        }
       }
+      if (batteryW != null) {
+        battery.add(FlSpot(xValue, batteryW));
+      }
+
+      double? gridW;
       if (i < gridPwr.length && gridPwr[i] != null) {
-        grid.add(FlSpot(xValue, (gridPwr[i] as num).toDouble() * 1000));
+        gridW = (gridPwr[i] as num).toDouble() * 1000;
+      } else {
+        final pvW = (i < genPower.length && genPower[i] != null)
+            ? (genPower[i] as num).toDouble() * 1000
+            : 0.0;
+        final loadW = (i < loadPwr.length && loadPwr[i] != null)
+            ? (loadPwr[i] as num).toDouble() * 1000
+            : 0.0;
+        final batW = batteryW ?? 0.0;
+        // Approximation: grid covers remaining demand when positive.
+        final derivedGrid = loadW + (batW > 0 ? batW : 0.0) - pvW;
+        if (derivedGrid > 0) {
+          gridW = derivedGrid;
+        }
+      }
+      if (gridW != null) {
+        grid.add(FlSpot(xValue, gridW));
       }
     }
+
+    log_service.log(
+        '📊 Після парсингу: pv=${pv.length}, load=${load.length}, battery=${battery.length}, grid=${grid.length}');
 
     // СОРТУВАННЯ: fl_chart вимагає, щоб точки йшли строго зліва направо (за зростанням X).
     // Це захищає від крашу, якщо сервер віддав точки вперемішку або при зміні часового поясу.

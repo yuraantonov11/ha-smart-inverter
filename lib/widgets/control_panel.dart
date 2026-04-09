@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
+import '../theme/app_theme.dart';
+import './app_components.dart';
 
 class ControlPanel extends StatelessWidget {
   final AppStateProvider provider;
@@ -13,7 +15,8 @@ class ControlPanel extends StatelessWidget {
       isScrollControlled: true,
       backgroundColor: Theme.of(context).cardColor,
       shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+          borderRadius:
+              BorderRadius.vertical(top: Radius.circular(AppTheme.radiusXL))),
       builder: (context) => SafeArea(
         child: SingleChildScrollView(
           child: Padding(
@@ -28,25 +31,13 @@ class ControlPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     final l10n = AppLocalizations.of(context)!;
     final currentOutputPriority = provider
             .data?.rawFields['outputSourcePriority']?['value']
             ?.toString() ??
         '2';
 
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: isDark
-            ? []
-            : [
-                BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05), blurRadius: 10)
-              ],
-      ),
+    return AppCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -54,95 +45,43 @@ class ControlPanel extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(l10n.inverterMode,
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold)),
-              IconButton(
-                icon: const Icon(Icons.settings_outlined, color: Colors.grey),
-                tooltip: l10n.advancedSettings,
-                onPressed: () => _showSettingsModal(context),
+                  style: Theme.of(context).textTheme.titleLarge),
+              Tooltip(
+                message: l10n.advancedSettings,
+                child: IconButton(
+                  icon: const Icon(Icons.settings_outlined),
+                  onPressed: () => _showSettingsModal(context),
+                ),
               )
             ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: AppTheme.spacingL),
           Row(
             children: [
               Expanded(
-                child: _SwitchCard(
+                child: AppModeButton(
                   title: l10n.solarSbu,
+                  subtitle: 'Від сонця',
                   icon: Icons.wb_sunny_rounded,
                   isActive: currentOutputPriority == '2',
-                  activeColor: Colors.amber,
+                  activeColor: const Color(0xFFF59E0B),
                   onTap: () => provider.setMode(2),
                 ),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: AppTheme.spacingL),
               Expanded(
-                child: _SwitchCard(
+                child: AppModeButton(
                   title: l10n.gridUsb,
+                  subtitle: 'Від мережі',
                   icon: Icons.power_rounded,
                   isActive: currentOutputPriority == '0',
-                  activeColor: Colors.blueAccent,
+                  activeColor: const Color(0xFF06B6D4),
                   onTap: () => provider.setMode(0),
                 ),
               ),
             ],
           )
         ],
-      ),
-    );
-  }
-}
-
-class _SwitchCard extends StatelessWidget {
-  final String title;
-  final IconData icon;
-  final bool isActive;
-  final Color activeColor;
-  final VoidCallback onTap;
-
-  const _SwitchCard(
-      {required this.title,
-      required this.icon,
-      required this.isActive,
-      required this.activeColor,
-      required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final baseColor = isDark ? Colors.white : Colors.black;
-
-    return GestureDetector(
-      onTap: isActive ? null : onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
-        padding: const EdgeInsets.symmetric(vertical: 20),
-        decoration: BoxDecoration(
-          color: isActive
-              ? activeColor.withValues(alpha: 0.15)
-              : (isDark ? Colors.black26 : Colors.grey.shade100),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-              color: isActive
-                  ? activeColor
-                  : (isDark ? Colors.white12 : Colors.grey.shade300),
-              width: isActive ? 2 : 1),
-        ),
-        child: Column(
-          children: [
-            Icon(icon,
-                color:
-                    isActive ? activeColor : baseColor.withValues(alpha: 0.4),
-                size: 36),
-            const SizedBox(height: 12),
-            Text(title,
-                style: TextStyle(
-                    color: isActive
-                        ? activeColor
-                        : baseColor.withValues(alpha: 0.6),
-                    fontWeight: isActive ? FontWeight.bold : FontWeight.w500)),
-          ],
-        ),
       ),
     );
   }
@@ -163,28 +102,25 @@ class _SettingsModal extends StatelessWidget {
         fields['chargerSourcePriority']?['value']?.toString() ?? '0';
 
     return Padding(
-      padding: const EdgeInsets.all(24.0),
+      padding: const EdgeInsets.all(AppTheme.spacingXL),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(l10n.advancedSettings,
-              style:
-                  const TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 24),
-          Text(l10n.outputSourcePriority,
-              style: const TextStyle(fontSize: 14, color: Colors.grey)),
-          const SizedBox(height: 8),
+              style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: AppTheme.spacing2XL),
+          AppSectionTitle(
+            title: l10n.outputSourcePriority,
+            icon: Icons.power_rounded,
+          ),
+          const SizedBox(height: AppTheme.spacingM),
           _buildDropdown(
             context,
             value: outputPriority,
             items: [
-              DropdownMenuItem(
-                  value: '0',
-                  child: Text(l10n.utilityFirstUsb)),
-              DropdownMenuItem(
-                  value: '1',
-                  child: Text(l10n.solarFirstSub)),
+              DropdownMenuItem(value: '0', child: Text(l10n.utilityFirstUsb)),
+              DropdownMenuItem(value: '1', child: Text(l10n.solarFirstSub)),
               DropdownMenuItem(value: '2', child: Text(l10n.sbuPriority)),
             ],
             onChanged: (val) {
@@ -194,24 +130,19 @@ class _SettingsModal extends StatelessWidget {
               }
             },
           ),
-          const SizedBox(height: 24),
-          Text(l10n.chargerSourcePriority,
-              style: const TextStyle(fontSize: 14, color: Colors.grey)),
-          const SizedBox(height: 8),
+          const SizedBox(height: AppTheme.spacing2XL),
+          AppSectionTitle(
+            title: l10n.chargerSourcePriority,
+            icon: Icons.bolt_rounded,
+          ),
+          const SizedBox(height: AppTheme.spacingM),
           _buildDropdown(
             context,
             value: chargerPriority,
             items: [
-              DropdownMenuItem(
-                  value: '0',
-                  child: Text(l10n.solarFirst)),
-              DropdownMenuItem(
-                  value: '1',
-                  child: Text(l10n.solarUtilitySnu)),
-              DropdownMenuItem(
-                  value: '2',
-                  child:
-                      Text(l10n.onlySolar)),
+              DropdownMenuItem(value: '0', child: Text(l10n.solarFirst)),
+              DropdownMenuItem(value: '1', child: Text(l10n.solarUtilitySnu)),
+              DropdownMenuItem(value: '2', child: Text(l10n.onlySolar)),
             ],
             onChanged: (val) {
               if (val != null) {
@@ -220,7 +151,7 @@ class _SettingsModal extends StatelessWidget {
               }
             },
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: AppTheme.spacingL),
         ],
       ),
     );
@@ -231,11 +162,10 @@ class _SettingsModal extends StatelessWidget {
       required List<DropdownMenuItem<String>> items,
       required void Function(String?) onChanged}) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
+      padding: const EdgeInsets.symmetric(horizontal: AppTheme.spacingL),
       decoration: BoxDecoration(
-        color: Theme.of(context).scaffoldBackgroundColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.withValues(alpha: 0.2)),
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        border: Border.all(color: Theme.of(context).dividerColor),
       ),
       child: DropdownButtonHideUnderline(
         child: DropdownButton<String>(
@@ -243,7 +173,8 @@ class _SettingsModal extends StatelessWidget {
               ? value
               : items.first.value,
           isExpanded: true,
-          icon: const Icon(Icons.arrow_drop_down_rounded, color: Colors.amber),
+          icon: Icon(Icons.arrow_drop_down_rounded,
+              color: Theme.of(context).colorScheme.primary),
           items: items,
           onChanged: onChanged,
         ),

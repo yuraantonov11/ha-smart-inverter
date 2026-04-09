@@ -45,9 +45,21 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
         ? (fullConfigs['loadFlow']?['value']?['value'] ?? 0.0).toDouble() * 1000
         : widget.data.loadPower.toDouble();
 
+    final double gridPower = fullConfigs != null
+        ? (fullConfigs['gridFlow']?['value']?['value'] ?? 0.0).toDouble() * 1000
+        : widget.data.gridPower.toDouble();
+
     final int batterySoc = fullConfigs != null
         ? (fullConfigs['batteryFlow']?['value']?['value'] ?? 0).toInt()
         : widget.data.batterySoc.toInt();
+
+    final isGridImport = fullConfigs != null
+        ? (fullConfigs['gridFlow']?['flowDirection'] == 1)
+        : gridPower > 0;
+
+    final isGridExport = fullConfigs != null
+        ? (fullConfigs['gridFlow']?['flowDirection'] == 2)
+        : false;
 
     // 1 - Заряд, 2 - Розряд (fallback на старі дані струму)
     final isBatCharging = fullConfigs != null
@@ -84,7 +96,10 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
             painter: _FlowPainter(
               animationValue: _controller.value,
               pvPower: pvPower,
+              gridPower: gridPower,
               loadPower: loadPower,
+              isGridImport: isGridImport,
+              isGridExport: isGridExport,
               isBatCharging: isBatCharging,
               isBatDischarging: isBatDischarging,
             ),
@@ -202,14 +217,20 @@ class _NodeWidget extends StatelessWidget {
 class _FlowPainter extends CustomPainter {
   final double animationValue;
   final double pvPower;
+  final double gridPower;
   final double loadPower;
+  final bool isGridImport;
+  final bool isGridExport;
   final bool isBatCharging;
   final bool isBatDischarging;
 
   _FlowPainter({
     required this.animationValue,
     required this.pvPower,
+    required this.gridPower,
     required this.loadPower,
+    required this.isGridImport,
+    required this.isGridExport,
     required this.isBatCharging,
     required this.isBatDischarging,
   });
@@ -241,6 +262,7 @@ class _FlowPainter extends CustomPainter {
     final batPath = _createSPath(batPos, center);
     final loadPath = _createSPath(center, loadPos);
     final centerToBatPath = _createSPath(center, batPos);
+    final centerToGridPath = _createSPath(center, gridPos);
 
     // Малюємо базові напівпрозорі лінії
     final linePaint = Paint()
@@ -258,9 +280,14 @@ class _FlowPainter extends CustomPainter {
     if (pvPower > 0) {
       _drawParticles(canvas, pvPath, Colors.amber, animationValue);
     }
-    // if (gridPower > 0) {
-    //   _drawParticles(canvas, gridPath, Colors.blueAccent, animationValue);
-    // }
+    if (gridPower > 0) {
+      if (isGridImport) {
+        _drawParticles(canvas, gridPath, Colors.blueAccent, animationValue);
+      } else if (isGridExport) {
+        _drawParticles(
+            canvas, centerToGridPath, Colors.blueAccent, animationValue);
+      }
+    }
     if (loadPower > 0) {
       _drawParticles(canvas, loadPath, Colors.purpleAccent, animationValue);
     }

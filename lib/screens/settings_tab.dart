@@ -126,35 +126,8 @@ class SettingsTab extends StatelessWidget {
 
         // Блок Налаштувань Додатка
         _buildSectionTitle(l10n.appSettings),
-        Container(
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(24),
-          ),
-          child: Column(
-            children: [
-              _buildSettingTile(
-                context: context,
-                title: 'Звуковий сигнал',
-                subtitle: 'Увімкнути/вимкнути системну пищалку',
-                // Перевіряємо ключ (в Siseli зазвичай 'buzzerSwitchSetting' або 'buzzerSwitch')
-                currentValue: provider.data?.rawFields['fullConfigs']
-                        ?['buzzerSwitchSetting'] ==
-                    '1',
-                onChanged: (val) {
-                  provider.changeInverterSetting(
-                      'buzzerSwitchSetting', val ? '1' : '0');
-                },
-              ),
-              const Divider(height: 1),
-            ],
-          ),
-        ),
         const SizedBox(height: 16),
         HardwareSettingsSection(provider: provider), // <--- Додаємо сюди
-        const SizedBox(height: 16),
-        // ДОДАЄМО СЮДИ:
-        SolcastSettingsSection(provider: provider),
         const SizedBox(height: 16),
         Container(
           decoration: BoxDecoration(
@@ -276,33 +249,8 @@ class SettingsTab extends StatelessWidget {
     );
   }
 
-  Widget _buildSettingTile({
-    required String title,
-    required String subtitle,
-    required bool currentValue,
-    required Function(bool) onChanged,
-    required BuildContext context,
-  }) {
-    return ListTile(
-      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-      subtitle: Text(subtitle,
-          style: const TextStyle(fontSize: 12, color: Colors.grey)),
-      trailing: provider.isSettingChanging
-          ? const SizedBox(
-              width: 24,
-              height: 24,
-              child: CircularProgressIndicator(
-                  strokeWidth: 2, color: Colors.amber),
-            )
-          : Switch(
-              value: currentValue,
-              activeThumbColor: Colors.amber,
-              onChanged: onChanged,
-            ),
-    );
-  }
-
   void _showLogsDialog(BuildContext context) {
+    final logsSnapshot = List<String>.from(LogService.allLogs);
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -311,9 +259,9 @@ class SettingsTab extends StatelessWidget {
           width: double.maxFinite,
           height: 400,
           child: ListView.builder(
-            itemCount: LogService.allLogs.length,
+            itemCount: logsSnapshot.length,
             itemBuilder: (context, i) => Text(
-              LogService.allLogs[i],
+              logsSnapshot[i],
               style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
             ),
           ),
@@ -626,159 +574,6 @@ class HardwareSettingsSection extends StatelessWidget {
                       'АКБ: ${provider.batteryCapacityAh.toInt()} Ah • PV: ${provider.pvTotalCapacityW.toInt()} W\nІнвертор: ${provider.inverterMaxPowerW.toInt()} W',
                       style: const TextStyle(
                           fontSize: 13, color: Colors.grey, height: 1.4),
-                    ),
-                  ],
-                ),
-              ),
-              const Icon(Icons.chevron_right_rounded, color: Colors.grey),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class SolcastSettingsSection extends StatelessWidget {
-  final AppStateProvider provider;
-
-  const SolcastSettingsSection({super.key, required this.provider});
-
-  void _showEditDialog(BuildContext context) {
-    // Контролери для текстових полів
-    final apiCtrl = TextEditingController(text: provider.solcastApiKey);
-    final resourceCtrl =
-        TextEditingController(text: provider.solcastResourceId);
-
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Row(
-          children: [
-            Icon(Icons.cloud_sync_rounded, color: Colors.blueAccent),
-            SizedBox(width: 12),
-            Text('Solcast API', style: TextStyle(fontSize: 20)),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Введіть дані доступу до Solcast для точного прогнозування генерації.',
-                style: TextStyle(fontSize: 13, color: Colors.grey),
-              ),
-              const SizedBox(height: 20),
-              TextField(
-                controller: apiCtrl,
-                decoration: InputDecoration(
-                  labelText: 'API Key',
-                  prefixIcon:
-                      const Icon(Icons.vpn_key_rounded, color: Colors.grey),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: resourceCtrl,
-                decoration: InputDecoration(
-                  labelText: 'Resource ID (Rooftop Site)',
-                  prefixIcon:
-                      const Icon(Icons.home_rounded, color: Colors.grey),
-                  border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actionsPadding: const EdgeInsets.only(right: 16, bottom: 16),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text('Скасувати',
-                style:
-                    TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Colors.blueAccent,
-              foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-            onPressed: () {
-              // Зберігаємо ключі за допомогою методу з провайдера
-              provider.saveSolcastSettings(
-                  apiCtrl.text.trim(), resourceCtrl.text.trim());
-              Navigator.pop(context);
-
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Налаштування Solcast збережено!'),
-                  backgroundColor: Colors.green,
-                  duration: Duration(seconds: 2),
-                ),
-              );
-            },
-            child: const Text('Зберегти',
-                style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    // Перевіряємо, чи ключі вже введені
-    final hasKeys = provider.solcastApiKey.isNotEmpty &&
-        provider.solcastResourceId.isNotEmpty;
-
-    return Card(
-      elevation: 0,
-      color: isDark ? Colors.grey[900] : Colors.grey[100],
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-            color: isDark ? Colors.grey[800]! : Colors.grey[300]!, width: 1),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(16),
-        onTap: () => _showEditDialog(context),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blueAccent.withValues(alpha: 0.2),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(Icons.cloud_sync_rounded,
-                    color: Colors.blueAccent),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Прогноз погоди Solcast',
-                        style: TextStyle(
-                            fontSize: 16, fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 4),
-                    Text(
-                      hasKeys ? 'Ключі підключено ✅' : 'Не налаштовано ❌',
-                      style: TextStyle(
-                          fontSize: 13,
-                          color: hasKeys ? Colors.green : Colors.redAccent,
-                          fontWeight: FontWeight.bold),
                     ),
                   ],
                 ),

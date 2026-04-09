@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:developer' as LogService;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:system_tray/system_tray.dart';
@@ -58,8 +60,10 @@ class AppStateProvider extends ChangeNotifier {
   int _versionClickCount = 0;
 
   bool _isSettingChanging = false;
+  bool _isPollingInBackground = false;
 
   bool get isSettingChanging => _isSettingChanging;
+  bool get isConfigLoading => _isPollingInBackground;
 
   AppStateProvider() {
     hemsService = HemsAlgorithmService(this);
@@ -91,17 +95,25 @@ class AppStateProvider extends ChangeNotifier {
     pvTotalCapacityW = prefs.getDouble('pv_total_capacity_w') ?? 3000.0;
     inverterMaxPowerW = prefs.getDouble('inverter_max_power_w') ?? 5000.0;
 
-    solcastApiKey = prefs.getString('solcast_api_key') ??
-        '2VEPTJd53ZSHJyNF3ZcY4o2kusVLi52N';
-    solcastResourceId =
-        prefs.getString('solcast_resource_id') ?? '12e1-6b6b-cf67-00bd';
-
     smartMode = prefs.getInt('smart_mode') ?? 0;
     lang = prefs.getString('app_lang') ?? 'en';
     isAutostartEnabled = await launchAtStartup.isEnabled();
     final l10n = await _getL10n();
     userName = prefs.getString('user_name') ?? l10n.userNameDefault;
     savedEmail = prefs.getString('saved_email');
+
+    // Load historical PV data
+    final historicalDataStr = prefs.getString('historical_pv_data');
+    if (historicalDataStr != null) {
+      try {
+        final decoded = json.decode(historicalDataStr) as Map<String, dynamic>;
+        historicalPvData = decoded
+            .map((key, value) => MapEntry(key, (value as num).toDouble()));
+      } catch (e) {
+        LogService.log('Error loading historical PV data: $e');
+        historicalPvData = {};
+      }
+    }
 
     // Перевірка автологіну при старті
     var loggedIn = await autoLogin();
@@ -115,23 +127,6 @@ class AppStateProvider extends ChangeNotifier {
     await _updateWeatherForecast();
     await _updateStatusMessage(true);
     notifyListeners();
-  }
-
-  Future<void> saveSolcastSettings(String apiKey, String resourceId) async {
-    final prefs = await SharedPreferences.getInstance();
-
-    solcastApiKey = apiKey;
-    solcastResourceId = resourceId;
-
-    await prefs.setString('solcast_api_key', apiKey);
-    await prefs.setString('solcast_resource_id', resourceId);
-
-    // Після введення нових ключів, видаляємо кеш, щоб примусово завантажити новий прогноз
-    final todayStr = DateTime.now().toIso8601String().substring(0, 10);
-    await prefs.remove('solcast_cache_$todayStr');
-
-    notifyListeners();
-    await _updateWeatherForecast();
   }
 
   Future<void> saveHardwareSettings(
@@ -148,13 +143,11 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> _updateWeatherForecast() async {
-    // ТЕПЕР МИ ВИКЛИКАЄМО НАШ НОВИЙ АПІ, ПЕРЕДАЮЧИ ПОТУЖНІСТЬ ПАНЕЛЕЙ (pvTotalCapacityW)
     final dynamicForecastMap = await weatherService.fetchLocalForecast(
-      pvCapacityW:
-          pvTotalCapacityW, // Беремо значення з налаштувань вашого додатка
-      efficiency: 0.85, // ККД системи (85%)
+      pvCapacityW: pvTotalCapacityW,
+      efficiency: 0.85,
+      historicalPvData: historicalPvData,
     );
-
     hourlyForecast = dynamicForecastMap;
     notifyListeners();
   }
@@ -178,12 +171,27 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
-  void _recordPvHistory(InverterData currentData) {
+  void _recordPvHistory(InverterData currentData) async {
     final now = DateTime.now();
     final timeKey =
         "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}T${now.hour.toString().padLeft(2, '0')}:00";
 
     historicalPvData[timeKey] = currentData.pvPower;
+
+    // Limit historical data to last 14 days to prevent unlimited growth
+    final cutoffDate = now.subtract(const Duration(days: 14));
+    historicalPvData.removeWhere((key, value) {
+      try {
+        final date = DateTime.parse(key.replaceAll(' ', 'T'));
+        return date.isBefore(cutoffDate);
+      } catch (_) {
+        return true; // Remove invalid keys
+      }
+    });
+
+    // Save to SharedPreferences
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('historical_pv_data', json.encode(historicalPvData));
   }
 
   void handleVersionClick() async {
@@ -387,16 +395,34 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
 
     if (newData != null) {
-      await _fetchConfigsInBackground(newData);
+      // Fire-and-forget — don't block the fetch cycle waiting for configs
+      // ignore: unawaited_futures
+      _fetchConfigsInBackground(newData);
     }
   }
 
   Future<void> _fetchConfigsInBackground(InverterData currentData) async {
     await Future.delayed(const Duration(seconds: 2));
 
-    final fullConfigs = await service.getDeviceFullConfigs();
-    if (fullConfigs != null) {
-      currentData.rawFields['fullConfigs'] = fullConfigs;
+    // Quick check — may return from cache or trigger the batch
+    final initial = await service.getDeviceFullConfigs();
+    if (initial != null) {
+      data?.rawFields['fullConfigs'] = initial;
+      notifyListeners();
+      return;
+    }
+
+    // Batch was triggered but data not ready; poll in background
+    if (_isPollingInBackground) return;
+    _isPollingInBackground = true;
+    notifyListeners();
+    try {
+      final polled = await service.pollForConfigsBackground();
+      if (polled != null) {
+        data?.rawFields['fullConfigs'] = polled;
+      }
+    } finally {
+      _isPollingInBackground = false;
       notifyListeners();
     }
   }
@@ -408,8 +434,16 @@ class AppStateProvider extends ChangeNotifier {
     final success = await service.updateSetting(key, value);
 
     if (success) {
-      if (data?.rawFields['fullConfigs'] != null) {
-        data!.rawFields['fullConfigs'][key] = value;
+      // Update local cache (configAttributeStates format has {value, valueDisplay, ...})
+      final fullConfigs = data?.rawFields['fullConfigs'];
+      if (fullConfigs is Map<String, dynamic> && fullConfigs.containsKey(key)) {
+        final entry = fullConfigs[key];
+        if (entry is Map<String, dynamic>) {
+          entry['value'] = num.tryParse(value) ?? value;
+          entry['valueDisplay'] = value;
+        } else {
+          fullConfigs[key] = value;
+        }
       }
       await Future.delayed(const Duration(seconds: 5));
     }
@@ -418,6 +452,14 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
 
     Future.delayed(const Duration(seconds: 65), () => fetchData());
+  }
+
+  /// Force re-fetch device configs (invalidates cooldown cache)
+  Future<void> refreshDeviceConfigs() async {
+    if (_isPollingInBackground) return; // already running
+    service.invalidateConfigCache();
+    if (data == null) return;
+    await _fetchConfigsInBackground(data!);
   }
 
   Future<void> changeSetting(String key, String value) async {
