@@ -225,7 +225,7 @@ class SettingsTab extends StatelessWidget {
                   onTap: provider.handleVersionClick, // Ті самі 7 кліків
                   child: Center(
                     child: Text(
-                      'Version 1.0.4+26',
+                      'Version 1.1.7+8',
                       style: TextStyle(
                           color: Colors.grey.withValues(alpha: 0.5),
                           fontSize: 12),

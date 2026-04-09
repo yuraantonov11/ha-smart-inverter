@@ -28,6 +28,7 @@ class InverterService {
   Map<String, dynamic>? _cachedFullConfigs;
   DateTime? _lastConfigFetchTime;
   bool _isConfigFetching = false;
+  String? _configBatchReadId;
 
   late final String _appSecret = _decryptAppSecret(_appId, _encryptedAppSecret);
 
@@ -266,6 +267,23 @@ class InverterService {
   void invalidateConfigCache() {
     _lastConfigFetchTime = null;
     _cachedFullConfigs = null;
+    _configBatchReadId = null;
+  }
+
+  Map<String, dynamic>? _extractConfigsFromBatch(dynamic respData) {
+    if (respData is! Map<String, dynamic>) return null;
+
+    final configStates = respData['configAttributeStates'];
+    if (configStates is Map<String, dynamic> && configStates.isNotEmpty) {
+      return configStates;
+    }
+
+    final target = respData['targetConfig'];
+    if (target is Map<String, dynamic> && target.isNotEmpty) {
+      return target;
+    }
+
+    return null;
   }
 
   /// Single API call — triggers the batch read or returns current result.
@@ -291,17 +309,13 @@ class InverterService {
       _isConfigFetching = false;
 
       if (response.statusCode == 200 && response.data['code'] == 0) {
-        final respData = response.data['data'];
+        final respData = response.data['data'] as Map<String, dynamic>?;
         if (respData != null) {
-          final configStates = respData['configAttributeStates'];
-          if (configStates is Map<String, dynamic> && configStates.isNotEmpty) {
-            _cachedFullConfigs = configStates;
-            return configStates;
-          }
-          final target = respData['targetConfig'];
-          if (target is Map<String, dynamic> && target.isNotEmpty) {
-            _cachedFullConfigs = target;
-            return target;
+          _configBatchReadId = respData['id']?.toString();
+          final parsed = _extractConfigsFromBatch(respData);
+          if (parsed != null) {
+            _cachedFullConfigs = parsed;
+            return parsed;
           }
           debugPrint('⏳ Config batch triggered, data pending...');
         }
@@ -322,30 +336,36 @@ class InverterService {
     int maxAttempts = 12,
     Duration delay = const Duration(seconds: 5),
   }) async {
+    if (deviceSn == null) return _cachedFullConfigs;
+
+    // If batch id is missing, trigger a fresh batch read first.
+    if (_configBatchReadId == null) {
+      final first = await getDeviceFullConfigs();
+      if (first != null) return first;
+    }
+
     for (var i = 0; i < maxAttempts; i++) {
       await Future.delayed(delay);
       try {
-        final response = await _dio.post(
-          '/apis/remote/device/configs/read?deviceId=$deviceSn',
-          data: {},
+        final batchId = _configBatchReadId;
+        if (batchId == null || batchId.isEmpty) {
+          debugPrint('⚠️ Missing batchReadId while polling configs');
+          break;
+        }
+
+        final response = await _dio.get(
+          '/apis/remote/device/configs/read/details',
+          queryParameters: {'batchReadId': batchId},
         );
+
         if (response.statusCode == 200 && response.data['code'] == 0) {
-          final respData = response.data['data'];
-          if (respData != null) {
-            final configStates = respData['configAttributeStates'];
-            if (configStates is Map<String, dynamic> &&
-                configStates.isNotEmpty) {
-              _cachedFullConfigs = configStates;
-              _lastConfigFetchTime = DateTime.now();
-              debugPrint('✅ Конфіги отримано (спроба ${i + 1}/$maxAttempts)');
-              return configStates;
-            }
-            final target = respData['targetConfig'];
-            if (target is Map<String, dynamic> && target.isNotEmpty) {
-              _cachedFullConfigs = target;
-              _lastConfigFetchTime = DateTime.now();
-              return target;
-            }
+          final respData = response.data['data'] as Map<String, dynamic>?;
+          final parsed = _extractConfigsFromBatch(respData);
+          if (parsed != null) {
+            _cachedFullConfigs = parsed;
+            _lastConfigFetchTime = DateTime.now();
+            debugPrint('✅ Конфіги отримано (спроба ${i + 1}/$maxAttempts)');
+            return parsed;
           }
         }
         debugPrint('⏳ Конфіги не готові (${i + 1}/$maxAttempts)...');

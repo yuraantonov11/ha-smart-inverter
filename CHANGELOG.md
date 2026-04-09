@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.7] - 2026-04-10
+### Changed
+- Fixed inverter config loading on the Data tab by polling batch details with `batchReadId`.
+- Restored editing flow for inverter settings and normalized compact config values.
+- Preserved loaded config state across realtime refresh cycles.
+
 ## [1.1.6] - 2024-04-07
 ### Changed
 - Bumped version to 1.1.6 to test auto-update functionality.

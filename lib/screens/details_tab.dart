@@ -110,6 +110,13 @@ class DetailsTab extends StatelessWidget {
         final cfg =
             Map<String, dynamic>.from(entry.value as Map<String, dynamic>);
         cfg['key'] ??= entry.key;
+        // Compact API format may return {t, v} without metadata.
+        if (!cfg.containsKey('value') && cfg.containsKey('v')) {
+          cfg['value'] = cfg['v'];
+        }
+        cfg['valueDisplay'] ??=
+            cfg['value']?.toString() ?? cfg['v']?.toString();
+        cfg['nameDisplay'] ??= entry.key;
         list.add(cfg);
       } else {
         // Compact format: entry.value is a primitive

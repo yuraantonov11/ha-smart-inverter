@@ -14,7 +14,7 @@ import '../services/weather_service.dart';
 import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
-  static const String appVersion = '1.0.0';
+  static const String appVersion = '1.1.7+8';
   final InverterService service = InverterService();
   final WeatherService weatherService = WeatherService();
   late HemsAlgorithmService hemsService;
@@ -371,12 +371,17 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> fetchData() async {
     if (isDataLoading || service.deviceSn == null) return;
 
+    final previousConfigs = data?.rawFields['fullConfigs'];
+
     isDataLoading = true;
     notifyListeners();
 
     final newData = await service.getRealTimeData();
 
     if (newData != null) {
+      if (previousConfigs != null) {
+        newData.rawFields['fullConfigs'] = previousConfigs;
+      }
       data = newData;
       _recordPvHistory(newData);
       await _updateStatusMessage(true);
@@ -395,6 +400,11 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
 
     if (newData != null) {
+      final hasConfigs = data?.rawFields['fullConfigs']
+              is Map<String, dynamic> &&
+          (data!.rawFields['fullConfigs'] as Map<String, dynamic>).isNotEmpty;
+      if (hasConfigs) return;
+
       // Fire-and-forget — don't block the fetch cycle waiting for configs
       // ignore: unawaited_futures
       _fetchConfigsInBackground(newData);
