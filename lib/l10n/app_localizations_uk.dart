@@ -179,6 +179,9 @@ class AppLocalizationsUk extends AppLocalizations {
   String get hemsTitle => 'Інтелектуальні HEMS режими';
 
   @override
+  String get hemsSubtitle => 'Оберіть стратегію керування енергією';
+
+  @override
   String get gotIt => 'Зрозуміло';
 
   @override

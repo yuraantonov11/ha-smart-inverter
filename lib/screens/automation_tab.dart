@@ -1,3 +1,5 @@
+// ignore_for_file: deprecated_member_use
+
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
@@ -17,16 +19,34 @@ class AutomationTab extends StatelessWidget {
       children: [
         Padding(
           padding: const EdgeInsets.only(bottom: 20, left: 4),
-          child: Text(l10n.hemsTitle,
-              style: TextStyle(
-                  fontSize: 18,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.hemsTitle,
+                style: TextStyle(
+                  fontSize: 20,
                   fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white70 : Colors.grey[800])),
+                  color: isDark ? Colors.white : Colors.black87,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                l10n.hemsSubtitle,
+                style: TextStyle(
+                  fontSize: 14,
+                  color: isDark ? Colors.white60 : Colors.black54,
+                ),
+              ),
+            ],
+          ),
         ),
+
+        // 1. Адаптивний режим
         _SmartModeCard(
           title: l10n.modeAdaptive,
           subtitle: l10n.modeAdaptiveSubtitle,
-          icon: Icons.auto_awesome,
+          icon: Icons.auto_awesome_rounded,
           color: Colors.blueAccent,
           value: 0,
           groupValue: provider.smartMode,
@@ -34,22 +54,26 @@ class AutomationTab extends StatelessWidget {
           tooltipText: l10n.modeAdaptiveDesc,
         ),
         const SizedBox(height: 16),
+
+        // 2. Нічний арбітраж
         _SmartModeCard(
           title: l10n.modeArbitrage,
           subtitle: l10n.modeArbitrageSubtitle,
-          icon: Icons.nights_stay_rounded,
-          color: Colors.purpleAccent,
+          icon: Icons.nightlight_round,
+          color: Colors.deepPurpleAccent,
           value: 1,
           groupValue: provider.smartMode,
           onChanged: (val) => provider.setSmartMode(val!),
           tooltipText: l10n.modeArbitrageDesc,
         ),
         const SizedBox(height: 16),
+
+        // 3. Шторм / Резерв
         _SmartModeCard(
           title: l10n.modeStorm,
           subtitle: l10n.modeStormSubtitle,
           icon: Icons.thunderstorm_rounded,
-          color: Colors.amber,
+          color: Colors.orangeAccent,
           value: 2,
           groupValue: provider.smartMode,
           onChanged: (val) => provider.setSmartMode(val!),
@@ -82,111 +106,119 @@ class _SmartModeCard extends StatelessWidget {
   });
 
   void _showInfo(BuildContext context) {
+    // ДОДАНО: Отримуємо локалізацію для цього контексту
     final l10n = AppLocalizations.of(context)!;
-    showModalBottomSheet(
+
+    showDialog(
       context: context,
-      shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
-      builder: (context) => Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+      builder: (context) => AlertDialog(
+        title: Row(
           children: [
-            Row(
-              children: [
-                Icon(icon, color: color, size: 28),
-                const SizedBox(width: 12),
-                Expanded(
-                    child: Text(title,
-                        style: const TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.bold))),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Text(tooltipText,
-                style: const TextStyle(fontSize: 15, height: 1.5)),
-            const SizedBox(height: 24),
-            SizedBox(
-              width: double.infinity,
-              child: ElevatedButton(
-                onPressed: () => Navigator.pop(context),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: color,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12)),
-                ),
-                child: Text(l10n.gotIt,
-                    style: const TextStyle(color: Colors.white)),
-              ),
-            )
+            Icon(icon, color: color),
+            const SizedBox(width: 10),
+            Flexible(child: Text(title)),
           ],
         ),
+        content: Text(tooltipText),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            // ВИПРАВЛЕНО: Прибрали const, бо l10n генерується динамічно
+            child: Text(l10n.gotIt),
+          ),
+        ],
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final isSelected = value == groupValue;
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isSelected = value == groupValue;
 
-    return GestureDetector(
+    return InkWell(
       onTap: () => onChanged(value),
+      borderRadius: BorderRadius.circular(20),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 300),
+        duration: const Duration(milliseconds: 250),
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: isSelected
-              ? color.withValues(alpha: 0.1)
-              : Theme.of(context).cardColor,
+          color: isDark
+              ? (isSelected
+                  ? color.withValues(alpha: 0.15)
+                  : Colors.white.withValues(alpha: 0.05))
+              : (isSelected ? color.withValues(alpha: 0.1) : Colors.grey[100]),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: isSelected ? color : Colors.transparent,
+            color:
+                isSelected ? color.withValues(alpha: 0.5) : Colors.transparent,
             width: 2,
           ),
-          boxShadow: isDark
-              ? []
-              : [
-                  BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.05),
-                      blurRadius: 10)
-                ],
+          boxShadow: [
+            if (isSelected)
+              BoxShadow(
+                color: color.withValues(alpha: 0.2),
+                blurRadius: 10,
+                offset: const Offset(0, 4),
+              ),
+          ],
         ),
         child: Row(
           children: [
+            // Іконка в колі
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                // Використовуємо ваш стиль з alpha
-                color: color.withValues(alpha: 0.15),
+                color: isSelected ? color : color.withValues(alpha: 0.1),
                 shape: BoxShape.circle,
               ),
-              child: Icon(icon, color: color, size: 24),
+              child: Icon(icon,
+                  color: isSelected ? Colors.white : color, size: 28),
             ),
             const SizedBox(width: 16),
+
+            // Текстовий блок
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title,
-                      style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 16)),
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 17,
+                      color: isDark ? Colors.white : Colors.black87,
+                    ),
+                  ),
                   const SizedBox(height: 4),
-                  Text(subtitle,
-                      style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      color: isDark ? Colors.white60 : Colors.black54,
+                      fontSize: 13,
+                    ),
+                  ),
                 ],
               ),
             ),
+
+            // Кнопка інфо
             IconButton(
-              icon: const Icon(Icons.info_outline_rounded, color: Colors.grey),
+              icon: Icon(
+                Icons.help_outline_rounded,
+                color: isSelected ? color : Colors.grey,
+                size: 22,
+              ),
               onPressed: () => _showInfo(context),
             ),
-            // ВИПРАВЛЕНИЙ RADIO:
+
+            // Радіо-кнопка
+            // (Попередження про deprecation тепер ігнорується на рівні файлу)
             Radio<int>(
-              value: value, // Унікальне значення цього елемента
+              value: value,
+              groupValue: groupValue,
+              onChanged: onChanged,
               activeColor: color,
-              // groupValue та onChanged тут БІЛЬШЕ НЕ ПОТРІБНІ
             ),
           ],
         ),

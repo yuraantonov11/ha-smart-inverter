@@ -428,6 +428,12 @@ abstract class AppLocalizations {
   /// **'Intelligent HEMS Modes'**
   String get hemsTitle;
 
+  /// No description provided for @hemsSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Choose an energy management strategy'**
+  String get hemsSubtitle;
+
   /// No description provided for @gotIt.
   ///
   /// In en, this message translates to:

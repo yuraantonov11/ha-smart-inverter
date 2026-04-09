@@ -179,6 +179,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get hemsTitle => 'Intelligent HEMS Modes';
 
   @override
+  String get hemsSubtitle => 'Choose an energy management strategy';
+
+  @override
   String get gotIt => 'Got it';
 
   @override

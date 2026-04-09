@@ -174,9 +174,10 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
     // 2. Розумний прогноз (лише для денного графіка)
     var forecast = <String, double>{};
     if (_selectedRange == 0) {
-      // Отримуємо прогноз від Solcast
-      forecast = await widget.provider.weatherService.fetchSolcastForecast(
-          widget.provider.solcastApiKey, widget.provider.solcastResourceId);
+      forecast = await widget.provider.weatherService.fetchLocalForecast(
+        pvCapacityW: widget.provider.pvTotalCapacityW,
+        efficiency: 0.85,
+      );
     }
 
     if (mounted) {
@@ -258,6 +259,20 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
   }
 
   Widget _buildDateSelector() {
+    // Для денного графіка дозволяємо перехід на завтра (прогноз)
+    // Для інших графіків дозволяємо тільки минулі дані
+    var canGoForward = false;
+    if (_selectedRange == 0) {
+      // День: дозволяємо перехід максимум на 1 день вперед (для прогнозу)
+      canGoForward =
+          _currentDate.isBefore(DateTime.now().add(const Duration(days: 1)));
+    } else {
+      // Місяць/Рік: дозволяємо перехід у межах поточного року/місяця
+      canGoForward = _currentDate
+              .isBefore(DateTime.now().subtract(const Duration(days: 1))) ||
+          (_selectedRange > 0 && _currentDate.year <= DateTime.now().year);
+    }
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -272,13 +287,7 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
         ),
         IconButton(
           icon: const Icon(Icons.chevron_right, color: Colors.white),
-          // Блокуємо перехід у майбутнє, якщо потрібно
-          onPressed: _currentDate.isBefore(
-                      DateTime.now().subtract(const Duration(days: 1))) ||
-                  (_selectedRange > 0 &&
-                      _currentDate.year <= DateTime.now().year)
-              ? () => _changeDate(1)
-              : null,
+          onPressed: canGoForward ? () => _changeDate(1) : null,
         ),
       ],
     );
@@ -574,14 +583,17 @@ class _EnergyLineChartWidgetState extends State<_EnergyLineChartWidget> {
           _buildLegendItem(
               Colors.amber.withValues(alpha: 0.6),
               'Прогноз (Сонце)',
-              _showForecast,
-              () => setState(() => _showForecast = !_showForecast))
+              _showForecast && _forecastData.isNotEmpty,
+              // Кнопка активна тільки якщо є дані прогнозу
+              _forecastData.isNotEmpty
+                  ? () => setState(() => _showForecast = !_showForecast)
+                  : null) // Null callback = неактивна кнопка
       ],
     );
   }
 
   Widget _buildLegendItem(
-      Color color, String text, bool isActive, VoidCallback onTap) {
+      Color color, String text, bool isActive, VoidCallback? onTap) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),

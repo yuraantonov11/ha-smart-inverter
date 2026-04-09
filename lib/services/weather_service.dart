@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
 import 'log_service.dart';
 
 class WeatherService {
@@ -9,98 +10,179 @@ class WeatherService {
     receiveTimeout: const Duration(seconds: 10),
   ));
 
-  /// Отримує прогноз від Solcast з жорстким кешуванням на 1 день
-  Future<Map<String, double>> fetchSolcastForecast(
-      String apiKey, String resourceId) async {
-    final prefs = await SharedPreferences.getInstance();
+  // Кеш на 3 години
+  static const int cacheValidDurationHours = 3;
 
-    // Створюємо унікальний ключ кешу для поточного дня (наприклад: solcast_2026-04-10)
-    final todayStr = DateTime.now().toIso8601String().substring(0, 10);
-    final cacheKey = 'solcast_cache_$todayStr';
-
-    // 1. ПЕРЕВІРКА КЕШУ
-    final cachedData = prefs.getString(cacheKey);
-    if (cachedData != null) {
-      LogService.log('☀️ Беремо прогноз Solcast з кешу (економимо API ліміт)');
-      return _parseSolcastData(json.decode(cachedData));
+  /// 1. АВТОМАТИЧНИЙ РОЗРАХУНОК ККД (Калібрування)
+  /// Порівнює історичну радіацію Open-Meteo з фактичною генерацією інвертора
+  Future<double> calculateDynamicEfficiency({
+    required Map<String, double> historicalPvData,
+    required double pvCapacityW,
+    double lat = 49.7115, // Пустомити
+    double lon = 23.9060, // Пустомити
+    double fallbackEfficiency = 0.85,
+  }) async {
+    // Якщо ми ще не зібрали історію генерації, або потужність 0
+    if (historicalPvData.isEmpty || pvCapacityW <= 0) {
+      return fallbackEfficiency;
     }
 
-    // 2. ЯКЩО КЕШУ НЕМАЄ АБО ДЕНЬ ЗМІНИВСЯ - РОБИМО ЗАПИТ
-    if (apiKey.isEmpty || resourceId.isEmpty) {
-      LogService.log(
-          '⚠️ Solcast API Key або Resource ID не вказано в налаштуваннях!');
-      return {};
-    }
-
-    final url =
-        'https://api.solcast.com.au/rooftop_sites/$resourceId/forecasts?format=json';
+    // Запитуємо історію сонця за останні 7 днів (без прогнозу на майбутнє)
+    final url = 'https://api.open-meteo.com/v1/forecast'
+        '?latitude=$lat&longitude=$lon'
+        '&hourly=shortwave_radiation'
+        '&timezone=auto&past_days=7&forecast_days=0';
 
     try {
-      final response = await _dio.get(
-        url,
-        options: Options(
-          headers: {'Authorization': 'Bearer $apiKey'},
-        ),
-      );
+      LogService.log(
+          '📊 Аналізуємо історичні дані сонця для розрахунку ККД панелей...');
+      final response = await _dio.get(url);
+
+      if (response.statusCode == 200) {
+        final data = response.data;
+        final List<dynamic> times = data['hourly']['time'] ?? [];
+        final List<dynamic> radiationList =
+            data['hourly']['shortwave_radiation'] ?? [];
+
+        var totalTheoreticalWh = 0.0;
+        var totalRealWh = 0.0;
+
+        // Нормалізуємо ключі вашої історії у формат "Рік-Місяць-День-Година"
+        // щоб легко порівнювати їх без прив'язки до мілісекунд чи хвилин
+        final normalizedHistory = <String, double>{};
+        historicalPvData.forEach((key, value) {
+          try {
+            // Парсимо ключ (напр. "2026-04-09T13:00")
+            final dt = DateTime.parse(key.replaceAll(' ', 'T'));
+            final normKey = '${dt.year}-${dt.month}-${dt.day}-${dt.hour}';
+            normalizedHistory[normKey] = value;
+          } catch (e) {
+            // Ігноруємо биті ключі
+          }
+        });
+
+        // Порівнюємо історію
+        for (var i = 0; i < times.length; i++) {
+          final timeLocal = DateTime.parse(times[i]);
+          final normKey =
+              '${timeLocal.year}-${timeLocal.month}-${timeLocal.day}-${timeLocal.hour}';
+
+          final radiationWm2 = (radiationList[i] as num).toDouble();
+
+          // Якщо в цю годину було сонце і ми маємо запис від вашого інвертора
+          if (radiationWm2 > 0 && normalizedHistory.containsKey(normKey)) {
+            final realWh = normalizedHistory[normKey]!;
+            final theoreticalWh = (radiationWm2 / 1000.0) * pvCapacityW;
+
+            // Важливий момент: Якщо акумулятор був заряджений на 100% і не було
+            // споживання в будинку, інвертор міг "зрізати" генерацію сонця.
+            // Щоб це не псувало нам статистику, беремо до уваги лише суттєву генерацію.
+            if (realWh > 10.0) {
+              totalRealWh += realWh;
+              totalTheoreticalWh += theoreticalWh;
+            }
+          }
+        }
+
+        // Розрахунок підсумкового ККД
+        if (totalTheoreticalWh > 0) {
+          var calculatedEfficiency = totalRealWh / totalTheoreticalWh;
+
+          // Захист від аномалій (ККД не може бути менше 10% або більше 100%)
+          if (calculatedEfficiency < 0.1) calculatedEfficiency = 0.1;
+          if (calculatedEfficiency > 1.0) calculatedEfficiency = 1.0;
+
+          LogService.log(
+              '✅ Успішно розраховано реальний ККД: ${(calculatedEfficiency * 100).toStringAsFixed(1)}%');
+          return calculatedEfficiency;
+        }
+      }
+    } catch (e, stack) {
+      LogService.log('❌ Помилка розрахунку ККД', error: e, stack: stack);
+    }
+
+    // Якщо щось пішло не так (немає інтернету), віддаємо дефолт
+    return fallbackEfficiency;
+  }
+
+  /// 2. ОТРИМАННЯ ПРОГНОЗУ НА МАЙБУТНЄ
+  Future<Map<String, double>> fetchLocalForecast({
+    double lat = 49.7115,
+    double lon = 23.9060,
+    required double pvCapacityW,
+    double efficiency = 0.85,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    const cacheDataKey = 'openmeteo_cache_data';
+    const cacheTimeKey = 'openmeteo_cache_timestamp';
+
+    final cachedData = prefs.getString(cacheDataKey);
+    final cacheTimestampStr = prefs.getString(cacheTimeKey);
+
+    if (cachedData != null && cacheTimestampStr != null) {
+      final cacheTimestamp = DateTime.parse(cacheTimestampStr);
+      final now = DateTime.now();
+
+      if (now.difference(cacheTimestamp).inHours < cacheValidDurationHours) {
+        LogService.log('☀️ Беремо прогноз Open-Meteo з кешу');
+        return _parseOpenMeteoData(
+            json.decode(cachedData), pvCapacityW, efficiency);
+      }
+    }
+
+    final url = 'https://api.open-meteo.com/v1/forecast'
+        '?latitude=$lat&longitude=$lon'
+        '&hourly=shortwave_radiation'
+        '&timezone=auto&forecast_days=2';
+
+    try {
+      LogService.log('🔄 Завантажуємо свіжий прогноз радіації...');
+      final response = await _dio.get(url);
 
       if (response.statusCode == 200) {
         final responseData = response.data;
+        await prefs.setString(cacheDataKey, json.encode(responseData));
+        await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
 
-        // Зберігаємо новий прогноз у пам'ять
-        await prefs.setString(cacheKey, json.encode(responseData));
-
-        // Очищаємо старі кеші (за вчорашні дні), щоб не забивати пам'ять пристрою
-        _clearOldCaches(prefs, cacheKey);
-
-        LogService.log('✅ Успішно завантажено новий прогноз Solcast!');
-        return _parseSolcastData(responseData);
-      }
-    } on DioException catch (e) {
-      if (e.response?.statusCode == 429) {
-        LogService.log('❌ Ліміт Solcast API вичерпано (429 Too Many Requests)');
-      } else {
-        LogService.log('Помилка API Solcast: ${e.response?.statusCode}',
-            error: e.message);
+        LogService.log('✅ Успішно завантажено прогноз Open-Meteo!');
+        return _parseOpenMeteoData(responseData, pvCapacityW, efficiency);
       }
     } catch (e, stack) {
-      LogService.log('Непередбачена помилка Solcast', error: e, stack: stack);
+      LogService.log('❌ Помилка Open-Meteo API', error: e, stack: stack);
+      if (cachedData != null) {
+        return _parseOpenMeteoData(
+            json.decode(cachedData), pvCapacityW, efficiency);
+      }
     }
 
     return {};
   }
 
-  /// Парсер даних Solcast (перетворює kW за 30 хв у Wh)
-  Map<String, double> _parseSolcastData(Map<String, dynamic> data) {
+  Map<String, double> _parseOpenMeteoData(
+      Map<String, dynamic> data, double pvCapacityW, double efficiency) {
     var forecast = <String, double>{};
-    final forecastsList = data['forecasts'] as List<dynamic>? ?? [];
 
-    for (var item in forecastsList) {
-      // Solcast повертає час в форматі: "2024-07-18T01:30:00.0000000Z"
-      final String periodEnd = item['period_end'];
+    final List<dynamic> times = data['hourly']['time'] ?? [];
+    final List<dynamic> radiationList =
+        data['hourly']['shortwave_radiation'] ?? [];
 
-      // Відрізаємо зайве, залишаємо ключ формату "YYYY-MM-DD HH:mm" (для сумісності з вашим старим кодом)
-      final timeKey = periodEnd.replaceFirst('T', ' ').substring(0, 16);
+    final formatter = DateFormat('yyyy-MM-dd HH:mm');
 
-      // pv_estimate повертається в кВт (kW).
-      final pvEstimateKW = (item['pv_estimate'] as num).toDouble();
+    for (var i = 0; i < times.length; i++) {
+      final timeLocal = DateTime.parse(times[i]);
+      final timeKey = formatter.format(timeLocal);
 
-      // Оскільки період PT30M (30 хвилин або 0.5 години),
-      // Енергія в кВт⋅год = Потужність(кВт) * Час(год) => pvEstimateKW * 0.5
-      // Енергія в Вт⋅год (Wh) = кВт⋅год * 1000 => pvEstimateKW * 500
-      final pvEstimateWh = pvEstimateKW * 500.0;
+      final radiationWm2 = (radiationList[i] as num).toDouble();
 
-      forecast[timeKey] = pvEstimateWh;
+      if (radiationWm2 > 0) {
+        // Застосовуємо розрахований нами точний ККД
+        final rawPowerW = (radiationWm2 / 1000.0) * pvCapacityW;
+        final realPowerWh = rawPowerW * efficiency;
+
+        forecast[timeKey] = realPowerWh;
+      }
     }
 
     return forecast;
-  }
-
-  void _clearOldCaches(SharedPreferences prefs, String currentCacheKey) {
-    final keys = prefs.getKeys();
-    for (var key in keys) {
-      if (key.startsWith('solcast_cache_') && key != currentCacheKey) {
-        prefs.remove(key);
-      }
-    }
   }
 }

@@ -31,10 +31,13 @@ class AppStateProvider extends ChangeNotifier {
   double batteryCapacityAh = 230.0;
   double pvTotalCapacityW = 3000.0;
   double inverterMaxPowerW = 5000.0;
-  double _tomorrowForecastWh = 0.0;
 
   String solcastApiKey = '';
   String solcastResourceId = '';
+
+  // --- НОВІ ЗМІННІ ДЛЯ РОЗУМНОГО АЛГОРИТМУ ---
+  Map<String, double> hourlyForecast = {};
+  Map<int, double> avgHourlyConsumptionStats = {};
 
   Map<String, double> historicalPvData = {};
 
@@ -59,8 +62,6 @@ class AppStateProvider extends ChangeNotifier {
   bool get isSettingChanging => _isSettingChanging;
 
   AppStateProvider() {
-    // Ініціалізуємо сервіс алгоритмів, передаючи посилання на провайдер
-    // для доступу до методу changeSetting та оптимістичного оновлення UI
     hemsService = HemsAlgorithmService(this);
   }
 
@@ -111,7 +112,7 @@ class AppStateProvider extends ChangeNotifier {
       startTimers();
     }
 
-    _updateWeatherForecast();
+    await _updateWeatherForecast();
     await _updateStatusMessage(true);
     notifyListeners();
   }
@@ -130,7 +131,7 @@ class AppStateProvider extends ChangeNotifier {
     await prefs.remove('solcast_cache_$todayStr');
 
     notifyListeners();
-    _updateWeatherForecast();
+    await _updateWeatherForecast();
   }
 
   Future<void> saveHardwareSettings(
@@ -143,38 +144,45 @@ class AppStateProvider extends ChangeNotifier {
     await prefs.setDouble('pv_total_capacity_w', pv);
     await prefs.setDouble('inverter_max_power_w', inverter);
     notifyListeners();
-    _updateWeatherForecast(); // Recalculate forecast immediately
+    await _updateWeatherForecast();
   }
 
   Future<void> _updateWeatherForecast() async {
-    // Тепер передаємо ключі доступу замість історії
-    final dynamicForecastMap = await weatherService.fetchSolcastForecast(
-        solcastApiKey, solcastResourceId);
+    // ТЕПЕР МИ ВИКЛИКАЄМО НАШ НОВИЙ АПІ, ПЕРЕДАЮЧИ ПОТУЖНІСТЬ ПАНЕЛЕЙ (pvTotalCapacityW)
+    final dynamicForecastMap = await weatherService.fetchLocalForecast(
+      pvCapacityW:
+          pvTotalCapacityW, // Беремо значення з налаштувань вашого додатка
+      efficiency: 0.85, // ККД системи (85%)
+    );
 
-    final now = DateTime.now();
-    final tomorrow = now.add(const Duration(days: 1));
-    // Шукаємо по даті завтрашнього дня
-    final tomorrowString =
-        "${tomorrow.year}-${tomorrow.month.toString().padLeft(2, '0')}-${tomorrow.day.toString().padLeft(2, '0')}";
-
-    var totalWh = 0.0;
-    dynamicForecastMap.forEach((key, value) {
-      if (key.startsWith(tomorrowString)) {
-        totalWh += value;
-      }
-    });
-
-    _tomorrowForecastWh = totalWh;
+    hourlyForecast = dynamicForecastMap;
     notifyListeners();
   }
 
+  // --- ОНОВЛЕННЯ СТАТИСТИКИ СІМ'Ї ---
+  Future<void> _updateConsumptionStats() async {
+    if (service.currentStationId == null) return;
+
+    try {
+      // Оскільки HemsDataMiner не використовується в поточній версії hems_algorithm,
+      // задаємо базову статистику родини.
+      avgHourlyConsumptionStats = {
+        0: 250, 1: 200, 2: 200, 3: 200, 4: 200, 5: 250, 6: 500, // Ніч
+        7: 1500, 8: 1200, 9: 600, 10: 500, 11: 500, 12: 500, // Ранок-Обід
+        13: 500, 14: 600, 15: 800, 16: 900, 17: 1500, 18: 2000, // День-Вечір
+        19: 3000, 20: 2500, 21: 2000, 22: 1000, 23: 500 // Пік
+      };
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Помилка завантаження статистики: $e');
+    }
+  }
+
   void _recordPvHistory(InverterData currentData) {
-    // Зберігаємо поточну генерацію з ключем часу. Наприклад "2026-04-08T13:00"
     final now = DateTime.now();
     final timeKey =
         "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}T${now.hour.toString().padLeft(2, '0')}:00";
 
-    // Оновлюємо середню генерацію за цю годину
     historicalPvData[timeKey] = currentData.pvPower;
   }
 
@@ -353,13 +361,11 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> fetchData() async {
-    // Якщо дані вже вантажаться - виходимо
     if (isDataLoading || service.deviceSn == null) return;
 
     isDataLoading = true;
     notifyListeners();
 
-    // 1. ШВИДКА СМУГА: Отримуємо миттєві базові дані (займає < 1 сек)
     final newData = await service.getRealTimeData();
 
     if (newData != null) {
@@ -367,30 +373,30 @@ class AppStateProvider extends ChangeNotifier {
       _recordPvHistory(newData);
       await _updateStatusMessage(true);
       if (isAuthenticated) await _updateTrayMenu();
+
+      // Додано await для уникнення помилки unawaited_futures
+      if (avgHourlyConsumptionStats.isEmpty &&
+          service.currentStationId != null) {
+        await _updateConsumptionStats();
+      }
     } else {
       await _updateStatusMessage(false);
     }
 
-    // МИТТЄВО РОЗБЛОКОВУЄМО UI!
-    // Це дозволить графікам і прогнозу одразу почати відмальовуватися
     isDataLoading = false;
     notifyListeners();
 
-    // 2. ФОНОВА СМУГА: Витягуємо конфіги тихо на фоні
     if (newData != null) {
-      _fetchConfigsInBackground(newData);
+      await _fetchConfigsInBackground(newData);
     }
   }
 
-  // Окремий фоновий метод
   Future<void> _fetchConfigsInBackground(InverterData currentData) async {
-    // Чекаємо 2 секунди, щоб графіки встигли без перешкод завантажити свою історію
     await Future.delayed(const Duration(seconds: 2));
 
     final fullConfigs = await service.getDeviceFullConfigs();
     if (fullConfigs != null) {
       currentData.rawFields['fullConfigs'] = fullConfigs;
-      // Коли дані прийдуть, UI тихенько оновить стрілочки потоків
       notifyListeners();
     }
   }
@@ -402,45 +408,36 @@ class AppStateProvider extends ChangeNotifier {
     final success = await service.updateSetting(key, value);
 
     if (success) {
-      // Після успішного запису сервер Siseli блокує читання на 60 сек (помилка 70021)
-      // Тому ми вручну оновлюємо локальний кеш, щоб UI відразу змінився
       if (data?.rawFields['fullConfigs'] != null) {
         data!.rawFields['fullConfigs'][key] = value;
       }
-
-      // Показуємо користувачеві, що треба зачекати
       await Future.delayed(const Duration(seconds: 5));
     }
 
     _isSettingChanging = false;
     notifyListeners();
 
-    // Через 65 секунд можна спробувати отримати свіжі дані з інвертора
     Future.delayed(const Duration(seconds: 65), () => fetchData());
   }
 
   Future<void> changeSetting(String key, String value) async {
     final l10n = await _getL10n();
-    // 1. Копіюємо старий стан для відкату
     final oldFields = data?.rawFields != null
         ? Map<String, dynamic>.from(data!.rawFields)
         : null;
 
-    // 2. ОПТИМІСТИЧНЕ ОНОВЛЕННЯ: миттєво міняємо колір кнопок в UI
     final localKey = key.replaceAll('Setting', '');
     if (data != null && data!.rawFields.containsKey(localKey)) {
       data!.rawFields[localKey]['value'] = value;
       notifyListeners();
     }
 
-    // 3. Запит до сервера
     var success = await service.setConfigItem(key, value);
 
     if (success) {
       statusMessage = l10n.updated;
-      await fetchData(); // Підтверджуємо дані з сервера
+      await fetchData();
     } else {
-      // 4. В разі помилки повертаємо як було
       if (oldFields != null && data != null) {
         data!.rawFields = oldFields;
       }
@@ -456,15 +453,20 @@ class AppStateProvider extends ChangeNotifier {
   Future<void> _checkAutomations({bool isManualTrigger = false}) async {
     if (data == null) return;
 
-    // Завжди вимикаємо звук вночі
     if (!isManualTrigger) {
       await hemsService.enforceAcousticComfort(data!);
     }
 
     switch (smartMode) {
       case 0: // Адаптивний (Прогноз + Піки)
+        // Викликаємо метод, передаючи параметри, сумісні з твоєю версією алгоритму
         await hemsService.executeAdaptiveMode(
-            data!, batteryCapacityAh, _tomorrowForecastWh);
+          data: data!,
+          batteryCapacityAh: batteryCapacityAh,
+          hourlyForecast: hourlyForecast,
+          avgHourlyConsumptionStats: avgHourlyConsumptionStats,
+          productionCoefficient: 0.85,
+        );
         break;
       case 1: // Нічний арбітраж
         await hemsService.executeNightArbitrage(data!);

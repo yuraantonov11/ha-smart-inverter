@@ -61,6 +61,7 @@
   "onlySolar": "Only Solar (OSO)",
   "solarFirst": "Solar First (CSO)",
   "hemsTitle": "Intelligent HEMS Modes",
+  "hemsSubtitle": "Choose an energy management strategy",
   "gotIt": "Got it",
   "welcomeBack": "Welcome Back",
   "email": "Email",

@@ -1,5 +1,8 @@
+import 'package:intl/intl.dart';
+import 'dart:math';
 import '../models/inverter_data.dart';
 import '../providers/app_provider.dart';
+import 'log_service.dart';
 
 class HemsAlgorithmService {
   final AppStateProvider provider;
@@ -11,23 +14,28 @@ class HemsAlgorithmService {
     final hour = DateTime.now().hour;
     final isNight = hour >= 22 || hour < 7;
 
-    // Дістаємо налаштування за НОВИМ ключем
     final buzzerConfig = data.rawFields['fullConfigs']?['buzzerAlarmSetting'];
-
-    // Важливо: Siseli повертає значення як int (1 або 0)
     final currentBuzzer = buzzerConfig?['value']?.toString();
     final desiredBuzzer = isNight ? '0' : '1';
 
     if (currentBuzzer != null && currentBuzzer != desiredBuzzer) {
       await provider.changeSetting('buzzerAlarmSetting', desiredBuzzer);
+      LogService.log(isNight
+          ? '🤫 Увімкнено нічну тишу інвертора'
+          : '🔊 Повернено звук інвертора');
     }
   }
 
-  /// 2. Адаптивний режим (зрізання піків + прогноз погоди)
-  /// 2. Предиктивний адаптивний режим (Звільнення місця для сонця + Резерв на вечір)
-  Future<void> executeAdaptiveMode(InverterData data, double batteryCapacityAh,
-      double expectedSolarTodayWh // Прогноз Solcast на ПОТОЧНИЙ день
-      ) async {
+  /// 2. ВИСОКОТОЧНИЙ АДАПТИВНИЙ РЕЖИМ (Статистичне моделювання)
+  Future<void> executeAdaptiveMode({
+    required InverterData data,
+    required double batteryCapacityAh,
+    required Map<String, double> hourlyForecast,
+    required Map<int, double>
+        avgHourlyConsumptionStats, // Статистика споживання (година: Ват-години)
+    required double
+        productionCoefficient, // Коефіцієнт реальної генерації (напр. 0.75)
+  }) async {
     final now = DateTime.now();
     final currentHour = now.hour;
 
@@ -36,81 +44,146 @@ class HemsAlgorithmService {
     final currentCharger =
         data.rawFields['chargerSourcePriority']?['value']?.toString();
 
-    // 1. Фізичні параметри
+    // 1. Фізичні параметри АКБ
     const systemVoltage = 51.2;
-    final batteryCapacityWh = batteryCapacityAh * systemVoltage;
-    const reserveSoc = 20.0; // Залишаємо 20% для здоров'я АКБ
+    final maxBatteryCapacityWh = batteryCapacityAh * systemVoltage;
 
-    final availableSoc = data.batterySoc - reserveSoc;
-    final availableEnergyWh =
-        (availableSoc > 0) ? (batteryCapacityWh * (availableSoc / 100.0)) : 0.0;
+    // Динамічний резерв (нижче якого ми не хочемо опускати батарею, напр. 20%)
+    const reserveSoc = 20.0;
+    final reserveEnergyWh = maxBatteryCapacityWh * (reserveSoc / 100.0);
 
-    // Середнє споживання за годину (беремо поточне, але не менше 400 Вт для страховки)
-    final avgHourlyLoad = data.loadPower > 400 ? data.loadPower : 400.0;
+    final currentEnergyWh = maxBatteryCapacityWh * (data.batterySoc / 100.0);
+    final availableEnergyWh = max(0.0, currentEnergyWh - reserveEnergyWh);
+
+    final formatter = DateFormat('yyyy-MM-dd HH:mm');
+
+    // 2. ФУНКЦІЯ СИМУЛЯЦІЇ (DIGITAL TWIN)
+    // Повертає дефіцит енергії (в Ват-годинах) для заданого періоду.
+    // Якщо повертає 0 - енергії вистачить і батарея не впаде нижче резерву.
+    double simulateEnergyDeficit(int startHour, int endHour,
+        DateTime targetDate, double startBatteryWh) {
+      var simulatedBatteryWh = startBatteryWh;
+      var totalDeficitWh = 0.0;
+
+      for (var h = startHour; h < endHour; h++) {
+        // Отримуємо статистичне споживання для цієї години
+        final loadWh = avgHourlyConsumptionStats[h] ?? 500.0; // 500Вт як фолбек
+
+        // Отримуємо скоригований прогноз сонця
+        final timeKey = formatter.format(
+            DateTime(targetDate.year, targetDate.month, targetDate.day, h, 0));
+        final rawSolarWh = hourlyForecast[timeKey] ?? 0.0;
+        final realSolarWh = rawSolarWh *
+            productionCoefficient; // Враховуємо малу площу панелей/тіні
+
+        // Баланс години
+        simulatedBatteryWh += realSolarWh - loadWh;
+
+        // Якщо батарея зарядилась повністю, надлишок сонця "згорає" (якщо немає бойлера)
+        if (simulatedBatteryWh > maxBatteryCapacityWh) {
+          simulatedBatteryWh = maxBatteryCapacityWh;
+        }
+
+        // Якщо батарея впала нижче резерву - фіксуємо дефіцит
+        if (simulatedBatteryWh < reserveEnergyWh) {
+          totalDeficitWh += (reserveEnergyWh - simulatedBatteryWh);
+          simulatedBatteryWh =
+              reserveEnergyWh; // Батарея залишається на дні (будинок перейде на мережу)
+        }
+      }
+      return totalDeficitWh;
+    }
+
+    // --- ЛОГІКА ПРИЙНЯТТЯ РІШЕНЬ ---
 
     if (currentHour >= 23 || currentHour < 7) {
-      // --- НІЧНИЙ ТАРИФ (23:00 - 07:00) ---
-      // Живимо будинок від мережі (дешево)
-      if (currentOutput != '0') await provider.setMode(0); // USB
+      // ==========================================
+      // НІЧНИЙ ТАРИФ (23:00 - 07:00)
+      // ==========================================
+      if (currentOutput != '0') {
+        await provider.setMode(0); // USB (Utility First)
+      }
 
-      // Скільки нам знадобиться на завтра? (з 07:00 до 23:00 = 16 годин)
-      final dailyNeedWh = avgHourlyLoad * 16.0;
-      // Дефіцит = Потреба - Прогноз сонця
-      final deficitWh = dailyNeedWh - expectedSolarTodayWh;
+      // Симулюємо ЗАВТРІШНІЙ день (з 07:00 до 23:00)
+      // Припускаємо, що до 07:00 ранку батарея зарядиться від мережі до 100% (якщо ми увімкнемо зарядку)
+      // або залишиться як є (якщо вимкнемо).
 
-      if (deficitWh > 0 && availableEnergyWh < deficitWh) {
-        // [ЗАРЯДЖАЄМО] Енергії не вистачить. Заряджаємо з мережі до рівня дефіциту.
+      // Перевіряємо, що буде, якщо ми НЕ будемо заряджати вночі взагалі (стартуємо з поточного заряду)
+      final tomorrow = now.hour >= 23 ? now.add(const Duration(days: 1)) : now;
+      final deficitIfNoCharge =
+          simulateEnergyDeficit(7, 23, tomorrow, currentEnergyWh);
+
+      if (deficitIfNoCharge > 0) {
+        // Навіть із сонцем нам не вистачить енергії на день/вечір.
+        // Причина: похмуро АБО панелей занадто мало для покриття потреб. Заряджаємось по нічному тарифу!
         if (currentCharger != '1') {
+          LogService.log(
+              '🌙 Ніч: Симуляція показує дефіцит ${deficitIfNoCharge.toInt()} Вт*год на завтра. Вмикаємо зарядку (SNU).');
           await provider.changeSetting(
               'chargerSourcePrioritySetting', '1'); // SNU
         }
       } else {
-        // [СТОП ЗАРЯД] В акумуляторі ВЖЕ достатньо місця/енергії. Вимикаємо мережу.
+        // Енергії повністю вистачить завдяки сонцю і залишку в батареї
         if (currentCharger != '2') {
+          LogService.log(
+              '🌙 Ніч: Завтра сонця вистачить повністю. Економимо ресурс АКБ, зарядка від мережі ВИМК (OSO).');
           await provider.changeSetting(
               'chargerSourcePrioritySetting', '2'); // OSO
         }
       }
-    } else if (currentHour >= 19 && currentHour < 23) {
-      // --- ВЕЧІРНЯ ПІДГОТОВКА (19:00 - 23:00) ---
-      // Очікується скоро нічний тариф. АГРЕСИВНО РОЗРЯДЖАЄМО до 20%.
-      if (currentOutput != '2') await provider.setMode(2); // SBU
+    } else if (currentHour >= 17 && currentHour < 23) {
+      // ==========================================
+      // ВЕЧІРНІЙ ПІК (17:00 - 23:00)
+      // ==========================================
       if (currentCharger != '2') {
         await provider.changeSetting(
             'chargerSourcePrioritySetting', '2'); // OSO
+      }
+
+      if (availableEnergyWh > 0) {
+        if (currentOutput != '2') {
+          LogService.log(
+              '🌆 Вечір: Працюємо від АКБ (SBU). Залишок: ${availableEnergyWh.toInt()} Вт*год.');
+          await provider.setMode(2); // SBU
+        }
+      } else {
+        if (currentOutput != '0') {
+          LogService.log(
+              '⚠️ Вечір: АКБ вичерпано до резерву. Перехід на мережу (USB).');
+          await provider.setMode(0); // USB
+        }
       }
     } else {
-      // --- ДЕНЬ (07:00 - 19:00) ---
-
-      // 1. Скільки годин залишилося жити до 23:00?
-      final hoursTillNight = 23.0 - currentHour;
-      final energyNeededTillNightWh = avgHourlyLoad * hoursTillNight;
-
-      // 2. Скільки сонячної енергії з прогнозу ще має надійти сьогодні?
-      // (Проста пропорція: чим ближче до 19:00, тим менша частка прогнозу залишилась)
-      final percentOfDayRemaining = (19.0 - currentHour) / 12.0;
-      final remainingSolarWh = expectedSolarTodayWh *
-          (percentOfDayRemaining > 0 ? percentOfDayRemaining : 0);
-
-      // 3. Загальний баланс виживання
-      final totalAvailableEnergyWh = availableEnergyWh + remainingSolarWh;
-
-      if (totalAvailableEnergyWh >= energyNeededTillNightWh) {
-        // [ЗВІЛЬНЮЄМО МІСЦЕ]
-        // Сума заряду та очікуваного сонця ПЕРЕВИЩУЄ наші потреби!
-        // Працюємо від батареї (SBU), щоб звільнити місце для сонця, інакше воно пропаде дарма.
-        if (currentOutput != '2') await provider.setMode(2); // SBU
-      } else {
-        // [ТРИМАЄМО АКУМУЛЯТОР ЗАРЯДЖЕНИМ]
-        // Прогноз сонця впав або акумулятор пустий. Якщо розрядимо зараз, до 23:00 не дотягнемо.
-        // Перемикаємо будинок на мережу (USB), щоб "заморозити" залишок в АКБ для вечірнього піку.
-        if (currentOutput != '0') await provider.setMode(0); // USB
-      }
-
-      // Вдень категорично забороняємо заряджати акумулятор від мережі, навіть якщо похмуро!
+      // ==========================================
+      // ДЕНЬ (07:00 - 17:00)
+      // ==========================================
       if (currentCharger != '2') {
         await provider.changeSetting(
             'chargerSourcePrioritySetting', '2'); // OSO
+      }
+
+      // Симулюємо залишок поточного дня (від поточної години до 23:00)
+      // Стартуємо з поточного реального заряду батареї
+      final deficitTillNight =
+          simulateEnergyDeficit(currentHour, 23, now, currentEnergyWh);
+
+      if (deficitTillNight == 0) {
+        // Сонця і батареї ГАРАНТОВАНО вистачить до 23:00 (з урахуванням коефіцієнта і статистики)
+        if (currentOutput != '2') {
+          LogService.log(
+              '☀️ День: Симуляція успішна (дефіцит 0). Працюємо від Сонця/АКБ (SBU).');
+          await provider.setMode(2); // SBU
+        }
+      } else {
+        // УВАГА: Симуляція показує, що батарея сяде ДО 23:00 (наприклад, о 20:00).
+        // Це означає, що панелі зараз генерують сонце, але його не вистачає для покриття поточного
+        // споживання + накопичення резерву на вечір.
+        // РІШЕННЯ: Зараз живимо будинок від мережі (вона зараз дешева), а ВСЕ сонце направляємо на зарядку АКБ!
+        if (currentOutput != '0') {
+          LogService.log(
+              '⛅ День: Симуляція показує дефіцит ввечері. Живимось від мережі (USB), зберігаємо сонце в АКБ!');
+          await provider.setMode(0); // USB
+        }
       }
     }
   }
