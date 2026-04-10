@@ -29,61 +29,72 @@ class SettingsTab extends StatelessWidget {
           ),
           child: Column(
             children: [
-              Stack(
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const CircleAvatar(
-                    radius: 40,
-                    backgroundColor: Colors.amber,
-                    child: Icon(Icons.person, size: 40, color: Colors.black),
-                  ),
-                  const SizedBox(height: 16),
-                  Positioned(
-                    right: 0,
-                    bottom: 0,
-                    child: Container(
-                      padding: const EdgeInsets.all(4),
-                      decoration: const BoxDecoration(
-                          color: Colors.blue, shape: BoxShape.circle),
-                      child: InkWell(
-                        onTap: () => _showEditProfileDialog(context),
-                        child: const Icon(Icons.edit,
-                            size: 16, color: Colors.white),
+                  Stack(
+                    children: [
+                      const CircleAvatar(
+                        radius: 34,
+                        backgroundColor: Colors.amber,
+                        child:
+                            Icon(Icons.person, size: 34, color: Colors.black),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    provider.displayName, // "yuraantonov11" з профілю
-                    style: const TextStyle(
-                        fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                  Text(
-                    provider.displayEmail, // "y************@gmail.com"
-                    style: const TextStyle(color: Colors.grey),
-                  ),
-                  if (provider.displayPhone.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        'Тел: ${provider.displayPhone}', // "380*****8414"
-                        style:
-                            const TextStyle(color: Colors.grey, fontSize: 13),
+                      Positioned(
+                        right: -2,
+                        bottom: -2,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                              color: Colors.blue, shape: BoxShape.circle),
+                          child: InkWell(
+                            onTap: () => _showEditProfileDialog(context),
+                            child: const Icon(Icons.edit,
+                                size: 14, color: Colors.white),
+                          ),
+                        ),
                       ),
-                    ),
-                  const SizedBox(height: 12),
-                  // Вивід ID користувача з HAR
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: Colors.blueGrey.withValues(alpha: 0.1),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      "UID: ${provider.userData?['uid'] ?? '...'}",
-                      // "5xjt6zu9gq"
-                      style: const TextStyle(
-                          fontSize: 11, fontFamily: 'monospace'),
+                    ],
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          provider.displayName,
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          provider.displayEmail,
+                          style: const TextStyle(color: Colors.grey),
+                        ),
+                        if (provider.displayPhone.isNotEmpty)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              'Тел: ${provider.displayPhone}',
+                              style: const TextStyle(
+                                  color: Colors.grey, fontSize: 13),
+                            ),
+                          ),
+                        const SizedBox(height: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: Colors.blueGrey.withValues(alpha: 0.1),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            'UID: ${provider.userData?['uid'] ?? '...'}',
+                            style: const TextStyle(
+                                fontSize: 11, fontFamily: 'monospace'),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -225,7 +236,7 @@ class SettingsTab extends StatelessWidget {
                   onTap: provider.handleVersionClick, // Ті самі 7 кліків
                   child: Center(
                     child: Text(
-                      'Version 1.1.7+8',
+                      provider.appVersionLabel,
                       style: TextStyle(
                           color: Colors.grey.withValues(alpha: 0.5),
                           fontSize: 12),
@@ -251,6 +262,8 @@ class SettingsTab extends StatelessWidget {
 
   void _showLogsDialog(BuildContext context) {
     final logsSnapshot = List<String>.from(LogService.allLogs);
+    final allLogsText =
+        logsSnapshot.isEmpty ? 'No logs yet.' : logsSnapshot.join('\n');
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -258,17 +271,34 @@ class SettingsTab extends StatelessWidget {
         content: SizedBox(
           width: double.maxFinite,
           height: 400,
-          child: ListView.builder(
-            itemCount: logsSnapshot.length,
-            itemBuilder: (context, i) => Text(
-              logsSnapshot[i],
-              style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
+          child: Scrollbar(
+            child: SingleChildScrollView(
+              child: SelectableText(
+                allLogsText,
+                style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
+              ),
             ),
           ),
         ),
         actions: [
           TextButton(
-              onPressed: () => LogService.clear(), child: const Text('Clear')),
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: allLogsText));
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Logs copied to clipboard')),
+                );
+              }
+            },
+            child: const Text('Copy all'),
+          ),
+          TextButton(
+            onPressed: () {
+              LogService.clear();
+              Navigator.pop(context);
+            },
+            child: const Text('Clear'),
+          ),
           TextButton(
               onPressed: () => Navigator.pop(context),
               child: const Text('Close')),

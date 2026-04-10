@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:developer' as LogService;
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:system_tray/system_tray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
@@ -14,7 +15,7 @@ import '../services/weather_service.dart';
 import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
-  static const String appVersion = '1.1.7+8';
+  static const String _defaultAppVersionLabel = 'Version --';
   final InverterService service = InverterService();
   final WeatherService weatherService = WeatherService();
   late HemsAlgorithmService hemsService;
@@ -58,12 +59,15 @@ class AppStateProvider extends ChangeNotifier {
 
   bool isDeveloperMode = false;
   int _versionClickCount = 0;
+  String _appVersionLabel = _defaultAppVersionLabel;
 
   bool _isSettingChanging = false;
   bool _isPollingInBackground = false;
+  bool _timersStarted = false;
 
   bool get isSettingChanging => _isSettingChanging;
   bool get isConfigLoading => _isPollingInBackground;
+  String get appVersionLabel => _appVersionLabel;
 
   AppStateProvider() {
     hemsService = HemsAlgorithmService(this);
@@ -124,9 +128,28 @@ class AppStateProvider extends ChangeNotifier {
       startTimers();
     }
 
+    await _loadAppVersion();
     await _updateWeatherForecast();
     await _updateStatusMessage(true);
     notifyListeners();
+  }
+
+  Future<void> _loadAppVersion() async {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      final version = packageInfo.version.trim();
+      final build = packageInfo.buildNumber.trim();
+      if (version.isNotEmpty && build.isNotEmpty) {
+        _appVersionLabel = 'Version $version+$build';
+      } else if (version.isNotEmpty) {
+        _appVersionLabel = 'Version $version';
+      } else {
+        _appVersionLabel = _defaultAppVersionLabel;
+      }
+    } catch (e) {
+      LogService.log('Failed to load app version: $e');
+      _appVersionLabel = _defaultAppVersionLabel;
+    }
   }
 
   Future<void> saveHardwareSettings(
@@ -214,6 +237,8 @@ class AppStateProvider extends ChangeNotifier {
   String get displayPhone => userData?['cellphone'] ?? '';
 
   void startTimers() {
+    if (_timersStarted) return;
+    _timersStarted = true;
     _initTray();
     fetchData();
     _dataTimer = Timer.periodic(const Duration(minutes: 1), (_) => fetchData());
@@ -224,6 +249,8 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   void stopTimers() {
+    if (!_timersStarted) return;
+    _timersStarted = false;
     _dataTimer?.cancel();
     _automationTimer?.cancel();
     _weatherTimer?.cancel();
@@ -369,7 +396,14 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> fetchData() async {
-    if (isDataLoading || service.deviceSn == null) return;
+    if (isDataLoading) return;
+
+    final hasDevice = await service.ensureDeviceSelected();
+    if (!hasDevice) {
+      await _updateStatusMessage(false);
+      notifyListeners();
+      return;
+    }
 
     final previousConfigs = data?.rawFields['fullConfigs'];
 
