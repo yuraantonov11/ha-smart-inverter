@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.9] - 2026-04-10
+### Changed
+- Restored `InverterService.ensureDeviceSelected()` to keep provider/service contract stable in CI and release builds.
+- Added resilient realtime data fallback between energy-flow and state endpoints with centralized logging.
+- Enabled GitHub Actions build trigger on pushes to `main` (release publishing remains tag-based).
+
 ## [1.1.8] - 2026-04-10
 ### Changed
 - Unified app version source by reading runtime package metadata in settings.
