@@ -8,6 +8,7 @@ import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
 import '../models/inverter_data.dart';
+import 'log_service.dart' as app_log;
 
 class InverterService {
   final String _appId = 'rBrTRfAPXz';
@@ -168,16 +169,48 @@ class InverterService {
     }
   }
 
+  Future<bool> ensureDeviceSelected() async {
+    if (deviceSn != null && deviceSn!.isNotEmpty) return true;
+    await _fetchDeviceList();
+    return deviceSn != null && deviceSn!.isNotEmpty;
+  }
+
   Future<InverterData?> getRealTimeData() async {
     if (deviceSn == null) return null;
-    try {
-      final response = await _dio.get('/apis/deviceState/simple/energy/flow/v1',
-          queryParameters: {'deviceId': deviceSn, 'dataSource': 1});
-      if (response.data['code'] == 0) {
+
+    Future<InverterData?> tryEndpoint(String endpoint) async {
+      final response = await _dio.get(
+        endpoint,
+        queryParameters: {'deviceId': deviceSn, 'dataSource': 1},
+      );
+      if (response.data['code'] == 0 && response.data['data'] != null) {
         return InverterData.fromJson(
-            response.data['data'], deviceSn!, currentMode?.toString() ?? '');
+          response.data['data'] as Map<String, dynamic>,
+          deviceSn!,
+          currentMode?.toString() ?? '',
+        );
       }
-    } catch (e) {
+      return null;
+    }
+
+    try {
+      final primary =
+          await tryEndpoint('/apis/deviceState/simple/energy/flow/v1');
+      if (primary != null) return primary;
+
+      final fallback =
+          await tryEndpoint('/apis/deviceState/simple/state/latest/v1');
+      if (fallback != null) return fallback;
+
+      app_log.LogService.log(
+        'Realtime data empty from both endpoints for deviceId=$deviceSn',
+      );
+    } catch (e, stack) {
+      app_log.LogService.log(
+        'Realtime data error',
+        error: e,
+        stack: stack,
+      );
       if (kDebugMode) print('Realtime data error: $e');
     }
     return null;
