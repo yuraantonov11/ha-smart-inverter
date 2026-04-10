@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.8] - 2026-04-10
+### Changed
+- Unified app version source by reading runtime package metadata in settings.
+- Removed hardcoded version label and synced release version to `1.1.8+9`.
+- Aligned Windows installer metadata with release version `1.1.8`.
+
 ## [1.1.7] - 2026-04-10
 ### Changed
 - Fixed inverter config loading on the Data tab by polling batch details with `batchReadId`.
