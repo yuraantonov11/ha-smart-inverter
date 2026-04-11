@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-04-12
+### Fixed
+- **Critical logging bug**: `app_provider.dart` was importing `dart:developer` aliased as `LogService`, causing all data-fetch error logs to go to the Flutter console only and never appear in the in-app log viewer. Now uses the custom `LogService` from `log_service.dart`.
+- Added explicit log entries when `ensureDeviceSelected()` returns false or `getRealTimeData()` returns null, so data-update failures are now visible in-app.
+
 ## [1.1.9] - 2026-04-10
 ### Changed
 - Restored `InverterService.ensureDeviceSelected()` to keep provider/service contract stable in CI and release builds.
