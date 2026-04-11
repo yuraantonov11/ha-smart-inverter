@@ -1,17 +1,17 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:developer' as LogService;
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:system_tray/system_tray.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
-import 'package:window_manager/window_manager.dart'; // Використовуємо window_manager для трея
+import 'package:window_manager/window_manager.dart';
 import '../l10n/app_localizations.dart';
 import '../services/inverter_service.dart';
 import '../services/hems_algorithm.dart';
 import '../services/weather_service.dart';
+import '../services/log_service.dart';
 import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
@@ -400,6 +400,8 @@ class AppStateProvider extends ChangeNotifier {
 
     final hasDevice = await service.ensureDeviceSelected();
     if (!hasDevice) {
+      LogService.log(
+          '⚠️ fetchData: пристрій не знайдено, deviceSn=${service.deviceSn}');
       await _updateStatusMessage(false);
       notifyListeners();
       return;
@@ -421,12 +423,13 @@ class AppStateProvider extends ChangeNotifier {
       await _updateStatusMessage(true);
       if (isAuthenticated) await _updateTrayMenu();
 
-      // Додано await для уникнення помилки unawaited_futures
       if (avgHourlyConsumptionStats.isEmpty &&
           service.currentStationId != null) {
         await _updateConsumptionStats();
       }
     } else {
+      LogService.log(
+          '⚠️ fetchData: getRealTimeData повернув null, deviceSn=${service.deviceSn}');
       await _updateStatusMessage(false);
     }
 
