@@ -89,12 +89,40 @@ void main() {
         data: _buildData(soc: 40.0, outputPriority: '0', chargerPriority: '2'),
         batteryCapacityAh: 230,
         hourlyForecast: const {},
-        avgHourlyConsumptionStats: const {},
+        avgHourlyConsumptionStats: const {
+          18: 200,
+          19: 200,
+          20: 200,
+          21: 200,
+          22: 200,
+        },
         productionCoefficient: 0.85,
         nowOverride: DateTime(2026, 1, 1, 18),
       );
 
       expect(provider.setModeCalls, contains(2));
+    });
+
+    test('switches to USB in evening when projected deficit exists', () async {
+      final provider = _FakeAppStateProvider();
+      final service = HemsAlgorithmService(provider);
+
+      await service.executeAdaptiveMode(
+        data: _buildData(soc: 40.0, outputPriority: '2', chargerPriority: '2'),
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {
+          18: 800,
+          19: 800,
+          20: 800,
+          21: 800,
+          22: 800,
+        },
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 1, 1, 18),
+      );
+
+      expect(provider.setModeCalls, contains(0));
     });
   });
 }

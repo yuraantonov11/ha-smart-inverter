@@ -202,17 +202,24 @@ class HemsAlgorithmService {
             'chargerSourcePrioritySetting', '2'); // OSO
       }
 
-      final reserveProtectionActive =
-          data.batterySoc <= (reserveSoc + 2.0) ||
-              availableEnergyWh <= eveningSafetyWh;
-      final batteryCanBeUsed =
-          data.batterySoc >= (reserveSoc + 5.0) &&
-              availableEnergyWh > eveningSafetyWh;
+      final deficitTillNight =
+          simulateEnergyDeficit(currentHour, 23, now, currentEnergyWh);
+      final reserveProtectionActive = data.batterySoc <= (reserveSoc + 2.0) ||
+          availableEnergyWh <= eveningSafetyWh ||
+          deficitTillNight > 0;
+      final batteryCanBeUsed = data.batterySoc >= (reserveSoc + 5.0) &&
+          availableEnergyWh > eveningSafetyWh &&
+          deficitTillNight == 0;
 
       if (reserveProtectionActive) {
         if (currentOutput != '0') {
-          LogService.log(
-              '⚠️ Вечір: SOC ${data.batterySoc.toStringAsFixed(1)}% біля резерву ${reserveSoc.toInt()}%. Перехід на мережу (USB).');
+          if (deficitTillNight > 0) {
+            LogService.log(
+                '⚠️ Вечір: прогнозований дефіцит до 23:00 = ${deficitTillNight.toInt()} Вт*год. Перехід на мережу (USB).');
+          } else {
+            LogService.log(
+                '⚠️ Вечір: SOC ${data.batterySoc.toStringAsFixed(1)}% біля резерву ${reserveSoc.toInt()}%. Перехід на мережу (USB).');
+          }
           await provider.setMode(0); // USB
         }
       } else if (batteryCanBeUsed) {
