@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-04-20
+### Changed
+- Reworked chart navigation and weekly/monthly loading behavior to avoid stale data flashes and improve timeout recovery.
+- Improved in-app diagnostics with structured log levels, filtering, chart-quality summaries, and more readable log UI.
+- Fixed cloud profile fetching by aligning the user-info API call with the real Siseli endpoint contract.
+- Modernized the update experience with richer release metadata, download progress, skip-version support, and a settings update banner.
+- Refined Automation tab visuals and expanded mode descriptions/tooltips, especially for the adaptive mode.
+
 ## [1.2.0] - 2026-04-12
 ### Fixed
 - **Critical logging bug**: `app_provider.dart` was importing `dart:developer` aliased as `LogService`, causing all data-fetch error logs to go to the Flutter console only and never appear in the in-app log viewer. Now uses the custom `LogService` from `log_service.dart`.

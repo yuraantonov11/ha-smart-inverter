@@ -5,6 +5,7 @@
 *.iml
 *.ipr
 *.iws
+CppProperties.json
 
 # Flutter and Dart related
 .dart_tool/
@@ -24,3 +25,4 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+*.har

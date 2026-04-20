@@ -293,13 +293,13 @@ abstract class AppLocalizations {
   /// No description provided for @modeAdaptiveSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Balance of autonomy and savings (SBU)'**
+  /// **'Dynamic mode: forecast, tariff, and battery state'**
   String get modeAdaptiveSubtitle;
 
   /// No description provided for @modeAdaptiveDesc.
   ///
   /// In en, this message translates to:
-  /// **'Inverter independently maneuvers between solar energy and battery. Grid is used only at critical discharge.'**
+  /// **'Adaptive mode continuously analyzes:\n• real-time PV generation and house consumption\n• solar forecast for the rest of the day\n• battery SOC and safety reserve\n• time-of-use tariff windows (night/day/evening)\n\nWhat it does:\n• At night, it predicts whether tomorrow\'s solar will be enough and decides whether grid charging is needed\n• During daytime, it optimizes source priority to preserve energy for evening peak\n• In evening hours, it uses battery energy down to the configured reserve threshold\n• It automatically falls back to grid if battery safety or supply stability is at risk\n\nResult: fewer manual switches, lower energy cost, and more stable day-to-day operation.'**
   String get modeAdaptiveDesc;
 
   /// No description provided for @modeArbitrage.
@@ -311,13 +311,13 @@ abstract class AppLocalizations {
   /// No description provided for @modeArbitrageSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Maximum financial savings'**
+  /// **'Strict cost optimization by tariff windows'**
   String get modeArbitrageSubtitle;
 
   /// No description provided for @modeArbitrageDesc.
   ///
   /// In en, this message translates to:
-  /// **'At 23:00, inverter smoothly charges battery at night tariff. During the day, priority is given to sun. Dynamic boiler shutdown is configured at low charge.'**
+  /// **'This mode prioritizes minimum electricity cost:\n• During night tariff, it forces grid operation and charges battery\n• During day/evening, it prioritizes battery and solar\n• Grid charging is disabled outside night tariff\n\nBest when cost saving is the primary goal, even with more battery cycling.'**
   String get modeArbitrageDesc;
 
   /// No description provided for @modeStorm.
@@ -329,13 +329,13 @@ abstract class AppLocalizations {
   /// No description provided for @modeStormSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Preparation for rolling blackouts'**
+  /// **'Maximum backup readiness for outages'**
   String get modeStormSubtitle;
 
   /// No description provided for @modeStormDesc.
   ///
   /// In en, this message translates to:
-  /// **'Financial savings are ignored. Battery is forcibly maintained at 100% from grid (USB mode). Readiness for unpredictable blackouts.'**
+  /// **'This mode prioritizes reliability over savings:\n• Keeps battery as full as possible\n• Powers home from grid to preserve battery for emergency use\n• Ignores tariff optimization when reserve readiness is critical\n\nRecommended before storms, unstable grid periods, or expected long outages.'**
   String get modeStormDesc;
 
   /// No description provided for @account.
@@ -431,7 +431,7 @@ abstract class AppLocalizations {
   /// No description provided for @hemsSubtitle.
   ///
   /// In en, this message translates to:
-  /// **'Choose an energy management strategy'**
+  /// **'Choose your strategy: adaptive automation, savings, or backup reserve'**
   String get hemsSubtitle;
 
   /// No description provided for @gotIt.
@@ -547,6 +547,102 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Copied to clipboard'**
   String get copiedToClipboard;
+
+  /// No description provided for @updatesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Updates'**
+  String get updatesTitle;
+
+  /// No description provided for @updatesCheckingBackground.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking updates in background...'**
+  String get updatesCheckingBackground;
+
+  /// No description provided for @updatesChecking.
+  ///
+  /// In en, this message translates to:
+  /// **'Checking for updates...'**
+  String get updatesChecking;
+
+  /// No description provided for @updatesSubtitleDefault.
+  ///
+  /// In en, this message translates to:
+  /// **'Check and install latest version'**
+  String get updatesSubtitleDefault;
+
+  /// No description provided for @updatesSubtitleAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'New version {version} is available'**
+  String updatesSubtitleAvailable(String version);
+
+  /// No description provided for @updatesSubtitleSkipped.
+  ///
+  /// In en, this message translates to:
+  /// **'Version {version} is skipped'**
+  String updatesSubtitleSkipped(String version);
+
+  /// No description provided for @updatesSubtitleUpToDate.
+  ///
+  /// In en, this message translates to:
+  /// **'You are up to date ({version})'**
+  String updatesSubtitleUpToDate(String version);
+
+  /// No description provided for @updatesLastChecked.
+  ///
+  /// In en, this message translates to:
+  /// **'Last checked: {time}'**
+  String updatesLastChecked(String time);
+
+  /// No description provided for @updatesSkippedBanner.
+  ///
+  /// In en, this message translates to:
+  /// **'Version {version} is currently skipped.'**
+  String updatesSkippedBanner(String version);
+
+  /// No description provided for @updatesSkippedRestored.
+  ///
+  /// In en, this message translates to:
+  /// **'Skipped version restored.'**
+  String get updatesSkippedRestored;
+
+  /// No description provided for @updatesRestore.
+  ///
+  /// In en, this message translates to:
+  /// **'Restore'**
+  String get updatesRestore;
+
+  /// No description provided for @updatesBannerAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'New update {version} is available'**
+  String updatesBannerAvailable(String version);
+
+  /// No description provided for @updatesCurrentVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Current version: {version}'**
+  String updatesCurrentVersion(String version);
+
+  /// No description provided for @updatesView.
+  ///
+  /// In en, this message translates to:
+  /// **'View'**
+  String get updatesView;
+
+  /// No description provided for @updatesSkip.
+  ///
+  /// In en, this message translates to:
+  /// **'Skip'**
+  String get updatesSkip;
+
+  /// No description provided for @updatesSkippedNow.
+  ///
+  /// In en, this message translates to:
+  /// **'Version {version} was skipped.'**
+  String updatesSkippedNow(String version);
 
   /// No description provided for @solarSbu.
   ///

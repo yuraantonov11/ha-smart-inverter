@@ -1100,6 +1100,7 @@ class InverterService {
     required DateTime from,
     required DateTime to,
     int count = 1500,
+    bool retryOnTimeout = true,
   }) async {
     if (deviceSn == null) return null;
 
@@ -1137,6 +1138,11 @@ class InverterService {
       final response = await _dio.post(
         '/apis/deviceState/simple/attribute/keys/history/v1',
         data: payload,
+        options: Options(
+          connectTimeout: const Duration(seconds: 25),
+          sendTimeout: const Duration(seconds: 25),
+          receiveTimeout: const Duration(seconds: 35),
+        ),
       );
       if (response.data['code'] == 0) {
         final parsed = response.data['data'] as Map<String, dynamic>?;
@@ -1150,6 +1156,24 @@ class InverterService {
       }
       app_log.LogService.log(
           '⚠️ history.fetch non-zero code: code=${response.data['code']}');
+    } on DioException catch (e) {
+      final isTimeout = e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout;
+
+      if (isTimeout && retryOnTimeout) {
+        final retryCount = (count * 0.6).round().clamp(800, count);
+        app_log.LogService.log(
+            '⚠️ history.fetch timeout, retry once with smaller count=$retryCount (was $count), from=${from.toIso8601String().substring(0, 10)}, to=${to.toIso8601String().substring(0, 10)}');
+        return _fetchHistoryRaw(
+          from: from,
+          to: to,
+          count: retryCount,
+          retryOnTimeout: false,
+        );
+      }
+
+      app_log.LogService.log('❌ history.fetch failed', error: e);
     } catch (e) {
       app_log.LogService.log('❌ history.fetch failed', error: e);
     }

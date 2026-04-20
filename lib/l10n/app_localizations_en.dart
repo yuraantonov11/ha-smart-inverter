@@ -105,31 +105,33 @@ class AppLocalizationsEn extends AppLocalizations {
   String get modeAdaptive => 'Adaptive Intelligence (Auto)';
 
   @override
-  String get modeAdaptiveSubtitle => 'Balance of autonomy and savings (SBU)';
+  String get modeAdaptiveSubtitle =>
+      'Dynamic mode: forecast, tariff, and battery state';
 
   @override
   String get modeAdaptiveDesc =>
-      'Inverter independently maneuvers between solar energy and battery. Grid is used only at critical discharge.';
+      'Adaptive mode continuously analyzes:\n• real-time PV generation and house consumption\n• solar forecast for the rest of the day\n• battery SOC and safety reserve\n• time-of-use tariff windows (night/day/evening)\n\nWhat it does:\n• At night, it predicts whether tomorrow\'s solar will be enough and decides whether grid charging is needed\n• During daytime, it optimizes source priority to preserve energy for evening peak\n• In evening hours, it uses battery energy down to the configured reserve threshold\n• It automatically falls back to grid if battery safety or supply stability is at risk\n\nResult: fewer manual switches, lower energy cost, and more stable day-to-day operation.';
 
   @override
   String get modeArbitrage => 'Night Arbitrage';
 
   @override
-  String get modeArbitrageSubtitle => 'Maximum financial savings';
+  String get modeArbitrageSubtitle =>
+      'Strict cost optimization by tariff windows';
 
   @override
   String get modeArbitrageDesc =>
-      'At 23:00, inverter smoothly charges battery at night tariff. During the day, priority is given to sun. Dynamic boiler shutdown is configured at low charge.';
+      'This mode prioritizes minimum electricity cost:\n• During night tariff, it forces grid operation and charges battery\n• During day/evening, it prioritizes battery and solar\n• Grid charging is disabled outside night tariff\n\nBest when cost saving is the primary goal, even with more battery cycling.';
 
   @override
   String get modeStorm => 'Reserve / Storm';
 
   @override
-  String get modeStormSubtitle => 'Preparation for rolling blackouts';
+  String get modeStormSubtitle => 'Maximum backup readiness for outages';
 
   @override
   String get modeStormDesc =>
-      'Financial savings are ignored. Battery is forcibly maintained at 100% from grid (USB mode). Readiness for unpredictable blackouts.';
+      'This mode prioritizes reliability over savings:\n• Keeps battery as full as possible\n• Powers home from grid to preserve battery for emergency use\n• Ignores tariff optimization when reserve readiness is critical\n\nRecommended before storms, unstable grid periods, or expected long outages.';
 
   @override
   String get account => 'Account';
@@ -179,7 +181,8 @@ class AppLocalizationsEn extends AppLocalizations {
   String get hemsTitle => 'Intelligent HEMS Modes';
 
   @override
-  String get hemsSubtitle => 'Choose an energy management strategy';
+  String get hemsSubtitle =>
+      'Choose your strategy: adaptive automation, savings, or backup reserve';
 
   @override
   String get gotIt => 'Got it';
@@ -239,6 +242,70 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get copiedToClipboard => 'Copied to clipboard';
+
+  @override
+  String get updatesTitle => 'Updates';
+
+  @override
+  String get updatesCheckingBackground => 'Checking updates in background...';
+
+  @override
+  String get updatesChecking => 'Checking for updates...';
+
+  @override
+  String get updatesSubtitleDefault => 'Check and install latest version';
+
+  @override
+  String updatesSubtitleAvailable(String version) {
+    return 'New version $version is available';
+  }
+
+  @override
+  String updatesSubtitleSkipped(String version) {
+    return 'Version $version is skipped';
+  }
+
+  @override
+  String updatesSubtitleUpToDate(String version) {
+    return 'You are up to date ($version)';
+  }
+
+  @override
+  String updatesLastChecked(String time) {
+    return 'Last checked: $time';
+  }
+
+  @override
+  String updatesSkippedBanner(String version) {
+    return 'Version $version is currently skipped.';
+  }
+
+  @override
+  String get updatesSkippedRestored => 'Skipped version restored.';
+
+  @override
+  String get updatesRestore => 'Restore';
+
+  @override
+  String updatesBannerAvailable(String version) {
+    return 'New update $version is available';
+  }
+
+  @override
+  String updatesCurrentVersion(String version) {
+    return 'Current version: $version';
+  }
+
+  @override
+  String get updatesView => 'View';
+
+  @override
+  String get updatesSkip => 'Skip';
+
+  @override
+  String updatesSkippedNow(String version) {
+    return 'Version $version was skipped.';
+  }
 
   @override
   String get solarSbu => 'SOLAR (SBU)';

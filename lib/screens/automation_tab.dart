@@ -3,6 +3,8 @@
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
+import '../theme/app_theme.dart';
+import '../widgets/app_components.dart';
 
 class AutomationTab extends StatelessWidget {
   final AppStateProvider provider;
@@ -11,35 +13,15 @@ class AutomationTab extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
     final l10n = AppLocalizations.of(context)!;
 
     return ListView(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.all(AppTheme.spacingXL),
       children: [
-        Padding(
-          padding: const EdgeInsets.only(bottom: 20, left: 4),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                l10n.hemsTitle,
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: isDark ? Colors.white : Colors.black87,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                l10n.hemsSubtitle,
-                style: TextStyle(
-                  fontSize: 14,
-                  color: isDark ? Colors.white60 : Colors.black54,
-                ),
-              ),
-            ],
-          ),
+        AppSectionTitle(
+          title: l10n.hemsTitle,
+          subtitle: l10n.hemsSubtitle,
+          icon: Icons.tune_rounded,
         ),
 
         // 1. Адаптивний режим
@@ -53,7 +35,7 @@ class AutomationTab extends StatelessWidget {
           onChanged: (val) => provider.setSmartMode(val!),
           tooltipText: l10n.modeAdaptiveDesc,
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTheme.spacingL),
 
         // 2. Нічний арбітраж
         _SmartModeCard(
@@ -66,7 +48,7 @@ class AutomationTab extends StatelessWidget {
           onChanged: (val) => provider.setSmartMode(val!),
           tooltipText: l10n.modeArbitrageDesc,
         ),
-        const SizedBox(height: 16),
+        const SizedBox(height: AppTheme.spacingL),
 
         // 3. Шторм / Резерв
         _SmartModeCard(
@@ -112,14 +94,33 @@ class _SmartModeCard extends StatelessWidget {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(AppTheme.radiusXL),
+        ),
         title: Row(
           children: [
-            Icon(icon, color: color),
-            const SizedBox(width: 10),
+            Container(
+              padding: const EdgeInsets.all(AppTheme.spacingS),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+              ),
+              child: Icon(icon, color: color, size: 20),
+            ),
+            const SizedBox(width: AppTheme.spacingM),
             Flexible(child: Text(title)),
           ],
         ),
-        content: Text(tooltipText),
+        content: SingleChildScrollView(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _buildTooltipContent(context),
+            ),
+          ),
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -131,89 +132,171 @@ class _SmartModeCard extends StatelessWidget {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final isSelected = value == groupValue;
+  List<Widget> _buildTooltipContent(BuildContext context) {
+    final theme = Theme.of(context);
+    final sections = tooltipText
+        .split('\n\n')
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toList();
 
-    return InkWell(
-      onTap: () => onChanged(value),
-      borderRadius: BorderRadius.circular(20),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: isDark
-              ? (isSelected
-                  ? color.withValues(alpha: 0.15)
-                  : Colors.white.withValues(alpha: 0.05))
-              : (isSelected ? color.withValues(alpha: 0.1) : Colors.grey[100]),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color:
-                isSelected ? color.withValues(alpha: 0.5) : Colors.transparent,
-            width: 2,
-          ),
-          boxShadow: [
-            if (isSelected)
-              BoxShadow(
-                color: color.withValues(alpha: 0.2),
-                blurRadius: 10,
-                offset: const Offset(0, 4),
+    final widgets = <Widget>[];
+
+    for (var sectionIndex = 0; sectionIndex < sections.length; sectionIndex++) {
+      final lines = sections[sectionIndex]
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList();
+
+      if (lines.isEmpty) continue;
+
+      final firstLine = lines.first;
+      final hasHeading = firstLine.endsWith(':') && !firstLine.startsWith('•');
+
+      if (hasHeading) {
+        widgets.add(
+          Padding(
+            padding: EdgeInsets.only(bottom: lines.length > 1 ? 8 : 0),
+            child: Text(
+              firstLine.substring(0, firstLine.length - 1),
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: color,
               ),
-          ],
-        ),
-        child: Row(
-          children: [
-            // Іконка в колі
-            Container(
-              padding: const EdgeInsets.all(12),
+            ),
+          ),
+        );
+      }
+
+      final contentLines = hasHeading ? lines.skip(1).toList() : lines;
+      for (final line in contentLines) {
+        if (line.startsWith('•')) {
+          widgets.add(_buildBulletLine(context, line.substring(1).trim()));
+        } else {
+          widgets.add(
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                line,
+                style: theme.textTheme.bodyMedium,
+              ),
+            ),
+          );
+        }
+      }
+
+      if (sectionIndex != sections.length - 1) {
+        widgets.add(const SizedBox(height: 10));
+      }
+    }
+
+    return widgets;
+  }
+
+  Widget _buildBulletLine(BuildContext context, String text) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: AppTheme.spacingS),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Container(
+              width: 7,
+              height: 7,
               decoration: BoxDecoration(
-                color: isSelected ? color : color.withValues(alpha: 0.1),
+                color: color,
                 shape: BoxShape.circle,
               ),
-              child: Icon(icon,
-                  color: isSelected ? Colors.white : color, size: 28),
             ),
-            const SizedBox(width: 16),
+          ),
+          const SizedBox(width: AppTheme.spacingM),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.bodyMedium,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-            // Текстовий блок
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isSelected = value == groupValue;
+
+    return AppCard(
+      onTap: () => onChanged(value),
+      backgroundColor: isSelected
+          ? color.withValues(
+              alpha: theme.brightness == Brightness.dark ? 0.16 : 0.10)
+          : theme.cardColor,
+      borderRadius: AppTheme.radiusXL,
+      padding: const EdgeInsets.all(AppTheme.spacingL),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(AppTheme.spacingM),
+              decoration: BoxDecoration(
+                color: isSelected ? color : color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+              ),
+              child: Icon(
+                icon,
+                color: isSelected ? Colors.white : color,
+                size: 24,
+              ),
+            ),
+            const SizedBox(width: AppTheme.spacingL),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     title,
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 17,
-                      color: isDark ? Colors.white : Colors.black87,
+                    style: theme.textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: isSelected
+                          ? color
+                          : theme.textTheme.titleLarge?.color,
                     ),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: AppTheme.spacingXS),
                   Text(
                     subtitle,
-                    style: TextStyle(
-                      color: isDark ? Colors.white60 : Colors.black54,
-                      fontSize: 13,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: isSelected
+                          ? theme.textTheme.bodyMedium?.color
+                          : theme.textTheme.bodyMedium?.color,
                     ),
                   ),
                 ],
               ),
             ),
-
-            // Кнопка інфо
-            IconButton(
-              icon: Icon(
-                Icons.help_outline_rounded,
-                color: isSelected ? color : Colors.grey,
-                size: 22,
+            Container(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest
+                    .withValues(alpha: isSelected ? 0.55 : 0.35),
+                borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
               ),
-              onPressed: () => _showInfo(context),
+              child: IconButton(
+                icon: Icon(
+                  Icons.help_outline_rounded,
+                  color: isSelected ? color : theme.textTheme.bodySmall?.color,
+                  size: 20,
+                ),
+                onPressed: () => _showInfo(context),
+                tooltip: title,
+              ),
             ),
-
-            // Радіо-кнопка
-            // (Попередження про deprecation тепер ігнорується на рівні файлу)
+            const SizedBox(width: AppTheme.spacingS),
             Radio<int>(
               value: value,
               groupValue: groupValue,

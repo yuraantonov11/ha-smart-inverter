@@ -305,6 +305,20 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     _chartDebounce = Timer(const Duration(milliseconds: 350), _fetchChartData);
   }
 
+  void _startRangeLoadingState() {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = true;
+      _productionData = [];
+      _consumptionData = [];
+      _batteryData = [];
+      _gridData = [];
+      _forecastData = [];
+    });
+    LogService.log(
+        '🧹 chart.ui reset before fetch: range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}');
+  }
+
   Future<void> _fetchChartData() async {
     final requestId = ++_chartRequestSeq;
     LogService.log(
@@ -386,6 +400,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             _currentDate.year, _currentDate.month + offset, _currentDate.day);
       }
     });
+    _startRangeLoadingState();
     _scheduleFetchChartData();
   }
 
@@ -459,6 +474,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             isActive: _selectedRange == 0,
             onTap: () {
               setState(() => _selectedRange = 0);
+              _startRangeLoadingState();
               _scheduleFetchChartData();
             },
           ),
@@ -467,6 +483,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             isActive: _selectedRange == 1,
             onTap: () {
               setState(() => _selectedRange = 1);
+              _startRangeLoadingState();
               _scheduleFetchChartData();
             },
           ),
@@ -475,6 +492,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             isActive: _selectedRange == 2,
             onTap: () {
               setState(() => _selectedRange = 2);
+              _startRangeLoadingState();
               _scheduleFetchChartData();
             },
           ),

@@ -31,14 +31,14 @@
   "battery": "Батарея",
   "grid": "Мережа",
   "modeAdaptive": "Адаптивний інтелект (Авто)",
-  "modeAdaptiveSubtitle": "Баланс автономності та економії (SBU)",
-  "modeAdaptiveDesc": "Інвертор самостійно маневрує між сонячною енергією та батареєю. Мережа використовується лише при критичному розряді.",
+  "modeAdaptiveSubtitle": "Динамічний режим: прогноз, тариф і стан АКБ",
+  "modeAdaptiveDesc": "Адаптивний режим щохвилини аналізує:\n• поточну генерацію PV і споживання будинку\n• прогноз сонячної генерації на день\n• заряд АКБ та резерв безпеки\n• часові зони тарифу (ніч/день/вечір)\n\nЩо робить режим:\n• Вночі оцінює, чи вистачить сонця наступного дня, і вирішує: заряджати АКБ від мережі чи ні\n• Вдень перемикає пріоритет так, щоб зберегти енергію на вечірній пік\n• Увечері максимально використовує АКБ до резервного порогу\n• Автоматично повертає живлення від мережі, якщо є ризик просадки АКБ\n\nРезультат: мінімум ручних перемикань, нижча вартість електроенергії та стабільніша робота системи.",
   "modeArbitrage": "Нічний арбітраж",
-  "modeArbitrageSubtitle": "Максимальна фінансова економія",
-  "modeArbitrageDesc": "О 23:00 інвертор плавно заряджає батарею за нічним тарифом. Вдень пріоритет віддається сонцю. Налаштовано динамічне відключення бойлера при низькому заряді.",
+  "modeArbitrageSubtitle": "Жорстка економія за часовими тарифами",
+  "modeArbitrageDesc": "Режим орієнтований на мінімальну ціну електроенергії:\n• У нічний тариф примусово працює від мережі та заряджає АКБ\n• У денний/вечірній період віддає пріоритет АКБ і сонцю\n• Зарядка від мережі вдень вимикається\n\nПідійде, якщо головна ціль — економія, навіть ціною більш частих циклів АКБ.",
   "modeStorm": "Резерв / Шторм",
-  "modeStormSubtitle": "Підготовка до віялових відключень",
-  "modeStormDesc": "Фінансова економія ігнорується. Батарея примусово підтримується на 100% від мережі (режим USB). Готовність до непередбачуваних відключень.",
+  "modeStormSubtitle": "Максимальний резерв на випадок відключень",
+  "modeStormDesc": "Режим пріоритету надійності:\n• Система тримає АКБ максимально зарядженою\n• Живлення будинку від мережі для збереження ресурсу АКБ перед аваріями\n• Економія тарифу не є пріоритетом\n\nРекомендовано перед штормами, нестабільною мережею або при ризику тривалих відключень.",
   "account": "Акаунт",
   "appSettings": "Налаштування застосунку",
   "editProfile": "Редагувати профіль",
@@ -61,7 +61,7 @@
   "onlySolar": "Тільки Сонце (OSO)",
   "solarFirst": "Сонце в першу чергу (CSO)",
   "hemsTitle": "Інтелектуальні HEMS режими",
-  "hemsSubtitle": "Оберіть стратегію керування енергією",
+  "hemsSubtitle": "Оберіть стратегію: адаптивна автоматизація, економія або резерв",
   "gotIt": "Зрозуміло",
   "welcomeBack": "З поверненням",
   "email": "Електронна пошта",
@@ -81,6 +81,78 @@
   "nameCannotBeEmpty": "Ім'я не може бути порожнім",
   "copy": "Копіювати",
   "copiedToClipboard": "Скопійовано в буфер обміну",
+  "updatesTitle": "Оновлення",
+  "updatesCheckingBackground": "Перевірка оновлень у фоні...",
+  "updatesChecking": "Перевірка оновлень...",
+  "updatesSubtitleDefault": "Перевірити та встановити останню версію",
+  "updatesSubtitleAvailable": "Доступна нова версія {version}",
+  "@updatesSubtitleAvailable": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSubtitleSkipped": "Версію {version} пропущено",
+  "@updatesSubtitleSkipped": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSubtitleUpToDate": "У вас остання версія ({version})",
+  "@updatesSubtitleUpToDate": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesLastChecked": "Остання перевірка: {time}",
+  "@updatesLastChecked": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSkippedBanner": "Версію {version} наразі пропущено.",
+  "@updatesSkippedBanner": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSkippedRestored": "Пропущену версію відновлено.",
+  "updatesRestore": "Відновити",
+  "updatesBannerAvailable": "Доступне оновлення {version}",
+  "@updatesBannerAvailable": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesCurrentVersion": "Поточна версія: {version}",
+  "@updatesCurrentVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesView": "Переглянути",
+  "updatesSkip": "Пропустити",
+  "updatesSkippedNow": "Версію {version} пропущено.",
+  "@updatesSkippedNow": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
   "solarSbu": "СОНЦЕ (SBU)",
   "gridUsb": "МЕРЕЖА (USB)",
   "utilityFirstUsb": "Мережа (Utility First / USB)",

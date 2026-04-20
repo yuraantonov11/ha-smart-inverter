@@ -31,14 +31,14 @@
   "battery": "Battery",
   "grid": "Grid",
   "modeAdaptive": "Adaptive Intelligence (Auto)",
-  "modeAdaptiveSubtitle": "Balance of autonomy and savings (SBU)",
-  "modeAdaptiveDesc": "Inverter independently maneuvers between solar energy and battery. Grid is used only at critical discharge.",
+  "modeAdaptiveSubtitle": "Dynamic mode: forecast, tariff, and battery state",
+  "modeAdaptiveDesc": "Adaptive mode continuously analyzes:\n• real-time PV generation and house consumption\n• solar forecast for the rest of the day\n• battery SOC and safety reserve\n• time-of-use tariff windows (night/day/evening)\n\nWhat it does:\n• At night, it predicts whether tomorrow's solar will be enough and decides whether grid charging is needed\n• During daytime, it optimizes source priority to preserve energy for evening peak\n• In evening hours, it uses battery energy down to the configured reserve threshold\n• It automatically falls back to grid if battery safety or supply stability is at risk\n\nResult: fewer manual switches, lower energy cost, and more stable day-to-day operation.",
   "modeArbitrage": "Night Arbitrage",
-  "modeArbitrageSubtitle": "Maximum financial savings",
-  "modeArbitrageDesc": "At 23:00, inverter smoothly charges battery at night tariff. During the day, priority is given to sun. Dynamic boiler shutdown is configured at low charge.",
+  "modeArbitrageSubtitle": "Strict cost optimization by tariff windows",
+  "modeArbitrageDesc": "This mode prioritizes minimum electricity cost:\n• During night tariff, it forces grid operation and charges battery\n• During day/evening, it prioritizes battery and solar\n• Grid charging is disabled outside night tariff\n\nBest when cost saving is the primary goal, even with more battery cycling.",
   "modeStorm": "Reserve / Storm",
-  "modeStormSubtitle": "Preparation for rolling blackouts",
-  "modeStormDesc": "Financial savings are ignored. Battery is forcibly maintained at 100% from grid (USB mode). Readiness for unpredictable blackouts.",
+  "modeStormSubtitle": "Maximum backup readiness for outages",
+  "modeStormDesc": "This mode prioritizes reliability over savings:\n• Keeps battery as full as possible\n• Powers home from grid to preserve battery for emergency use\n• Ignores tariff optimization when reserve readiness is critical\n\nRecommended before storms, unstable grid periods, or expected long outages.",
   "account": "Account",
   "appSettings": "Application Settings",
   "editProfile": "Edit Profile",
@@ -61,7 +61,7 @@
   "onlySolar": "Only Solar (OSO)",
   "solarFirst": "Solar First (CSO)",
   "hemsTitle": "Intelligent HEMS Modes",
-  "hemsSubtitle": "Choose an energy management strategy",
+  "hemsSubtitle": "Choose your strategy: adaptive automation, savings, or backup reserve",
   "gotIt": "Got it",
   "welcomeBack": "Welcome Back",
   "email": "Email",
@@ -81,6 +81,78 @@
   "nameCannotBeEmpty": "Name cannot be empty",
   "copy": "Copy",
   "copiedToClipboard": "Copied to clipboard",
+  "updatesTitle": "Updates",
+  "updatesCheckingBackground": "Checking updates in background...",
+  "updatesChecking": "Checking for updates...",
+  "updatesSubtitleDefault": "Check and install latest version",
+  "updatesSubtitleAvailable": "New version {version} is available",
+  "@updatesSubtitleAvailable": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSubtitleSkipped": "Version {version} is skipped",
+  "@updatesSubtitleSkipped": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSubtitleUpToDate": "You are up to date ({version})",
+  "@updatesSubtitleUpToDate": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesLastChecked": "Last checked: {time}",
+  "@updatesLastChecked": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSkippedBanner": "Version {version} is currently skipped.",
+  "@updatesSkippedBanner": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesSkippedRestored": "Skipped version restored.",
+  "updatesRestore": "Restore",
+  "updatesBannerAvailable": "New update {version} is available",
+  "@updatesBannerAvailable": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesCurrentVersion": "Current version: {version}",
+  "@updatesCurrentVersion": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesView": "View",
+  "updatesSkip": "Skip",
+  "updatesSkippedNow": "Version {version} was skipped.",
+  "@updatesSkippedNow": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
   "solarSbu": "SOLAR (SBU)",
   "gridUsb": "GRID (USB)",
   "utilityFirstUsb": "Utility First (USB)",

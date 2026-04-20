@@ -27,6 +27,9 @@ class SettingsTab extends StatelessWidget {
 
         // Блок Налаштувань Додатка
         _buildSectionTitle(l10n.appSettings),
+        _buildUpdateBanner(context, l10n),
+        if (provider.updateInfo != null || provider.isCheckingForUpdates)
+          const SizedBox(height: 12),
         const SizedBox(height: 16),
         HardwareSettingsSection(provider: provider), // <--- Додаємо сюди
         const SizedBox(height: 16),
@@ -88,9 +91,22 @@ class SettingsTab extends StatelessWidget {
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
                   leading: const Icon(Icons.update, color: Colors.blueAccent),
-                  title: const Text('Check for Updates'),
-                  subtitle: const Text('Check and install latest version'),
-                  trailing: const Icon(Icons.chevron_right),
+                  title: Text(l10n.updatesTitle),
+                  subtitle: Text(_buildUpdateSubtitle(l10n)),
+                  trailing: provider.isCheckingForUpdates
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          provider.hasPendingUpdate
+                              ? Icons.system_update_alt_rounded
+                              : Icons.chevron_right,
+                          color: provider.hasPendingUpdate
+                              ? Colors.green
+                              : Colors.grey,
+                        ),
                   onTap: () => _checkForUpdates(context),
                 ),
                 if (provider.isDeveloperMode) ...[
@@ -140,6 +156,131 @@ class SettingsTab extends StatelessWidget {
       child: Text(title,
           style: const TextStyle(
               fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey)),
+    );
+  }
+
+  Widget _buildUpdateBanner(BuildContext context, AppLocalizations l10n) {
+    final theme = Theme.of(context);
+    final info = provider.updateInfo;
+
+    if (provider.isCheckingForUpdates) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.primary.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+              color: theme.colorScheme.primary.withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+            Expanded(child: Text(l10n.updatesCheckingBackground)),
+          ],
+        ),
+      );
+    }
+
+    if (info == null) return const SizedBox.shrink();
+
+    final isSkipped = provider.skippedUpdateVersion != null &&
+        info.hasUpdate &&
+        provider.skippedUpdateVersion == info.latestVersion;
+
+    if (!provider.hasPendingUpdate && !isSkipped) {
+      return const SizedBox.shrink();
+    }
+
+    if (isSkipped) {
+      return Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: Colors.orange.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.history_toggle_off_rounded, color: Colors.orange),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(l10n.updatesSkippedBanner(info.latestVersion)),
+            ),
+            TextButton(
+              onPressed: () async {
+                await provider.clearSkippedUpdate();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text(l10n.updatesSkippedRestored)),
+                  );
+                }
+              },
+              child: Text(l10n.updatesRestore),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.green.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.system_update_alt_rounded, color: Colors.green),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  l10n.updatesBannerAvailable(info.latestVersion),
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            l10n.updatesCurrentVersion(info.currentVersion),
+            style: theme.textTheme.bodySmall,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: () => _showUpdateAvailableDialog(context, info),
+                icon: const Icon(Icons.visibility_rounded, size: 16),
+                label: Text(l10n.updatesView),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: () async {
+                  await provider.skipLatestUpdate();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content:
+                            Text(l10n.updatesSkippedNow(info.latestVersion)),
+                      ),
+                    );
+                  }
+                },
+                child: Text(l10n.updatesSkip),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
@@ -473,25 +614,7 @@ class SettingsTab extends StatelessWidget {
 
   void _checkForUpdates(BuildContext context) async {
     final scaffoldMessenger = ScaffoldMessenger.of(context);
-
-    unawaited(showDialog(
-      // ignore: unawaited_futures
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 16),
-            Text('Checking for updates...'),
-          ],
-        ),
-      ),
-    ));
-
-    final info = await UpdateService.fetchUpdateInfo();
-    if (!context.mounted) return;
-    Navigator.pop(context); // Close loading dialog
+    final info = await provider.checkForUpdates(force: true);
 
     if (info.hasUpdate) {
       if (!context.mounted) return;
@@ -536,6 +659,13 @@ class SettingsTab extends StatelessWidget {
           ],
         ),
         actions: [
+          TextButton(
+            onPressed: () async {
+              await provider.skipLatestUpdate();
+              if (context.mounted) Navigator.pop(context);
+            },
+            child: const Text('Skip this version'),
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: const Text('Later'),
@@ -640,6 +770,34 @@ class SettingsTab extends StatelessWidget {
                 Text('Download failed. Check internet or release assets.')),
       );
     }
+  }
+
+  String _buildUpdateSubtitle(AppLocalizations l10n) {
+    final info = provider.updateInfo;
+    if (provider.isCheckingForUpdates) {
+      return l10n.updatesChecking;
+    }
+    if (info == null) {
+      return l10n.updatesSubtitleDefault;
+    }
+    if (provider.hasPendingUpdate) {
+      return _withLastChecked(
+          l10n.updatesSubtitleAvailable(info.latestVersion), l10n);
+    }
+    if (provider.skippedUpdateVersion != null &&
+        info.hasUpdate &&
+        info.latestVersion == provider.skippedUpdateVersion) {
+      return _withLastChecked(
+          l10n.updatesSubtitleSkipped(info.latestVersion), l10n);
+    }
+    return _withLastChecked(
+        l10n.updatesSubtitleUpToDate(info.currentVersion), l10n);
+  }
+
+  String _withLastChecked(String base, AppLocalizations l10n) {
+    final checkedAt = provider.lastUpdateCheckAt;
+    if (checkedAt == null) return base;
+    return '$base • ${l10n.updatesLastChecked(UpdateService.formatPublishedAt(checkedAt))}';
   }
 }
 

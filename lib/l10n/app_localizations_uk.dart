@@ -105,31 +105,32 @@ class AppLocalizationsUk extends AppLocalizations {
   String get modeAdaptive => 'Адаптивний інтелект (Авто)';
 
   @override
-  String get modeAdaptiveSubtitle => 'Баланс автономності та економії (SBU)';
+  String get modeAdaptiveSubtitle =>
+      'Динамічний режим: прогноз, тариф і стан АКБ';
 
   @override
   String get modeAdaptiveDesc =>
-      'Інвертор самостійно маневрує між сонячною енергією та батареєю. Мережа використовується лише при критичному розряді.';
+      'Адаптивний режим щохвилини аналізує:\n• поточну генерацію PV і споживання будинку\n• прогноз сонячної генерації на день\n• заряд АКБ та резерв безпеки\n• часові зони тарифу (ніч/день/вечір)\n\nЩо робить режим:\n• Вночі оцінює, чи вистачить сонця наступного дня, і вирішує: заряджати АКБ від мережі чи ні\n• Вдень перемикає пріоритет так, щоб зберегти енергію на вечірній пік\n• Увечері максимально використовує АКБ до резервного порогу\n• Автоматично повертає живлення від мережі, якщо є ризик просадки АКБ\n\nРезультат: мінімум ручних перемикань, нижча вартість електроенергії та стабільніша робота системи.';
 
   @override
   String get modeArbitrage => 'Нічний арбітраж';
 
   @override
-  String get modeArbitrageSubtitle => 'Максимальна фінансова економія';
+  String get modeArbitrageSubtitle => 'Жорстка економія за часовими тарифами';
 
   @override
   String get modeArbitrageDesc =>
-      'О 23:00 інвертор плавно заряджає батарею за нічним тарифом. Вдень пріоритет віддається сонцю. Налаштовано динамічне відключення бойлера при низькому заряді.';
+      'Режим орієнтований на мінімальну ціну електроенергії:\n• У нічний тариф примусово працює від мережі та заряджає АКБ\n• У денний/вечірній період віддає пріоритет АКБ і сонцю\n• Зарядка від мережі вдень вимикається\n\nПідійде, якщо головна ціль — економія, навіть ціною більш частих циклів АКБ.';
 
   @override
   String get modeStorm => 'Резерв / Шторм';
 
   @override
-  String get modeStormSubtitle => 'Підготовка до віялових відключень';
+  String get modeStormSubtitle => 'Максимальний резерв на випадок відключень';
 
   @override
   String get modeStormDesc =>
-      'Фінансова економія ігнорується. Батарея примусово підтримується на 100% від мережі (режим USB). Готовність до непередбачуваних відключень.';
+      'Режим пріоритету надійності:\n• Система тримає АКБ максимально зарядженою\n• Живлення будинку від мережі для збереження ресурсу АКБ перед аваріями\n• Економія тарифу не є пріоритетом\n\nРекомендовано перед штормами, нестабільною мережею або при ризику тривалих відключень.';
 
   @override
   String get account => 'Акаунт';
@@ -179,7 +180,8 @@ class AppLocalizationsUk extends AppLocalizations {
   String get hemsTitle => 'Інтелектуальні HEMS режими';
 
   @override
-  String get hemsSubtitle => 'Оберіть стратегію керування енергією';
+  String get hemsSubtitle =>
+      'Оберіть стратегію: адаптивна автоматизація, економія або резерв';
 
   @override
   String get gotIt => 'Зрозуміло';
@@ -239,6 +241,71 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get copiedToClipboard => 'Скопійовано в буфер обміну';
+
+  @override
+  String get updatesTitle => 'Оновлення';
+
+  @override
+  String get updatesCheckingBackground => 'Перевірка оновлень у фоні...';
+
+  @override
+  String get updatesChecking => 'Перевірка оновлень...';
+
+  @override
+  String get updatesSubtitleDefault =>
+      'Перевірити та встановити останню версію';
+
+  @override
+  String updatesSubtitleAvailable(String version) {
+    return 'Доступна нова версія $version';
+  }
+
+  @override
+  String updatesSubtitleSkipped(String version) {
+    return 'Версію $version пропущено';
+  }
+
+  @override
+  String updatesSubtitleUpToDate(String version) {
+    return 'У вас остання версія ($version)';
+  }
+
+  @override
+  String updatesLastChecked(String time) {
+    return 'Остання перевірка: $time';
+  }
+
+  @override
+  String updatesSkippedBanner(String version) {
+    return 'Версію $version наразі пропущено.';
+  }
+
+  @override
+  String get updatesSkippedRestored => 'Пропущену версію відновлено.';
+
+  @override
+  String get updatesRestore => 'Відновити';
+
+  @override
+  String updatesBannerAvailable(String version) {
+    return 'Доступне оновлення $version';
+  }
+
+  @override
+  String updatesCurrentVersion(String version) {
+    return 'Поточна версія: $version';
+  }
+
+  @override
+  String get updatesView => 'Переглянути';
+
+  @override
+  String get updatesSkip => 'Пропустити';
+
+  @override
+  String updatesSkippedNow(String version) {
+    return 'Версію $version пропущено.';
+  }
 
   @override
   String get solarSbu => 'СОНЦЕ (SBU)';

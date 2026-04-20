@@ -68,6 +68,27 @@ class AppTheme {
         margin: EdgeInsets.zero,
       ),
 
+      // Dialogs
+      dialogTheme: DialogThemeData(
+        backgroundColor: _lightCard,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: _lightBorder, width: 1),
+        ),
+        titleTextStyle: const TextStyle(
+          color: _lightText,
+          fontWeight: FontWeight.w600,
+          fontSize: 20,
+        ),
+        contentTextStyle: const TextStyle(
+          color: _lightTextSecondary,
+          fontSize: 14,
+          height: 1.45,
+        ),
+      ),
+
       // Input Decoration
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
@@ -170,6 +191,27 @@ class AppTheme {
         elevation: 0,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         margin: EdgeInsets.zero,
+      ),
+
+      // Dialogs
+      dialogTheme: DialogThemeData(
+        backgroundColor: _darkCard,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: _darkBorder, width: 1),
+        ),
+        titleTextStyle: const TextStyle(
+          color: _darkText,
+          fontWeight: FontWeight.w600,
+          fontSize: 20,
+        ),
+        contentTextStyle: const TextStyle(
+          color: _darkTextSecondary,
+          fontSize: 14,
+          height: 1.45,
+        ),
       ),
 
       // Input Decoration
