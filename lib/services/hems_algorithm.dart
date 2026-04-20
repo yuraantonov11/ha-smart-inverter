@@ -12,6 +12,7 @@ class HemsAlgorithmService {
   bool _keepaliveInProgress = false;
   static const _keepaliveInterval = Duration(hours: 2);
   static const _keepaliveDuration = Duration(seconds: 90);
+  static const _keepaliveMinSoc = 22.0;
 
   HemsAlgorithmService(this.provider);
 
@@ -30,8 +31,8 @@ class HemsAlgorithmService {
 
     _trackBatteryActivity(data);
 
-    // Не робимо keepalive якщо SOC занадто низький
-    if (data.batterySoc < 15) return false;
+    // Не робимо keepalive якщо SOC близький до резерву
+    if (data.batterySoc <= _keepaliveMinSoc) return false;
 
     final lastActivity = _lastBatteryActivityAt;
     if (lastActivity == null) {
@@ -91,11 +92,12 @@ class HemsAlgorithmService {
         avgHourlyConsumptionStats, // Статистика споживання (година: Ват-години)
     required double
         productionCoefficient, // Коефіцієнт реальної генерації (напр. 0.75)
+    DateTime? nowOverride,
   }) async {
     // Keepalive перевірка — якщо батарея засинає, пробуджуємо
     if (await _batteryKeepalive(data)) return;
 
-    final now = DateTime.now();
+    final now = nowOverride ?? DateTime.now();
     final currentHour = now.hour;
 
     final currentOutput =
@@ -113,6 +115,7 @@ class HemsAlgorithmService {
 
     final currentEnergyWh = maxBatteryCapacityWh * (data.batterySoc / 100.0);
     final availableEnergyWh = max(0.0, currentEnergyWh - reserveEnergyWh);
+    final eveningSafetyWh = maxBatteryCapacityWh * 0.01; // 1% буфер від флотів
 
     final formatter = DateFormat('yyyy-MM-dd HH:mm');
 
@@ -199,17 +202,24 @@ class HemsAlgorithmService {
             'chargerSourcePrioritySetting', '2'); // OSO
       }
 
-      if (availableEnergyWh > 0) {
+      final reserveProtectionActive =
+          data.batterySoc <= (reserveSoc + 2.0) ||
+              availableEnergyWh <= eveningSafetyWh;
+      final batteryCanBeUsed =
+          data.batterySoc >= (reserveSoc + 5.0) &&
+              availableEnergyWh > eveningSafetyWh;
+
+      if (reserveProtectionActive) {
+        if (currentOutput != '0') {
+          LogService.log(
+              '⚠️ Вечір: SOC ${data.batterySoc.toStringAsFixed(1)}% біля резерву ${reserveSoc.toInt()}%. Перехід на мережу (USB).');
+          await provider.setMode(0); // USB
+        }
+      } else if (batteryCanBeUsed) {
         if (currentOutput != '2') {
           LogService.log(
               '🌆 Вечір: Працюємо від АКБ (SBU). Залишок: ${availableEnergyWh.toInt()} Вт*год.');
           await provider.setMode(2); // SBU
-        }
-      } else {
-        if (currentOutput != '0') {
-          LogService.log(
-              '⚠️ Вечір: АКБ вичерпано до резерву. Перехід на мережу (USB).');
-          await provider.setMode(0); // USB
         }
       }
     } else {
