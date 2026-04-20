@@ -31,44 +31,18 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
 
   @override
   Widget build(BuildContext context) {
-// 1. БЕЗПЕЧНЕ вилучення даних з кешу
-    final fullConfigs =
-        widget.data.rawFields['fullConfigs'] as Map<String, dynamic>?;
+    // Always use live realtime values. fullConfigs are static device settings
+    // and may freeze flow visualization after first load.
+    final pvPower = widget.data.pvPower.toDouble();
+    final loadPower = widget.data.loadPower.toDouble();
+    final gridPower = widget.data.gridPower.toDouble();
+    final batterySoc = widget.data.batterySoc.toInt();
 
-    // 2. Зчитуємо потоки (Siseli віддає потужність у кВт, тому множимо на 1000 для Вт)
-    // Якщо fullConfigs ще null, плавно використовуємо старі дані, щоб графік не падав
-    final double pvPower = fullConfigs != null
-        ? (fullConfigs['pvFlow']?['value']?['value'] ?? 0.0).toDouble() * 1000
-        : widget.data.pvPower.toDouble();
+    final isGridImport = gridPower > 30;
+    final isGridExport = gridPower < -30;
 
-    final double loadPower = fullConfigs != null
-        ? (fullConfigs['loadFlow']?['value']?['value'] ?? 0.0).toDouble() * 1000
-        : widget.data.loadPower.toDouble();
-
-    final double gridPower = fullConfigs != null
-        ? (fullConfigs['gridFlow']?['value']?['value'] ?? 0.0).toDouble() * 1000
-        : widget.data.gridPower.toDouble();
-
-    final int batterySoc = fullConfigs != null
-        ? (fullConfigs['batteryFlow']?['value']?['value'] ?? 0).toInt()
-        : widget.data.batterySoc.toInt();
-
-    final isGridImport = fullConfigs != null
-        ? (fullConfigs['gridFlow']?['flowDirection'] == 1)
-        : gridPower > 0;
-
-    final isGridExport = fullConfigs != null
-        ? (fullConfigs['gridFlow']?['flowDirection'] == 2)
-        : false;
-
-    // 1 - Заряд, 2 - Розряд (fallback на старі дані струму)
-    final isBatCharging = fullConfigs != null
-        ? (fullConfigs['batteryFlow']?['flowDirection'] == 1)
-        : widget.data.batteryPower > 0;
-
-    final isBatDischarging = fullConfigs != null
-        ? (fullConfigs['batteryFlow']?['flowDirection'] == 2) // Додано дужки
-        : widget.data.batteryPower < 0;
+    final isBatCharging = widget.data.batteryPower > 30;
+    final isBatDischarging = widget.data.batteryPower < -30;
 
     return Container(
       height: 240,
@@ -96,15 +70,15 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
             painter: _FlowPainter(
               animationValue: _controller.value,
               pvPower: pvPower,
-              gridPower: gridPower,
+              gridPower: gridPower.abs(),
               loadPower: loadPower,
               isGridImport: isGridImport,
               isGridExport: isGridExport,
               isBatCharging: isBatCharging,
               isBatDischarging: isBatDischarging,
             ),
-            child: _buildNodes(context, pvPower, loadPower, batterySoc,
-                widget.data.gridVoltage.toDouble()),
+            child: _buildNodes(
+                context, pvPower, loadPower, batterySoc, gridPower.abs()),
           );
         },
       ),
@@ -112,7 +86,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
   }
 
   Widget _buildNodes(BuildContext context, double pvPower, double loadPower,
-      int batterySoc, double gridVoltage) {
+      int batterySoc, double gridPower) {
     final l10n = AppLocalizations.of(context)!;
     return Stack(
       children: [
@@ -130,7 +104,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                 icon: Icons.electric_bolt,
                 color: Colors.blueAccent,
                 title: l10n.grid,
-                value: '${gridVoltage.toStringAsFixed(1)} V')),
+                value: '${gridPower.toStringAsFixed(0)} W')),
         Align(
             alignment: Alignment.bottomLeft,
             child: _NodeWidget(

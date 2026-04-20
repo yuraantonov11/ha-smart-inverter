@@ -476,6 +476,78 @@ abstract class AppLocalizations {
   /// **'Name'**
   String get name;
 
+  /// No description provided for @notProvided.
+  ///
+  /// In en, this message translates to:
+  /// **'Not provided'**
+  String get notProvided;
+
+  /// No description provided for @unknownValue.
+  ///
+  /// In en, this message translates to:
+  /// **'Unknown'**
+  String get unknownValue;
+
+  /// No description provided for @accountStatusLocal.
+  ///
+  /// In en, this message translates to:
+  /// **'Local profile only'**
+  String get accountStatusLocal;
+
+  /// No description provided for @accountStatusSynced.
+  ///
+  /// In en, this message translates to:
+  /// **'Cloud profile synced'**
+  String get accountStatusSynced;
+
+  /// No description provided for @cloudAccount.
+  ///
+  /// In en, this message translates to:
+  /// **'Cloud account'**
+  String get cloudAccount;
+
+  /// No description provided for @phoneLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Phone'**
+  String get phoneLabel;
+
+  /// No description provided for @sessionId.
+  ///
+  /// In en, this message translates to:
+  /// **'Session ID'**
+  String get sessionId;
+
+  /// No description provided for @accountProfileHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Profile data is used for account display and inverter cloud access.'**
+  String get accountProfileHint;
+
+  /// No description provided for @logoutConfirmMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'Are you sure you want to sign out from this device?'**
+  String get logoutConfirmMessage;
+
+  /// No description provided for @nameCannotBeEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Name cannot be empty'**
+  String get nameCannotBeEmpty;
+
+  /// No description provided for @copy.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy'**
+  String get copy;
+
+  /// No description provided for @copiedToClipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Copied to clipboard'**
+  String get copiedToClipboard;
+
   /// No description provided for @solarSbu.
   ///
   /// In en, this message translates to:
@@ -542,6 +614,24 @@ abstract class AppLocalizations {
   /// **'Load'**
   String get load;
 
+  /// No description provided for @connectionOnline.
+  ///
+  /// In en, this message translates to:
+  /// **'Online'**
+  String get connectionOnline;
+
+  /// No description provided for @connectionOffline.
+  ///
+  /// In en, this message translates to:
+  /// **'Offline'**
+  String get connectionOffline;
+
+  /// No description provided for @lastRealtimeUpdate.
+  ///
+  /// In en, this message translates to:
+  /// **'Last update'**
+  String get lastRealtimeUpdate;
+
   /// No description provided for @updatedAt.
   ///
   /// In en, this message translates to:
@@ -553,6 +643,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Update failed'**
   String get updateFailed;
+
+  /// No description provided for @retry.
+  ///
+  /// In en, this message translates to:
+  /// **'Retry'**
+  String get retry;
 
   /// No description provided for @updated.
   ///

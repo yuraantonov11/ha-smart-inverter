@@ -203,6 +203,44 @@ class AppLocalizationsEn extends AppLocalizations {
   String get name => 'Name';
 
   @override
+  String get notProvided => 'Not provided';
+
+  @override
+  String get unknownValue => 'Unknown';
+
+  @override
+  String get accountStatusLocal => 'Local profile only';
+
+  @override
+  String get accountStatusSynced => 'Cloud profile synced';
+
+  @override
+  String get cloudAccount => 'Cloud account';
+
+  @override
+  String get phoneLabel => 'Phone';
+
+  @override
+  String get sessionId => 'Session ID';
+
+  @override
+  String get accountProfileHint =>
+      'Profile data is used for account display and inverter cloud access.';
+
+  @override
+  String get logoutConfirmMessage =>
+      'Are you sure you want to sign out from this device?';
+
+  @override
+  String get nameCannotBeEmpty => 'Name cannot be empty';
+
+  @override
+  String get copy => 'Copy';
+
+  @override
+  String get copiedToClipboard => 'Copied to clipboard';
+
+  @override
   String get solarSbu => 'SOLAR (SBU)';
 
   @override
@@ -236,12 +274,24 @@ class AppLocalizationsEn extends AppLocalizations {
   String get load => 'Load';
 
   @override
+  String get connectionOnline => 'Online';
+
+  @override
+  String get connectionOffline => 'Offline';
+
+  @override
+  String get lastRealtimeUpdate => 'Last update';
+
+  @override
   String updatedAt(String time) {
     return 'Updated at $time';
   }
 
   @override
   String get updateFailed => 'Update failed';
+
+  @override
+  String get retry => 'Retry';
 
   @override
   String get updated => 'Updated!';

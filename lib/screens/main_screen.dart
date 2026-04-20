@@ -28,6 +28,7 @@ class _MainScreenState extends State<MainScreen> {
   Widget build(BuildContext context) {
     final provider = context.watch<AppStateProvider>();
     final data = provider.data;
+    final viewData = data ?? provider.cachedSnapshotData;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final l10n = AppLocalizations.of(context)!;
 
@@ -75,18 +76,28 @@ class _MainScreenState extends State<MainScreen> {
             ],
           ),
         ),
-        body: data == null
-            ? const Center(
-                child: CircularProgressIndicator(),
-              )
-            : TabBarView(
-                children: [
-                  DashboardTab(provider: provider, data: data),
-                  AutomationTab(provider: provider),
-                  DetailsTab(data: data, provider: provider),
-                  SettingsTab(provider: provider),
-                ],
-              ),
+        body: TabBarView(
+          children: [
+            viewData != null
+                ? DashboardTab(provider: provider, data: viewData)
+                : _NoDataState(
+                    isOffline: provider.isInverterOffline,
+                    statusMessage: provider.statusMessage,
+                    onRetry: provider.fetchData,
+                    isLoading: provider.isDataLoading,
+                  ),
+            AutomationTab(provider: provider),
+            viewData != null
+                ? DetailsTab(data: viewData, provider: provider)
+                : _NoDataState(
+                    isOffline: provider.isInverterOffline,
+                    statusMessage: provider.statusMessage,
+                    onRetry: provider.fetchData,
+                    isLoading: provider.isDataLoading,
+                  ),
+            SettingsTab(provider: provider),
+          ],
+        ),
       ),
     );
   }
@@ -96,6 +107,68 @@ class _MainScreenState extends State<MainScreen> {
       icon: Icon(icon),
       text: label,
       iconMargin: const EdgeInsets.only(bottom: AppTheme.spacingXS),
+    );
+  }
+}
+
+class _NoDataState extends StatelessWidget {
+  final bool isOffline;
+  final String statusMessage;
+  final Future<void> Function() onRetry;
+  final bool isLoading;
+
+  const _NoDataState({
+    required this.isOffline,
+    required this.statusMessage,
+    required this.onRetry,
+    required this.isLoading,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final localeCode = Localizations.localeOf(context).languageCode;
+    final offlineLabel = localeCode == 'uk' ? 'Офлайн' : 'Offline';
+    final retryLabel = localeCode == 'uk' ? 'Повторити' : 'Retry';
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: isLoading
+            ? const CircularProgressIndicator()
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    isOffline
+                        ? Icons.cloud_off_rounded
+                        : Icons.wifi_tethering_error,
+                    size: 44,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    isOffline ? offlineLabel : l10n.updateFailed,
+                    style: Theme.of(context).textTheme.titleMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    statusMessage.isNotEmpty
+                        ? statusMessage
+                        : l10n.updateFailed,
+                    style: Theme.of(context).textTheme.bodyMedium,
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: onRetry,
+                    icon: const Icon(Icons.refresh),
+                    label: Text(retryLabel),
+                  ),
+                ],
+              ),
+      ),
     );
   }
 }

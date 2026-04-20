@@ -203,6 +203,44 @@ class AppLocalizationsUk extends AppLocalizations {
   String get name => 'Ім\'я';
 
   @override
+  String get notProvided => 'Не вказано';
+
+  @override
+  String get unknownValue => 'Невідомо';
+
+  @override
+  String get accountStatusLocal => 'Локальний профіль';
+
+  @override
+  String get accountStatusSynced => 'Профіль синхронізовано';
+
+  @override
+  String get cloudAccount => 'Cloud акаунт';
+
+  @override
+  String get phoneLabel => 'Телефон';
+
+  @override
+  String get sessionId => 'ID сесії';
+
+  @override
+  String get accountProfileHint =>
+      'Дані профілю використовуються для відображення акаунта та доступу до хмари інвертора.';
+
+  @override
+  String get logoutConfirmMessage =>
+      'Ви впевнені, що хочете вийти на цьому пристрої?';
+
+  @override
+  String get nameCannotBeEmpty => 'Ім\'я не може бути порожнім';
+
+  @override
+  String get copy => 'Копіювати';
+
+  @override
+  String get copiedToClipboard => 'Скопійовано в буфер обміну';
+
+  @override
   String get solarSbu => 'СОНЦЕ (SBU)';
 
   @override
@@ -236,12 +274,24 @@ class AppLocalizationsUk extends AppLocalizations {
   String get load => 'Будинок';
 
   @override
+  String get connectionOnline => 'Онлайн';
+
+  @override
+  String get connectionOffline => 'Офлайн';
+
+  @override
+  String get lastRealtimeUpdate => 'Останнє оновлення';
+
+  @override
   String updatedAt(String time) {
     return 'Оновлено о $time';
   }
 
   @override
   String get updateFailed => 'Помилка оновлення';
+
+  @override
+  String get retry => 'Повторити';
 
   @override
   String get updated => 'Оновлено!';

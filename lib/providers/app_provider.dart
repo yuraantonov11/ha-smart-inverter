@@ -12,10 +12,13 @@ import '../services/inverter_service.dart';
 import '../services/hems_algorithm.dart';
 import '../services/weather_service.dart';
 import '../services/log_service.dart';
+import '../services/update_service.dart';
 import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
   static const String _defaultAppVersionLabel = 'Version --';
+  static const String _lastSnapshotKey = 'last_inverter_snapshot';
+  static const String _skippedUpdateVersionKey = 'skipped_update_version';
   final InverterService service = InverterService();
   final WeatherService weatherService = WeatherService();
   late HemsAlgorithmService hemsService;
@@ -64,10 +67,31 @@ class AppStateProvider extends ChangeNotifier {
   bool _isSettingChanging = false;
   bool _isPollingInBackground = false;
   bool _timersStarted = false;
+  int _consecutiveRealtimeNulls = 0;
+  DateTime? _lastRealtimeNullLogAt;
+  DateTime? _lastRecoveryAttemptAt;
+  DateTime? _lastSuccessfulRealtimeAt;
+  InverterData? _cachedSnapshotData;
+
+  UpdateInfo? _updateInfo;
+  bool _isCheckingForUpdates = false;
+  DateTime? _lastUpdateCheckAt;
+  String? _skippedUpdateVersion;
 
   bool get isSettingChanging => _isSettingChanging;
   bool get isConfigLoading => _isPollingInBackground;
   String get appVersionLabel => _appVersionLabel;
+  bool get isInverterOffline => service.lastRealtimeOffline;
+  DateTime? get lastSuccessfulRealtimeAt => _lastSuccessfulRealtimeAt;
+  InverterData? get cachedSnapshotData => _cachedSnapshotData;
+  UpdateInfo? get updateInfo => _updateInfo;
+  bool get isCheckingForUpdates => _isCheckingForUpdates;
+  DateTime? get lastUpdateCheckAt => _lastUpdateCheckAt;
+  String? get skippedUpdateVersion => _skippedUpdateVersion;
+  bool get hasPendingUpdate =>
+      _updateInfo != null &&
+      _updateInfo!.hasUpdate &&
+      _updateInfo!.latestVersion != _skippedUpdateVersion;
 
   AppStateProvider() {
     hemsService = HemsAlgorithmService(this);
@@ -78,12 +102,21 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> fetchProfile() async {
-    if (service.userId == null) return;
+    if (service.userId == null) {
+      LogService.log('⚠️ profile.fetch skipped: userId is null');
+      return;
+    }
 
-    final data = await service.getUserInfo(service.userId!);
+    LogService.log('👤 profile.fetch start: userId=${service.userId}');
+
+    final data = await service.getUserInfo();
     if (data.isNotEmpty) {
       userData = data;
+      LogService.log(
+          '✅ profile.fetch success: account=${data['account']}, uid=${data['uid']}');
       notifyListeners();
+    } else {
+      LogService.log('⚠️ profile.fetch empty response');
     }
   }
 
@@ -105,6 +138,7 @@ class AppStateProvider extends ChangeNotifier {
     final l10n = await _getL10n();
     userName = prefs.getString('user_name') ?? l10n.userNameDefault;
     savedEmail = prefs.getString('saved_email');
+    _skippedUpdateVersion = prefs.getString(_skippedUpdateVersionKey);
 
     // Load historical PV data
     final historicalDataStr = prefs.getString('historical_pv_data');
@@ -119,6 +153,18 @@ class AppStateProvider extends ChangeNotifier {
       }
     }
 
+    // Load last successful realtime snapshot (used when inverter is offline).
+    final snapshotStr = prefs.getString(_lastSnapshotKey);
+    if (snapshotStr != null && snapshotStr.isNotEmpty) {
+      try {
+        final decoded = json.decode(snapshotStr) as Map<String, dynamic>;
+        _cachedSnapshotData = InverterData.fromCacheMap(decoded);
+      } catch (e) {
+        LogService.log('Error loading cached inverter snapshot: $e');
+        _cachedSnapshotData = null;
+      }
+    }
+
     // Перевірка автологіну при старті
     var loggedIn = await autoLogin();
     isAuthenticated = loggedIn;
@@ -126,11 +172,61 @@ class AppStateProvider extends ChangeNotifier {
 
     if (loggedIn) {
       startTimers();
+      await fetchProfile();
     }
 
     await _loadAppVersion();
     await _updateWeatherForecast();
     await _updateStatusMessage(true);
+    // Fire-and-forget startup check for a non-intrusive update badge in Settings.
+    // ignore: unawaited_futures
+    checkForUpdates();
+    notifyListeners();
+  }
+
+  Future<UpdateInfo> checkForUpdates({bool force = false}) async {
+    if (_isCheckingForUpdates) {
+      return _updateInfo ??
+          const UpdateInfo(
+            hasUpdate: false,
+            currentVersion: '--',
+            latestVersion: '--',
+          );
+    }
+
+    _isCheckingForUpdates = true;
+    notifyListeners();
+    try {
+      final info = await UpdateService.fetchUpdateInfo();
+      _updateInfo = info;
+      _lastUpdateCheckAt = DateTime.now();
+
+      if (force && _skippedUpdateVersion == info.latestVersion) {
+        _skippedUpdateVersion = null;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_skippedUpdateVersionKey);
+      }
+
+      return info;
+    } finally {
+      _isCheckingForUpdates = false;
+      notifyListeners();
+    }
+  }
+
+  Future<void> skipLatestUpdate() async {
+    final info = _updateInfo;
+    if (info == null || !info.hasUpdate) return;
+    _skippedUpdateVersion = info.latestVersion;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_skippedUpdateVersionKey, info.latestVersion);
+    notifyListeners();
+  }
+
+  Future<void> clearSkippedUpdate() async {
+    _skippedUpdateVersion = null;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_skippedUpdateVersionKey);
     notifyListeners();
   }
 
@@ -329,6 +425,7 @@ class AppStateProvider extends ChangeNotifier {
 
       isAuthenticated = true;
       startTimers();
+      await fetchProfile();
       notifyListeners();
     }
     return success;
@@ -341,7 +438,11 @@ class AppStateProvider extends ChangeNotifier {
     savedEmail = null;
     service.accessToken = null;
     service.userId = null;
+    userData = null;
     data = null;
+    _lastSuccessfulRealtimeAt = null;
+    _cachedSnapshotData = null;
+    await prefs.remove(_lastSnapshotKey);
 
     stopTimers();
     isAuthenticated = false;
@@ -415,11 +516,17 @@ class AppStateProvider extends ChangeNotifier {
     final newData = await service.getRealTimeData();
 
     if (newData != null) {
+      _consecutiveRealtimeNulls = 0;
+      _lastSuccessfulRealtimeAt = DateTime.now();
       if (previousConfigs != null) {
         newData.rawFields['fullConfigs'] = previousConfigs;
       }
       data = newData;
+      _cachedSnapshotData = newData;
       _recordPvHistory(newData);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          _lastSnapshotKey, json.encode(newData.toCacheMap()));
       await _updateStatusMessage(true);
       if (isAuthenticated) await _updateTrayMenu();
 
@@ -428,9 +535,36 @@ class AppStateProvider extends ChangeNotifier {
         await _updateConsumptionStats();
       }
     } else {
-      LogService.log(
-          '⚠️ fetchData: getRealTimeData повернув null, deviceSn=${service.deviceSn}');
-      await _updateStatusMessage(false);
+      _consecutiveRealtimeNulls++;
+      final now = DateTime.now();
+      if (_lastRealtimeNullLogAt == null ||
+          now.difference(_lastRealtimeNullLogAt!) >
+              const Duration(seconds: 75)) {
+        LogService.log(
+            '⚠️ fetchData: getRealTimeData повернув null, deviceSn=${service.deviceSn}, nulls=$_consecutiveRealtimeNulls');
+        _lastRealtimeNullLogAt = now;
+      }
+
+      // Recover from stale/mismatched device assignment after repeated null cycles.
+      final recoveryCooldownPassed = _lastRecoveryAttemptAt == null ||
+          now.difference(_lastRecoveryAttemptAt!) > const Duration(minutes: 5);
+      if (_consecutiveRealtimeNulls >= 3 &&
+          recoveryCooldownPassed &&
+          !service.lastRealtimeOffline) {
+        _lastRecoveryAttemptAt = now;
+        service.deviceSn = null;
+        service.currentStationId = null;
+        service.invalidateConfigCache();
+        final reselectionOk = await service.ensureDeviceSelected();
+        LogService.log(
+            '🔁 fetchData recovery: device reselection=${reselectionOk ? 'ok' : 'failed'}, newDeviceSn=${service.deviceSn}');
+      } else if (service.lastRealtimeOffline &&
+          _consecutiveRealtimeNulls >= 3) {
+        statusMessage = 'Інвертор офлайн. Очікуємо відновлення зв\'язку...';
+      }
+      if (!service.lastRealtimeOffline) {
+        await _updateStatusMessage(false);
+      }
     }
 
     isDataLoading = false;

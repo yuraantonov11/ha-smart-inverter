@@ -131,4 +131,43 @@ class InverterData {
       rawFields: fields,
     );
   }
+
+  Map<String, dynamic> toCacheMap() {
+    return {
+      'pvPower': pvPower,
+      'gridPower': gridPower,
+      'batteryPower': batteryPower,
+      'loadPower': loadPower,
+      'batterySoc': batterySoc,
+      'pvVoltage': pvVoltage,
+      'gridVoltage': gridVoltage,
+      'batteryVoltage': batteryVoltage,
+      'loadPercentage': loadPercentage,
+      'workingMode': workingMode,
+      'deviceSn': deviceSn,
+      'currentModeStr': currentModeStr,
+      'rawFields': rawFields,
+    };
+  }
+
+  factory InverterData.fromCacheMap(Map<String, dynamic> map) {
+    final raw = map['rawFields'];
+    final rawFields = raw is Map<String, dynamic> ? raw : <String, dynamic>{};
+
+    return InverterData(
+      pvPower: (map['pvPower'] as num?)?.toDouble() ?? 0.0,
+      gridPower: (map['gridPower'] as num?)?.toDouble() ?? 0.0,
+      batteryPower: (map['batteryPower'] as num?)?.toDouble() ?? 0.0,
+      loadPower: (map['loadPower'] as num?)?.toDouble() ?? 0.0,
+      batterySoc: (map['batterySoc'] as num?)?.toDouble() ?? 0.0,
+      pvVoltage: (map['pvVoltage'] as num?)?.toDouble() ?? 0.0,
+      gridVoltage: (map['gridVoltage'] as num?)?.toDouble() ?? 0.0,
+      batteryVoltage: (map['batteryVoltage'] as num?)?.toDouble() ?? 0.0,
+      loadPercentage: (map['loadPercentage'] as num?)?.toDouble() ?? 0.0,
+      workingMode: map['workingMode']?.toString() ?? 'N/A',
+      deviceSn: map['deviceSn']?.toString() ?? '',
+      currentModeStr: map['currentModeStr']?.toString() ?? '',
+      rawFields: rawFields,
+    );
+  }
 }

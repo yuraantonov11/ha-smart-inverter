@@ -21,117 +21,7 @@ class SettingsTab extends StatelessWidget {
       children: [
         // Блок Акаунта
         _buildSectionTitle(l10n.account),
-        Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(24),
-          ),
-          child: Column(
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Stack(
-                    children: [
-                      const CircleAvatar(
-                        radius: 34,
-                        backgroundColor: Colors.amber,
-                        child:
-                            Icon(Icons.person, size: 34, color: Colors.black),
-                      ),
-                      Positioned(
-                        right: -2,
-                        bottom: -2,
-                        child: Container(
-                          padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(
-                              color: Colors.blue, shape: BoxShape.circle),
-                          child: InkWell(
-                            onTap: () => _showEditProfileDialog(context),
-                            child: const Icon(Icons.edit,
-                                size: 14, color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          provider.displayName,
-                          style: const TextStyle(
-                              fontSize: 18, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          provider.displayEmail,
-                          style: const TextStyle(color: Colors.grey),
-                        ),
-                        if (provider.displayPhone.isNotEmpty)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              'Тел: ${provider.displayPhone}',
-                              style: const TextStyle(
-                                  color: Colors.grey, fontSize: 13),
-                            ),
-                          ),
-                        const SizedBox(height: 10),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.blueGrey.withValues(alpha: 0.1),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            'UID: ${provider.userData?['uid'] ?? '...'}',
-                            style: const TextStyle(
-                                fontSize: 11, fontFamily: 'monospace'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Text(
-                  provider.userName ??
-                      l10n.userNameDefault, // Використання динамічного імені
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold)),
-              Text(provider.savedEmail ?? '',
-                  style: const TextStyle(color: Colors.grey, fontSize: 14)),
-              const SizedBox(height: 8),
-              Text(
-                  l10n.userId(provider.userId
-                      .toString()), // Відображення ID з провайдера
-                  style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: 20),
-              // Кнопка Виходу
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: provider.logout,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.redAccent,
-                    side: const BorderSide(color: Colors.redAccent),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                  ),
-                  icon: const Icon(Icons.logout, size: 18),
-                  label: Text(l10n.logout),
-                ),
-              ),
-            ],
-          ),
-        ),
+        _buildAccountCard(context, l10n),
 
         const SizedBox(height: 24),
 
@@ -145,12 +35,10 @@ class SettingsTab extends StatelessWidget {
             color: Theme.of(context).cardColor,
             borderRadius: BorderRadius.circular(24),
           ),
-          // Додано Material з прозорим фоном для уникнення помилки ListTile
           child: Material(
             color: Colors.transparent,
             child: Column(
               children: [
-                // Вибір мови
                 ListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -171,7 +59,6 @@ class SettingsTab extends StatelessWidget {
                   ),
                 ),
                 const Divider(height: 1),
-                // Вибір Теми
                 ListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -185,7 +72,6 @@ class SettingsTab extends StatelessWidget {
                   ),
                 ),
                 const Divider(height: 1),
-                // Автозапуск
                 SwitchListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -198,7 +84,6 @@ class SettingsTab extends StatelessWidget {
                   onChanged: provider.toggleAutostart,
                 ),
                 const Divider(height: 1),
-                // Перевірка оновлень
                 ListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
@@ -208,7 +93,6 @@ class SettingsTab extends StatelessWidget {
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => _checkForUpdates(context),
                 ),
-                // 1. Секція внизу списку
                 if (provider.isDeveloperMode) ...[
                   _buildSectionTitle('Debug Logs'),
                   Container(
@@ -230,10 +114,9 @@ class SettingsTab extends StatelessWidget {
                     ),
                   ),
                 ],
-
                 const SizedBox(height: 32),
                 GestureDetector(
-                  onTap: provider.handleVersionClick, // Ті самі 7 кліків
+                  onTap: provider.handleVersionClick,
                   child: Center(
                     child: Text(
                       provider.appVersionLabel,
@@ -260,50 +143,265 @@ class SettingsTab extends StatelessWidget {
     );
   }
 
-  void _showLogsDialog(BuildContext context) {
-    final logsSnapshot = List<String>.from(LogService.allLogs);
-    final allLogsText =
-        logsSnapshot.isEmpty ? 'No logs yet.' : logsSnapshot.join('\n');
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('App Logs'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 400,
-          child: Scrollbar(
-            child: SingleChildScrollView(
-              child: SelectableText(
-                allLogsText,
-                style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
+  Widget _buildAccountCard(BuildContext context, AppLocalizations l10n) {
+    final theme = Theme.of(context);
+
+    final displayName =
+        provider.displayName.trim().isNotEmpty && provider.displayName != 'N/A'
+            ? provider.displayName
+            : (provider.userName?.trim().isNotEmpty ?? false)
+                ? provider.userName!.trim()
+                : l10n.userNameDefault;
+
+    final email = provider.displayEmail.trim().isNotEmpty
+        ? provider.displayEmail.trim()
+        : (provider.savedEmail?.trim().isNotEmpty ?? false)
+            ? provider.savedEmail!.trim()
+            : l10n.notProvided;
+
+    final phone = provider.displayPhone.trim().isNotEmpty
+        ? provider.displayPhone.trim()
+        : l10n.notProvided;
+
+    final uid = provider.userData?['uid']?.toString().trim();
+    final cloudAccount = provider.displayAccount.trim().isNotEmpty &&
+            provider.displayAccount != 'N/A'
+        ? provider.displayAccount
+        : l10n.unknownValue;
+
+    final statusLabel = provider.userData == null
+        ? l10n.accountStatusLocal
+        : l10n.accountStatusSynced;
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: theme.cardColor,
+        borderRadius: BorderRadius.circular(24),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Stack(
+                children: [
+                  const CircleAvatar(
+                    radius: 32,
+                    backgroundColor: Colors.amber,
+                    child: Icon(Icons.person, size: 30, color: Colors.black),
+                  ),
+                  Positioned(
+                    right: -3,
+                    bottom: -3,
+                    child: InkWell(
+                      onTap: () => _showEditProfileDialog(context),
+                      borderRadius: BorderRadius.circular(20),
+                      child: Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: theme.colorScheme.primary,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.edit,
+                            size: 14, color: Colors.white),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      displayName,
+                      style: const TextStyle(
+                          fontSize: 19, fontWeight: FontWeight.w700),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      email,
+                      style: TextStyle(
+                        color: theme.textTheme.bodySmall?.color,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: provider.userData == null
+                            ? Colors.orange.withValues(alpha: 0.18)
+                            : Colors.green.withValues(alpha: 0.14),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        statusLabel,
+                        style: TextStyle(
+                          color: provider.userData == null
+                              ? Colors.orange[800]
+                              : Colors.green[700],
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(14),
+              color: theme.brightness == Brightness.dark
+                  ? Colors.white.withValues(alpha: 0.03)
+                  : Colors.black.withValues(alpha: 0.03),
+            ),
+            child: Column(
+              children: [
+                _buildAccountInfoRow(
+                  context,
+                  label: l10n.cloudAccount,
+                  value: cloudAccount,
+                  icon: Icons.cloud_done_rounded,
+                ),
+                _buildAccountInfoRow(
+                  context,
+                  label: l10n.phoneLabel,
+                  value: phone,
+                  icon: Icons.phone_outlined,
+                ),
+                _buildAccountInfoRow(
+                  context,
+                  label: 'UID',
+                  value: (uid?.isNotEmpty ?? false) ? uid! : '...',
+                  icon: Icons.badge_outlined,
+                  monospace: true,
+                  onCopy: () => _copyToClipboard(
+                    context,
+                    (uid?.isNotEmpty ?? false) ? uid! : null,
+                  ),
+                ),
+                _buildAccountInfoRow(
+                  context,
+                  label: l10n.sessionId,
+                  value: provider.userId,
+                  icon: Icons.fingerprint,
+                  monospace: true,
+                  onCopy: () => _copyToClipboard(context, provider.userId),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            l10n.accountProfileHint,
+            style: TextStyle(
+              fontSize: 12,
+              color: theme.textTheme.bodySmall?.color,
+            ),
+          ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _showEditProfileDialog(context),
+                  icon: const Icon(Icons.edit_outlined, size: 18),
+                  label: Text(l10n.editProfile),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _confirmLogout(context),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.redAccent,
+                    side: const BorderSide(color: Colors.redAccent),
+                  ),
+                  icon: const Icon(Icons.logout, size: 18),
+                  label: Text(l10n.logout),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAccountInfoRow(
+    BuildContext context, {
+    required String label,
+    required String value,
+    required IconData icon,
+    bool monospace = false,
+    VoidCallback? onCopy,
+  }) {
+    final textStyle = Theme.of(context).textTheme.bodyMedium;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Icon(icon, size: 17, color: Colors.grey),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              style: textStyle?.copyWith(
+                color: Theme.of(context).textTheme.bodySmall?.color,
               ),
             ),
           ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () async {
-              await Clipboard.setData(ClipboardData(text: allLogsText));
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Logs copied to clipboard')),
-                );
-              }
-            },
-            child: const Text('Copy all'),
+          Flexible(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.end,
+              style: textStyle?.copyWith(
+                fontWeight: FontWeight.w600,
+                fontFamily: monospace ? 'monospace' : null,
+              ),
+            ),
           ),
-          TextButton(
-            onPressed: () {
-              LogService.clear();
-              Navigator.pop(context);
-            },
-            child: const Text('Clear'),
-          ),
-          TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Close')),
+          if (onCopy != null) ...[
+            const SizedBox(width: 4),
+            IconButton(
+              onPressed: onCopy,
+              splashRadius: 16,
+              icon: const Icon(Icons.copy_rounded, size: 16),
+              color: Theme.of(context).textTheme.bodySmall?.color,
+              tooltip: AppLocalizations.of(context)!.copy,
+            ),
+          ],
         ],
       ),
+    );
+  }
+
+  Future<void> _copyToClipboard(BuildContext context, String? value) async {
+    if (value == null || value.trim().isEmpty || value.trim() == '...') return;
+    await Clipboard.setData(ClipboardData(text: value.trim()));
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(AppLocalizations.of(context)!.copiedToClipboard)),
+    );
+  }
+
+  void _showLogsDialog(BuildContext context) {
+    final logsSnapshot = List<LogEntry>.from(LogService.entries);
+    showDialog(
+      context: context,
+      builder: (context) => _LogsDialog(entries: logsSnapshot),
     );
   }
 
@@ -328,7 +426,17 @@ class SettingsTab extends StatelessWidget {
           ),
           ElevatedButton(
             onPressed: () {
-              provider.updateProfile(controller.text);
+              final name = controller.text.trim();
+              if (name.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(l10n.nameCannotBeEmpty),
+                  ),
+                );
+                return;
+              }
+
+              provider.updateProfile(name);
               Navigator.pop(context);
             },
             child: Text(l10n.save),
@@ -336,6 +444,31 @@ class SettingsTab extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _confirmLogout(BuildContext context) async {
+    final l10n = AppLocalizations.of(context)!;
+    final shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(l10n.logout),
+        content: Text(l10n.logoutConfirmMessage),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(l10n.cancel),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(l10n.logout),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldLogout == true) {
+      await provider.logout();
+    }
   }
 
   void _checkForUpdates(BuildContext context) async {
@@ -356,69 +489,125 @@ class SettingsTab extends StatelessWidget {
       ),
     ));
 
-    final hasUpdate = await UpdateService.checkForUpdate();
+    final info = await UpdateService.fetchUpdateInfo();
     if (!context.mounted) return;
     Navigator.pop(context); // Close loading dialog
 
-    if (hasUpdate) {
+    if (info.hasUpdate) {
       if (!context.mounted) return;
-      unawaited(showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Update Available'),
-          content: const Text(
-              'A new version is available. Do you want to download and install it?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context); // Close update dialog
-                await _downloadAndInstallUpdate(context);
-              },
-              child: const Text('Update'),
-            ),
-          ],
-        ),
-      ));
+      await _showUpdateAvailableDialog(context, info);
     } else {
       scaffoldMessenger.showSnackBar(
-        const SnackBar(content: Text('You are up to date!')),
+        SnackBar(
+          content: Text('You are up to date (${info.currentVersion}).'),
+        ),
       );
     }
   }
 
-  Future<void> _downloadAndInstallUpdate(BuildContext context) async {
-    final scaffoldMessenger = ScaffoldMessenger.of(context);
+  Future<void> _showUpdateAvailableDialog(
+      BuildContext context, UpdateInfo info) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Update Available'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Current: ${info.currentVersion}'),
+            Text('Latest: ${info.latestVersion}'),
+            const SizedBox(height: 8),
+            Text(
+                'Published: ${UpdateService.formatPublishedAt(info.publishedAt)}'),
+            if (info.assetName != null) ...[
+              const SizedBox(height: 4),
+              Text('Package: ${info.assetName}'),
+            ],
+            if ((info.releaseNotes ?? '').trim().isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                (info.releaseNotes!.trim().length > 220)
+                    ? '${info.releaseNotes!.trim().substring(0, 220)}...'
+                    : info.releaseNotes!.trim(),
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Later'),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _downloadAndInstallUpdate(context, info);
+            },
+            icon: const Icon(Icons.download_rounded),
+            label: const Text('Download'),
+          ),
+        ],
+      ),
+    );
+  }
 
-    unawaited(showDialog(
+  Future<void> _downloadAndInstallUpdate(
+      BuildContext context, UpdateInfo info) async {
+    final scaffoldMessenger = ScaffoldMessenger.of(context);
+    if (info.downloadUrl == null || info.assetName == null) {
+      scaffoldMessenger.showSnackBar(
+        const SnackBar(
+          content: Text('No compatible installer was found in the release.'),
+        ),
+      );
+      return;
+    }
+
+    final progressNotifier = ValueNotifier<double>(0.0);
+
+    unawaited(showDialog<void>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => const AlertDialog(
-        content: Row(
-          children: [
-            CircularProgressIndicator(),
-            SizedBox(width: 16),
-            Text('Downloading update...'),
-          ],
+      builder: (context) => AlertDialog(
+        title: const Text('Downloading update'),
+        content: ValueListenableBuilder<double>(
+          valueListenable: progressNotifier,
+          builder: (context, progress, _) => Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              LinearProgressIndicator(value: progress > 0 ? progress : null),
+              const SizedBox(height: 12),
+              Text(progress > 0
+                  ? '${(progress * 100).toStringAsFixed(0)}%'
+                  : 'Preparing download...'),
+            ],
+          ),
         ),
       ),
     ));
 
-    final path = await UpdateService.downloadUpdate();
+    final path = await UpdateService.downloadUpdateAsset(
+      downloadUrl: info.downloadUrl!,
+      fileName: info.assetName!,
+      onProgress: (value) {
+        progressNotifier.value = value;
+      },
+    );
+    progressNotifier.dispose();
     if (!context.mounted) return;
     Navigator.pop(context); // Close downloading dialog
 
     if (path != null) {
       if (!context.mounted) return;
-      unawaited(showDialog(
+      unawaited(showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
           title: const Text('Install Update'),
-          content: const Text(
-              'Update downloaded. Install now? The app will close during installation.'),
+          content: Text(
+              'Update downloaded (${info.latestVersion}). Install now? The app will close during installation.'),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
@@ -433,7 +622,9 @@ class SettingsTab extends StatelessWidget {
                   exit(0);
                 } else {
                   scaffoldMessenger.showSnackBar(
-                    const SnackBar(content: Text('Installation failed.')),
+                    const SnackBar(
+                        content: Text(
+                            'Installation failed. Please run installer manually.')),
                   );
                 }
               },
@@ -444,9 +635,221 @@ class SettingsTab extends StatelessWidget {
       ));
     } else {
       scaffoldMessenger.showSnackBar(
-        const SnackBar(content: Text('Download failed.')),
+        const SnackBar(
+            content:
+                Text('Download failed. Check internet or release assets.')),
       );
     }
+  }
+}
+
+class _LogsDialog extends StatefulWidget {
+  final List<LogEntry> entries;
+
+  const _LogsDialog({required this.entries});
+
+  @override
+  State<_LogsDialog> createState() => _LogsDialogState();
+}
+
+class _LogsDialogState extends State<_LogsDialog> {
+  late final ScrollController _scrollController;
+  LogLevel? _selectedLevel;
+
+  int get _infoCount =>
+      widget.entries.where((e) => e.level == LogLevel.info).length;
+  int get _warnCount =>
+      widget.entries.where((e) => e.level == LogLevel.warn).length;
+  int get _errorCount =>
+      widget.entries.where((e) => e.level == LogLevel.error).length;
+
+  List<LogEntry> get _filteredEntries {
+    if (_selectedLevel == null) return widget.entries;
+    return widget.entries.where((e) => e.level == _selectedLevel).toList();
+  }
+
+  String get _filteredText {
+    if (_filteredEntries.isEmpty) return 'No logs yet.';
+    return _filteredEntries.map((e) => e.toDisplayString()).join('\n');
+  }
+
+  Color _levelColor(LogLevel level, BuildContext context) {
+    switch (level) {
+      case LogLevel.info:
+        return Theme.of(context).colorScheme.primary;
+      case LogLevel.warn:
+        return Colors.orange;
+      case LogLevel.error:
+        return Colors.redAccent;
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('App Logs'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 400,
+        child: Column(
+          children: [
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ChoiceChip(
+                  label: const Text('All'),
+                  selected: _selectedLevel == null,
+                  onSelected: (_) => setState(() => _selectedLevel = null),
+                ),
+                ChoiceChip(
+                  label: const Text('Info'),
+                  selected: _selectedLevel == LogLevel.info,
+                  onSelected: (_) =>
+                      setState(() => _selectedLevel = LogLevel.info),
+                ),
+                ChoiceChip(
+                  label: const Text('Warn'),
+                  selected: _selectedLevel == LogLevel.warn,
+                  onSelected: (_) =>
+                      setState(() => _selectedLevel = LogLevel.warn),
+                ),
+                ChoiceChip(
+                  label: const Text('Error'),
+                  selected: _selectedLevel == LogLevel.error,
+                  onSelected: (_) =>
+                      setState(() => _selectedLevel = LogLevel.error),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Total: ${widget.entries.length}  |  Info: $_infoCount  Warn: $_warnCount  Error: $_errorCount',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: _filteredEntries.isEmpty
+                  ? const Center(child: Text('No logs yet.'))
+                  : Scrollbar(
+                      controller: _scrollController,
+                      thumbVisibility: true,
+                      child: ListView.separated(
+                        controller: _scrollController,
+                        itemCount: _filteredEntries.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 8),
+                        itemBuilder: (context, index) {
+                          final entry = _filteredEntries[index];
+                          final color = _levelColor(entry.level, context);
+                          return Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: color.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(
+                                  color: color.withValues(alpha: 0.3)),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 8, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: color.withValues(alpha: 0.18),
+                                        borderRadius:
+                                            BorderRadius.circular(999),
+                                      ),
+                                      child: Text(
+                                        '${entry.levelIcon} ${entry.levelLabel}',
+                                        style: TextStyle(
+                                          color: color,
+                                          fontWeight: FontWeight.w700,
+                                          fontSize: 11,
+                                        ),
+                                      ),
+                                    ),
+                                    const Spacer(),
+                                    Text(
+                                      entry.formattedTime,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(fontFamily: 'monospace'),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6),
+                                SelectableText(
+                                  entry.message,
+                                  style: Theme.of(context).textTheme.bodySmall,
+                                ),
+                                if (entry.errorText != null &&
+                                    entry.errorText!.trim().isNotEmpty) ...[
+                                  const SizedBox(height: 6),
+                                  SelectableText(
+                                    'Error: ${entry.errorText}',
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          color: Colors.redAccent,
+                                          fontFamily: 'monospace',
+                                        ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () async {
+            await Clipboard.setData(ClipboardData(text: _filteredText));
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Logs copied to clipboard')),
+              );
+            }
+          },
+          child: const Text('Copy filtered'),
+        ),
+        TextButton(
+          onPressed: () {
+            LogService.clear();
+            Navigator.pop(context);
+          },
+          child: const Text('Clear'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Close'),
+        ),
+      ],
+    );
   }
 }
 

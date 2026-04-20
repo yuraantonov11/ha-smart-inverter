@@ -7,7 +7,63 @@ import 'log_service.dart';
 class HemsAlgorithmService {
   final AppStateProvider provider;
 
+  // --- Battery Keepalive ---
+  DateTime? _lastBatteryActivityAt;
+  bool _keepaliveInProgress = false;
+  static const _keepaliveInterval = Duration(hours: 2);
+  static const _keepaliveDuration = Duration(seconds: 90);
+
   HemsAlgorithmService(this.provider);
+
+  /// Оновлює час останньої активності батареї (розряд або заряд)
+  void _trackBatteryActivity(InverterData data) {
+    if (data.batteryPower.abs() > 50) {
+      // батарея активна (заряд або розряд > 50W)
+      _lastBatteryActivityAt = DateTime.now();
+    }
+  }
+
+  /// Keepalive: якщо батарея не була активна більше 2 годин,
+  /// коротко перемикаємо на SBU щоб "розбудити" її.
+  Future<bool> _batteryKeepalive(InverterData data) async {
+    if (_keepaliveInProgress) return true; // вже виконується
+
+    _trackBatteryActivity(data);
+
+    // Не робимо keepalive якщо SOC занадто низький
+    if (data.batterySoc < 15) return false;
+
+    final lastActivity = _lastBatteryActivityAt;
+    if (lastActivity == null) {
+      // Перший запуск — ініціалізуємо
+      _lastBatteryActivityAt = DateTime.now();
+      return false;
+    }
+
+    final inactiveDuration = DateTime.now().difference(lastActivity);
+    if (inactiveDuration < _keepaliveInterval) return false;
+
+    // Батарея неактивна занадто довго — запускаємо keepalive
+    final currentOutput =
+        data.rawFields['outputSourcePriority']?['value']?.toString();
+    if (currentOutput == '2') return false; // вже на батареї
+
+    _keepaliveInProgress = true;
+    LogService.log(
+        '🔋 Keepalive: батарея неактивна ${inactiveDuration.inMinutes} хв. Короткий перехід на SBU для запобігання сну АКБ.');
+
+    await provider.setMode(2); // SBU — розбудити батарею
+
+    // Повертаємо назад через 90 секунд
+    Future.delayed(_keepaliveDuration, () async {
+      await provider.setMode(0); // Повертаємо USB
+      _lastBatteryActivityAt = DateTime.now();
+      _keepaliveInProgress = false;
+      LogService.log('🔋 Keepalive завершено. Повернено режим мережі (USB).');
+    });
+
+    return true; // keepalive запущено, пропускаємо основну логіку
+  }
 
   /// 1. Акустичний комфорт (Нічна тиша)
   Future<void> enforceAcousticComfort(InverterData data) async {
@@ -36,6 +92,9 @@ class HemsAlgorithmService {
     required double
         productionCoefficient, // Коефіцієнт реальної генерації (напр. 0.75)
   }) async {
+    // Keepalive перевірка — якщо батарея засинає, пробуджуємо
+    if (await _batteryKeepalive(data)) return;
+
     final now = DateTime.now();
     final currentHour = now.hour;
 
@@ -190,6 +249,8 @@ class HemsAlgorithmService {
 
   /// 3. Нічний арбітраж (Примусова економія)
   Future<void> executeNightArbitrage(InverterData data) async {
+    if (await _batteryKeepalive(data)) return;
+
     final hour = DateTime.now().hour;
     if (hour >= 23 || hour < 7) {
       if (data.rawFields['outputSourcePriority']?['value']?.toString() != '0') {
@@ -214,6 +275,9 @@ class HemsAlgorithmService {
 
   /// 4. Шторм / Резерв (100% готовність до відключень)
   Future<void> executeStormMode(InverterData data) async {
+    // У штормовому режимі keepalive не потрібен — батарея заряджається постійно
+    _trackBatteryActivity(data);
+
     if (data.rawFields['outputSourcePriority']?['value']?.toString() != '0') {
       await provider.setMode(0); // USB
     }

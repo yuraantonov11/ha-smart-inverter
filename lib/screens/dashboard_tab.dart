@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
 
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import '../models/inverter_data.dart';
+import '../services/log_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
 import '../widgets/energy_flow.dart';
@@ -129,9 +132,15 @@ class _SystemCapacitySection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final localeCode = Localizations.localeOf(context).languageCode;
+    final onlineLabel = localeCode == 'uk' ? 'Онлайн' : 'Online';
+    final offlineLabel = localeCode == 'uk' ? 'Офлайн' : 'Offline';
+    final lastUpdatedLabel =
+        localeCode == 'uk' ? 'Останнє оновлення' : 'Last update';
     final loadPercent = provider.inverterMaxPowerW > 0
         ? (data.loadPower / provider.inverterMaxPowerW).clamp(0.0, 1.0)
         : 0.0;
+    final isOffline = provider.isInverterOffline;
 
     Color getLoadColor(double percent) {
       if (percent > 0.85) return const Color(0xFFEF4444);
@@ -143,9 +152,21 @@ class _SystemCapacitySection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Статус обладнання',
-            style: Theme.of(context).textTheme.titleLarge,
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Статус обладнання',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              _ConnectionBadge(
+                isOffline: isOffline,
+                onlineLabel: onlineLabel,
+                offlineLabel: offlineLabel,
+                lastUpdatedPrefix: lastUpdatedLabel,
+                lastUpdatedAt: provider.lastSuccessfulRealtimeAt,
+              ),
+            ],
           ),
           const SizedBox(height: AppTheme.spacingL),
           AppProgressBar(
@@ -165,6 +186,69 @@ class _SystemCapacitySection extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ConnectionBadge extends StatelessWidget {
+  final bool isOffline;
+  final String onlineLabel;
+  final String offlineLabel;
+  final String lastUpdatedPrefix;
+  final DateTime? lastUpdatedAt;
+
+  const _ConnectionBadge({
+    required this.isOffline,
+    required this.onlineLabel,
+    required this.offlineLabel,
+    required this.lastUpdatedPrefix,
+    required this.lastUpdatedAt,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = isOffline ? const Color(0xFFEF4444) : const Color(0xFF10B981);
+    final text = isOffline ? offlineLabel : onlineLabel;
+    final icon = isOffline ? Icons.cloud_off_rounded : Icons.cloud_done_rounded;
+    final updated = lastUpdatedAt;
+    final timeLabel = updated == null
+        ? '--:--:--'
+        : '${updated.hour.toString().padLeft(2, '0')}:${updated.minute.toString().padLeft(2, '0')}:${updated.second.toString().padLeft(2, '0')}';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: color.withValues(alpha: 0.35)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 6),
+              Text(
+                text,
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: color,
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '$lastUpdatedPrefix: $timeLabel',
+          style: Theme.of(context)
+              .textTheme
+              .labelSmall
+              ?.copyWith(color: Theme.of(context).hintColor),
+        ),
+      ],
     );
   }
 }
@@ -195,14 +279,36 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
   List<FlSpot> _batteryData = [];
   List<FlSpot> _gridData = [];
   List<FlSpot> _forecastData = [];
+  Timer? _chartDebounce;
+  int _chartRequestSeq = 0;
+  String? _lastRenderLogSignature;
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchChartData());
+    WidgetsBinding.instance
+        .addPostFrameCallback((_) => _scheduleFetchChartData(immediate: true));
+  }
+
+  @override
+  void dispose() {
+    _chartDebounce?.cancel();
+    super.dispose();
+  }
+
+  void _scheduleFetchChartData({bool immediate = false}) {
+    _chartDebounce?.cancel();
+    if (immediate) {
+      _fetchChartData();
+      return;
+    }
+    _chartDebounce = Timer(const Duration(milliseconds: 350), _fetchChartData);
   }
 
   Future<void> _fetchChartData() async {
+    final requestId = ++_chartRequestSeq;
+    LogService.log(
+        '📊 chart.ui fetch start: requestId=$requestId, range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}');
     if (mounted && !_isLoading) setState(() => _isLoading = true);
 
     final data = await widget.provider.service
@@ -218,6 +324,12 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
       );
     }
 
+    if (!mounted || requestId != _chartRequestSeq) {
+      LogService.log(
+          '⏭️ chart.ui stale response ignored: requestId=$requestId, active=$_chartRequestSeq');
+      return;
+    }
+
     if (mounted) {
       setState(() {
         _productionData = data['pv'] ?? [];
@@ -226,6 +338,8 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         _gridData = data['grid'] ?? [];
         _isLoading = false;
       });
+
+      _logChartUiSummary('chart.ui fetched');
 
       if (_selectedRange == 0) {
         _loadForecastForToday(forecast);
@@ -266,23 +380,30 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
       if (_selectedRange == 0) {
         _currentDate = _currentDate.add(Duration(days: offset));
       } else if (_selectedRange == 1) {
-        _currentDate =
-            DateTime(_currentDate.year, _currentDate.month + offset, 1);
+        _currentDate = _currentDate.add(Duration(days: 7 * offset));
       } else {
-        _currentDate = DateTime(_currentDate.year + offset, 1, 1);
+        _currentDate = DateTime(
+            _currentDate.year, _currentDate.month + offset, _currentDate.day);
       }
     });
-    _fetchChartData();
+    _scheduleFetchChartData();
   }
 
   String _getDateText() {
     if (_selectedRange == 0) {
       return '${_currentDate.day.toString().padLeft(2, '0')}.${_currentDate.month.toString().padLeft(2, '0')}.${_currentDate.year}';
     } else if (_selectedRange == 1) {
-      return '${_currentDate.month.toString().padLeft(2, '0')}.${_currentDate.year}';
+      final start = _startOfWeek(_currentDate);
+      final end = start.add(const Duration(days: 6));
+      return '${start.day.toString().padLeft(2, '0')}.${start.month.toString().padLeft(2, '0')} - ${end.day.toString().padLeft(2, '0')}.${end.month.toString().padLeft(2, '0')}';
     } else {
-      return '${_currentDate.year}';
+      return '${_currentDate.month.toString().padLeft(2, '0')}.${_currentDate.year}';
     }
+  }
+
+  DateTime _startOfWeek(DateTime date) {
+    final normalized = DateTime(date.year, date.month, date.day);
+    return normalized.subtract(Duration(days: normalized.weekday - 1));
   }
 
   @override
@@ -306,6 +427,10 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
           _buildDateNavigator(),
           const SizedBox(height: AppTheme.spacingM),
           _buildLegend(l10n),
+          if (_selectedRange == 0 || _showBattery) ...[
+            const SizedBox(height: AppTheme.spacingS),
+            _buildBatterySignHint(context),
+          ],
           const SizedBox(height: AppTheme.spacingL),
           SizedBox(
             height: 300,
@@ -334,7 +459,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             isActive: _selectedRange == 0,
             onTap: () {
               setState(() => _selectedRange = 0);
-              _fetchChartData();
+              _scheduleFetchChartData();
             },
           ),
           _TimeButton(
@@ -342,7 +467,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             isActive: _selectedRange == 1,
             onTap: () {
               setState(() => _selectedRange = 1);
-              _fetchChartData();
+              _scheduleFetchChartData();
             },
           ),
           _TimeButton(
@@ -350,7 +475,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             isActive: _selectedRange == 2,
             onTap: () {
               setState(() => _selectedRange = 2);
-              _fetchChartData();
+              _scheduleFetchChartData();
             },
           ),
         ],
@@ -359,15 +484,20 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
   }
 
   Widget _buildDateNavigator() {
-    var canGoForward = false;
-    if (_selectedRange == 0) {
-      canGoForward =
-          _currentDate.isBefore(DateTime.now().add(const Duration(days: 1)));
-    } else {
-      canGoForward = _currentDate
-              .isBefore(DateTime.now().subtract(const Duration(days: 1))) ||
-          (_selectedRange > 0 && _currentDate.year <= DateTime.now().year);
-    }
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final currentDay =
+        DateTime(_currentDate.year, _currentDate.month, _currentDate.day);
+    final currentMonth = DateTime(_currentDate.year, _currentDate.month);
+    final nowMonth = DateTime(now.year, now.month);
+    final currentWeek = _startOfWeek(_currentDate);
+    final nowWeek = _startOfWeek(today);
+
+    final canGoForward = _selectedRange == 0
+        ? currentDay.isBefore(today)
+        : _selectedRange == 1
+            ? currentWeek.isBefore(nowWeek)
+            : currentMonth.isBefore(nowMonth);
 
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
@@ -430,20 +560,76 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     );
   }
 
+  Widget _buildBatterySignHint(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTheme.spacingM,
+        vertical: AppTheme.spacingS,
+      ),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.battery_charging_full_rounded,
+              size: 16, color: Color(0xFF10B981)),
+          const SizedBox(width: AppTheme.spacingS),
+          Expanded(
+            child: Text(
+              "АКБ: '+' означає заряд, '-' означає розряд.",
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildChart(BuildContext context) {
+    final minX = _getMinX();
+    final maxX = _getMaxX();
+
+    final minY = _getMinY();
+    final maxY = _getMaxY();
+    final renderSignature =
+        '$_selectedRange|${minX.toStringAsFixed(2)}|${maxX.toStringAsFixed(2)}|${minY.toStringAsFixed(1)}|${maxY.toStringAsFixed(1)}|${_getVisibleSpots().length}';
+    if (_lastRenderLogSignature != renderSignature) {
+      _lastRenderLogSignature = renderSignature;
+      LogService.log(
+          '🖼️ chart.ui render: range=$_selectedRange, x=${minX.toStringAsFixed(2)}..${maxX.toStringAsFixed(2)}, y=${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}, visible=${_getVisibleSpots().length}');
+    }
+
     var lines = <LineChartBarData>[];
 
     if (_showProduction && _productionData.isNotEmpty) {
-      lines.add(_buildLineData(_productionData, const Color(0xFFF59E0B)));
+      lines.add(_buildLineData(
+        _productionData,
+        const Color(0xFFF59E0B),
+        isCurved: _selectedRange == 0,
+      ));
     }
     if (_showConsumption && _consumptionData.isNotEmpty) {
-      lines.add(_buildLineData(_consumptionData, const Color(0xFF8B5CF6)));
+      lines.add(_buildLineData(
+        _consumptionData,
+        const Color(0xFF8B5CF6),
+        isCurved: _selectedRange == 0,
+      ));
     }
     if (_showBattery && _batteryData.isNotEmpty) {
-      lines.add(_buildLineData(_batteryData, const Color(0xFF10B981)));
+      lines.add(_buildLineData(
+        _batteryData,
+        const Color(0xFF10B981),
+        isCurved: _selectedRange == 0,
+      ));
     }
     if (_showGrid && _gridData.isNotEmpty) {
-      lines.add(_buildLineData(_gridData, const Color(0xFF06B6D4)));
+      lines.add(_buildLineData(
+        _gridData,
+        const Color(0xFF06B6D4),
+        isCurved: _selectedRange == 0,
+      ));
     }
 
     if (_showForecast && _forecastData.isNotEmpty && _selectedRange == 0) {
@@ -468,16 +654,18 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
 
     return LineChart(
       LineChartData(
-        minX: 0,
-        maxX: 23,
-        minY: _getMinY(),
-        maxY: _getMaxY(),
+        minX: minX,
+        maxX: maxX,
+        minY: minY,
+        maxY: maxY,
         lineTouchData: LineTouchData(
           touchTooltipData: LineTouchTooltipData(
             getTooltipColor: (spot) => Theme.of(context).cardColor,
             getTooltipItems: (spots) => spots
                 .map((spot) => LineTooltipItem(
-                      Formatters.formatPower(spot.y),
+                      _selectedRange == 0
+                          ? Formatters.formatPower(spot.y)
+                          : Formatters.formatEnergy(spot.y),
                       TextStyle(
                         color: spot.bar.color,
                         fontWeight: FontWeight.bold,
@@ -499,7 +687,9 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
               getTitlesWidget: (value, meta) => SideTitleWidget(
                 meta: meta,
                 child: Text(
-                  Formatters.formatPower(value),
+                  _selectedRange == 0
+                      ? Formatters.formatPower(value)
+                      : Formatters.formatEnergy(value),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
@@ -508,14 +698,19 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
           bottomTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
-              interval: _selectedRange == 0 ? 4 : 1,
+              interval: _selectedRange == 0
+                  ? 4
+                  : _selectedRange == 1
+                      ? 1
+                      : ((maxX - minX) > 20 ? 5 : 2),
               getTitlesWidget: (value, meta) => SideTitleWidget(
                 meta: meta,
                 space: 10,
                 child: Text(
-                  _selectedRange == 0
-                      ? '${value.toInt()}:00'
-                      : '${value.toInt()}',
+                  _formatBottomAxisLabel(
+                    value,
+                    AppLocalizations.of(context)!,
+                  ),
                   style: Theme.of(context).textTheme.bodySmall,
                 ),
               ),
@@ -536,10 +731,14 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     );
   }
 
-  LineChartBarData _buildLineData(List<FlSpot> spots, Color color) {
+  LineChartBarData _buildLineData(
+    List<FlSpot> spots,
+    Color color, {
+    required bool isCurved,
+  }) {
     return LineChartBarData(
       spots: spots,
-      isCurved: true,
+      isCurved: isCurved,
       color: color,
       barWidth: 2.5,
       dotData: const FlDotData(show: false),
@@ -553,6 +752,55 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     if (spots.isEmpty) return 10.0;
     var max = spots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
     return max == 0 ? 10.0 : max * 1.15;
+  }
+
+  double _getMaxX() {
+    if (_selectedRange == 0) return 23;
+    if (_selectedRange == 1) return 6;
+
+    final lastDay = DateTime(_currentDate.year, _currentDate.month + 1, 0).day;
+    return lastDay.toDouble();
+  }
+
+  double _getMinX() {
+    if (_selectedRange == 0 || _selectedRange == 1) return 0;
+    return 1;
+  }
+
+  String _formatBottomAxisLabel(double value, AppLocalizations l10n) {
+    final rounded = value.round();
+    if ((value - rounded).abs() > 0.01) return '';
+
+    if (_selectedRange == 0) {
+      return '$rounded:00';
+    }
+
+    if (_selectedRange == 1) {
+      const weekKeys = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+      if (rounded < 0 || rounded >= weekKeys.length) return '';
+      switch (weekKeys[rounded]) {
+        case 'mon':
+          return l10n.mon;
+        case 'tue':
+          return l10n.tue;
+        case 'wed':
+          return l10n.wed;
+        case 'thu':
+          return l10n.thu;
+        case 'fri':
+          return l10n.fri;
+        case 'sat':
+          return l10n.sat;
+        case 'sun':
+          return l10n.sun;
+      }
+    }
+
+    final lastDay = DateTime(_currentDate.year, _currentDate.month + 1, 0).day;
+    if (rounded < 1 || rounded > lastDay) return '';
+    final day = rounded.toString().padLeft(2, '0');
+    final month = _currentDate.month.toString().padLeft(2, '0');
+    return '$day.$month';
   }
 
   double _getMinY() {
@@ -571,6 +819,40 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     if (_showGrid) all.addAll(_gridData);
     if (_showForecast && _selectedRange == 0) all.addAll(_forecastData);
     return all;
+  }
+
+  void _logChartUiSummary(String prefix) {
+    String fmt(List<FlSpot> spots) {
+      if (spots.isEmpty) return 'count=0';
+      final minX = spots.map((e) => e.x).reduce((a, b) => a < b ? a : b);
+      final maxX = spots.map((e) => e.x).reduce((a, b) => a > b ? a : b);
+      final minY = spots.map((e) => e.y).reduce((a, b) => a < b ? a : b);
+      final maxY = spots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
+      return 'count=${spots.length},x=${minX.toStringAsFixed(2)}..${maxX.toStringAsFixed(2)},y=${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}';
+    }
+
+    String quality(List<FlSpot> spots) {
+      if (spots.isEmpty) return 'missing';
+      if (spots.any((s) => !s.x.isFinite || !s.y.isFinite)) return 'invalid';
+
+      final uniqueX = spots.map((e) => e.x.toStringAsFixed(3)).toSet().length;
+      if (uniqueX < 2) return 'poor';
+
+      final minX = spots.map((e) => e.x).reduce((a, b) => a < b ? a : b);
+      final maxX = spots.map((e) => e.x).reduce((a, b) => a > b ? a : b);
+      final axisMin = _getMinX();
+      final axisMax = _getMaxX();
+      final span = (axisMax - axisMin).abs();
+      final covered = (maxX - minX).abs();
+      final coverage = span > 0 ? (covered / span).clamp(0.0, 1.0) : 1.0;
+
+      if (coverage < 0.25) return 'low';
+      if (coverage < 0.6) return 'partial';
+      return 'good';
+    }
+
+    LogService.log(
+        '📈 $prefix | range=$_selectedRange pv[q=${quality(_productionData)}](${fmt(_productionData)}) load[q=${quality(_consumptionData)}](${fmt(_consumptionData)}) battery[q=${quality(_batteryData)}](${fmt(_batteryData)}) grid[q=${quality(_gridData)}](${fmt(_gridData)}) forecast[q=${quality(_forecastData)}](${fmt(_forecastData)})');
   }
 }
 
