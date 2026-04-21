@@ -695,50 +695,19 @@ class SettingsTab extends StatelessWidget {
       return;
     }
 
-    final progressNotifier = ValueNotifier<double>(0.0);
+    LogService.log(
+        '⬇️ update.ui starting download dialog: version=${info.latestVersion}, asset=${info.assetName}');
 
-    unawaited(showDialog<void>(
+    final path = await showDialog<String?>(
       context: context,
       barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('Downloading update'),
-        content: ValueListenableBuilder<double>(
-          valueListenable: progressNotifier,
-          builder: (context, progress, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              LinearProgressIndicator(value: progress > 0 ? progress : null),
-              const SizedBox(height: 12),
-              Text(progress > 0
-                  ? '${(progress * 100).toStringAsFixed(0)}%'
-                  : 'Preparing download...'),
-            ],
-          ),
-        ),
-      ),
-    ));
+      builder: (_) => _UpdateDownloadDialog(info: info),
+    );
 
-    String? path;
-    try {
-      path = await UpdateService.downloadUpdateAsset(
-        downloadUrl: info.downloadUrl!,
-        fileName: info.assetName!,
-        onProgress: (value) {
-          progressNotifier.value = value;
-        },
-      );
-    } finally {
-      // Close the dialog BEFORE disposing the notifier so that the
-      // ValueListenableBuilder inside the dialog can detach cleanly.
-      // Disposing while listeners are attached causes a Flutter error that
-      // prevents Navigator.pop from executing (dialog stays open, app hangs).
-      if (context.mounted) Navigator.pop(context);
-      progressNotifier.dispose();
-    }
     if (!context.mounted) return;
 
     if (path != null) {
+      LogService.log('✅ update.ui download dialog completed: path=$path');
       if (!context.mounted) return;
       unawaited(showDialog<void>(
         context: context,
@@ -754,11 +723,16 @@ class SettingsTab extends StatelessWidget {
             ElevatedButton(
               onPressed: () async {
                 Navigator.pop(context);
-                final success = await UpdateService.installUpdate(path!);
+                LogService.log(
+                    '🚀 update.ui install confirmed: version=${info.latestVersion}, path=$path');
+                final success = await UpdateService.installUpdate(path);
                 if (success) {
+                  LogService.log(
+                      '🚪 update.ui installer started successfully, exiting app');
                   // Exit app
                   exit(0);
                 } else {
+                  LogService.log('❌ update.ui install failed for path=$path');
                   scaffoldMessenger.showSnackBar(
                     const SnackBar(
                         content: Text(
@@ -772,6 +746,9 @@ class SettingsTab extends StatelessWidget {
         ),
       ));
     } else {
+      LogService.log(
+          '⚠️ update.ui download dialog finished without file path: version=${info.latestVersion}',
+          level: LogLevel.warn);
       scaffoldMessenger.showSnackBar(
         const SnackBar(
             content:
@@ -806,6 +783,110 @@ class SettingsTab extends StatelessWidget {
     final checkedAt = provider.lastUpdateCheckAt;
     if (checkedAt == null) return base;
     return '$base • ${l10n.updatesLastChecked(UpdateService.formatPublishedAt(checkedAt))}';
+  }
+}
+
+class _UpdateDownloadDialog extends StatefulWidget {
+  final UpdateInfo info;
+
+  const _UpdateDownloadDialog({required this.info});
+
+  @override
+  State<_UpdateDownloadDialog> createState() => _UpdateDownloadDialogState();
+}
+
+class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
+  double _progress = 0.0;
+  bool _isDone = false;
+  String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_startDownload());
+  }
+
+  Future<void> _startDownload() async {
+    LogService.log(
+        '⬇️ update.dialog download started: url=${widget.info.downloadUrl}, file=${widget.info.assetName}');
+    try {
+      final path = await UpdateService.downloadUpdateAsset(
+        downloadUrl: widget.info.downloadUrl!,
+        fileName: widget.info.assetName!,
+        onProgress: (value) {
+          if (!mounted) return;
+          setState(() {
+            _progress = value.clamp(0.0, 1.0);
+          });
+        },
+      );
+
+      if (!mounted) return;
+
+      if (path != null) {
+        _isDone = true;
+        LogService.log('✅ update.dialog download finished: path=$path');
+        Navigator.of(context).pop(path);
+        return;
+      }
+
+      setState(() {
+        _isDone = true;
+        _errorMessage =
+            'Download failed. Check internet or release assets, then try again.';
+      });
+      LogService.log('⚠️ update.dialog download finished with null path',
+          level: LogLevel.warn);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isDone = true;
+        _errorMessage = 'Download failed: $e';
+      });
+      LogService.log('❌ update.dialog exception during download',
+          error: e, level: LogLevel.error);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final canClose = _isDone;
+    return PopScope(
+      canPop: canClose,
+      child: AlertDialog(
+        title: Text(
+            _errorMessage == null ? 'Downloading update' : 'Download failed'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            LinearProgressIndicator(
+                value: _progress > 0 && _progress < 1 ? _progress : null),
+            const SizedBox(height: 12),
+            Text(
+              _errorMessage ??
+                  (_progress > 0
+                      ? '${(_progress * 100).toStringAsFixed(0)}%'
+                      : 'Preparing download...'),
+            ),
+            if (widget.info.assetName != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                widget.info.assetName!,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          if (canClose)
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+        ],
+      ),
+    );
   }
 }
 

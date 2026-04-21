@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.6] - 2026-04-21
+### Fixed
+- Fixed the auto-update flow hanging at 100% with a non-closable modal. The old implementation opened the progress dialog in a fire-and-forget way and then tried to close it from the parent context, which could race with route creation and leave the blocking dialog on screen.
+- Replaced the download flow with an awaited dedicated stateful dialog that owns its own lifecycle, reports progress safely, returns the downloaded file path, and always shows a close path on failure.
+- Added detailed update logs for dialog start, download start/progress/completion, install confirmation, installer launch, and failure cases so updater issues are visible in the in-app log viewer.
+- Removed the GitHub Actions Node 20 deprecation warning by replacing `softprops/action-gh-release` with GitHub CLI release commands in the release workflow.
+
 ## [1.2.5] - 2026-04-21
 ### Fixed
 - Fixed weird chart vectors where lines could turn too sharply or visually tie into "knots".

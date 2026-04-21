@@ -174,6 +174,8 @@ class UpdateService {
     void Function(double progress)? onProgress,
   }) async {
     try {
+      LogService.log(
+          '⬇️ update.download start: file=$fileName, url=$downloadUrl');
       final tempDir = await getTemporaryDirectory();
       final filePath = '${tempDir.path}\\$fileName';
       final request = http.Request('GET', Uri.parse(downloadUrl));
@@ -190,6 +192,7 @@ class UpdateService {
 
       final totalBytes = response.contentLength ?? 0;
       var received = 0;
+      var nextProgressLog = 0.25;
       final file = File(filePath);
       final sink = file.openWrite();
 
@@ -197,7 +200,13 @@ class UpdateService {
         received += chunk.length;
         sink.add(chunk);
         if (totalBytes > 0 && onProgress != null) {
-          onProgress((received / totalBytes).clamp(0.0, 1.0));
+          final progress = (received / totalBytes).clamp(0.0, 1.0);
+          onProgress(progress);
+          if (progress >= nextProgressLog) {
+            LogService.log(
+                '⬇️ update.download progress: file=$fileName ${(progress * 100).toStringAsFixed(0)}% ($received/$totalBytes)');
+            nextProgressLog += 0.25;
+          }
         }
       }
       await sink.flush();
@@ -209,7 +218,8 @@ class UpdateService {
       }
 
       onProgress?.call(1.0);
-      LogService.log('✅ update.download complete: $filePath');
+      LogService.log(
+          '✅ update.download complete: path=$filePath, bytes=${await file.length()}');
       return filePath;
     } catch (e) {
       LogService.log('❌ update.download exception', error: e);
@@ -219,6 +229,7 @@ class UpdateService {
 
   static Future<bool> installUpdate(String path) async {
     try {
+      LogService.log('🚀 update.install start: path=$path');
       final lower = path.toLowerCase();
       if (lower.endsWith('.msi')) {
         final result = await Process.run(
@@ -230,12 +241,16 @@ class UpdateService {
         if (!ok) {
           LogService.log(
               '⚠️ update.install msi exit=${result.exitCode}, stderr=${result.stderr}');
+        } else {
+          LogService.log(
+              '✅ update.install msi launched successfully: exit=${result.exitCode}');
         }
         return ok;
       }
 
       // Inno/EXE/MSIX - start installer and return immediately.
       await Process.start(path, [], runInShell: true);
+      LogService.log('✅ update.install process started: $path');
       return true;
     } catch (e) {
       LogService.log('❌ update.install exception', error: e);

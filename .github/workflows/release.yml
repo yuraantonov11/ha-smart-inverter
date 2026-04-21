@@ -15,8 +15,6 @@ jobs:
   build:
     name: Build Windows App
     runs-on: windows-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
       - name: Checkout code
@@ -53,12 +51,27 @@ jobs:
           copy-item -Path "$release_dir\*" -Destination "release_zip" -Recurse -Exclude "*.msix"
           compress-archive -Path "release_zip\*" -DestinationPath "smart_inverter_windows_$version.zip"
 
-      - name: Create Release
+      - name: Create or Update Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            smart_inverter_setup_*.exe
-            smart_inverter_windows_*.zip
+        shell: pwsh
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $title = $tag
+          $notesFile = Join-Path $env:RUNNER_TEMP "release_notes.md"
+
+          @"
+          Automated release for $tag
+
+          Assets:
+          - Windows installer (.exe)
+          - Portable Windows build (.zip)
+          "@ | Set-Content -Path $notesFile -Encoding UTF8
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag smart_inverter_setup_*.exe smart_inverter_windows_*.zip --clobber
+          } else {
+            gh release create $tag smart_inverter_setup_*.exe smart_inverter_windows_*.zip --title $title --notes-file $notesFile
+          }
