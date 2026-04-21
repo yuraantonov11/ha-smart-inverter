@@ -346,10 +346,10 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
 
     if (mounted) {
       setState(() {
-        _productionData = data['pv'] ?? [];
-        _consumptionData = data['load'] ?? [];
-        _batteryData = data['battery'] ?? [];
-        _gridData = data['grid'] ?? [];
+        _productionData = _normalizeSpots(data['pv'] ?? []);
+        _consumptionData = _normalizeSpots(data['load'] ?? []);
+        _batteryData = _normalizeSpots(data['battery'] ?? []);
+        _gridData = _normalizeSpots(data['grid'] ?? []);
         _isLoading = false;
       });
 
@@ -384,9 +384,33 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
 
     if (mounted) {
       setState(() {
-        _forecastData = spots;
+        _forecastData = _normalizeSpots(spots);
       });
     }
+  }
+
+  List<FlSpot> _normalizeSpots(List<FlSpot> raw) {
+    final filtered = raw
+        .where((s) => s.x.isFinite && s.y.isFinite)
+        .map((s) => FlSpot(s.x, s.y))
+        .toList();
+    if (filtered.length < 2) return filtered;
+
+    filtered.sort((a, b) => a.x.compareTo(b.x));
+
+    // Merge duplicate/near-duplicate X values to avoid vertical segments that
+    // can make cubic interpolation fold back into loops.
+    const eps = 0.001;
+    final merged = <FlSpot>[];
+    for (final spot in filtered) {
+      if (merged.isEmpty || (spot.x - merged.last.x).abs() > eps) {
+        merged.add(spot);
+      } else {
+        merged[merged.length - 1] =
+            FlSpot(merged.last.x, (merged.last.y + spot.y) / 2);
+      }
+    }
+    return merged;
   }
 
   void _changeDate(int offset) {
@@ -652,8 +676,11 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
 
     if (_showForecast && _forecastData.isNotEmpty && _selectedRange == 0) {
       lines.add(LineChartBarData(
-        spots: _forecastData,
+        spots: _normalizeSpots(_forecastData),
         isCurved: true,
+        curveSmoothness: 0.18,
+        preventCurveOverShooting: true,
+        preventCurveOvershootingThreshold: 8,
         color: const Color(0xFFF59E0B).withValues(alpha: 0.5),
         barWidth: 2,
         dotData: const FlDotData(show: false),
@@ -754,9 +781,14 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     Color color, {
     required bool isCurved,
   }) {
+    final normalized = _normalizeSpots(spots);
+    final useCurved = isCurved && normalized.length >= 4;
     return LineChartBarData(
-      spots: spots,
-      isCurved: isCurved,
+      spots: normalized,
+      isCurved: useCurved,
+      curveSmoothness: useCurved ? 0.18 : 0.0,
+      preventCurveOverShooting: true,
+      preventCurveOvershootingThreshold: 8,
       color: color,
       barWidth: 2.5,
       dotData: const FlDotData(show: false),

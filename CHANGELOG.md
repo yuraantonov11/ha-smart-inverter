@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.5] - 2026-04-21
+### Fixed
+- Fixed weird chart vectors where lines could turn too sharply or visually tie into "knots".
+- Added point normalization before rendering (sort by X, remove invalid points, merge duplicate/near-duplicate X values) to prevent malformed interpolation inputs.
+- Enabled overshoot protection for curved lines and reduced curve smoothness to stabilize trajectory.
+- Applied the same protections to forecast series.
+
 ## [1.2.4] - 2026-04-21
 ### Fixed
 - **Auto-update dialog hangs at 100%** — `progressNotifier.dispose()` was called while the download dialog's `ValueListenableBuilder` was still attached, causing a Flutter error that prevented `Navigator.pop()` from running. The dialog (`barrierDismissible: false`) stayed open permanently, freezing the app. Fixed by wrapping the download in `try/finally`: dialog is now closed first, then the notifier is disposed.
