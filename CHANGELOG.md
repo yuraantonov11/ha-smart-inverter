@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-04-21
+### Fixed
+- CI build fix: made `_consecutiveDeviceNotFoundCount` mutable in `AppStateProvider` so `flutter build windows --release` no longer fails with missing setter errors.
+- GitHub Actions compatibility: updated `actions/checkout` to `v5`, `softprops/action-gh-release` to `v2`, and enabled Node 24 execution via `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` in release workflow.
+
 ## [1.2.2] - 2026-04-21
 ### Fixed
 - **Critical: Battery drain at night** — HEMS was completely blind when `deviceSn=null` (device unreachable) for hours, allowing battery to fully discharge and causing power outage. Added two safeguards:

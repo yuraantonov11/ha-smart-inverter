@@ -68,7 +68,7 @@ class AppStateProvider extends ChangeNotifier {
   bool _isPollingInBackground = false;
   bool _timersStarted = false;
   int _consecutiveRealtimeNulls = 0;
-  final int _consecutiveDeviceNotFoundCount = 0;
+  int _consecutiveDeviceNotFoundCount = 0;
   DateTime? _lastRealtimeNullLogAt;
   DateTime? _lastDeviceNotFoundLogAt;
   DateTime? _lastRecoveryAttemptAt;
