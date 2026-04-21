@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.8] - 2026-04-21
+### Fixed
+- Fixed updater flow where download reached 100% but installation never started. Root cause: after closing the "Update Available" dialog, the code continued with a dialog-scoped `BuildContext`, which became invalid and broke the next modal step.
+- Reworked update flow to always use a stable parent context and switched install confirmation from fire-and-forget to awaited flow (`showDialog<bool>`), then linear install execution.
+- Added explicit log when install is canceled by user to make updater state transitions visible.
+
 ## [1.2.7] - 2026-04-21
 ### Fixed
 - Localized the entire update flow UI (dialogs, buttons, snackbars, status texts) for both English and Ukrainian; removed remaining hardcoded English update strings.

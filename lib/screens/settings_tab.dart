@@ -632,9 +632,10 @@ class SettingsTab extends StatelessWidget {
   Future<void> _showUpdateAvailableDialog(
       BuildContext context, UpdateInfo info) async {
     final l10n = AppLocalizations.of(context)!;
+    final parentContext = context;
     await showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
+      builder: (dialogContext) => AlertDialog(
         title: Text(l10n.updatesDialogAvailableTitle),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -664,18 +665,18 @@ class SettingsTab extends StatelessWidget {
           TextButton(
             onPressed: () async {
               await provider.skipLatestUpdate();
-              if (context.mounted) Navigator.pop(context);
+              if (dialogContext.mounted) Navigator.pop(dialogContext);
             },
             child: Text(l10n.updatesDialogSkipVersion),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(dialogContext),
             child: Text(l10n.updatesDialogLater),
           ),
           ElevatedButton.icon(
             onPressed: () async {
-              Navigator.pop(context);
-              await _downloadAndInstallUpdate(context, info);
+              Navigator.pop(dialogContext);
+              await _downloadAndInstallUpdate(parentContext, info);
             },
             icon: const Icon(Icons.download_rounded),
             label: Text(l10n.updatesDialogDownload),
@@ -711,40 +712,42 @@ class SettingsTab extends StatelessWidget {
 
     if (path != null) {
       LogService.log('✅ update.ui download dialog completed: path=$path');
-      if (!context.mounted) return;
-      unawaited(showDialog<void>(
+      final shouldInstall = await showDialog<bool>(
         context: context,
-        builder: (context) => AlertDialog(
+        builder: (dialogContext) => AlertDialog(
           title: Text(l10n.updatesDialogInstallTitle),
           content: Text(l10n.updatesDialogInstallPrompt(info.latestVersion)),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => Navigator.pop(dialogContext, false),
               child: Text(l10n.cancel),
             ),
             ElevatedButton(
-              onPressed: () async {
-                Navigator.pop(context);
-                LogService.log(
-                    '🚀 update.ui install confirmed: version=${info.latestVersion}, path=$path');
-                final success = await UpdateService.installUpdate(path);
-                if (success) {
-                  LogService.log(
-                      '🚪 update.ui installer started successfully, exiting app');
-                  // Exit app
-                  exit(0);
-                } else {
-                  LogService.log('❌ update.ui install failed for path=$path');
-                  scaffoldMessenger.showSnackBar(
-                    SnackBar(content: Text(l10n.updatesDialogInstallFailed)),
-                  );
-                }
-              },
+              onPressed: () => Navigator.pop(dialogContext, true),
               child: Text(l10n.updatesDialogInstall),
             ),
           ],
         ),
-      ));
+      );
+
+      if (!context.mounted || shouldInstall != true) {
+        LogService.log('⏸️ update.ui install canceled by user');
+        return;
+      }
+
+      LogService.log(
+          '🚀 update.ui install confirmed: version=${info.latestVersion}, path=$path');
+      final success = await UpdateService.installUpdate(path);
+      if (success) {
+        LogService.log(
+            '🚪 update.ui installer started successfully, exiting app');
+        exit(0);
+      } else {
+        LogService.log('❌ update.ui install failed for path=$path');
+        scaffoldMessenger.showSnackBar(
+          SnackBar(content: Text(l10n.updatesDialogInstallFailed)),
+        );
+      }
     } else {
       LogService.log(
           '⚠️ update.ui download dialog finished without file path: version=${info.latestVersion}',
