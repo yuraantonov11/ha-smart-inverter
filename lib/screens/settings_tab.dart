@@ -719,16 +719,24 @@ class SettingsTab extends StatelessWidget {
       ),
     ));
 
-    final path = await UpdateService.downloadUpdateAsset(
-      downloadUrl: info.downloadUrl!,
-      fileName: info.assetName!,
-      onProgress: (value) {
-        progressNotifier.value = value;
-      },
-    );
-    progressNotifier.dispose();
+    String? path;
+    try {
+      path = await UpdateService.downloadUpdateAsset(
+        downloadUrl: info.downloadUrl!,
+        fileName: info.assetName!,
+        onProgress: (value) {
+          progressNotifier.value = value;
+        },
+      );
+    } finally {
+      // Close the dialog BEFORE disposing the notifier so that the
+      // ValueListenableBuilder inside the dialog can detach cleanly.
+      // Disposing while listeners are attached causes a Flutter error that
+      // prevents Navigator.pop from executing (dialog stays open, app hangs).
+      if (context.mounted) Navigator.pop(context);
+      progressNotifier.dispose();
+    }
     if (!context.mounted) return;
-    Navigator.pop(context); // Close downloading dialog
 
     if (path != null) {
       if (!context.mounted) return;
@@ -746,7 +754,7 @@ class SettingsTab extends StatelessWidget {
             ElevatedButton(
               onPressed: () async {
                 Navigator.pop(context);
-                final success = await UpdateService.installUpdate(path);
+                final success = await UpdateService.installUpdate(path!);
                 if (success) {
                   // Exit app
                   exit(0);

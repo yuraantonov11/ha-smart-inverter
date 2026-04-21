@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.4] - 2026-04-21
+### Fixed
+- **Auto-update dialog hangs at 100%** — `progressNotifier.dispose()` was called while the download dialog's `ValueListenableBuilder` was still attached, causing a Flutter error that prevented `Navigator.pop()` from running. The dialog (`barrierDismissible: false`) stayed open permanently, freezing the app. Fixed by wrapping the download in `try/finally`: dialog is now closed first, then the notifier is disposed.
+
 ## [1.2.3] - 2026-04-21
 ### Fixed
 - CI build fix: made `_consecutiveDeviceNotFoundCount` mutable in `AppStateProvider` so `flutter build windows --release` no longer fails with missing setter errors.
