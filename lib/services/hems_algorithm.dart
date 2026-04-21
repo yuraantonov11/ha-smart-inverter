@@ -14,6 +14,9 @@ class HemsAlgorithmService {
   static const _keepaliveDuration = Duration(seconds: 90);
   static const _keepaliveMinSoc = 22.0;
 
+  // --- Acoustic comfort ---
+  String? _lastAppliedBuzzer;
+
   HemsAlgorithmService(this.provider);
 
   /// Оновлює час останньої активності батареї (розряд або заряд)
@@ -75,12 +78,27 @@ class HemsAlgorithmService {
     final currentBuzzer = buzzerConfig?['value']?.toString();
     final desiredBuzzer = isNight ? '0' : '1';
 
-    if (currentBuzzer != null && currentBuzzer != desiredBuzzer) {
-      await provider.changeSetting('buzzerAlarmSetting', desiredBuzzer);
-      LogService.log(isNight
-          ? '🤫 Увімкнено нічну тишу інвертора'
-          : '🔊 Повернено звук інвертора');
+    // Skip if config not loaded yet (avoid repeated attempts on null config)
+    if (currentBuzzer == null) return;
+
+    // Skip if already applied this desired state (avoids repeating when
+    // changeSetting's optimistic update doesn't reach fullConfigs cache)
+    if (currentBuzzer == desiredBuzzer || _lastAppliedBuzzer == desiredBuzzer) {
+      return;
     }
+
+    await provider.changeSetting('buzzerAlarmSetting', desiredBuzzer);
+    // Also update fullConfigs cache directly so next check sees the new value
+    final fullConfigs = data.rawFields['fullConfigs'];
+    if (fullConfigs is Map<String, dynamic> &&
+        fullConfigs['buzzerAlarmSetting'] is Map<String, dynamic>) {
+      (fullConfigs['buzzerAlarmSetting'] as Map<String, dynamic>)['value'] =
+          num.tryParse(desiredBuzzer) ?? desiredBuzzer;
+    }
+    _lastAppliedBuzzer = desiredBuzzer;
+    LogService.log(isNight
+        ? '🤫 Увімкнено нічну тишу інвертора'
+        : '🔊 Повернено звук інвертора');
   }
 
   /// 2. ВИСОКОТОЧНИЙ АДАПТИВНИЙ РЕЖИМ (Статистичне моделювання)

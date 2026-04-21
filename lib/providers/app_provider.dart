@@ -68,8 +68,11 @@ class AppStateProvider extends ChangeNotifier {
   bool _isPollingInBackground = false;
   bool _timersStarted = false;
   int _consecutiveRealtimeNulls = 0;
+  final int _consecutiveDeviceNotFoundCount = 0;
   DateTime? _lastRealtimeNullLogAt;
+  DateTime? _lastDeviceNotFoundLogAt;
   DateTime? _lastRecoveryAttemptAt;
+  DateTime? _lastDeviceRecoveryAttemptAt;
   DateTime? _lastSuccessfulRealtimeAt;
   InverterData? _cachedSnapshotData;
 
@@ -501,12 +504,49 @@ class AppStateProvider extends ChangeNotifier {
 
     final hasDevice = await service.ensureDeviceSelected();
     if (!hasDevice) {
-      LogService.log(
-          '⚠️ fetchData: пристрій не знайдено, deviceSn=${service.deviceSn}');
+      final now = DateTime.now();
+      _consecutiveDeviceNotFoundCount++;
+      if (_lastDeviceNotFoundLogAt == null ||
+          now.difference(_lastDeviceNotFoundLogAt!) >
+              const Duration(minutes: 15)) {
+        LogService.log(
+            '⚠️ fetchData: пристрій не знайдено, deviceSn=${service.deviceSn}, count=$_consecutiveDeviceNotFoundCount');
+        _lastDeviceNotFoundLogAt = now;
+      }
+
+      // Auto-recovery: after 3 consecutive failures try re-selecting device,
+      // after 10 failures re-login entirely (token may have expired).
+      final recoveryCooldown = _lastDeviceRecoveryAttemptAt == null ||
+          now.difference(_lastDeviceRecoveryAttemptAt!) >
+              const Duration(minutes: 10);
+      if (recoveryCooldown) {
+        if (_consecutiveDeviceNotFoundCount >= 10) {
+          _lastDeviceRecoveryAttemptAt = now;
+          LogService.log(
+              '🔑 fetchData: device not found for $_consecutiveDeviceNotFoundCount cycles, attempting re-login…');
+          final prefs = await SharedPreferences.getInstance();
+          final email = prefs.getString('saved_email');
+          final pass = prefs.getString('saved_pass');
+          if (email != null && pass != null) {
+            final ok = await service.login(email, pass);
+            LogService.log('🔑 re-login result=$ok');
+          }
+        } else if (_consecutiveDeviceNotFoundCount >= 3) {
+          _lastDeviceRecoveryAttemptAt = now;
+          service.deviceSn = null;
+          service.currentStationId = null;
+          service.invalidateConfigCache();
+          final reselected = await service.ensureDeviceSelected();
+          LogService.log(
+              '🔁 fetchData: forced device reselection after $_consecutiveDeviceNotFoundCount failures → ${reselected ? "ok, sn=${service.deviceSn}" : "failed"}');
+        }
+      }
+
       await _updateStatusMessage(false);
       notifyListeners();
       return;
     }
+    _consecutiveDeviceNotFoundCount = 0;
 
     final previousConfigs = data?.rawFields['fullConfigs'];
 
@@ -675,6 +715,32 @@ class AppStateProvider extends ChangeNotifier {
 
   Future<void> _checkAutomations({bool isManualTrigger = false}) async {
     if (data == null) return;
+
+    // Emergency battery protection: if data is stale (device unreachable for
+    // >30 min) and battery SOC is low, force USB (grid) mode to prevent drain.
+    final staleThreshold = const Duration(minutes: 30);
+    final isDataStale = _lastSuccessfulRealtimeAt != null &&
+        DateTime.now().difference(_lastSuccessfulRealtimeAt!) > staleThreshold;
+    if (isDataStale) {
+      final soc = data!.batterySoc;
+      final hour = DateTime.now().hour;
+      final isNight = hour >= 22 || hour < 7;
+      if (soc < 30 || isNight) {
+        final currentOutput =
+            data!.rawFields['outputSourcePriority']?['value']?.toString();
+        if (currentOutput != '0') {
+          LogService.log(
+              '🆘 ЗАХИСТ АКБ: дані застарілі (${DateTime.now().difference(_lastSuccessfulRealtimeAt!).inMinutes} хв), '
+              'SOC=$soc%, нічний=$isNight → примусово USB (мережа) для захисту акумулятора!',
+              level: LogLevel.error);
+          await service.setMode(0);
+        } else {
+          LogService.log('🛡️ ЗАХИСТ АКБ: дані застарілі, вже на USB — добре.',
+              level: LogLevel.warn);
+        }
+      }
+      return; // skip HEMS when data is stale
+    }
 
     if (!isManualTrigger) {
       await hemsService.enforceAcousticComfort(data!);

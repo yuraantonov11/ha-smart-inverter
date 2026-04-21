@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-04-21
+### Fixed
+- **Critical: Battery drain at night** — HEMS was completely blind when `deviceSn=null` (device unreachable) for hours, allowing battery to fully discharge and causing power outage. Added two safeguards:
+  1. **Auto-recovery**: after 3 consecutive `ensureDeviceSelected()` failures, force device reselection; after 10 failures, re-login entirely (handles token expiry).
+  2. **Emergency battery protection**: if inverter data is stale (>30 min without successful realtime fetch) and battery SOC <30% or it is night time, immediately force USB (grid) mode via direct API call to prevent further discharge.
+- **Sound restore loop** — `enforceAcousticComfort()` was sending "restore buzzer" command every minute from 07:00 onwards. Fixed by `_lastAppliedBuzzer` state guard so the command fires only once per state transition.
+
 ## [1.2.1] - 2026-04-20
 ### Changed
 - Reworked chart navigation and weekly/monthly loading behavior to avoid stale data flashes and improve timeout recovery.
