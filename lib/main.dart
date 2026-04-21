@@ -54,6 +54,13 @@ void main() async {
   );
 
   await windowManager.waitUntilReadyToShow(windowOptions, () async {
+    if (Platform.isWindows) {
+      try {
+        await windowManager.setIcon('assets/app_icon.ico');
+      } catch (e) {
+        LogService.log('⚠️ window icon setup failed', error: e);
+      }
+    }
     await windowManager.show();
     await windowManager.focus();
     await windowManager.setPreventClose(true);

@@ -308,6 +308,73 @@ class AppLocalizationsEn extends AppLocalizations {
   }
 
   @override
+  String get updatesNoInstallerFound =>
+      'No compatible installer was found in this release.';
+
+  @override
+  String get updatesDialogAvailableTitle => 'Update Available';
+
+  @override
+  String updatesDialogCurrent(String version) {
+    return 'Current: $version';
+  }
+
+  @override
+  String updatesDialogLatest(String version) {
+    return 'Latest: $version';
+  }
+
+  @override
+  String updatesDialogPublished(String time) {
+    return 'Published: $time';
+  }
+
+  @override
+  String updatesDialogPackage(String name) {
+    return 'Package: $name';
+  }
+
+  @override
+  String get updatesDialogSkipVersion => 'Skip this version';
+
+  @override
+  String get updatesDialogLater => 'Later';
+
+  @override
+  String get updatesDialogDownload => 'Download';
+
+  @override
+  String get updatesDialogDownloadingTitle => 'Downloading update';
+
+  @override
+  String get updatesDialogDownloadFailedTitle => 'Download failed';
+
+  @override
+  String get updatesDialogPreparing => 'Preparing download...';
+
+  @override
+  String get updatesDialogInstallTitle => 'Install Update';
+
+  @override
+  String updatesDialogInstallPrompt(String version) {
+    return 'Update downloaded ($version). Install now? The app will close during installation.';
+  }
+
+  @override
+  String get updatesDialogInstall => 'Install';
+
+  @override
+  String get updatesDialogInstallFailed =>
+      'Installation failed. Please run installer manually.';
+
+  @override
+  String get updatesDialogDownloadFailed =>
+      'Download failed. Check internet or release assets.';
+
+  @override
+  String get updatesDialogClose => 'Close';
+
+  @override
   String get solarSbu => 'SOLAR (SBU)';
 
   @override

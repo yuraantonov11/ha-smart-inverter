@@ -643,6 +643,10 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
           '🖼️ chart.ui render: range=$_selectedRange, x=${minX.toStringAsFixed(2)}..${maxX.toStringAsFixed(2)}, y=${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}, visible=${_getVisibleSpots().length}');
     }
 
+    if (_selectedRange != 0) {
+      return _buildBarChart(context, minX, maxX, minY, maxY);
+    }
+
     var lines = <LineChartBarData>[];
 
     if (_showProduction && _productionData.isNotEmpty) {
@@ -774,6 +778,161 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         lineBarsData: lines,
       ),
     );
+  }
+
+  Widget _buildBarChart(
+    BuildContext context,
+    double minX,
+    double maxX,
+    double minY,
+    double maxY,
+  ) {
+    final series = _buildBarSeries(AppLocalizations.of(context)!);
+    if (series.isEmpty) {
+      return AppEmptyState(
+        title: 'Нема даних',
+        message: 'Графік повинен завантажитися через деякий час',
+        icon: Icons.bar_chart_rounded,
+      );
+    }
+
+    final groups = <BarChartGroupData>[];
+    final start = minX.round();
+    final end = maxX.round();
+
+    for (var x = start; x <= end; x++) {
+      final rods = <BarChartRodData>[];
+      for (final s in series) {
+        final value = s.points[x] ?? 0.0;
+        rods.add(
+          BarChartRodData(
+            toY: value,
+            color: s.color,
+            width: (20 / series.length).clamp(3, 8).toDouble(),
+            borderRadius: BorderRadius.circular(2),
+          ),
+        );
+      }
+      groups.add(
+        BarChartGroupData(
+          x: x,
+          barsSpace: 4,
+          barRods: rods,
+        ),
+      );
+    }
+
+    return BarChart(
+      BarChartData(
+        minY: minY,
+        maxY: maxY,
+        baselineY: 0,
+        barGroups: groups,
+        groupsSpace: 8,
+        titlesData: FlTitlesData(
+          show: true,
+          rightTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles:
+              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 40,
+              getTitlesWidget: (value, meta) => SideTitleWidget(
+                meta: meta,
+                child: Text(
+                  Formatters.formatEnergy(value),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ),
+          ),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              interval: _selectedRange == 1 ? 1 : ((maxX - minX) > 20 ? 5 : 2),
+              getTitlesWidget: (value, meta) => SideTitleWidget(
+                meta: meta,
+                space: 10,
+                child: Text(
+                  _formatBottomAxisLabel(value, AppLocalizations.of(context)!),
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            ),
+          ),
+        ),
+        gridData: FlGridData(
+          show: true,
+          drawVerticalLine: false,
+          getDrawingHorizontalLine: (value) => FlLine(
+            color: Theme.of(context).dividerColor.withValues(alpha: 0.3),
+            strokeWidth: 1,
+          ),
+        ),
+        borderData: FlBorderData(show: false),
+        barTouchData: BarTouchData(
+          enabled: true,
+          touchTooltipData: BarTouchTooltipData(
+            getTooltipColor: (_) => Theme.of(context).cardColor,
+            getTooltipItem: (group, groupIndex, rod, rodIndex) {
+              final name = series[rodIndex].name;
+              return BarTooltipItem(
+                '$name\n${Formatters.formatEnergy(rod.toY)}',
+                TextStyle(
+                  color: rod.color,
+                  fontWeight: FontWeight.bold,
+                ),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+
+  List<_BarSeriesConfig> _buildBarSeries(AppLocalizations l10n) {
+    final result = <_BarSeriesConfig>[];
+
+    Map<int, double> toMap(List<FlSpot> spots) {
+      final map = <int, double>{};
+      for (final spot in spots) {
+        map[spot.x.round()] = spot.y;
+      }
+      return map;
+    }
+
+    if (_showProduction && _productionData.isNotEmpty) {
+      result.add(_BarSeriesConfig(
+        name: l10n.production,
+        color: const Color(0xFFF59E0B),
+        points: toMap(_productionData),
+      ));
+    }
+    if (_showConsumption && _consumptionData.isNotEmpty) {
+      result.add(_BarSeriesConfig(
+        name: l10n.consumption,
+        color: const Color(0xFF8B5CF6),
+        points: toMap(_consumptionData),
+      ));
+    }
+    if (_showBattery && _batteryData.isNotEmpty) {
+      result.add(_BarSeriesConfig(
+        name: l10n.battery,
+        color: const Color(0xFF10B981),
+        points: toMap(_batteryData),
+      ));
+    }
+    if (_showGrid && _gridData.isNotEmpty) {
+      result.add(_BarSeriesConfig(
+        name: l10n.grid,
+        color: const Color(0xFF06B6D4),
+        points: toMap(_gridData),
+      ));
+    }
+
+    return result;
   }
 
   LineChartBarData _buildLineData(
@@ -954,4 +1113,16 @@ class _TimeButton extends StatelessWidget {
       ),
     );
   }
+}
+
+class _BarSeriesConfig {
+  final String name;
+  final Color color;
+  final Map<int, double> points;
+
+  const _BarSeriesConfig({
+    required this.name,
+    required this.color,
+    required this.points,
+  });
 }

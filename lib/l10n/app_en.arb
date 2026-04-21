@@ -153,6 +153,59 @@
       }
     }
   },
+  "updatesNoInstallerFound": "No compatible installer was found in this release.",
+  "updatesDialogAvailableTitle": "Update Available",
+  "updatesDialogCurrent": "Current: {version}",
+  "@updatesDialogCurrent": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogLatest": "Latest: {version}",
+  "@updatesDialogLatest": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogPublished": "Published: {time}",
+  "@updatesDialogPublished": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogPackage": "Package: {name}",
+  "@updatesDialogPackage": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogSkipVersion": "Skip this version",
+  "updatesDialogLater": "Later",
+  "updatesDialogDownload": "Download",
+  "updatesDialogDownloadingTitle": "Downloading update",
+  "updatesDialogDownloadFailedTitle": "Download failed",
+  "updatesDialogPreparing": "Preparing download...",
+  "updatesDialogInstallTitle": "Install Update",
+  "updatesDialogInstallPrompt": "Update downloaded ({version}). Install now? The app will close during installation.",
+  "@updatesDialogInstallPrompt": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogInstall": "Install",
+  "updatesDialogInstallFailed": "Installation failed. Please run installer manually.",
+  "updatesDialogDownloadFailed": "Download failed. Check internet or release assets.",
+  "updatesDialogClose": "Close",
   "solarSbu": "SOLAR (SBU)",
   "gridUsb": "GRID (USB)",
   "utilityFirstUsb": "Utility First (USB)",

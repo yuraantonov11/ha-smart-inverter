@@ -308,6 +308,73 @@ class AppLocalizationsUk extends AppLocalizations {
   }
 
   @override
+  String get updatesNoInstallerFound =>
+      'У цьому релізі не знайдено сумісний інсталятор.';
+
+  @override
+  String get updatesDialogAvailableTitle => 'Доступне оновлення';
+
+  @override
+  String updatesDialogCurrent(String version) {
+    return 'Поточна: $version';
+  }
+
+  @override
+  String updatesDialogLatest(String version) {
+    return 'Остання: $version';
+  }
+
+  @override
+  String updatesDialogPublished(String time) {
+    return 'Опубліковано: $time';
+  }
+
+  @override
+  String updatesDialogPackage(String name) {
+    return 'Пакет: $name';
+  }
+
+  @override
+  String get updatesDialogSkipVersion => 'Пропустити цю версію';
+
+  @override
+  String get updatesDialogLater => 'Пізніше';
+
+  @override
+  String get updatesDialogDownload => 'Завантажити';
+
+  @override
+  String get updatesDialogDownloadingTitle => 'Завантаження оновлення';
+
+  @override
+  String get updatesDialogDownloadFailedTitle => 'Помилка завантаження';
+
+  @override
+  String get updatesDialogPreparing => 'Підготовка завантаження...';
+
+  @override
+  String get updatesDialogInstallTitle => 'Встановити оновлення';
+
+  @override
+  String updatesDialogInstallPrompt(String version) {
+    return 'Оновлення завантажено ($version). Встановити зараз? Під час встановлення застосунок буде закрито.';
+  }
+
+  @override
+  String get updatesDialogInstall => 'Встановити';
+
+  @override
+  String get updatesDialogInstallFailed =>
+      'Не вдалося встановити. Запустіть інсталятор вручну.';
+
+  @override
+  String get updatesDialogDownloadFailed =>
+      'Не вдалося завантажити. Перевірте інтернет або файли релізу.';
+
+  @override
+  String get updatesDialogClose => 'Закрити';
+
+  @override
   String get solarSbu => 'СОНЦЕ (SBU)';
 
   @override

@@ -644,6 +644,114 @@ abstract class AppLocalizations {
   /// **'Version {version} was skipped.'**
   String updatesSkippedNow(String version);
 
+  /// No description provided for @updatesNoInstallerFound.
+  ///
+  /// In en, this message translates to:
+  /// **'No compatible installer was found in this release.'**
+  String get updatesNoInstallerFound;
+
+  /// No description provided for @updatesDialogAvailableTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Update Available'**
+  String get updatesDialogAvailableTitle;
+
+  /// No description provided for @updatesDialogCurrent.
+  ///
+  /// In en, this message translates to:
+  /// **'Current: {version}'**
+  String updatesDialogCurrent(String version);
+
+  /// No description provided for @updatesDialogLatest.
+  ///
+  /// In en, this message translates to:
+  /// **'Latest: {version}'**
+  String updatesDialogLatest(String version);
+
+  /// No description provided for @updatesDialogPublished.
+  ///
+  /// In en, this message translates to:
+  /// **'Published: {time}'**
+  String updatesDialogPublished(String time);
+
+  /// No description provided for @updatesDialogPackage.
+  ///
+  /// In en, this message translates to:
+  /// **'Package: {name}'**
+  String updatesDialogPackage(String name);
+
+  /// No description provided for @updatesDialogSkipVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Skip this version'**
+  String get updatesDialogSkipVersion;
+
+  /// No description provided for @updatesDialogLater.
+  ///
+  /// In en, this message translates to:
+  /// **'Later'**
+  String get updatesDialogLater;
+
+  /// No description provided for @updatesDialogDownload.
+  ///
+  /// In en, this message translates to:
+  /// **'Download'**
+  String get updatesDialogDownload;
+
+  /// No description provided for @updatesDialogDownloadingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Downloading update'**
+  String get updatesDialogDownloadingTitle;
+
+  /// No description provided for @updatesDialogDownloadFailedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Download failed'**
+  String get updatesDialogDownloadFailedTitle;
+
+  /// No description provided for @updatesDialogPreparing.
+  ///
+  /// In en, this message translates to:
+  /// **'Preparing download...'**
+  String get updatesDialogPreparing;
+
+  /// No description provided for @updatesDialogInstallTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Install Update'**
+  String get updatesDialogInstallTitle;
+
+  /// No description provided for @updatesDialogInstallPrompt.
+  ///
+  /// In en, this message translates to:
+  /// **'Update downloaded ({version}). Install now? The app will close during installation.'**
+  String updatesDialogInstallPrompt(String version);
+
+  /// No description provided for @updatesDialogInstall.
+  ///
+  /// In en, this message translates to:
+  /// **'Install'**
+  String get updatesDialogInstall;
+
+  /// No description provided for @updatesDialogInstallFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Installation failed. Please run installer manually.'**
+  String get updatesDialogInstallFailed;
+
+  /// No description provided for @updatesDialogDownloadFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Download failed. Check internet or release assets.'**
+  String get updatesDialogDownloadFailed;
+
+  /// No description provided for @updatesDialogClose.
+  ///
+  /// In en, this message translates to:
+  /// **'Close'**
+  String get updatesDialogClose;
+
   /// No description provided for @solarSbu.
   ///
   /// In en, this message translates to:

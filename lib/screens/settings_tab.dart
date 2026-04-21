@@ -613,6 +613,7 @@ class SettingsTab extends StatelessWidget {
   }
 
   void _checkForUpdates(BuildContext context) async {
+    final l10n = AppLocalizations.of(context)!;
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     final info = await provider.checkForUpdates(force: true);
 
@@ -622,7 +623,7 @@ class SettingsTab extends StatelessWidget {
     } else {
       scaffoldMessenger.showSnackBar(
         SnackBar(
-          content: Text('You are up to date (${info.currentVersion}).'),
+          content: Text(l10n.updatesSubtitleUpToDate(info.currentVersion)),
         ),
       );
     }
@@ -630,22 +631,23 @@ class SettingsTab extends StatelessWidget {
 
   Future<void> _showUpdateAvailableDialog(
       BuildContext context, UpdateInfo info) async {
+    final l10n = AppLocalizations.of(context)!;
     await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Update Available'),
+        title: Text(l10n.updatesDialogAvailableTitle),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Current: ${info.currentVersion}'),
-            Text('Latest: ${info.latestVersion}'),
+            Text(l10n.updatesDialogCurrent(info.currentVersion)),
+            Text(l10n.updatesDialogLatest(info.latestVersion)),
             const SizedBox(height: 8),
-            Text(
-                'Published: ${UpdateService.formatPublishedAt(info.publishedAt)}'),
+            Text(l10n.updatesDialogPublished(
+                UpdateService.formatPublishedAt(info.publishedAt))),
             if (info.assetName != null) ...[
               const SizedBox(height: 4),
-              Text('Package: ${info.assetName}'),
+              Text(l10n.updatesDialogPackage(info.assetName!)),
             ],
             if ((info.releaseNotes ?? '').trim().isNotEmpty) ...[
               const SizedBox(height: 12),
@@ -664,11 +666,11 @@ class SettingsTab extends StatelessWidget {
               await provider.skipLatestUpdate();
               if (context.mounted) Navigator.pop(context);
             },
-            child: const Text('Skip this version'),
+            child: Text(l10n.updatesDialogSkipVersion),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: const Text('Later'),
+            child: Text(l10n.updatesDialogLater),
           ),
           ElevatedButton.icon(
             onPressed: () async {
@@ -676,7 +678,7 @@ class SettingsTab extends StatelessWidget {
               await _downloadAndInstallUpdate(context, info);
             },
             icon: const Icon(Icons.download_rounded),
-            label: const Text('Download'),
+            label: Text(l10n.updatesDialogDownload),
           ),
         ],
       ),
@@ -685,11 +687,12 @@ class SettingsTab extends StatelessWidget {
 
   Future<void> _downloadAndInstallUpdate(
       BuildContext context, UpdateInfo info) async {
+    final l10n = AppLocalizations.of(context)!;
     final scaffoldMessenger = ScaffoldMessenger.of(context);
     if (info.downloadUrl == null || info.assetName == null) {
       scaffoldMessenger.showSnackBar(
-        const SnackBar(
-          content: Text('No compatible installer was found in the release.'),
+        SnackBar(
+          content: Text(l10n.updatesNoInstallerFound),
         ),
       );
       return;
@@ -712,13 +715,12 @@ class SettingsTab extends StatelessWidget {
       unawaited(showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
-          title: const Text('Install Update'),
-          content: Text(
-              'Update downloaded (${info.latestVersion}). Install now? The app will close during installation.'),
+          title: Text(l10n.updatesDialogInstallTitle),
+          content: Text(l10n.updatesDialogInstallPrompt(info.latestVersion)),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
+              child: Text(l10n.cancel),
             ),
             ElevatedButton(
               onPressed: () async {
@@ -734,13 +736,11 @@ class SettingsTab extends StatelessWidget {
                 } else {
                   LogService.log('❌ update.ui install failed for path=$path');
                   scaffoldMessenger.showSnackBar(
-                    const SnackBar(
-                        content: Text(
-                            'Installation failed. Please run installer manually.')),
+                    SnackBar(content: Text(l10n.updatesDialogInstallFailed)),
                   );
                 }
               },
-              child: const Text('Install'),
+              child: Text(l10n.updatesDialogInstall),
             ),
           ],
         ),
@@ -750,9 +750,7 @@ class SettingsTab extends StatelessWidget {
           '⚠️ update.ui download dialog finished without file path: version=${info.latestVersion}',
           level: LogLevel.warn);
       scaffoldMessenger.showSnackBar(
-        const SnackBar(
-            content:
-                Text('Download failed. Check internet or release assets.')),
+        SnackBar(content: Text(l10n.updatesDialogDownloadFailed)),
       );
     }
   }
@@ -833,7 +831,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
       setState(() {
         _isDone = true;
         _errorMessage =
-            'Download failed. Check internet or release assets, then try again.';
+            AppLocalizations.of(context)!.updatesDialogDownloadFailed;
       });
       LogService.log('⚠️ update.dialog download finished with null path',
           level: LogLevel.warn);
@@ -841,7 +839,8 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
       if (!mounted) return;
       setState(() {
         _isDone = true;
-        _errorMessage = 'Download failed: $e';
+        _errorMessage =
+            '${AppLocalizations.of(context)!.updatesDialogDownloadFailed} ($e)';
       });
       LogService.log('❌ update.dialog exception during download',
           error: e, level: LogLevel.error);
@@ -850,12 +849,14 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final canClose = _isDone;
     return PopScope(
       canPop: canClose,
       child: AlertDialog(
-        title: Text(
-            _errorMessage == null ? 'Downloading update' : 'Download failed'),
+        title: Text(_errorMessage == null
+            ? l10n.updatesDialogDownloadingTitle
+            : l10n.updatesDialogDownloadFailedTitle),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -867,7 +868,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
               _errorMessage ??
                   (_progress > 0
                       ? '${(_progress * 100).toStringAsFixed(0)}%'
-                      : 'Preparing download...'),
+                      : l10n.updatesDialogPreparing),
             ),
             if (widget.info.assetName != null) ...[
               const SizedBox(height: 8),
@@ -882,7 +883,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
           if (canClose)
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Close'),
+              child: Text(l10n.updatesDialogClose),
             ),
         ],
       ),

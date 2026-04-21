@@ -153,6 +153,59 @@
       }
     }
   },
+  "updatesNoInstallerFound": "У цьому релізі не знайдено сумісний інсталятор.",
+  "updatesDialogAvailableTitle": "Доступне оновлення",
+  "updatesDialogCurrent": "Поточна: {version}",
+  "@updatesDialogCurrent": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogLatest": "Остання: {version}",
+  "@updatesDialogLatest": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogPublished": "Опубліковано: {time}",
+  "@updatesDialogPublished": {
+    "placeholders": {
+      "time": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogPackage": "Пакет: {name}",
+  "@updatesDialogPackage": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogSkipVersion": "Пропустити цю версію",
+  "updatesDialogLater": "Пізніше",
+  "updatesDialogDownload": "Завантажити",
+  "updatesDialogDownloadingTitle": "Завантаження оновлення",
+  "updatesDialogDownloadFailedTitle": "Помилка завантаження",
+  "updatesDialogPreparing": "Підготовка завантаження...",
+  "updatesDialogInstallTitle": "Встановити оновлення",
+  "updatesDialogInstallPrompt": "Оновлення завантажено ({version}). Встановити зараз? Під час встановлення застосунок буде закрито.",
+  "@updatesDialogInstallPrompt": {
+    "placeholders": {
+      "version": {
+        "type": "String"
+      }
+    }
+  },
+  "updatesDialogInstall": "Встановити",
+  "updatesDialogInstallFailed": "Не вдалося встановити. Запустіть інсталятор вручну.",
+  "updatesDialogDownloadFailed": "Не вдалося завантажити. Перевірте інтернет або файли релізу.",
+  "updatesDialogClose": "Закрити",
   "solarSbu": "СОНЦЕ (SBU)",
   "gridUsb": "МЕРЕЖА (USB)",
   "utilityFirstUsb": "Мережа (Utility First / USB)",

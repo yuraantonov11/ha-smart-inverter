@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.7] - 2026-04-21
+### Fixed
+- Localized the entire update flow UI (dialogs, buttons, snackbars, status texts) for both English and Ukrainian; removed remaining hardcoded English update strings.
+- Improved updater diagnostics and dialog reliability continuity from v1.2.6 while keeping all update stages visible in logs.
+- Fixed Windows app icon consistency: synchronized `windows/runner/resources/app_icon.ico` with the main app icon and applied icon setup at window startup.
+- Changed chart type for Week and Month ranges from line chart to column chart (grouped bars), while Day remains a line chart.
+
 ## [1.2.6] - 2026-04-21
 ### Fixed
 - Fixed the auto-update flow hanging at 100% with a non-closable modal. The old implementation opened the progress dialog in a fire-and-forget way and then tried to close it from the parent context, which could race with route creation and leave the blocking dialog on screen.
