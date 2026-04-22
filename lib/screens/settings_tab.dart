@@ -1143,21 +1143,21 @@ class HardwareSettingsSection extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text(
+              Text(
                 'Ці дані потрібні інтелектуальному алгоритму для точного розрахунку енергії та прогнозу погоди.',
                 style: TextStyle(
                     fontSize: 13,
                     color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 20),
-              _buildTextField(batteryCtrl, 'Ємність АКБ', 'Ah',
+              _buildTextField(context, batteryCtrl, 'Ємність АКБ', 'Ah',
                   Icons.battery_charging_full_rounded),
               const SizedBox(height: 16),
-              _buildTextField(
-                  pvCtrl, 'Потужність панелей', 'W', Icons.grid_4x4_rounded),
+              _buildTextField(context, pvCtrl, 'Потужність панелей', 'W',
+                  Icons.grid_4x4_rounded),
               const SizedBox(height: 16),
-              _buildTextField(inverterCtrl, 'Потужність інвертора', 'W',
-                  Icons.bolt_rounded),
+              _buildTextField(context, inverterCtrl, 'Потужність інвертора',
+                  'W', Icons.bolt_rounded),
             ],
           ),
         ),
@@ -1204,8 +1204,8 @@ class HardwareSettingsSection extends StatelessWidget {
     );
   }
 
-  Widget _buildTextField(TextEditingController controller, String label,
-      String suffix, IconData icon) {
+  Widget _buildTextField(BuildContext context, TextEditingController controller,
+      String label, String suffix, IconData icon) {
     return TextField(
       controller: controller,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),
