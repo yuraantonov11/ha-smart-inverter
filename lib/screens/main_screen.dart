@@ -49,15 +49,7 @@ class _MainScreenState extends State<MainScreen> {
                 onPressed: provider.toggleTheme,
               ),
             ),
-            // Refresh
-            Tooltip(
-              message: 'Оновити',
-              child: IconButton(
-                icon: const Icon(Icons.refresh),
-                onPressed: provider.fetchData,
-              ),
-            ),
-            const SizedBox(width: AppTheme.spacingM),
+            const SizedBox(width: AppTheme.spacingS),
           ],
           bottom: TabBar(
             isScrollable: true,

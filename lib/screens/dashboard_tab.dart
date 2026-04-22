@@ -274,26 +274,47 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
   bool _showForecast = true;
 
   bool _isLoading = true;
+  bool _isBackgroundRefreshing = false;
   List<FlSpot> _productionData = [];
   List<FlSpot> _consumptionData = [];
   List<FlSpot> _batteryData = [];
   List<FlSpot> _gridData = [];
   List<FlSpot> _forecastData = [];
   Timer? _chartDebounce;
+  Timer? _autoRefreshTimer;
   int _chartRequestSeq = 0;
   String? _lastRenderLogSignature;
+  DateTime? _lastChartRefreshedAt;
+
+  static const Duration _autoRefreshInterval = Duration(minutes: 5);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance
         .addPostFrameCallback((_) => _scheduleFetchChartData(immediate: true));
+    _autoRefreshTimer = Timer.periodic(_autoRefreshInterval, (_) {
+      _maybeAutoRefresh();
+    });
   }
 
   @override
   void dispose() {
     _chartDebounce?.cancel();
+    _autoRefreshTimer?.cancel();
     super.dispose();
+  }
+
+  /// Silently refreshes chart only when viewing today in day mode.
+  void _maybeAutoRefresh() {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final viewing =
+        DateTime(_currentDate.year, _currentDate.month, _currentDate.day);
+    if (_selectedRange == 0 && viewing == today) {
+      _fetchChartData(background: true);
+    }
   }
 
   void _scheduleFetchChartData({bool immediate = false}) {
@@ -309,6 +330,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     if (!mounted) return;
     setState(() {
       _isLoading = true;
+      _isBackgroundRefreshing = false;
       _productionData = [];
       _consumptionData = [];
       _batteryData = [];
@@ -319,11 +341,15 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         '🧹 chart.ui reset before fetch: range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}');
   }
 
-  Future<void> _fetchChartData() async {
+  Future<void> _fetchChartData({bool background = false}) async {
     final requestId = ++_chartRequestSeq;
     LogService.log(
-        '📊 chart.ui fetch start: requestId=$requestId, range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}');
-    if (mounted && !_isLoading) setState(() => _isLoading = true);
+        '📊 chart.ui fetch start: requestId=$requestId, range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}, bg=$background');
+    if (!background) {
+      if (mounted && !_isLoading) setState(() => _isLoading = true);
+    } else {
+      if (mounted) setState(() => _isBackgroundRefreshing = true);
+    }
 
     final data = await widget.provider.service
         .getChartData(_selectedRange, _currentDate);
@@ -351,6 +377,8 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         _batteryData = _normalizeSpots(data['battery'] ?? []);
         _gridData = _normalizeSpots(data['grid'] ?? []);
         _isLoading = false;
+        _isBackgroundRefreshing = false;
+        _lastChartRefreshedAt = DateTime.now();
       });
 
       _logChartUiSummary('chart.ui fetched');
@@ -459,7 +487,18 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             children: [
               Text(l10n.energyOverview,
                   style: Theme.of(context).textTheme.titleLarge),
-              _buildTimeSelector(l10n),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_lastChartRefreshedAt != null)
+                    _ChartRefreshBadge(
+                      refreshedAt: _lastChartRefreshedAt!,
+                      isRefreshing: _isBackgroundRefreshing,
+                    ),
+                  const SizedBox(width: 6),
+                  _buildTimeSelector(l10n),
+                ],
+              ),
             ],
           ),
           const SizedBox(height: AppTheme.spacingM),
@@ -555,6 +594,24 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         IconButton(
           icon: const Icon(Icons.chevron_right),
           onPressed: canGoForward ? () => _changeDate(1) : null,
+        ),
+        const SizedBox(width: 4),
+        IconButton(
+          icon: _isBackgroundRefreshing
+              ? SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                )
+              : Icon(Icons.refresh_rounded,
+                  size: 18, color: Theme.of(context).colorScheme.primary),
+          tooltip: 'Оновити графік',
+          onPressed: _isBackgroundRefreshing
+              ? null
+              : () => _fetchChartData(background: true),
         ),
       ],
     );
@@ -1111,6 +1168,81 @@ class _TimeButton extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ChartRefreshBadge extends StatefulWidget {
+  final DateTime refreshedAt;
+  final bool isRefreshing;
+
+  const _ChartRefreshBadge({
+    required this.refreshedAt,
+    required this.isRefreshing,
+  });
+
+  @override
+  State<_ChartRefreshBadge> createState() => _ChartRefreshBadgeState();
+}
+
+class _ChartRefreshBadgeState extends State<_ChartRefreshBadge> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    // Tick every 30 s to keep "X хв тому" label fresh
+    _ticker = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  String _label() {
+    if (widget.isRefreshing) return '…';
+    final diff = DateTime.now().difference(widget.refreshedAt);
+    if (diff.inSeconds < 60) return '< 1 хв';
+    if (diff.inMinutes < 60) return '${diff.inMinutes} хв тому';
+    return '${diff.inHours} год тому';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isStale = !widget.isRefreshing &&
+        DateTime.now().difference(widget.refreshedAt) >
+            const Duration(minutes: 6);
+    final color = isStale
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).hintColor;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (widget.isRefreshing)
+          SizedBox(
+            width: 10,
+            height: 10,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.5,
+              color: color,
+            ),
+          )
+        else
+          Icon(
+            isStale ? Icons.sync_problem_rounded : Icons.sync_rounded,
+            size: 12,
+            color: color,
+          ),
+        const SizedBox(width: 4),
+        Text(
+          _label(),
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color),
+        ),
+      ],
     );
   }
 }

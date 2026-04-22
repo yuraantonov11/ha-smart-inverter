@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:smart_inverter/models/inverter_data.dart';
-import 'package:smart_inverter/providers/app_provider.dart';
-import 'package:smart_inverter/services/hems_algorithm.dart';
+import 'package:inverter_app/models/inverter_data.dart';
+import 'package:inverter_app/providers/app_provider.dart';
+import 'package:inverter_app/services/hems_algorithm.dart';
 
 class _FakeAppStateProvider extends AppStateProvider {
   final List<int> setModeCalls = [];

@@ -45,7 +45,8 @@ class SettingsTab extends StatelessWidget {
                 ListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: const Icon(Icons.language, color: Colors.blueAccent),
+                  leading: Icon(Icons.language,
+                      color: Theme.of(context).colorScheme.primary),
                   title: Text(l10n.language),
                   trailing: DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
@@ -65,12 +66,11 @@ class SettingsTab extends StatelessWidget {
                 ListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading:
-                      const Icon(Icons.palette, color: Colors.orangeAccent),
+                  leading: Icon(Icons.palette,
+                      color: Theme.of(context).colorScheme.secondary),
                   title: Text(l10n.theme),
                   trailing: Switch(
                     value: provider.themeMode == ThemeMode.dark,
-                    activeThumbColor: Colors.amber,
                     onChanged: (val) => provider.toggleTheme(),
                   ),
                 ),
@@ -78,19 +78,18 @@ class SettingsTab extends StatelessWidget {
                 SwitchListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  secondary: const Icon(Icons.power_settings_new,
-                      color: Colors.greenAccent),
+                  secondary: Icon(Icons.power_settings_new,
+                      color: Theme.of(context).colorScheme.primary),
                   title: Text(l10n.startWithWindows),
                   value: provider.isAutostartEnabled,
-                  activeThumbColor: Colors.greenAccent,
-                  activeTrackColor: Colors.greenAccent.withValues(alpha: 0.3),
                   onChanged: provider.toggleAutostart,
                 ),
                 const Divider(height: 1),
                 ListTile(
                   contentPadding:
                       const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: const Icon(Icons.update, color: Colors.blueAccent),
+                  leading: Icon(Icons.update,
+                      color: Theme.of(context).colorScheme.primary),
                   title: Text(l10n.updatesTitle),
                   subtitle: Text(_buildUpdateSubtitle(l10n)),
                   trailing: provider.isCheckingForUpdates
@@ -104,8 +103,8 @@ class SettingsTab extends StatelessWidget {
                               ? Icons.system_update_alt_rounded
                               : Icons.chevron_right,
                           color: provider.hasPendingUpdate
-                              ? Colors.green
-                              : Colors.grey,
+                              ? Theme.of(context).colorScheme.secondary
+                              : Theme.of(context).colorScheme.onSurfaceVariant,
                         ),
                   onTap: () => _checkForUpdates(context),
                 ),
@@ -119,8 +118,8 @@ class SettingsTab extends StatelessWidget {
                     child: Material(
                       color: Colors.transparent,
                       child: ListTile(
-                        leading: const Icon(Icons.bug_report,
-                            color: Colors.redAccent),
+                        leading: Icon(Icons.bug_report,
+                            color: Theme.of(context).colorScheme.error),
                         title: const Text('View System Logs'),
                         subtitle:
                             const Text('Analyze app errors and API calls'),
@@ -151,12 +150,16 @@ class SettingsTab extends StatelessWidget {
   }
 
   Widget _buildSectionTitle(String title) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 12, left: 4),
-      child: Text(title,
-          style: const TextStyle(
-              fontSize: 16, fontWeight: FontWeight.bold, color: Colors.grey)),
-    );
+    return Builder(builder: (context) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12, left: 4),
+        child: Text(title,
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Theme.of(context).colorScheme.onSurfaceVariant)),
+      );
+    });
   }
 
   Widget _buildUpdateBanner(BuildContext context, AppLocalizations l10n) {
@@ -197,16 +200,17 @@ class SettingsTab extends StatelessWidget {
     }
 
     if (isSkipped) {
+      final amberColor = Theme.of(context).colorScheme.tertiary;
       return Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: Colors.orange.withValues(alpha: 0.10),
+          color: amberColor.withValues(alpha: 0.10),
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+          border: Border.all(color: amberColor.withValues(alpha: 0.3)),
         ),
         child: Row(
           children: [
-            const Icon(Icons.history_toggle_off_rounded, color: Colors.orange),
+            Icon(Icons.history_toggle_off_rounded, color: amberColor),
             const SizedBox(width: 10),
             Expanded(
               child: Text(l10n.updatesSkippedBanner(info.latestVersion)),
@@ -227,19 +231,20 @@ class SettingsTab extends StatelessWidget {
       );
     }
 
+    final successColor = Theme.of(context).colorScheme.secondary;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.green.withValues(alpha: 0.10),
+        color: successColor.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+        border: Border.all(color: successColor.withValues(alpha: 0.3)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Icon(Icons.system_update_alt_rounded, color: Colors.green),
+              Icon(Icons.system_update_alt_rounded, color: successColor),
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
@@ -330,8 +335,7 @@ class SettingsTab extends StatelessWidget {
                 children: [
                   const CircleAvatar(
                     radius: 32,
-                    backgroundColor: Colors.amber,
-                    child: Icon(Icons.person, size: 30, color: Colors.black),
+                    child: Icon(Icons.person, size: 30),
                   ),
                   Positioned(
                     right: -3,
@@ -376,16 +380,16 @@ class SettingsTab extends StatelessWidget {
                           horizontal: 10, vertical: 5),
                       decoration: BoxDecoration(
                         color: provider.userData == null
-                            ? Colors.orange.withValues(alpha: 0.18)
-                            : Colors.green.withValues(alpha: 0.14),
+                            ? theme.colorScheme.errorContainer
+                            : theme.colorScheme.secondaryContainer,
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
                         statusLabel,
                         style: TextStyle(
                           color: provider.userData == null
-                              ? Colors.orange[800]
-                              : Colors.green[700],
+                              ? theme.colorScheme.onErrorContainer
+                              : theme.colorScheme.onSecondaryContainer,
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
                         ),
@@ -464,8 +468,8 @@ class SettingsTab extends StatelessWidget {
                 child: OutlinedButton.icon(
                   onPressed: () => _confirmLogout(context),
                   style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.redAccent,
-                    side: const BorderSide(color: Colors.redAccent),
+                    foregroundColor: theme.colorScheme.error,
+                    side: BorderSide(color: theme.colorScheme.error),
                   ),
                   icon: const Icon(Icons.logout, size: 18),
                   label: Text(l10n.logout),
@@ -492,7 +496,8 @@ class SettingsTab extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
-          Icon(icon, size: 17, color: Colors.grey),
+          Icon(icon,
+              size: 17, color: Theme.of(context).colorScheme.onSurfaceVariant),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -1061,7 +1066,9 @@ class _LogsDialogState extends State<_LogsDialog> {
                                         .textTheme
                                         .bodySmall
                                         ?.copyWith(
-                                          color: Colors.redAccent,
+                                          color: Theme.of(context)
+                                              .colorScheme
+                                              .error,
                                           fontFamily: 'monospace',
                                         ),
                                   ),
@@ -1127,7 +1134,7 @@ class HardwareSettingsSection extends StatelessWidget {
         title: Row(
           children: [
             Icon(Icons.solar_power_rounded,
-                color: isDark ? Colors.amber : Colors.orange),
+                color: Theme.of(context).colorScheme.primary),
             const SizedBox(width: 12),
             const Text('Параметри станції', style: TextStyle(fontSize: 20)),
           ],
@@ -1138,7 +1145,9 @@ class HardwareSettingsSection extends StatelessWidget {
             children: [
               const Text(
                 'Ці дані потрібні інтелектуальному алгоритму для точного розрахунку енергії та прогнозу погоди.',
-                style: TextStyle(fontSize: 13, color: Colors.grey),
+                style: TextStyle(
+                    fontSize: 13,
+                    color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 20),
               _buildTextField(batteryCtrl, 'Ємність АКБ', 'Ah',
@@ -1162,8 +1171,8 @@ class HardwareSettingsSection extends StatelessWidget {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: isDark ? Colors.amber : Colors.orange,
-              foregroundColor: Colors.black,
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              foregroundColor: Theme.of(context).colorScheme.onPrimary,
               shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12)),
             ),
@@ -1183,7 +1192,6 @@ class HardwareSettingsSection extends StatelessWidget {
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(
                   content: Text('Параметри обладнання збережено!'),
-                  backgroundColor: Colors.green,
                   duration: Duration(seconds: 2),
                 ),
               );
@@ -1208,7 +1216,8 @@ class HardwareSettingsSection extends StatelessWidget {
       decoration: InputDecoration(
         labelText: label,
         suffixText: suffix,
-        prefixIcon: Icon(icon, color: Colors.grey),
+        prefixIcon:
+            Icon(icon, color: Theme.of(context).colorScheme.onSurfaceVariant),
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
@@ -1218,15 +1227,13 @@ class HardwareSettingsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     return Card(
       elevation: 0,
-      color: isDark ? Colors.grey[900] : Colors.grey[100],
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
         side: BorderSide(
-            color: isDark ? Colors.grey[800]! : Colors.grey[300]!, width: 1),
+            color: Theme.of(context).colorScheme.outlineVariant, width: 1),
       ),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
@@ -1238,12 +1245,11 @@ class HardwareSettingsSection extends StatelessWidget {
               Container(
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
-                  color: (isDark ? Colors.amber : Colors.orange)
-                      .withValues(alpha: 0.2),
+                  color: Theme.of(context).colorScheme.primaryContainer,
                   shape: BoxShape.circle,
                 ),
                 child: Icon(Icons.solar_power_rounded,
-                    color: isDark ? Colors.amber : Colors.orange),
+                    color: Theme.of(context).colorScheme.onPrimaryContainer),
               ),
               const SizedBox(width: 16),
               Expanded(
@@ -1256,13 +1262,16 @@ class HardwareSettingsSection extends StatelessWidget {
                     const SizedBox(height: 4),
                     Text(
                       'АКБ: ${provider.batteryCapacityAh.toInt()} Ah • PV: ${provider.pvTotalCapacityW.toInt()} W\nІнвертор: ${provider.inverterMaxPowerW.toInt()} W',
-                      style: const TextStyle(
-                          fontSize: 13, color: Colors.grey, height: 1.4),
+                      style: TextStyle(
+                          fontSize: 13,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          height: 1.4),
                     ),
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right_rounded, color: Colors.grey),
+              Icon(Icons.chevron_right_rounded,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant),
             ],
           ),
         ),
