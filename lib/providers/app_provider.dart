@@ -13,12 +13,14 @@ import '../services/hems_algorithm.dart';
 import '../services/weather_service.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
+import '../services/secure_storage_service.dart';
 import '../models/inverter_data.dart';
 
 class AppStateProvider extends ChangeNotifier {
   static const String _defaultAppVersionLabel = 'Version --';
   static const String _lastSnapshotKey = 'last_inverter_snapshot';
   static const String _skippedUpdateVersionKey = 'skipped_update_version';
+  static const String _startInTrayKey = 'start_in_tray';
   final InverterService service = InverterService();
   final WeatherService weatherService = WeatherService();
   late HemsAlgorithmService hemsService;
@@ -52,6 +54,7 @@ class AppStateProvider extends ChangeNotifier {
 
   bool get isEn => lang == 'en';
   bool isAutostartEnabled = false;
+  bool isStartInTrayEnabled = false;
   String? savedEmail;
   String? userName;
 
@@ -138,6 +141,7 @@ class AppStateProvider extends ChangeNotifier {
     smartMode = prefs.getInt('smart_mode') ?? 0;
     lang = prefs.getString('app_lang') ?? 'en';
     isAutostartEnabled = await launchAtStartup.isEnabled();
+    isStartInTrayEnabled = prefs.getBool(_startInTrayKey) ?? false;
     final l10n = await _getL10n();
     userName = prefs.getString('user_name') ?? l10n.userNameDefault;
     savedEmail = prefs.getString('saved_email');
@@ -294,26 +298,32 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   void _recordPvHistory(InverterData currentData) async {
-    final now = DateTime.now();
-    final timeKey =
-        "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}T${now.hour.toString().padLeft(2, '0')}:00";
+    try {
+      final now = DateTime.now();
+      final timeKey =
+          "${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}T${now.hour.toString().padLeft(2, '0')}:00";
 
-    historicalPvData[timeKey] = currentData.pvPower;
+      historicalPvData[timeKey] = currentData.pvPower;
 
-    // Limit historical data to last 14 days to prevent unlimited growth
-    final cutoffDate = now.subtract(const Duration(days: 14));
-    historicalPvData.removeWhere((key, value) {
-      try {
-        final date = DateTime.parse(key.replaceAll(' ', 'T'));
-        return date.isBefore(cutoffDate);
-      } catch (_) {
-        return true; // Remove invalid keys
-      }
-    });
+      // Limit historical data to last 14 days to prevent unlimited growth
+      final cutoffDate = now.subtract(const Duration(days: 14));
+      historicalPvData.removeWhere((key, value) {
+        try {
+          final date = DateTime.parse(key.replaceAll(' ', 'T'));
+          return date.isBefore(cutoffDate);
+        } catch (_) {
+          return true; // Remove invalid keys
+        }
+      });
 
-    // Save to SharedPreferences
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('historical_pv_data', json.encode(historicalPvData));
+      // Save to SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(
+          'historical_pv_data', json.encode(historicalPvData));
+    } catch (e, stack) {
+      // БЕЗПЕКА: Правильна обробка помилок вместо fire-and-forget
+      LogService.log('❌ Error recording PV history', error: e, stack: stack);
+    }
   }
 
   void handleVersionClick() async {
@@ -401,6 +411,14 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> toggleStartInTray(bool val) async {
+    isStartInTrayEnabled = val;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_startInTrayKey, val);
+    if (isAuthenticated) await _updateTrayMenu();
+    notifyListeners();
+  }
+
   Future<void> updateProfile(String newName) async {
     userName = newName;
     final prefs = await SharedPreferences.getInstance();
@@ -413,8 +431,38 @@ class AppStateProvider extends ChangeNotifier {
   Future<bool> autoLogin() async {
     final prefs = await SharedPreferences.getInstance();
     final email = prefs.getString('saved_email');
-    final pass = prefs.getString('saved_pass');
-    if (email != null && pass != null) return await service.login(email, pass);
+    var pass = await SecureStorageService.getPassword();
+
+    // Backward compatibility: previous builds stored password in SharedPreferences.
+    if ((pass == null || pass.isEmpty)) {
+      final legacyPass = prefs.getString('saved_pass');
+      if (legacyPass != null && legacyPass.isNotEmpty) {
+        try {
+          await SecureStorageService.savePassword(legacyPass);
+          await prefs.remove('saved_pass');
+        } catch (e) {
+          LogService.log('Failed to migrate legacy password to secure storage',
+              error: e);
+        }
+        pass = legacyPass;
+      }
+    }
+
+    if (email != null && email.isNotEmpty && pass != null && pass.isNotEmpty) {
+      final success = await service.login(email, pass);
+      if (success) {
+        final token = service.accessToken;
+        if (token != null && token.isNotEmpty) {
+          try {
+            await SecureStorageService.saveToken(token);
+          } catch (e) {
+            LogService.log('Failed to persist access token after auto login',
+                error: e);
+          }
+        }
+      }
+      return success;
+    }
     return false;
   }
 
@@ -423,7 +471,22 @@ class AppStateProvider extends ChangeNotifier {
     if (success) {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('saved_email', email);
-      await prefs.setString('saved_pass', pass);
+      await prefs.remove('saved_pass');
+      try {
+        await SecureStorageService.savePassword(pass);
+      } catch (e) {
+        LogService.log('Failed to persist password securely after login',
+            error: e);
+      }
+      final token = service.accessToken;
+      if (token != null && token.isNotEmpty) {
+        try {
+          await SecureStorageService.saveToken(token);
+        } catch (e) {
+          LogService.log('Failed to persist access token after login',
+              error: e);
+        }
+      }
       savedEmail = email;
 
       isAuthenticated = true;
@@ -438,6 +501,13 @@ class AppStateProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('saved_email');
     await prefs.remove('saved_pass');
+    try {
+      await SecureStorageService.deletePassword();
+      await SecureStorageService.deleteToken();
+    } catch (e) {
+      LogService.log('Failed to clear secure session data during logout',
+          error: e);
+    }
     savedEmail = null;
     service.accessToken = null;
     service.userId = null;
@@ -478,6 +548,12 @@ class AppStateProvider extends ChangeNotifier {
         label: l10n.startWithWindows,
         checked: isAutostartEnabled,
         onClicked: (item) async => await toggleAutostart(!isAutostartEnabled),
+      ),
+      MenuItemCheckbox(
+        label: l10n.startInTray,
+        checked: isStartInTrayEnabled,
+        onClicked: (item) async =>
+            await toggleStartInTray(!isStartInTrayEnabled),
       ),
       MenuSeparator(),
       MenuItemLabel(
@@ -526,7 +602,7 @@ class AppStateProvider extends ChangeNotifier {
               '🔑 fetchData: device not found for $_consecutiveDeviceNotFoundCount cycles, attempting re-login…');
           final prefs = await SharedPreferences.getInstance();
           final email = prefs.getString('saved_email');
-          final pass = prefs.getString('saved_pass');
+          final pass = await SecureStorageService.getPassword();
           if (email != null && pass != null) {
             final ok = await service.login(email, pass);
             LogService.log('🔑 re-login result=$ok');

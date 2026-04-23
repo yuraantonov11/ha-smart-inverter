@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 
+import '../l10n/app_localizations.dart';
 import '../models/inverter_data.dart';
 import '../providers/app_provider.dart';
+import '../theme/app_theme.dart';
+import '../widgets/app_components.dart';
 
 class DetailsTab extends StatelessWidget {
   final InverterData data;
@@ -14,6 +17,7 @@ class DetailsTab extends StatelessWidget {
   // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final fullConfigs = data.rawFields['fullConfigs'];
     final configList = _extractConfigList(fullConfigs);
     configList.sort((a, b) {
@@ -31,12 +35,12 @@ class DetailsTab extends StatelessWidget {
     return Stack(
       children: [
         ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(AppTheme.spacingL),
           children: [
             // ── Settings header ───────────────────────────────────────────
             _SectionHeader(
               icon: Icons.tune_rounded,
-              title: 'Налаштування інвертора',
+              title: l10n.inverterSettings,
               trailing: (provider.isSettingChanging || provider.isConfigLoading)
                   ? const SizedBox(
                       width: 16,
@@ -45,13 +49,13 @@ class DetailsTab extends StatelessWidget {
                     )
                   : IconButton(
                       icon: const Icon(Icons.refresh_rounded, size: 18),
-                      tooltip: 'Оновити налаштування',
+                      tooltip: l10n.refreshSettings,
                       onPressed: () => provider.refreshDeviceConfigs(),
                     ),
             ),
             const SizedBox(height: 8),
             if (configList.isEmpty)
-              Card(
+              AppCard(
                 child: ListTile(
                   leading: provider.isConfigLoading
                       ? const SizedBox(
@@ -60,10 +64,10 @@ class DetailsTab extends StatelessWidget {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.hourglass_empty_rounded),
-                  title: const Text('Налаштування завантажуються…'),
+                  title: Text(l10n.settingsLoadingTitle),
                   subtitle: Text(provider.isConfigLoading
-                      ? 'Очікуємо відповідь інвертора…'
-                      : 'Натисніть 🔄 для завантаження'),
+                      ? l10n.waitingInverterResponse
+                      : l10n.tapRefreshToLoad),
                 ),
               )
             else
@@ -74,7 +78,7 @@ class DetailsTab extends StatelessWidget {
             // ── Realtime readings header ───────────────────────────────────
             _SectionHeader(
               icon: Icons.monitor_heart_rounded,
-              title: 'Поточні показники',
+              title: l10n.realtimeReadings,
             ),
             const SizedBox(height: 8),
             ...stateKeys.map(
@@ -146,33 +150,35 @@ class DetailsTab extends StatelessWidget {
         ? '$valueDisplay $unit'
         : valueDisplay;
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 8),
-      child: ListTile(
-        leading: Icon(
-          _iconForSetting(key),
-          color: Theme.of(context).colorScheme.primary,
-          size: 22,
-        ),
-        title: Text(name, style: const TextStyle(fontSize: 13)),
-        subtitle: Text(
-          displayText,
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            fontSize: 15,
-            color: Theme.of(context).colorScheme.secondary,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: AppCard(
+        child: ListTile(
+          leading: Icon(
+            _iconForSetting(key),
+            color: Theme.of(context).colorScheme.primary,
+            size: 22,
           ),
+          title: Text(name, style: const TextStyle(fontSize: 13)),
+          subtitle: Text(
+            displayText,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 15,
+              color: Theme.of(context).colorScheme.secondary,
+            ),
+          ),
+          trailing: provider.isSettingChanging
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.edit_rounded, size: 18),
+          onTap: provider.isSettingChanging
+              ? null
+              : () => _showEditDialog(context, key, name, cfg),
         ),
-        trailing: provider.isSettingChanging
-            ? const SizedBox(
-                width: 16,
-                height: 16,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              )
-            : const Icon(Icons.edit_rounded, size: 18),
-        onTap: provider.isSettingChanging
-            ? null
-            : () => _showEditDialog(context, key, name, cfg),
       ),
     );
   }
@@ -193,17 +199,19 @@ class DetailsTab extends StatelessWidget {
       value = fieldData.toString();
     }
 
-    return Card(
-      margin: const EdgeInsets.only(bottom: 6),
-      child: ListTile(
-        dense: true,
-        title: Text(name, style: const TextStyle(fontSize: 13)),
-        trailing: Text(
-          (unit.isNotEmpty && unit != 'null') ? '$value $unit' : value,
-          style: TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w700,
-            color: Theme.of(context).colorScheme.primary,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: AppCard(
+        child: ListTile(
+          dense: true,
+          title: Text(name, style: const TextStyle(fontSize: 13)),
+          trailing: Text(
+            (unit.isNotEmpty && unit != 'null') ? '$value $unit' : value,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w700,
+              color: Theme.of(context).colorScheme.primary,
+            ),
           ),
         ),
       ),
@@ -220,6 +228,7 @@ class DetailsTab extends StatelessWidget {
     String name,
     Map<String, dynamic> cfg,
   ) {
+    final l10n = AppLocalizations.of(context)!;
     final valueType = (cfg['valueType'] as num?)?.toInt() ?? 1;
     final currentValue = cfg['value']?.toString() ?? '';
     final unit = cfg['unit']?.toString() ?? '';
@@ -245,7 +254,7 @@ class DetailsTab extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8),
                   child: Text(
-                    'Одиниця виміру: $unit',
+                    l10n.unitOfMeasure(unit),
                     style: TextStyle(
                       fontSize: 12,
                       color: Theme.of(context).colorScheme.secondary,
@@ -259,9 +268,9 @@ class DetailsTab extends StatelessWidget {
                   onChanged: (val) {
                     if (val != null) setState(() => selected = val);
                   },
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     border: OutlineInputBorder(),
-                    labelText: 'Оберіть значення',
+                    labelText: l10n.selectValue,
                   ),
                 )
               else
@@ -272,7 +281,7 @@ class DetailsTab extends StatelessWidget {
                       : TextInputType.text,
                   decoration: InputDecoration(
                     border: const OutlineInputBorder(),
-                    labelText: 'Нове значення',
+                    labelText: l10n.newValue,
                     suffixText:
                         (unit.isNotEmpty && unit != 'null') ? unit : null,
                   ),
@@ -282,11 +291,11 @@ class DetailsTab extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx),
-              child: const Text('Скасувати'),
+              child: Text(l10n.cancel),
             ),
             FilledButton.icon(
               icon: const Icon(Icons.check_rounded, size: 16),
-              label: const Text('Застосувати'),
+              label: Text(l10n.apply),
               onPressed: () async {
                 final newValue =
                     presets != null ? selected : controller.text.trim();
@@ -432,14 +441,24 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, color: Theme.of(context).colorScheme.primary, size: 20),
-        const SizedBox(width: 8),
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+            color:
+                Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
+          ),
+          child: Icon(icon,
+              color: Theme.of(context).colorScheme.primary, size: 18),
+        ),
+        const SizedBox(width: 10),
         Expanded(
           child: Text(
             title,
             style: Theme.of(context)
                 .textTheme
-                .titleMedium
+                .titleLarge
                 ?.copyWith(fontWeight: FontWeight.bold),
           ),
         ),

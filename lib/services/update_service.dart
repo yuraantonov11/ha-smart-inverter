@@ -230,12 +230,21 @@ class UpdateService {
   static Future<bool> installUpdate(String path) async {
     try {
       LogService.log('🚀 update.install start: path=$path');
+
+      // БЕЗПЕКА: Перевірка цілісності файлу перед запуском
+      final file = File(path);
+      if (!await file.exists()) {
+        LogService.log('❌ update.install failed: file does not exist');
+        return false;
+      }
+
       final lower = path.toLowerCase();
       if (lower.endsWith('.msi')) {
+        // БЕЗПЕКА: runInShell: false запобігає shell injection атакам
         final result = await Process.run(
           'msiexec',
           ['/i', path, '/passive', '/norestart'],
-          runInShell: true,
+          runInShell: false,
         );
         final ok = result.exitCode == 0 || result.exitCode == 3010;
         if (!ok) {
@@ -249,7 +258,8 @@ class UpdateService {
       }
 
       // Inno/EXE/MSIX - start installer and return immediately.
-      await Process.start(path, [], runInShell: true);
+      // БЕЗПЕКА: runInShell: false запобігає shell injection атакам
+      await Process.start(path, [], runInShell: false);
       LogService.log('✅ update.install process started: $path');
       return true;
     } catch (e) {

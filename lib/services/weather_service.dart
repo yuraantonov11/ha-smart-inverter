@@ -45,16 +45,137 @@ class _RadiationBin {
   }
 }
 
+class DailySolarForecast {
+  final DateTime date;
+  final double energyWh;
+  final double peakPowerW;
+
+  const DailySolarForecast({
+    required this.date,
+    required this.energyWh,
+    required this.peakPowerW,
+  });
+}
+
 class WeatherService {
   final Dio _dio = Dio(BaseOptions(
+    baseUrl: 'https://api.open-meteo.com',
     connectTimeout: const Duration(seconds: 10),
     receiveTimeout: const Duration(seconds: 10),
   ));
+
+  // БЕЗПЕКА: Rate limiting
+  DateTime? _lastRequestTime;
+  static const _minRequestIntervalMs = 1000; // 1 запит за секунду мінімум
+
+  WeatherService() {
+    // БЕЗПЕКА: Dio автоматично перевіряє SSL сертифікати
+    // Open-Meteo використовує legitim Let's Encrypt сертифікати
+  }
+
+  /// БЕЗПЕКА: Rate limiting для запобігання DoS атакам
+  Future<void> _applyRateLimit() async {
+    final now = DateTime.now();
+    if (_lastRequestTime != null) {
+      final elapsed = now.difference(_lastRequestTime!).inMilliseconds;
+      if (elapsed < _minRequestIntervalMs) {
+        final delayMs = _minRequestIntervalMs - elapsed;
+        LogService.log(
+            '⏱️ Rate limit applied for Open-Meteo, delay=${delayMs}ms');
+        await Future.delayed(Duration(milliseconds: delayMs));
+      }
+    }
+    _lastRequestTime = DateTime.now();
+  }
+
+  double? _toDoubleOrNull(dynamic value) {
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString());
+  }
 
   // Динамічний кеш: вночі можна довше, вдень — частіше
   static int get _cacheValidDurationHours {
     final hour = DateTime.now().hour;
     return (hour >= 22 || hour < 6) ? 6 : 1;
+  }
+
+  Future<Map<String, dynamic>?> _loadOpenMeteoPayload({
+    required double lat,
+    required double lon,
+    required int forecastDays,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    final cacheDataKey = 'openmeteo_cache_data_v2_$forecastDays';
+    final cacheTimeKey = 'openmeteo_cache_timestamp_v2_$forecastDays';
+
+    final cachedData = prefs.getString(cacheDataKey);
+    final cacheTimestampStr = prefs.getString(cacheTimeKey);
+    if (cachedData != null && cacheTimestampStr != null) {
+      final cacheTimestamp = DateTime.parse(cacheTimestampStr);
+      if (DateTime.now().difference(cacheTimestamp).inHours <
+          _cacheValidDurationHours) {
+        LogService.log('☀️ Прогноз з кешу (TTL: $_cacheValidDurationHoursг)');
+        return json.decode(cachedData) as Map<String, dynamic>;
+      }
+    }
+
+    final url = 'https://api.open-meteo.com/v1/forecast'
+        '?latitude=$lat&longitude=$lon'
+        '&hourly=shortwave_radiation'
+        '&timezone=auto'
+        '&past_days=14'
+        '&forecast_days=$forecastDays';
+
+    try {
+      LogService.log(
+          '🔄 Завантажуємо прогноз Open-Meteo (past=14, future=$forecastDays)...');
+
+      // БЕЗПЕКА: Rate limiting
+      await _applyRateLimit();
+
+      final response = await _dio.get(url);
+      if (response.statusCode == 200) {
+        final responseData = response.data as Map<String, dynamic>;
+        await prefs.setString(cacheDataKey, json.encode(responseData));
+        await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
+        LogService.log('✅ Open-Meteo завантажено успішно');
+        return responseData;
+      }
+    } catch (e, stack) {
+      LogService.log('❌ Помилка Open-Meteo', error: e, stack: stack);
+      if (cachedData != null) {
+        return json.decode(cachedData) as Map<String, dynamic>;
+      }
+    }
+
+    return null;
+  }
+
+  Map<int, _RadiationBin>? _buildLookupOrNull({
+    required Map<String, double> historicalPvData,
+    required List<String> times,
+    required List<dynamic> radiationList,
+  }) {
+    final totalHistoricalPoints = historicalPvData.length;
+    if (totalHistoricalPoints < 8) {
+      LogService.log('ℹ️ Мало історичних даних ($totalHistoricalPoints точок). '
+          'Використовуємо формульний прогноз.');
+      return null;
+    }
+
+    final lookup = _buildRadiationLookup(
+      historicalPvData: historicalPvData,
+      times: times,
+      radiationList: radiationList,
+    );
+    final validBins = lookup.values.where((b) => b.count >= 2).length;
+    if (validBins < 3) {
+      LogService.log(
+          '⚠️ Lookup має лише $validBins валідних бінів. Використовуємо fallback.');
+      return null;
+    }
+    return lookup;
   }
 
   // ─────────────────────────────────────────────────────────
@@ -76,7 +197,9 @@ class WeatherService {
     for (var i = 0; i < times.length; i++) {
       final dt = DateTime.parse(times[i]).toLocal();
       final normKey = _toNormKey(dt);
-      final radiationWm2 = (radiationList[i] as num).toDouble();
+      if (i >= radiationList.length) continue;
+      final radiationWm2 = _toDoubleOrNull(radiationList[i]);
+      if (radiationWm2 == null) continue;
 
       if (radiationWm2 <= 0) continue;
       if (!normalizedHistory.containsKey(normKey)) continue;
@@ -176,69 +299,104 @@ class WeatherService {
     Map<String, double> historicalPvData = const {},
     DateTime? targetDate, // Якщо null — повертаємо тільки майбутнє
   }) async {
-    final prefs = await SharedPreferences.getInstance();
-    const cacheDataKey = 'openmeteo_cache_data';
-    const cacheTimeKey = 'openmeteo_cache_timestamp';
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final desiredDay = targetDate == null
+        ? today
+        : DateTime(targetDate.year, targetDate.month, targetDate.day);
+    final dayDiff = desiredDay.difference(today).inDays;
+    // Keep minimum of 2 days, but expand horizon for selected future date.
+    final forecastDays = (dayDiff + 1).clamp(2, 16);
 
-    // Перевірка кешу з динамічним TTL
-    final cachedData = prefs.getString(cacheDataKey);
-    final cacheTimestampStr = prefs.getString(cacheTimeKey);
-    if (cachedData != null && cacheTimestampStr != null) {
-      final cacheTimestamp = DateTime.parse(cacheTimestampStr);
-      if (DateTime.now().difference(cacheTimestamp).inHours <
-          _cacheValidDurationHours) {
-        LogService.log('☀️ Прогноз з кешу (TTL: $_cacheValidDurationHoursг)');
-        return _buildForecast(
-          json.decode(cachedData),
-          historicalPvData: historicalPvData,
-          pvCapacityW: pvCapacityW,
+    final payload = await _loadOpenMeteoPayload(
+      lat: lat,
+      lon: lon,
+      forecastDays: forecastDays,
+    );
+    if (payload == null) return {};
+    return _buildForecast(
+      payload,
+      historicalPvData: historicalPvData,
+      pvCapacityW: pvCapacityW,
+      fallbackEfficiency: efficiency,
+      targetDate: targetDate,
+    );
+  }
+
+  Future<List<DailySolarForecast>> fetchDailyForecast({
+    double lat = 49.7115,
+    double lon = 23.9060,
+    required double pvCapacityW,
+    double efficiency = 0.85,
+    Map<String, double> historicalPvData = const {},
+    int daysAhead = 4,
+  }) async {
+    final forecastDays = daysAhead.clamp(2, 16);
+    final payload = await _loadOpenMeteoPayload(
+      lat: lat,
+      lon: lon,
+      forecastDays: forecastDays,
+    );
+    if (payload == null) return const [];
+
+    final times = (payload['hourly']['time'] as List).cast<String>();
+    final List<dynamic> radiationList =
+        payload['hourly']['shortwave_radiation'];
+    final lookup = _buildLookupOrNull(
+      historicalPvData: historicalPvData,
+      times: times,
+      radiationList: radiationList,
+    );
+
+    final now = DateTime.now();
+    final startDay = DateTime(now.year, now.month, now.day);
+    final endDay = startDay.add(Duration(days: forecastDays - 1));
+    final daily = <DateTime, List<double>>{};
+
+    for (var i = 0; i < times.length; i++) {
+      final dt = DateTime.parse(times[i]).toLocal();
+      final day = DateTime(dt.year, dt.month, dt.day);
+      if (day.isBefore(startDay) || day.isAfter(endDay)) continue;
+
+      if (i >= radiationList.length) continue;
+      final radiationWm2 = _toDoubleOrNull(radiationList[i]);
+      if (radiationWm2 == null) continue;
+      if (radiationWm2 <= 0) continue;
+
+      double predicted;
+      if (lookup != null) {
+        predicted = _predictFromLookup(
+          radiationWm2,
+          lookup,
           fallbackEfficiency: efficiency,
-          targetDate: targetDate,
+          pvCapacityW: pvCapacityW,
         );
+      } else {
+        predicted = (radiationWm2 / 1000.0) * pvCapacityW * efficiency;
       }
+
+      if (pvCapacityW > 0) {
+        predicted = predicted.clamp(0.0, pvCapacityW).toDouble();
+      }
+      daily.putIfAbsent(day, () => <double>[]).add(predicted);
     }
 
-    // past_days=14 — більше даних для lookup-таблиці
-    final url = 'https://api.open-meteo.com/v1/forecast'
-        '?latitude=$lat&longitude=$lon'
-        '&hourly=shortwave_radiation'
-        '&timezone=auto'
-        '&past_days=14'
-        '&forecast_days=2';
+    final result = daily.entries.map((entry) {
+      final values = entry.value;
+      final energyWh =
+          values.fold<double>(0, (sum, value) => sum + value).toDouble();
+      final peakPowerW = values.isEmpty
+          ? 0.0
+          : values.reduce((a, b) => a > b ? a : b).toDouble();
+      return DailySolarForecast(
+        date: entry.key,
+        energyWh: energyWh,
+        peakPowerW: peakPowerW,
+      );
+    }).toList()
+      ..sort((a, b) => a.date.compareTo(b.date));
 
-    try {
-      LogService.log(
-          '🔄 Завантажуємо прогноз Open-Meteo (past=14, future=2)...');
-      final response = await _dio.get(url);
-
-      if (response.statusCode == 200) {
-        final responseData = response.data;
-        await prefs.setString(cacheDataKey, json.encode(responseData));
-        await prefs.setString(cacheTimeKey, DateTime.now().toIso8601String());
-
-        LogService.log('✅ Open-Meteo завантажено успішно');
-        return _buildForecast(
-          responseData,
-          historicalPvData: historicalPvData,
-          pvCapacityW: pvCapacityW,
-          fallbackEfficiency: efficiency,
-          targetDate: targetDate,
-        );
-      }
-    } catch (e, stack) {
-      LogService.log('❌ Помилка Open-Meteo', error: e, stack: stack);
-      if (cachedData != null) {
-        return _buildForecast(
-          json.decode(cachedData),
-          historicalPvData: historicalPvData,
-          pvCapacityW: pvCapacityW,
-          fallbackEfficiency: efficiency,
-          targetDate: targetDate,
-        );
-      }
-    }
-
-    return {};
+    return result;
   }
 
   // ─────────────────────────────────────────────────────────
@@ -257,27 +415,11 @@ class WeatherService {
     LogService.log(
         '🌤️ Початок побудови прогнозу: часових точок=${times.length}, радіаційних точок=${radiationList.length}');
 
-    // Будуємо lookup тільки якщо є достатньо історичних даних
-    Map<int, _RadiationBin>? lookup;
-    final totalHistoricalPoints = historicalPvData.length;
-
-    if (totalHistoricalPoints >= 8) {
-      lookup = _buildRadiationLookup(
-        historicalPvData: historicalPvData,
-        times: times,
-        radiationList: radiationList,
-      );
-
-      final validBins = lookup.values.where((b) => b.count >= 2).length;
-      if (validBins < 3) {
-        LogService.log(
-            '⚠️ Lookup має лише $validBins валідних бінів. Використовуємо fallback.');
-        lookup = null;
-      }
-    } else {
-      LogService.log('ℹ️ Мало історичних даних ($totalHistoricalPoints точок). '
-          'Використовуємо формульний прогноз з ефективністю $fallbackEfficiency.');
-    }
+    final lookup = _buildLookupOrNull(
+      historicalPvData: historicalPvData,
+      times: times,
+      radiationList: radiationList,
+    );
 
     final now = DateTime.now();
     final forecast = <String, double>{};
@@ -316,7 +458,9 @@ class WeatherService {
 
       processedCount++;
 
-      final radiationWm2 = (radiationList[i] as num).toDouble();
+      if (i >= radiationList.length) continue;
+      final radiationWm2 = _toDoubleOrNull(radiationList[i]);
+      if (radiationWm2 == null) continue;
       if (radiationWm2 <= 0) continue;
 
       double predicted;

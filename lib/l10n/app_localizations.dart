@@ -128,6 +128,18 @@ abstract class AppLocalizations {
   /// **'Theme'**
   String get theme;
 
+  /// No description provided for @lightTheme.
+  ///
+  /// In en, this message translates to:
+  /// **'Light theme'**
+  String get lightTheme;
+
+  /// No description provided for @darkTheme.
+  ///
+  /// In en, this message translates to:
+  /// **'Dark theme'**
+  String get darkTheme;
+
   /// No description provided for @language.
   ///
   /// In en, this message translates to:
@@ -283,6 +295,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Grid'**
   String get grid;
+
+  /// No description provided for @forecast.
+  ///
+  /// In en, this message translates to:
+  /// **'Forecast'**
+  String get forecast;
 
   /// No description provided for @modeAdaptive.
   ///
@@ -469,6 +487,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Start with Windows'**
   String get startWithWindows;
+
+  /// No description provided for @startInTray.
+  ///
+  /// In en, this message translates to:
+  /// **'Start in tray'**
+  String get startInTray;
+
+  /// No description provided for @startInTraySubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Starts minimized when a saved session exists'**
+  String get startInTraySubtitle;
 
   /// No description provided for @name.
   ///
@@ -752,6 +782,192 @@ abstract class AppLocalizations {
   /// **'Close'**
   String get updatesDialogClose;
 
+  /// No description provided for @inverterSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Inverter settings'**
+  String get inverterSettings;
+
+  /// No description provided for @refreshSettings.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh settings'**
+  String get refreshSettings;
+
+  /// No description provided for @settingsLoadingTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Settings are loading…'**
+  String get settingsLoadingTitle;
+
+  /// No description provided for @waitingInverterResponse.
+  ///
+  /// In en, this message translates to:
+  /// **'Waiting for inverter response…'**
+  String get waitingInverterResponse;
+
+  /// No description provided for @tapRefreshToLoad.
+  ///
+  /// In en, this message translates to:
+  /// **'Tap refresh to load settings'**
+  String get tapRefreshToLoad;
+
+  /// No description provided for @realtimeReadings.
+  ///
+  /// In en, this message translates to:
+  /// **'Realtime readings'**
+  String get realtimeReadings;
+
+  /// No description provided for @unitOfMeasure.
+  ///
+  /// In en, this message translates to:
+  /// **'Unit: {unit}'**
+  String unitOfMeasure(String unit);
+
+  /// No description provided for @selectValue.
+  ///
+  /// In en, this message translates to:
+  /// **'Select value'**
+  String get selectValue;
+
+  /// No description provided for @newValue.
+  ///
+  /// In en, this message translates to:
+  /// **'New value'**
+  String get newValue;
+
+  /// No description provided for @apply.
+  ///
+  /// In en, this message translates to:
+  /// **'Apply'**
+  String get apply;
+
+  /// No description provided for @debugLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'Debug Logs'**
+  String get debugLogs;
+
+  /// No description provided for @viewSystemLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'View system logs'**
+  String get viewSystemLogs;
+
+  /// No description provided for @analyzeSystemLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'Analyze app errors and API calls'**
+  String get analyzeSystemLogs;
+
+  /// No description provided for @stationParameters.
+  ///
+  /// In en, this message translates to:
+  /// **'Station parameters'**
+  String get stationParameters;
+
+  /// No description provided for @stationParametersHint.
+  ///
+  /// In en, this message translates to:
+  /// **'These values help the intelligent algorithm calculate energy balance and weather-based forecasts more accurately.'**
+  String get stationParametersHint;
+
+  /// No description provided for @batteryCapacityLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery capacity'**
+  String get batteryCapacityLabel;
+
+  /// No description provided for @panelPowerLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Panel power'**
+  String get panelPowerLabel;
+
+  /// No description provided for @inverterPowerLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Inverter power'**
+  String get inverterPowerLabel;
+
+  /// No description provided for @hardwareSettingsSaved.
+  ///
+  /// In en, this message translates to:
+  /// **'Hardware settings saved!'**
+  String get hardwareSettingsSaved;
+
+  /// No description provided for @hardwareSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery: {battery} Ah • PV: {pv} W\nInverter: {inverter} W'**
+  String hardwareSummary(String battery, String pv, String inverter);
+
+  /// No description provided for @logsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'App Logs'**
+  String get logsTitle;
+
+  /// No description provided for @logsAll.
+  ///
+  /// In en, this message translates to:
+  /// **'All'**
+  String get logsAll;
+
+  /// No description provided for @logsInfo.
+  ///
+  /// In en, this message translates to:
+  /// **'Info'**
+  String get logsInfo;
+
+  /// No description provided for @logsWarn.
+  ///
+  /// In en, this message translates to:
+  /// **'Warn'**
+  String get logsWarn;
+
+  /// No description provided for @logsError.
+  ///
+  /// In en, this message translates to:
+  /// **'Error'**
+  String get logsError;
+
+  /// No description provided for @logsNoEntries.
+  ///
+  /// In en, this message translates to:
+  /// **'No logs yet.'**
+  String get logsNoEntries;
+
+  /// No description provided for @logsErrorPrefix.
+  ///
+  /// In en, this message translates to:
+  /// **'Error'**
+  String get logsErrorPrefix;
+
+  /// No description provided for @logsCopyFiltered.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy filtered'**
+  String get logsCopyFiltered;
+
+  /// No description provided for @clear.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear'**
+  String get clear;
+
+  /// No description provided for @logsCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Logs copied to clipboard'**
+  String get logsCopied;
+
+  /// No description provided for @logsSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Total: {total}  |  Info: {info}  Warn: {warn}  Error: {error}'**
+  String logsSummary(String total, String info, String warn, String error);
+
   /// No description provided for @solarSbu.
   ///
   /// In en, this message translates to:
@@ -799,6 +1015,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Today'**
   String get today;
+
+  /// No description provided for @forecastNextDays.
+  ///
+  /// In en, this message translates to:
+  /// **'Solar forecast for next days'**
+  String get forecastNextDays;
+
+  /// No description provided for @forecastPeak.
+  ///
+  /// In en, this message translates to:
+  /// **'Peak'**
+  String get forecastPeak;
+
+  /// No description provided for @forecastUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Forecast data is temporarily unavailable'**
+  String get forecastUnavailable;
+
+  /// No description provided for @equipmentStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Equipment status'**
+  String get equipmentStatus;
+
+  /// No description provided for @inverterLoad.
+  ///
+  /// In en, this message translates to:
+  /// **'Inverter load'**
+  String get inverterLoad;
+
+  /// No description provided for @pvGeneration.
+  ///
+  /// In en, this message translates to:
+  /// **'PV generation'**
+  String get pvGeneration;
+
+  /// No description provided for @refreshChart.
+  ///
+  /// In en, this message translates to:
+  /// **'Refresh chart'**
+  String get refreshChart;
+
+  /// No description provided for @batterySignHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery: \'+\' means charge, \'-\' means discharge.'**
+  String get batterySignHint;
+
+  /// No description provided for @chartNoDataTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'No data yet'**
+  String get chartNoDataTitle;
+
+  /// No description provided for @chartNoDataMessage.
+  ///
+  /// In en, this message translates to:
+  /// **'The chart should load in a moment.'**
+  String get chartNoDataMessage;
+
+  /// No description provided for @lessThanMinute.
+  ///
+  /// In en, this message translates to:
+  /// **'< 1 min'**
+  String get lessThanMinute;
+
+  /// No description provided for @minutesAgo.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} min ago'**
+  String minutesAgo(String count);
+
+  /// No description provided for @hoursAgo.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} hr ago'**
+  String hoursAgo(String count);
 
   /// No description provided for @total.
   ///
@@ -883,6 +1177,36 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Exit'**
   String get exit;
+
+  /// No description provided for @tooltipTodayEnergy.
+  ///
+  /// In en, this message translates to:
+  /// **'Total solar energy generated today'**
+  String get tooltipTodayEnergy;
+
+  /// No description provided for @tooltipTotalEnergy.
+  ///
+  /// In en, this message translates to:
+  /// **'Total solar energy generated since device installation'**
+  String get tooltipTotalEnergy;
+
+  /// No description provided for @tooltipCo2.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated CO₂ emission reduction based on solar generation'**
+  String get tooltipCo2;
+
+  /// No description provided for @tooltipInverterLoad.
+  ///
+  /// In en, this message translates to:
+  /// **'Current inverter load relative to its rated power capacity'**
+  String get tooltipInverterLoad;
+
+  /// No description provided for @tooltipPvGeneration.
+  ///
+  /// In en, this message translates to:
+  /// **'Current PV output relative to total installed panel capacity'**
+  String get tooltipPvGeneration;
 
   /// No description provided for @batteryLevel.
   ///

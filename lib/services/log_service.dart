@@ -44,6 +44,39 @@ class LogEntry {
 class LogService {
   static final List<LogEntry> _entries = [];
 
+  /// Маскує конфіденційні дані в log-повідомленні
+  static String _maskSensitiveData(String message) {
+    var masked = message;
+
+    // Маскуємо JSON токени та паролі
+    masked = masked.replaceAllMapped(
+      RegExp(
+          r'"(password|token|accessToken|refreshToken|Authorization)":\s*"([^"]*)"',
+          caseSensitive: false),
+      (match) => '"${match.group(1)}":"***MASKED***"',
+    );
+
+    // Маскуємо URL параметри з токенами
+    masked = masked.replaceAllMapped(
+      RegExp(r'(token=|password=|auth=|apikey=)([a-zA-Z0-9._-]+)',
+          caseSensitive: false),
+      (match) => '${match.group(1)}***MASKED***',
+    );
+
+    // Маскуємо довгі рядки які виглядають як токени (більше 20 символів)
+    masked = masked.replaceAllMapped(
+      RegExp(r'(?:Bearer|token|password)[\s]*:?\s*([a-zA-Z0-9._\-+/]{20,})',
+          caseSensitive: false),
+      (match) => '${match.group(0)?.substring(0, 10) ?? ''}...***MASKED***',
+    );
+
+    // Маскуємо email адреси (опційно, залежно від конфіденційності)
+    // masked = masked.replaceAllMapped(RegExp(r'\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b'),
+    //   (match) => '***EMAIL***');
+
+    return masked;
+  }
+
   static LogLevel _autoLevel(String message, dynamic error, LogLevel level) {
     if (level != LogLevel.info) return level;
     if (error != null || message.contains('❌')) return LogLevel.error;
@@ -57,18 +90,25 @@ class LogService {
     StackTrace? stack,
     LogLevel level = LogLevel.info,
   }) {
-    final effectiveLevel = _autoLevel(message, error, level);
+    // ===== БЕЗПЕКА: МАСКУВАННЯ КОНФІДЕНЦІЙНИХ ДАНИХ =====
+    final maskedMessage = _maskSensitiveData(message);
+    String? maskedError;
+    if (error != null) {
+      maskedError = _maskSensitiveData(error.toString());
+    }
+
+    final effectiveLevel = _autoLevel(maskedMessage, maskedError, level);
     final entry = LogEntry(
       timestamp: DateTime.now(),
       level: effectiveLevel,
-      message: message,
-      errorText: error?.toString(),
+      message: maskedMessage,
+      errorText: maskedError,
     );
     final logLine = entry.toDisplayString();
 
     if (kDebugMode) {
       print(logLine);
-      if (error != null) print('Error: $error');
+      if (maskedError != null) print('Error: $maskedError');
       if (stack != null) print('Stack: $stack');
     }
 
@@ -79,5 +119,28 @@ class LogService {
   static List<LogEntry> get entries => List.unmodifiable(_entries);
   static List<String> get allLogs =>
       List.unmodifiable(_entries.map((e) => e.toDisplayString()));
+
+  /// БЕЗПЕКА: Повертає санітизовані логи без конфіденційних даних
+  /// Використовується при експорті логів користувачем
+  static List<String> get sanitizedLogs {
+    return _entries.map((e) {
+      var log = e.toDisplayString();
+
+      // Видаліть IP адреси
+      log = log.replaceAll(RegExp(r'\b\d+\.\d+\.\d+\.\d+\b'), '***IP***');
+
+      // Видаліть токени/ключи
+      log = log.replaceAll(
+          RegExp(r'token[=:\s]+[a-zA-Z0-9._+/]{20,}', caseSensitive: false),
+          'token=***REDACTED***');
+
+      // Видаліть URLs з токенами
+      log = log.replaceAll(RegExp(r'https?://[^\s]+', caseSensitive: false),
+          'https://***URL_REDACTED***');
+
+      return log;
+    }).toList();
+  }
+
   static void clear() => _entries.clear();
 }

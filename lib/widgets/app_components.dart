@@ -1,3 +1,5 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
@@ -22,19 +24,13 @@ class AppCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
-    Widget content = Container(
-      padding: padding,
-      decoration: BoxDecoration(
-        color: backgroundColor ?? Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(borderRadius),
-        border: Border.all(
-          color: isDark ? Colors.white10 : Colors.black.withValues(alpha: 0.05),
-          width: 1,
-        ),
+    Widget content = AppGlassSurface(
+      borderRadius: borderRadius,
+      backgroundColor: backgroundColor,
+      child: Padding(
+        padding: padding,
+        child: child,
       ),
-      child: child,
     );
 
     if (onTap != null) {
@@ -52,45 +48,165 @@ class AppCard extends StatelessWidget {
   }
 }
 
+class AppGlassSurface extends StatelessWidget {
+  final Widget child;
+  final double borderRadius;
+  final Color? backgroundColor;
+  final bool isStrong;
+
+  const AppGlassSurface({
+    super.key,
+    required this.child,
+    this.borderRadius = AppTheme.radiusLarge,
+    this.backgroundColor,
+    this.isStrong = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(borderRadius),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(
+          sigmaX: isStrong ? 18 : 10,
+          sigmaY: isStrong ? 18 : 10,
+        ),
+        child: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                (backgroundColor ?? theme.cardColor).withValues(
+                    alpha: isDark
+                        ? (isStrong ? 0.84 : 0.74)
+                        : (isStrong ? 1.0 : 0.98)),
+                theme.colorScheme.surface.withValues(
+                    alpha: isDark
+                        ? (isStrong ? 0.72 : 0.58)
+                        : (isStrong ? 0.98 : 0.94)),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(borderRadius),
+            border: Border.all(
+              color: isDark
+                  ? Colors.white.withValues(alpha: isStrong ? 0.18 : 0.14)
+                  : theme.dividerColor.withValues(alpha: isStrong ? 1 : 0.9),
+              width: 1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: (isDark ? Colors.black : Colors.blueGrey).withValues(
+                    alpha: isDark
+                        ? (isStrong ? 0.36 : 0.3)
+                        : (isStrong ? 0.16 : 0.12)),
+                blurRadius: isStrong ? 28 : 20,
+                offset: Offset(0, isStrong ? 12 : 8),
+              ),
+            ],
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 // ======================== СТАТУС БАНЕР ========================
 
 class AppStatusBanner extends StatelessWidget {
   final String message;
   final IconData icon;
   final Color? color;
+  final String? meta;
 
   const AppStatusBanner({
     super.key,
     required this.message,
     required this.icon,
     this.color,
+    this.meta,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bannerColor = color ?? Theme.of(context).colorScheme.primary;
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final bannerColor = color ?? theme.colorScheme.primary;
 
-    return AppCard(
-      padding: const EdgeInsets.symmetric(
-        vertical: AppTheme.spacingM,
-        horizontal: AppTheme.spacingL,
-      ),
-      backgroundColor: bannerColor.withValues(alpha: 0.1),
-      child: Row(
-        children: [
-          Icon(icon, color: bannerColor, size: 20),
-          const SizedBox(width: AppTheme.spacingM),
-          Expanded(
-            child: Text(
-              message,
-              style: TextStyle(
-                color: bannerColor,
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
-              ),
-            ),
+    return AppGlassSurface(
+      borderRadius: AppTheme.radiusLarge,
+      backgroundColor: theme.cardColor.withValues(alpha: isDark ? 0.36 : 0.62),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+          gradient: LinearGradient(
+            colors: [
+              bannerColor.withValues(alpha: isDark ? 0.12 : 0.08),
+              Colors.transparent,
+            ],
+            begin: Alignment.centerLeft,
+            end: Alignment.centerRight,
           ),
-        ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            vertical: AppTheme.spacingS,
+            horizontal: AppTheme.spacingM,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  color: bannerColor.withValues(alpha: 0.16),
+                  borderRadius: BorderRadius.circular(999),
+                  border:
+                      Border.all(color: bannerColor.withValues(alpha: 0.42)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: bannerColor.withValues(alpha: isDark ? 0.28 : 0.2),
+                      blurRadius: 12,
+                      spreadRadius: -2,
+                    ),
+                  ],
+                ),
+                child: Icon(icon, color: bannerColor, size: 16),
+              ),
+              const SizedBox(width: AppTheme.spacingS),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      message,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurface,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (meta != null && meta!.trim().isNotEmpty)
+                      Text(
+                        meta!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -115,8 +231,8 @@ class AppSectionTitle extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(
         bottom: AppTheme.spacingM,
-        left: AppTheme.spacingL,
-        top: AppTheme.spacingL,
+        left: AppTheme.spacingXS,
+        top: AppTheme.spacingS,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -124,13 +240,29 @@ class AppSectionTitle extends StatelessWidget {
           Row(
             children: [
               if (icon != null) ...[
-                Icon(icon,
-                    color: Theme.of(context).colorScheme.primary, size: 20),
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
+                    color: Theme.of(context)
+                        .colorScheme
+                        .primary
+                        .withValues(alpha: 0.12),
+                  ),
+                  child: Icon(
+                    icon,
+                    color: Theme.of(context).colorScheme.primary,
+                    size: 16,
+                  ),
+                ),
                 const SizedBox(width: AppTheme.spacingS),
               ],
               Text(
                 title,
-                style: Theme.of(context).textTheme.headlineSmall,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                      letterSpacing: 0.9,
+                    ),
               ),
             ],
           ),
@@ -155,6 +287,7 @@ class AppStatCard extends StatelessWidget {
   final IconData icon;
   final Color color;
   final String? unit;
+  final String? tooltip;
 
   const AppStatCard({
     super.key,
@@ -163,11 +296,12 @@ class AppStatCard extends StatelessWidget {
     required this.icon,
     required this.color,
     this.unit,
+    this.tooltip,
   });
 
   @override
   Widget build(BuildContext context) {
-    return AppCard(
+    final card = AppCard(
       padding: const EdgeInsets.all(AppTheme.spacingL),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -175,15 +309,25 @@ class AppStatCard extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(AppTheme.spacingM),
             decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.1),
+              color: color.withValues(alpha: 0.14),
               borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+              border: Border.all(color: color.withValues(alpha: 0.35)),
+              boxShadow: [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.18),
+                  blurRadius: 16,
+                ),
+              ],
             ),
             child: Icon(icon, color: color, size: 24),
           ),
           const SizedBox(height: AppTheme.spacingM),
           Text(
             label,
-            style: Theme.of(context).textTheme.bodySmall,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: color,
+                  letterSpacing: 0.8,
+                ),
           ),
           const SizedBox(height: AppTheme.spacingXS),
           Row(
@@ -192,13 +336,21 @@ class AppStatCard extends StatelessWidget {
             children: [
               Text(
                 value,
-                style: Theme.of(context).textTheme.headlineSmall,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
               ),
               if (unit != null) ...[
                 const SizedBox(width: AppTheme.spacingXS),
                 Text(
                   unit!,
-                  style: Theme.of(context).textTheme.bodySmall,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.color
+                            ?.withValues(alpha: 0.85),
+                      ),
                 ),
               ],
             ],
@@ -206,6 +358,15 @@ class AppStatCard extends StatelessWidget {
         ],
       ),
     );
+    if (tooltip != null) {
+      return Tooltip(
+        message: tooltip!,
+        preferBelow: false,
+        waitDuration: const Duration(milliseconds: 600),
+        child: card,
+      );
+    }
+    return card;
   }
 }
 
@@ -268,6 +429,7 @@ class AppProgressBar extends StatelessWidget {
   final Color color;
   final String? suffix;
   final bool showPercentage;
+  final String? tooltip;
 
   const AppProgressBar({
     super.key,
@@ -277,13 +439,14 @@ class AppProgressBar extends StatelessWidget {
     required this.color,
     this.suffix,
     this.showPercentage = true,
+    this.tooltip,
   });
 
   @override
   Widget build(BuildContext context) {
     final percent = (value / maxValue).clamp(0.0, 1.0);
 
-    return Column(
+    final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
@@ -318,6 +481,15 @@ class AppProgressBar extends StatelessWidget {
         ],
       ],
     );
+    if (tooltip != null) {
+      return Tooltip(
+        message: tooltip!,
+        preferBelow: false,
+        waitDuration: const Duration(milliseconds: 600),
+        child: content,
+      );
+    }
+    return content;
   }
 }
 

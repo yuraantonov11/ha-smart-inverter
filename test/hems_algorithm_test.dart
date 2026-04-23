@@ -44,6 +44,8 @@ InverterData _buildData({
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('HemsAlgorithmService adaptive evening reserve protection', () {
     test(
         'switches to USB in evening when SOC is near reserve even if availableEnergyWh is slightly above zero',

@@ -6,6 +6,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:launch_at_startup/launch_at_startup.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'l10n/app_localizations.dart';
 import 'theme/app_theme.dart';
@@ -13,6 +14,7 @@ import 'providers/app_provider.dart';
 import 'screens/auth_screen.dart';
 import 'screens/main_screen.dart';
 import 'services/log_service.dart';
+import 'services/secure_storage_service.dart';
 
 void main() async {
   FlutterError.onError = (details) {
@@ -44,6 +46,13 @@ void main() async {
 
   // 2. Ініціалізація керування вікном
   await windowManager.ensureInitialized();
+  final prefs = await SharedPreferences.getInstance();
+  final startInTray = prefs.getBool('start_in_tray') ?? false;
+  final savedPass = await SecureStorageService.getPassword();
+  final hasSavedSession =
+      (prefs.getString('saved_email')?.isNotEmpty ?? false) &&
+          (savedPass?.isNotEmpty ?? false);
+  final shouldStartHidden = startInTray && hasSavedSession;
 
   const windowOptions = WindowOptions(
     size: Size(1100, 800),
@@ -61,8 +70,13 @@ void main() async {
         LogService.log('⚠️ window icon setup failed', error: e);
       }
     }
-    await windowManager.show();
-    await windowManager.focus();
+    if (shouldStartHidden) {
+      await windowManager.hide();
+      LogService.log('🧩 startup: app hidden to tray by user setting');
+    } else {
+      await windowManager.show();
+      await windowManager.focus();
+    }
     await windowManager.setPreventClose(true);
   });
 
@@ -118,8 +132,8 @@ class _MyAppState extends State<MyApp> with WindowListener {
       title: 'Smart Inverter',
       debugShowCheckedModeBanner: false,
       themeMode: provider.themeMode,
-      theme: AppTheme.lightTheme,
-      darkTheme: AppTheme.darkTheme,
+      theme: AppTheme.lightThemeForLanguage(provider.lang),
+      darkTheme: AppTheme.darkThemeForLanguage(provider.lang),
       locale: Locale(provider.lang),
       localizationsDelegates: const [
         AppLocalizations.delegate,

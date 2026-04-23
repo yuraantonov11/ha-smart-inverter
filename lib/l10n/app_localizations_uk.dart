@@ -24,6 +24,12 @@ class AppLocalizationsUk extends AppLocalizations {
   String get theme => 'Тема';
 
   @override
+  String get lightTheme => 'Світла тема';
+
+  @override
+  String get darkTheme => 'Темна тема';
+
+  @override
   String get language => 'Мова';
 
   @override
@@ -100,6 +106,9 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get grid => 'Мережа';
+
+  @override
+  String get forecast => 'Прогноз';
 
   @override
   String get modeAdaptive => 'Адаптивний інтелект (Авто)';
@@ -200,6 +209,12 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get startWithWindows => 'Автозапуск з Windows';
+
+  @override
+  String get startInTray => 'Запускати в треї';
+
+  @override
+  String get startInTraySubtitle => 'Стартує згорнутим, якщо є збережена сесія';
 
   @override
   String get name => 'Ім\'я';
@@ -375,6 +390,106 @@ class AppLocalizationsUk extends AppLocalizations {
   String get updatesDialogClose => 'Закрити';
 
   @override
+  String get inverterSettings => 'Налаштування інвертора';
+
+  @override
+  String get refreshSettings => 'Оновити налаштування';
+
+  @override
+  String get settingsLoadingTitle => 'Налаштування завантажуються…';
+
+  @override
+  String get waitingInverterResponse => 'Очікуємо відповідь інвертора…';
+
+  @override
+  String get tapRefreshToLoad => 'Натисніть 🔄 для завантаження';
+
+  @override
+  String get realtimeReadings => 'Поточні показники';
+
+  @override
+  String unitOfMeasure(String unit) {
+    return 'Одиниця виміру: $unit';
+  }
+
+  @override
+  String get selectValue => 'Оберіть значення';
+
+  @override
+  String get newValue => 'Нове значення';
+
+  @override
+  String get apply => 'Застосувати';
+
+  @override
+  String get debugLogs => 'Debug Logs';
+
+  @override
+  String get viewSystemLogs => 'Переглянути системні логи';
+
+  @override
+  String get analyzeSystemLogs => 'Аналіз помилок застосунку та API-викликів';
+
+  @override
+  String get stationParameters => 'Параметри станції';
+
+  @override
+  String get stationParametersHint =>
+      'Ці дані потрібні інтелектуальному алгоритму для точного розрахунку енергії та прогнозу погоди.';
+
+  @override
+  String get batteryCapacityLabel => 'Ємність АКБ';
+
+  @override
+  String get panelPowerLabel => 'Потужність панелей';
+
+  @override
+  String get inverterPowerLabel => 'Потужність інвертора';
+
+  @override
+  String get hardwareSettingsSaved => 'Параметри обладнання збережено!';
+
+  @override
+  String hardwareSummary(String battery, String pv, String inverter) {
+    return 'АКБ: $battery Ah • PV: $pv W\nІнвертор: $inverter W';
+  }
+
+  @override
+  String get logsTitle => 'Логи застосунку';
+
+  @override
+  String get logsAll => 'Усі';
+
+  @override
+  String get logsInfo => 'Інфо';
+
+  @override
+  String get logsWarn => 'Попередж.';
+
+  @override
+  String get logsError => 'Помилки';
+
+  @override
+  String get logsNoEntries => 'Логи відсутні.';
+
+  @override
+  String get logsErrorPrefix => 'Помилка';
+
+  @override
+  String get logsCopyFiltered => 'Копіювати фільтр';
+
+  @override
+  String get clear => 'Очистити';
+
+  @override
+  String get logsCopied => 'Логи скопійовано в буфер обміну';
+
+  @override
+  String logsSummary(String total, String info, String warn, String error) {
+    return 'Всього: $total  |  Інфо: $info  Попередж.: $warn  Помилки: $error';
+  }
+
+  @override
   String get solarSbu => 'СОНЦЕ (SBU)';
 
   @override
@@ -397,6 +512,51 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get today => 'Сьогодні';
+
+  @override
+  String get forecastNextDays => 'Прогноз сонячної генерації на наступні дні';
+
+  @override
+  String get forecastPeak => 'Пік';
+
+  @override
+  String get forecastUnavailable => 'Дані прогнозу тимчасово недоступні';
+
+  @override
+  String get equipmentStatus => 'Статус обладнання';
+
+  @override
+  String get inverterLoad => 'Навантаження інвертора';
+
+  @override
+  String get pvGeneration => 'Генерація PV';
+
+  @override
+  String get refreshChart => 'Оновити графік';
+
+  @override
+  String get batterySignHint =>
+      'АКБ: \'+\' означає заряд, \'-\' означає розряд.';
+
+  @override
+  String get chartNoDataTitle => 'Нема даних';
+
+  @override
+  String get chartNoDataMessage =>
+      'Графік повинен завантажитися через деякий час';
+
+  @override
+  String get lessThanMinute => '< 1 хв';
+
+  @override
+  String minutesAgo(String count) {
+    return '$count хв тому';
+  }
+
+  @override
+  String hoursAgo(String count) {
+    return '$count год тому';
+  }
 
   @override
   String get total => 'Всього';
@@ -441,6 +601,26 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get exit => 'Вийти';
+
+  @override
+  String get tooltipTodayEnergy =>
+      'Загальна сонячна енергія, згенерована сьогодні';
+
+  @override
+  String get tooltipTotalEnergy =>
+      'Загальна сонячна енергія з моменту встановлення пристрою';
+
+  @override
+  String get tooltipCo2 =>
+      'Оцінка скорочення викидів CO₂ на основі сонячної генерації';
+
+  @override
+  String get tooltipInverterLoad =>
+      'Поточне навантаження інвертора відносно номінальної потужності';
+
+  @override
+  String get tooltipPvGeneration =>
+      'Поточна потужність PV-панелей відносно встановленої ємності';
 
   @override
   String batteryLevel(String level) {

@@ -24,6 +24,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get theme => 'Theme';
 
   @override
+  String get lightTheme => 'Light theme';
+
+  @override
+  String get darkTheme => 'Dark theme';
+
+  @override
   String get language => 'Language';
 
   @override
@@ -100,6 +106,9 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get grid => 'Grid';
+
+  @override
+  String get forecast => 'Forecast';
 
   @override
   String get modeAdaptive => 'Adaptive Intelligence (Auto)';
@@ -201,6 +210,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get startWithWindows => 'Start with Windows';
+
+  @override
+  String get startInTray => 'Start in tray';
+
+  @override
+  String get startInTraySubtitle =>
+      'Starts minimized when a saved session exists';
 
   @override
   String get name => 'Name';
@@ -375,6 +391,106 @@ class AppLocalizationsEn extends AppLocalizations {
   String get updatesDialogClose => 'Close';
 
   @override
+  String get inverterSettings => 'Inverter settings';
+
+  @override
+  String get refreshSettings => 'Refresh settings';
+
+  @override
+  String get settingsLoadingTitle => 'Settings are loading…';
+
+  @override
+  String get waitingInverterResponse => 'Waiting for inverter response…';
+
+  @override
+  String get tapRefreshToLoad => 'Tap refresh to load settings';
+
+  @override
+  String get realtimeReadings => 'Realtime readings';
+
+  @override
+  String unitOfMeasure(String unit) {
+    return 'Unit: $unit';
+  }
+
+  @override
+  String get selectValue => 'Select value';
+
+  @override
+  String get newValue => 'New value';
+
+  @override
+  String get apply => 'Apply';
+
+  @override
+  String get debugLogs => 'Debug Logs';
+
+  @override
+  String get viewSystemLogs => 'View system logs';
+
+  @override
+  String get analyzeSystemLogs => 'Analyze app errors and API calls';
+
+  @override
+  String get stationParameters => 'Station parameters';
+
+  @override
+  String get stationParametersHint =>
+      'These values help the intelligent algorithm calculate energy balance and weather-based forecasts more accurately.';
+
+  @override
+  String get batteryCapacityLabel => 'Battery capacity';
+
+  @override
+  String get panelPowerLabel => 'Panel power';
+
+  @override
+  String get inverterPowerLabel => 'Inverter power';
+
+  @override
+  String get hardwareSettingsSaved => 'Hardware settings saved!';
+
+  @override
+  String hardwareSummary(String battery, String pv, String inverter) {
+    return 'Battery: $battery Ah • PV: $pv W\nInverter: $inverter W';
+  }
+
+  @override
+  String get logsTitle => 'App Logs';
+
+  @override
+  String get logsAll => 'All';
+
+  @override
+  String get logsInfo => 'Info';
+
+  @override
+  String get logsWarn => 'Warn';
+
+  @override
+  String get logsError => 'Error';
+
+  @override
+  String get logsNoEntries => 'No logs yet.';
+
+  @override
+  String get logsErrorPrefix => 'Error';
+
+  @override
+  String get logsCopyFiltered => 'Copy filtered';
+
+  @override
+  String get clear => 'Clear';
+
+  @override
+  String get logsCopied => 'Logs copied to clipboard';
+
+  @override
+  String logsSummary(String total, String info, String warn, String error) {
+    return 'Total: $total  |  Info: $info  Warn: $warn  Error: $error';
+  }
+
+  @override
   String get solarSbu => 'SOLAR (SBU)';
 
   @override
@@ -397,6 +513,50 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get today => 'Today';
+
+  @override
+  String get forecastNextDays => 'Solar forecast for next days';
+
+  @override
+  String get forecastPeak => 'Peak';
+
+  @override
+  String get forecastUnavailable => 'Forecast data is temporarily unavailable';
+
+  @override
+  String get equipmentStatus => 'Equipment status';
+
+  @override
+  String get inverterLoad => 'Inverter load';
+
+  @override
+  String get pvGeneration => 'PV generation';
+
+  @override
+  String get refreshChart => 'Refresh chart';
+
+  @override
+  String get batterySignHint =>
+      'Battery: \'+\' means charge, \'-\' means discharge.';
+
+  @override
+  String get chartNoDataTitle => 'No data yet';
+
+  @override
+  String get chartNoDataMessage => 'The chart should load in a moment.';
+
+  @override
+  String get lessThanMinute => '< 1 min';
+
+  @override
+  String minutesAgo(String count) {
+    return '$count min ago';
+  }
+
+  @override
+  String hoursAgo(String count) {
+    return '$count hr ago';
+  }
 
   @override
   String get total => 'Total';
@@ -441,6 +601,25 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get exit => 'Exit';
+
+  @override
+  String get tooltipTodayEnergy => 'Total solar energy generated today';
+
+  @override
+  String get tooltipTotalEnergy =>
+      'Total solar energy generated since device installation';
+
+  @override
+  String get tooltipCo2 =>
+      'Estimated CO₂ emission reduction based on solar generation';
+
+  @override
+  String get tooltipInverterLoad =>
+      'Current inverter load relative to its rated power capacity';
+
+  @override
+  String get tooltipPvGeneration =>
+      'Current PV output relative to total installed panel capacity';
 
   @override
   String batteryLevel(String level) {

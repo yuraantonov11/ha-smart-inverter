@@ -4,6 +4,8 @@
   "logout": "Вийти",
   "settings": "Налаштування",
   "theme": "Тема",
+  "lightTheme": "Світла тема",
+  "darkTheme": "Темна тема",
   "language": "Мова",
   "dashboard": "Дашборд",
   "details": "Деталі",
@@ -30,6 +32,7 @@
   "sun": "Нд",
   "battery": "Батарея",
   "grid": "Мережа",
+  "forecast": "Прогноз",
   "modeAdaptive": "Адаптивний інтелект (Авто)",
   "modeAdaptiveSubtitle": "Динамічний режим: прогноз, тариф і стан АКБ",
   "modeAdaptiveDesc": "Адаптивний режим щохвилини аналізує:\n• поточну генерацію PV і споживання будинку\n• прогноз сонячної генерації на день\n• заряд АКБ та резерв безпеки\n• часові зони тарифу (ніч/день/вечір)\n\nЩо робить режим:\n• Вночі оцінює, чи вистачить сонця наступного дня, і вирішує: заряджати АКБ від мережі чи ні\n• Вдень перемикає пріоритет так, щоб зберегти енергію на вечірній пік\n• Увечері максимально використовує АКБ до резервного порогу\n• Автоматично повертає живлення від мережі, якщо є ризик просадки АКБ\n\nРезультат: мінімум ручних перемикань, нижча вартість електроенергії та стабільніша робота системи.",
@@ -68,6 +71,8 @@
   "password": "Пароль",
   "loginError": "Неправильний логін або пароль",
   "startWithWindows": "Автозапуск з Windows",
+  "startInTray": "Запускати в треї",
+  "startInTraySubtitle": "Стартує згорнутим, якщо є збережена сесія",
   "name": "Ім'я",
   "notProvided": "Не вказано",
   "unknownValue": "Невідомо",
@@ -206,6 +211,73 @@
   "updatesDialogInstallFailed": "Не вдалося встановити. Запустіть інсталятор вручну.",
   "updatesDialogDownloadFailed": "Не вдалося завантажити. Перевірте інтернет або файли релізу.",
   "updatesDialogClose": "Закрити",
+  "inverterSettings": "Налаштування інвертора",
+  "refreshSettings": "Оновити налаштування",
+  "settingsLoadingTitle": "Налаштування завантажуються…",
+  "waitingInverterResponse": "Очікуємо відповідь інвертора…",
+  "tapRefreshToLoad": "Натисніть 🔄 для завантаження",
+  "realtimeReadings": "Поточні показники",
+  "unitOfMeasure": "Одиниця виміру: {unit}",
+  "@unitOfMeasure": {
+    "placeholders": {
+      "unit": {
+        "type": "String"
+      }
+    }
+  },
+  "selectValue": "Оберіть значення",
+  "newValue": "Нове значення",
+  "apply": "Застосувати",
+  "debugLogs": "Debug Logs",
+  "viewSystemLogs": "Переглянути системні логи",
+  "analyzeSystemLogs": "Аналіз помилок застосунку та API-викликів",
+  "stationParameters": "Параметри станції",
+  "stationParametersHint": "Ці дані потрібні інтелектуальному алгоритму для точного розрахунку енергії та прогнозу погоди.",
+  "batteryCapacityLabel": "Ємність АКБ",
+  "panelPowerLabel": "Потужність панелей",
+  "inverterPowerLabel": "Потужність інвертора",
+  "hardwareSettingsSaved": "Параметри обладнання збережено!",
+  "hardwareSummary": "АКБ: {battery} Ah • PV: {pv} W\nІнвертор: {inverter} W",
+  "@hardwareSummary": {
+    "placeholders": {
+      "battery": {
+        "type": "String"
+      },
+      "pv": {
+        "type": "String"
+      },
+      "inverter": {
+        "type": "String"
+      }
+    }
+  },
+  "logsTitle": "Логи застосунку",
+  "logsAll": "Усі",
+  "logsInfo": "Інфо",
+  "logsWarn": "Попередж.",
+  "logsError": "Помилки",
+  "logsNoEntries": "Логи відсутні.",
+  "logsErrorPrefix": "Помилка",
+  "logsCopyFiltered": "Копіювати фільтр",
+  "clear": "Очистити",
+  "logsCopied": "Логи скопійовано в буфер обміну",
+  "logsSummary": "Всього: {total}  |  Інфо: {info}  Попередж.: {warn}  Помилки: {error}",
+  "@logsSummary": {
+    "placeholders": {
+      "total": {
+        "type": "String"
+      },
+      "info": {
+        "type": "String"
+      },
+      "warn": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "solarSbu": "СОНЦЕ (SBU)",
   "gridUsb": "МЕРЕЖА (USB)",
   "utilityFirstUsb": "Мережа (Utility First / USB)",
@@ -214,6 +286,33 @@
   "signInCloud": "Увійдіть до Siseli Cloud",
   "loginFailed": "Помилка входу. Перевірте дані.",
   "today": "Сьогодні",
+  "forecastNextDays": "Прогноз сонячної генерації на наступні дні",
+  "forecastPeak": "Пік",
+  "forecastUnavailable": "Дані прогнозу тимчасово недоступні",
+  "equipmentStatus": "Статус обладнання",
+  "inverterLoad": "Навантаження інвертора",
+  "pvGeneration": "Генерація PV",
+  "refreshChart": "Оновити графік",
+  "batterySignHint": "АКБ: '+' означає заряд, '-' означає розряд.",
+  "chartNoDataTitle": "Нема даних",
+  "chartNoDataMessage": "Графік повинен завантажитися через деякий час",
+  "lessThanMinute": "< 1 хв",
+  "minutesAgo": "{count} хв тому",
+  "@minutesAgo": {
+    "placeholders": {
+      "count": {
+        "type": "String"
+      }
+    }
+  },
+  "hoursAgo": "{count} год тому",
+  "@hoursAgo": {
+    "placeholders": {
+      "count": {
+        "type": "String"
+      }
+    }
+  },
   "total": "Всього",
   "solar": "Сонце",
   "load": "Будинок",
@@ -235,6 +334,11 @@
   "enableGrid": "Увімкнути МЕРЕЖУ (USB)",
   "showApp": "Показати вікно",
   "exit": "Вийти",
+  "tooltipTodayEnergy": "Загальна сонячна енергія, згенерована сьогодні",
+  "tooltipTotalEnergy": "Загальна сонячна енергія з моменту встановлення пристрою",
+  "tooltipCo2": "Оцінка скорочення викидів CO₂ на основі сонячної генерації",
+  "tooltipInverterLoad": "Поточне навантаження інвертора відносно номінальної потужності",
+  "tooltipPvGeneration": "Поточна потужність PV-панелей відносно встановленої ємності",
   "batteryLevel": "АКБ: {level}%",
   "@batteryLevel": {
     "placeholders": {

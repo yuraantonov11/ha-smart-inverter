@@ -6,6 +6,8 @@ import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
+import '../theme/app_theme.dart';
+import '../widgets/app_components.dart';
 
 class SettingsTab extends StatelessWidget {
   final AppStateProvider provider;
@@ -15,6 +17,9 @@ class SettingsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final showLanguageInSettings = MediaQuery.of(context).size.width < 980;
+    final updateBanner = _buildUpdateBanner(context, l10n);
 
     return ListView(
       padding: const EdgeInsets.all(20),
@@ -27,121 +32,23 @@ class SettingsTab extends StatelessWidget {
 
         // Блок Налаштувань Додатка
         _buildSectionTitle(l10n.appSettings),
-        _buildUpdateBanner(context, l10n),
-        if (provider.updateInfo != null || provider.isCheckingForUpdates)
+        if (updateBanner != null) ...[
+          updateBanner,
           const SizedBox(height: 12),
+        ],
         const SizedBox(height: 16),
         HardwareSettingsSection(provider: provider), // <--- Додаємо сюди
         const SizedBox(height: 16),
-        Container(
-          decoration: BoxDecoration(
-            color: Theme.of(context).cardColor,
-            borderRadius: BorderRadius.circular(24),
-          ),
+        AppGlassSurface(
+          isStrong: true,
+          borderRadius: 24,
           child: Material(
             color: Colors.transparent,
-            child: Column(
-              children: [
-                ListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: Icon(Icons.language,
-                      color: Theme.of(context).colorScheme.primary),
-                  title: Text(l10n.language),
-                  trailing: DropdownButtonHideUnderline(
-                    child: DropdownButton<String>(
-                      value: provider.lang,
-                      items: const [
-                        DropdownMenuItem(value: 'en', child: Text('English')),
-                        DropdownMenuItem(
-                            value: 'uk', child: Text('Українська')),
-                      ],
-                      onChanged: (val) {
-                        if (val != null) provider.setLanguage(val);
-                      },
-                    ),
-                  ),
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: Icon(Icons.palette,
-                      color: Theme.of(context).colorScheme.secondary),
-                  title: Text(l10n.theme),
-                  trailing: Switch(
-                    value: provider.themeMode == ThemeMode.dark,
-                    onChanged: (val) => provider.toggleTheme(),
-                  ),
-                ),
-                const Divider(height: 1),
-                SwitchListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  secondary: Icon(Icons.power_settings_new,
-                      color: Theme.of(context).colorScheme.primary),
-                  title: Text(l10n.startWithWindows),
-                  value: provider.isAutostartEnabled,
-                  onChanged: provider.toggleAutostart,
-                ),
-                const Divider(height: 1),
-                ListTile(
-                  contentPadding:
-                      const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                  leading: Icon(Icons.update,
-                      color: Theme.of(context).colorScheme.primary),
-                  title: Text(l10n.updatesTitle),
-                  subtitle: Text(_buildUpdateSubtitle(l10n)),
-                  trailing: provider.isCheckingForUpdates
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Icon(
-                          provider.hasPendingUpdate
-                              ? Icons.system_update_alt_rounded
-                              : Icons.chevron_right,
-                          color: provider.hasPendingUpdate
-                              ? Theme.of(context).colorScheme.secondary
-                              : Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                  onTap: () => _checkForUpdates(context),
-                ),
-                if (provider.isDeveloperMode) ...[
-                  _buildSectionTitle('Debug Logs'),
-                  Container(
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).cardColor,
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Material(
-                      color: Colors.transparent,
-                      child: ListTile(
-                        leading: Icon(Icons.bug_report,
-                            color: Theme.of(context).colorScheme.error),
-                        title: const Text('View System Logs'),
-                        subtitle:
-                            const Text('Analyze app errors and API calls'),
-                        trailing: const Icon(Icons.chevron_right),
-                        onTap: () => _showLogsDialog(context),
-                      ),
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 32),
-                GestureDetector(
-                  onTap: provider.handleVersionClick,
-                  child: Center(
-                    child: Text(
-                      provider.appVersionLabel,
-                      style: TextStyle(
-                          color: Colors.grey.withValues(alpha: 0.5),
-                          fontSize: 12),
-                    ),
-                  ),
-                ),
-              ],
+            child: _buildSettingsControls(
+              context,
+              l10n,
+              theme,
+              showLanguageInSettings,
             ),
           ),
         ),
@@ -153,138 +60,380 @@ class SettingsTab extends StatelessWidget {
     return Builder(builder: (context) {
       return Padding(
         padding: const EdgeInsets.only(bottom: 12, left: 4),
-        child: Text(title,
-            style: TextStyle(
+        child: Text(
+          title,
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                color: Theme.of(context).colorScheme.onSurface,
                 fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: Theme.of(context).colorScheme.onSurfaceVariant)),
+                fontWeight: FontWeight.w700,
+              ),
+        ),
       );
     });
   }
 
-  Widget _buildUpdateBanner(BuildContext context, AppLocalizations l10n) {
+  Widget _buildSettingsControls(
+    BuildContext context,
+    AppLocalizations l10n,
+    ThemeData theme,
+    bool showLanguageInSettings,
+  ) {
+    return Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          children: [
+            if (showLanguageInSettings) ...[
+              _buildSettingsTile(
+                context,
+                icon: Icons.language,
+                iconColor: theme.colorScheme.primary,
+                title: l10n.language,
+                trailing: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    dropdownColor: theme.cardColor,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: theme.colorScheme.onSurface,
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                    value: provider.lang,
+                    items: const [
+                      DropdownMenuItem(value: 'en', child: Text('English')),
+                      DropdownMenuItem(value: 'uk', child: Text('Українська')),
+                    ],
+                    onChanged: (val) {
+                      if (val != null) provider.setLanguage(val);
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            _buildSettingsTile(
+              context,
+              icon: Icons.palette,
+              iconColor: theme.colorScheme.secondary,
+              title: l10n.theme,
+              trailing: Switch(
+                value: provider.themeMode == ThemeMode.dark,
+                onChanged: (_) => provider.toggleTheme(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            _buildSettingsSwitchTile(
+              context,
+              icon: Icons.power_settings_new,
+              title: l10n.startWithWindows,
+              value: provider.isAutostartEnabled,
+              onChanged: provider.toggleAutostart,
+            ),
+            const SizedBox(height: 10),
+            _buildSettingsSwitchTile(
+              context,
+              icon: Icons.minimize_rounded,
+              title: l10n.startInTray,
+              subtitle: l10n.startInTraySubtitle,
+              value: provider.isStartInTrayEnabled,
+              onChanged: provider.toggleStartInTray,
+            ),
+            const SizedBox(height: 10),
+            _buildSettingsTile(
+              context,
+              icon: Icons.update,
+              iconColor: theme.colorScheme.primary,
+              title: l10n.updatesTitle,
+              subtitle: _buildUpdateSubtitle(l10n),
+              trailing: provider.isCheckingForUpdates
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Icon(
+                      provider.hasPendingUpdate
+                          ? Icons.system_update_alt_rounded
+                          : Icons.chevron_right,
+                      color: provider.hasPendingUpdate
+                          ? theme.colorScheme.secondary
+                          : theme.colorScheme.onSurfaceVariant,
+                    ),
+              onTap: () => _checkForUpdates(context),
+            ),
+            if (provider.isDeveloperMode) ...[
+              const SizedBox(height: 14),
+              _buildSectionTitle(l10n.debugLogs),
+              AppGlassSurface(
+                isStrong: false,
+                borderRadius: 20,
+                child: Material(
+                  color: Colors.transparent,
+                  child: _buildSettingsTile(
+                    context,
+                    icon: Icons.bug_report,
+                    iconColor: theme.colorScheme.error,
+                    title: l10n.viewSystemLogs,
+                    subtitle: l10n.analyzeSystemLogs,
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: () => _showLogsDialog(context),
+                  ),
+                ),
+              ),
+            ],
+            const SizedBox(height: 32),
+            GestureDetector(
+              onTap: provider.handleVersionClick,
+              child: Center(
+                child: Text(
+                  provider.appVersionLabel,
+                  style: TextStyle(
+                    color: Colors.grey.withValues(alpha: 0.5),
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ));
+  }
+
+  Widget _buildSettingsTile(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    Color? iconColor,
+    Widget? trailing,
+    VoidCallback? onTap,
+  }) {
+    return _buildSettingsItemShell(
+      context,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        leading: Icon(
+          icon,
+          color: iconColor ?? Theme.of(context).colorScheme.primary,
+        ),
+        title: Text(title),
+        subtitle: subtitle == null ? null : Text(subtitle),
+        trailing: trailing,
+        onTap: onTap,
+      ),
+    );
+  }
+
+  Widget _buildSettingsSwitchTile(
+    BuildContext context, {
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    return _buildSettingsItemShell(
+      context,
+      child: SwitchListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+        secondary: Icon(icon, color: Theme.of(context).colorScheme.primary),
+        title: Text(title),
+        subtitle: subtitle == null ? null : Text(subtitle),
+        value: value,
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  Widget _buildSettingsItemShell(
+    BuildContext context, {
+    required Widget child,
+  }) {
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.cardColor.withValues(alpha: 0.58),
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: theme.dividerColor.withValues(alpha: 0.55),
+          ),
+        ),
+        child: child,
+      ),
+    );
+  }
+
+  Widget? _buildUpdateBanner(BuildContext context, AppLocalizations l10n) {
     final theme = Theme.of(context);
     final info = provider.updateInfo;
+    final checkedAt = provider.lastUpdateCheckAt;
 
     if (provider.isCheckingForUpdates) {
-      return Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.primary.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-              color: theme.colorScheme.primary.withValues(alpha: 0.25)),
-        ),
-        child: Row(
-          children: [
-            const SizedBox(
-              width: 18,
-              height: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-            const SizedBox(width: 10),
-            Expanded(child: Text(l10n.updatesCheckingBackground)),
-          ],
+      return AppGlassSurface(
+        isStrong: false,
+        borderRadius: 14,
+        backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.08),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: Text(l10n.updatesCheckingBackground)),
+            ],
+          ),
         ),
       );
     }
 
-    if (info == null) return const SizedBox.shrink();
+    if (info == null) {
+      if (checkedAt == null) return null;
+      return AppGlassSurface(
+        borderRadius: 14,
+        backgroundColor: theme.cardColor.withValues(alpha: 0.45),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              Icon(
+                Icons.check_circle_outline_rounded,
+                size: 16,
+                color: theme.colorScheme.secondary,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  l10n.updatesLastChecked(
+                      UpdateService.formatPublishedAt(checkedAt)),
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
 
     final isSkipped = provider.skippedUpdateVersion != null &&
         info.hasUpdate &&
         provider.skippedUpdateVersion == info.latestVersion;
 
     if (!provider.hasPendingUpdate && !isSkipped) {
-      return const SizedBox.shrink();
+      return checkedAt == null
+          ? null
+          : AppGlassSurface(
+              borderRadius: 14,
+              backgroundColor: theme.cardColor.withValues(alpha: 0.45),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle_outline_rounded,
+                      size: 16,
+                      color: theme.colorScheme.secondary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        l10n.updatesLastChecked(
+                            UpdateService.formatPublishedAt(checkedAt)),
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
     }
 
     if (isSkipped) {
       final amberColor = Theme.of(context).colorScheme.tertiary;
-      return Container(
-        padding: const EdgeInsets.all(14),
-        decoration: BoxDecoration(
-          color: amberColor.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: amberColor.withValues(alpha: 0.3)),
-        ),
-        child: Row(
-          children: [
-            Icon(Icons.history_toggle_off_rounded, color: amberColor),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Text(l10n.updatesSkippedBanner(info.latestVersion)),
-            ),
-            TextButton(
-              onPressed: () async {
-                await provider.clearSkippedUpdate();
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(content: Text(l10n.updatesSkippedRestored)),
-                  );
-                }
-              },
-              child: Text(l10n.updatesRestore),
-            ),
-          ],
+      return AppGlassSurface(
+        borderRadius: 14,
+        backgroundColor: amberColor.withValues(alpha: 0.1),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              Icon(Icons.history_toggle_off_rounded, color: amberColor),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(l10n.updatesSkippedBanner(info.latestVersion)),
+              ),
+              TextButton(
+                onPressed: () async {
+                  await provider.clearSkippedUpdate();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text(l10n.updatesSkippedRestored)),
+                    );
+                  }
+                },
+                child: Text(l10n.updatesRestore),
+              ),
+            ],
+          ),
         ),
       );
     }
 
     final successColor = Theme.of(context).colorScheme.secondary;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: successColor.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: successColor.withValues(alpha: 0.3)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.system_update_alt_rounded, color: successColor),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  l10n.updatesBannerAvailable(info.latestVersion),
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+    return AppGlassSurface(
+      borderRadius: 14,
+      backgroundColor: successColor.withValues(alpha: 0.1),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.system_update_alt_rounded, color: successColor),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    l10n.updatesBannerAvailable(info.latestVersion),
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            l10n.updatesCurrentVersion(info.currentVersion),
-            style: theme.textTheme.bodySmall,
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              OutlinedButton.icon(
-                onPressed: () => _showUpdateAvailableDialog(context, info),
-                icon: const Icon(Icons.visibility_rounded, size: 16),
-                label: Text(l10n.updatesView),
-              ),
-              const SizedBox(width: 8),
-              TextButton(
-                onPressed: () async {
-                  await provider.skipLatestUpdate();
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(
-                        content:
-                            Text(l10n.updatesSkippedNow(info.latestVersion)),
-                      ),
-                    );
-                  }
-                },
-                child: Text(l10n.updatesSkip),
-              ),
-            ],
-          ),
-        ],
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              l10n.updatesCurrentVersion(info.currentVersion),
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () => _showUpdateAvailableDialog(context, info),
+                  icon: const Icon(Icons.visibility_rounded, size: 16),
+                  label: Text(l10n.updatesView),
+                ),
+                const SizedBox(width: 8),
+                TextButton(
+                  onPressed: () async {
+                    await provider.skipLatestUpdate();
+                    if (context.mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content:
+                              Text(l10n.updatesSkippedNow(info.latestVersion)),
+                        ),
+                      );
+                    }
+                  },
+                  child: Text(l10n.updatesSkip),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -319,165 +468,162 @@ class SettingsTab extends StatelessWidget {
         ? l10n.accountStatusLocal
         : l10n.accountStatusSynced;
 
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: theme.cardColor,
-        borderRadius: BorderRadius.circular(24),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Stack(
-                children: [
-                  const CircleAvatar(
-                    radius: 32,
-                    child: Icon(Icons.person, size: 30),
-                  ),
-                  Positioned(
-                    right: -3,
-                    bottom: -3,
-                    child: InkWell(
-                      onTap: () => _showEditProfileDialog(context),
-                      borderRadius: BorderRadius.circular(20),
-                      child: Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: theme.colorScheme.primary,
-                          shape: BoxShape.circle,
-                        ),
-                        child: const Icon(Icons.edit,
-                            size: 14, color: Colors.white),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+    return AppGlassSurface(
+      isStrong: true,
+      borderRadius: 24,
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Stack(
                   children: [
-                    Text(
-                      displayName,
-                      style: const TextStyle(
-                          fontSize: 19, fontWeight: FontWeight.w700),
+                    const CircleAvatar(
+                      radius: 32,
+                      child: Icon(Icons.person, size: 30),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      email,
-                      style: TextStyle(
-                        color: theme.textTheme.bodySmall?.color,
-                        fontSize: 13,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 5),
-                      decoration: BoxDecoration(
-                        color: provider.userData == null
-                            ? theme.colorScheme.errorContainer
-                            : theme.colorScheme.secondaryContainer,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        statusLabel,
-                        style: TextStyle(
-                          color: provider.userData == null
-                              ? theme.colorScheme.onErrorContainer
-                              : theme.colorScheme.onSecondaryContainer,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
+                    Positioned(
+                      right: -3,
+                      bottom: -3,
+                      child: InkWell(
+                        onTap: () => _showEditProfileDialog(context),
+                        borderRadius: BorderRadius.circular(20),
+                        child: Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: BoxDecoration(
+                            color: theme.colorScheme.primary,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(Icons.edit,
+                              size: 14, color: Colors.white),
                         ),
                       ),
                     ),
                   ],
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(14),
-              color: theme.brightness == Brightness.dark
-                  ? Colors.white.withValues(alpha: 0.03)
-                  : Colors.black.withValues(alpha: 0.03),
-            ),
-            child: Column(
-              children: [
-                _buildAccountInfoRow(
-                  context,
-                  label: l10n.cloudAccount,
-                  value: cloudAccount,
-                  icon: Icons.cloud_done_rounded,
-                ),
-                _buildAccountInfoRow(
-                  context,
-                  label: l10n.phoneLabel,
-                  value: phone,
-                  icon: Icons.phone_outlined,
-                ),
-                _buildAccountInfoRow(
-                  context,
-                  label: 'UID',
-                  value: (uid?.isNotEmpty ?? false) ? uid! : '...',
-                  icon: Icons.badge_outlined,
-                  monospace: true,
-                  onCopy: () => _copyToClipboard(
-                    context,
-                    (uid?.isNotEmpty ?? false) ? uid! : null,
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        displayName,
+                        style: const TextStyle(
+                            fontSize: 19, fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        email,
+                        style: TextStyle(
+                          color: theme.textTheme.bodySmall?.color,
+                          fontSize: 13,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: provider.userData == null
+                              ? theme.colorScheme.errorContainer
+                              : theme.colorScheme.secondaryContainer,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          statusLabel,
+                          style: TextStyle(
+                            color: provider.userData == null
+                                ? theme.colorScheme.onErrorContainer
+                                : theme.colorScheme.onSecondaryContainer,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                _buildAccountInfoRow(
-                  context,
-                  label: l10n.sessionId,
-                  value: provider.userId,
-                  icon: Icons.fingerprint,
-                  monospace: true,
-                  onCopy: () => _copyToClipboard(context, provider.userId),
                 ),
               ],
             ),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            l10n.accountProfileHint,
-            style: TextStyle(
-              fontSize: 12,
-              color: theme.textTheme.bodySmall?.color,
+            const SizedBox(height: 18),
+            AppGlassSurface(
+              borderRadius: 14,
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  children: [
+                    _buildAccountInfoRow(
+                      context,
+                      label: l10n.cloudAccount,
+                      value: cloudAccount,
+                      icon: Icons.cloud_done_rounded,
+                    ),
+                    _buildAccountInfoRow(
+                      context,
+                      label: l10n.phoneLabel,
+                      value: phone,
+                      icon: Icons.phone_outlined,
+                    ),
+                    _buildAccountInfoRow(
+                      context,
+                      label: 'UID',
+                      value: (uid?.isNotEmpty ?? false) ? uid! : '...',
+                      icon: Icons.badge_outlined,
+                      monospace: true,
+                      onCopy: () => _copyToClipboard(
+                        context,
+                        (uid?.isNotEmpty ?? false) ? uid! : null,
+                      ),
+                    ),
+                    _buildAccountInfoRow(
+                      context,
+                      label: l10n.sessionId,
+                      value: provider.userId,
+                      icon: Icons.fingerprint,
+                      monospace: true,
+                      onCopy: () => _copyToClipboard(context, provider.userId),
+                    ),
+                  ],
+                ),
+              ),
             ),
-          ),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _showEditProfileDialog(context),
-                  icon: const Icon(Icons.edit_outlined, size: 18),
-                  label: Text(l10n.editProfile),
-                ),
+            const SizedBox(height: 14),
+            Text(
+              l10n.accountProfileHint,
+              style: TextStyle(
+                fontSize: 12,
+                color: theme.textTheme.bodySmall?.color,
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _confirmLogout(context),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: theme.colorScheme.error,
-                    side: BorderSide(color: theme.colorScheme.error),
+            ),
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _showEditProfileDialog(context),
+                    icon: const Icon(Icons.edit_outlined, size: 18),
+                    label: Text(l10n.editProfile),
                   ),
-                  icon: const Icon(Icons.logout, size: 18),
-                  label: Text(l10n.logout),
                 ),
-              ),
-            ],
-          ),
-        ],
+                const SizedBox(width: 10),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: () => _confirmLogout(context),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: theme.colorScheme.error,
+                      side: BorderSide(color: theme.colorScheme.error),
+                    ),
+                    icon: const Icon(Icons.logout, size: 18),
+                    label: Text(l10n.logout),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -924,8 +1070,8 @@ class _LogsDialogState extends State<_LogsDialog> {
     return widget.entries.where((e) => e.level == _selectedLevel).toList();
   }
 
-  String get _filteredText {
-    if (_filteredEntries.isEmpty) return 'No logs yet.';
+  String _filteredText(AppLocalizations l10n) {
+    if (_filteredEntries.isEmpty) return l10n.logsNoEntries;
     return _filteredEntries.map((e) => e.toDisplayString()).join('\n');
   }
 
@@ -954,8 +1100,9 @@ class _LogsDialogState extends State<_LogsDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return AlertDialog(
-      title: const Text('App Logs'),
+      title: Text(l10n.logsTitle),
       content: SizedBox(
         width: double.maxFinite,
         height: 400,
@@ -966,24 +1113,24 @@ class _LogsDialogState extends State<_LogsDialog> {
               runSpacing: 8,
               children: [
                 ChoiceChip(
-                  label: const Text('All'),
+                  label: Text(l10n.logsAll),
                   selected: _selectedLevel == null,
                   onSelected: (_) => setState(() => _selectedLevel = null),
                 ),
                 ChoiceChip(
-                  label: const Text('Info'),
+                  label: Text(l10n.logsInfo),
                   selected: _selectedLevel == LogLevel.info,
                   onSelected: (_) =>
                       setState(() => _selectedLevel = LogLevel.info),
                 ),
                 ChoiceChip(
-                  label: const Text('Warn'),
+                  label: Text(l10n.logsWarn),
                   selected: _selectedLevel == LogLevel.warn,
                   onSelected: (_) =>
                       setState(() => _selectedLevel = LogLevel.warn),
                 ),
                 ChoiceChip(
-                  label: const Text('Error'),
+                  label: Text(l10n.logsError),
                   selected: _selectedLevel == LogLevel.error,
                   onSelected: (_) =>
                       setState(() => _selectedLevel = LogLevel.error),
@@ -994,14 +1141,19 @@ class _LogsDialogState extends State<_LogsDialog> {
             Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Total: ${widget.entries.length}  |  Info: $_infoCount  Warn: $_warnCount  Error: $_errorCount',
+                l10n.logsSummary(
+                  widget.entries.length.toString(),
+                  _infoCount.toString(),
+                  _warnCount.toString(),
+                  _errorCount.toString(),
+                ),
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
             const SizedBox(height: 8),
             Expanded(
               child: _filteredEntries.isEmpty
-                  ? const Center(child: Text('No logs yet.'))
+                  ? Center(child: Text(l10n.logsNoEntries))
                   : Scrollbar(
                       controller: _scrollController,
                       thumbVisibility: true,
@@ -1061,7 +1213,7 @@ class _LogsDialogState extends State<_LogsDialog> {
                                     entry.errorText!.trim().isNotEmpty) ...[
                                   const SizedBox(height: 6),
                                   SelectableText(
-                                    'Error: ${entry.errorText}',
+                                    '${l10n.logsErrorPrefix}: ${entry.errorText}',
                                     style: Theme.of(context)
                                         .textTheme
                                         .bodySmall
@@ -1086,25 +1238,27 @@ class _LogsDialogState extends State<_LogsDialog> {
       actions: [
         TextButton(
           onPressed: () async {
-            await Clipboard.setData(ClipboardData(text: _filteredText));
+            await Clipboard.setData(
+              ClipboardData(text: _filteredText(l10n)),
+            );
             if (context.mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Logs copied to clipboard')),
+                SnackBar(content: Text(l10n.logsCopied)),
               );
             }
           },
-          child: const Text('Copy filtered'),
+          child: Text(l10n.logsCopyFiltered),
         ),
         TextButton(
           onPressed: () {
             LogService.clear();
             Navigator.pop(context);
           },
-          child: const Text('Clear'),
+          child: Text(l10n.clear),
         ),
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Close'),
+          child: Text(l10n.updatesDialogClose),
         ),
       ],
     );
@@ -1117,6 +1271,7 @@ class HardwareSettingsSection extends StatelessWidget {
   const HardwareSettingsSection({super.key, required this.provider});
 
   void _showEditDialog(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     // Ініціалізуємо контролери поточними значеннями з провайдера
     final batteryCtrl = TextEditingController(
         text: provider.batteryCapacityAh.toStringAsFixed(0));
@@ -1136,7 +1291,7 @@ class HardwareSettingsSection extends StatelessWidget {
             Icon(Icons.solar_power_rounded,
                 color: Theme.of(context).colorScheme.primary),
             const SizedBox(width: 12),
-            const Text('Параметри станції', style: TextStyle(fontSize: 20)),
+            Text(l10n.stationParameters, style: const TextStyle(fontSize: 20)),
           ],
         ),
         content: SingleChildScrollView(
@@ -1144,19 +1299,19 @@ class HardwareSettingsSection extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                'Ці дані потрібні інтелектуальному алгоритму для точного розрахунку енергії та прогнозу погоди.',
+                l10n.stationParametersHint,
                 style: TextStyle(
                     fontSize: 13,
                     color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 20),
-              _buildTextField(context, batteryCtrl, 'Ємність АКБ', 'Ah',
-                  Icons.battery_charging_full_rounded),
+              _buildTextField(context, batteryCtrl, l10n.batteryCapacityLabel,
+                  'Ah', Icons.battery_charging_full_rounded),
               const SizedBox(height: 16),
-              _buildTextField(context, pvCtrl, 'Потужність панелей', 'W',
+              _buildTextField(context, pvCtrl, l10n.panelPowerLabel, 'W',
                   Icons.grid_4x4_rounded),
               const SizedBox(height: 16),
-              _buildTextField(context, inverterCtrl, 'Потужність інвертора',
+              _buildTextField(context, inverterCtrl, l10n.inverterPowerLabel,
                   'W', Icons.bolt_rounded),
             ],
           ),
@@ -1165,7 +1320,7 @@ class HardwareSettingsSection extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Скасувати',
+            child: Text(l10n.cancel,
                 style:
                     TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
           ),
@@ -1190,14 +1345,14 @@ class HardwareSettingsSection extends StatelessWidget {
 
               // Візуальний фідбек для користувача
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(
-                  content: Text('Параметри обладнання збережено!'),
+                SnackBar(
+                  content: Text(l10n.hardwareSettingsSaved),
                   duration: Duration(seconds: 2),
                 ),
               );
             },
-            child: const Text('Зберегти',
-                style: TextStyle(fontWeight: FontWeight.bold)),
+            child:
+                Text(l10n.save, style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -1227,14 +1382,9 @@ class HardwareSettingsSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(
-            color: Theme.of(context).colorScheme.outlineVariant, width: 1),
-      ),
+    final l10n = AppLocalizations.of(context)!;
+    return AppCard(
+      borderRadius: AppTheme.radiusLarge,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () => _showEditDialog(context),
@@ -1256,12 +1406,16 @@ class HardwareSettingsSection extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Параметри обладнання',
-                        style: TextStyle(
+                    Text(l10n.stationParameters,
+                        style: const TextStyle(
                             fontSize: 16, fontWeight: FontWeight.bold)),
                     const SizedBox(height: 4),
                     Text(
-                      'АКБ: ${provider.batteryCapacityAh.toInt()} Ah • PV: ${provider.pvTotalCapacityW.toInt()} W\nІнвертор: ${provider.inverterMaxPowerW.toInt()} W',
+                      l10n.hardwareSummary(
+                        provider.batteryCapacityAh.toInt().toString(),
+                        provider.pvTotalCapacityW.toInt().toString(),
+                        provider.inverterMaxPowerW.toInt().toString(),
+                      ),
                       style: TextStyle(
                           fontSize: 13,
                           color: Theme.of(context).colorScheme.onSurfaceVariant,

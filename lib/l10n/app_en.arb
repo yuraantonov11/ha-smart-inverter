@@ -4,6 +4,8 @@
   "logout": "Logout",
   "settings": "Settings",
   "theme": "Theme",
+  "lightTheme": "Light theme",
+  "darkTheme": "Dark theme",
   "language": "Language",
   "dashboard": "Dashboard",
   "details": "Details",
@@ -30,6 +32,7 @@
   "sun": "Sun",
   "battery": "Battery",
   "grid": "Grid",
+  "forecast": "Forecast",
   "modeAdaptive": "Adaptive Intelligence (Auto)",
   "modeAdaptiveSubtitle": "Dynamic mode: forecast, tariff, and battery state",
   "modeAdaptiveDesc": "Adaptive mode continuously analyzes:\n• real-time PV generation and house consumption\n• solar forecast for the rest of the day\n• battery SOC and safety reserve\n• time-of-use tariff windows (night/day/evening)\n\nWhat it does:\n• At night, it predicts whether tomorrow's solar will be enough and decides whether grid charging is needed\n• During daytime, it optimizes source priority to preserve energy for evening peak\n• In evening hours, it uses battery energy down to the configured reserve threshold\n• It automatically falls back to grid if battery safety or supply stability is at risk\n\nResult: fewer manual switches, lower energy cost, and more stable day-to-day operation.",
@@ -68,6 +71,8 @@
   "password": "Password",
   "loginError": "Invalid login or password",
   "startWithWindows": "Start with Windows",
+  "startInTray": "Start in tray",
+  "startInTraySubtitle": "Starts minimized when a saved session exists",
   "name": "Name",
   "notProvided": "Not provided",
   "unknownValue": "Unknown",
@@ -206,6 +211,73 @@
   "updatesDialogInstallFailed": "Installation failed. Please run installer manually.",
   "updatesDialogDownloadFailed": "Download failed. Check internet or release assets.",
   "updatesDialogClose": "Close",
+  "inverterSettings": "Inverter settings",
+  "refreshSettings": "Refresh settings",
+  "settingsLoadingTitle": "Settings are loading…",
+  "waitingInverterResponse": "Waiting for inverter response…",
+  "tapRefreshToLoad": "Tap refresh to load settings",
+  "realtimeReadings": "Realtime readings",
+  "unitOfMeasure": "Unit: {unit}",
+  "@unitOfMeasure": {
+    "placeholders": {
+      "unit": {
+        "type": "String"
+      }
+    }
+  },
+  "selectValue": "Select value",
+  "newValue": "New value",
+  "apply": "Apply",
+  "debugLogs": "Debug Logs",
+  "viewSystemLogs": "View system logs",
+  "analyzeSystemLogs": "Analyze app errors and API calls",
+  "stationParameters": "Station parameters",
+  "stationParametersHint": "These values help the intelligent algorithm calculate energy balance and weather-based forecasts more accurately.",
+  "batteryCapacityLabel": "Battery capacity",
+  "panelPowerLabel": "Panel power",
+  "inverterPowerLabel": "Inverter power",
+  "hardwareSettingsSaved": "Hardware settings saved!",
+  "hardwareSummary": "Battery: {battery} Ah • PV: {pv} W\nInverter: {inverter} W",
+  "@hardwareSummary": {
+    "placeholders": {
+      "battery": {
+        "type": "String"
+      },
+      "pv": {
+        "type": "String"
+      },
+      "inverter": {
+        "type": "String"
+      }
+    }
+  },
+  "logsTitle": "App Logs",
+  "logsAll": "All",
+  "logsInfo": "Info",
+  "logsWarn": "Warn",
+  "logsError": "Error",
+  "logsNoEntries": "No logs yet.",
+  "logsErrorPrefix": "Error",
+  "logsCopyFiltered": "Copy filtered",
+  "clear": "Clear",
+  "logsCopied": "Logs copied to clipboard",
+  "logsSummary": "Total: {total}  |  Info: {info}  Warn: {warn}  Error: {error}",
+  "@logsSummary": {
+    "placeholders": {
+      "total": {
+        "type": "String"
+      },
+      "info": {
+        "type": "String"
+      },
+      "warn": {
+        "type": "String"
+      },
+      "error": {
+        "type": "String"
+      }
+    }
+  },
   "solarSbu": "SOLAR (SBU)",
   "gridUsb": "GRID (USB)",
   "utilityFirstUsb": "Utility First (USB)",
@@ -214,6 +286,33 @@
   "signInCloud": "Sign in to Siseli Cloud",
   "loginFailed": "Login failed. Check credentials.",
   "today": "Today",
+  "forecastNextDays": "Solar forecast for next days",
+  "forecastPeak": "Peak",
+  "forecastUnavailable": "Forecast data is temporarily unavailable",
+  "equipmentStatus": "Equipment status",
+  "inverterLoad": "Inverter load",
+  "pvGeneration": "PV generation",
+  "refreshChart": "Refresh chart",
+  "batterySignHint": "Battery: '+' means charge, '-' means discharge.",
+  "chartNoDataTitle": "No data yet",
+  "chartNoDataMessage": "The chart should load in a moment.",
+  "lessThanMinute": "< 1 min",
+  "minutesAgo": "{count} min ago",
+  "@minutesAgo": {
+    "placeholders": {
+      "count": {
+        "type": "String"
+      }
+    }
+  },
+  "hoursAgo": "{count} hr ago",
+  "@hoursAgo": {
+    "placeholders": {
+      "count": {
+        "type": "String"
+      }
+    }
+  },
   "total": "Total",
   "solar": "Solar",
   "load": "Load",
@@ -235,6 +334,11 @@
   "enableGrid": "Enable GRID (USB)",
   "showApp": "Show App",
   "exit": "Exit",
+  "tooltipTodayEnergy": "Total solar energy generated today",
+  "tooltipTotalEnergy": "Total solar energy generated since device installation",
+  "tooltipCo2": "Estimated CO₂ emission reduction based on solar generation",
+  "tooltipInverterLoad": "Current inverter load relative to its rated power capacity",
+  "tooltipPvGeneration": "Current PV output relative to total installed panel capacity",
   "batteryLevel": "Battery: {level}%",
   "@batteryLevel": {
     "placeholders": {

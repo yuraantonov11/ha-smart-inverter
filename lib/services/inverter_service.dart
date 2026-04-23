@@ -26,6 +26,10 @@ class InverterService {
   double totalEnergy = 0.0;
   double co2Reduction = 0.0;
 
+  // БЕЗПЕКА: Rate limiting для запобігання DoS атакам
+  final Map<String, DateTime> _lastRequestTime = {};
+  static const _minRequestIntervalMs = 1000; // 1 запит за секунду мінімум
+
   Map<String, dynamic>? _cachedFullConfigs;
   DateTime? _lastConfigFetchTime;
   bool _isConfigFetching = false;
@@ -50,6 +54,12 @@ class InverterService {
       connectTimeout: const Duration(seconds: 15),
       receiveTimeout: const Duration(seconds: 15),
     ));
+
+    // БЕЗПЕКА: Включення SSL верифікації (за замовчуванням вже включено в Dio)
+    // Dio автоматично перевіряє SSL сертифікати для HTTPS з'єднань
+    _dio.options.validateStatus = (status) {
+      return status != null && status < 500;
+    };
 
     _dio.interceptors.add(InterceptorsWrapper(
       onRequest: (options, handler) {
@@ -92,6 +102,25 @@ class InverterService {
     final random = Random.secure();
     return String.fromCharCodes(Iterable.generate(
         length, (_) => chars.codeUnitAt(random.nextInt(chars.length))));
+  }
+
+  /// БЕЗПЕКА: Rate limiting для запобігання DoS атакам
+  /// Забезпечує мінімальний інтервал між запитами до конкретного endpoint
+  Future<void> _applyRateLimit(String endpoint) async {
+    final now = DateTime.now();
+    final lastTime = _lastRequestTime[endpoint];
+
+    if (lastTime != null) {
+      final elapsed = now.difference(lastTime).inMilliseconds;
+      if (elapsed < _minRequestIntervalMs) {
+        final delayMs = _minRequestIntervalMs - elapsed;
+        app_log.LogService.log(
+            '⏱️ Rate limit applied for endpoint=$endpoint, delay=${delayMs}ms');
+        await Future.delayed(Duration(milliseconds: delayMs));
+      }
+    }
+
+    _lastRequestTime[endpoint] = DateTime.now();
   }
 
   String _decryptAppSecret(String appId, String encryptedSecret) {
@@ -142,12 +171,16 @@ class InverterService {
   // --- Основні методи API ---
   Future<bool> login(String email, String password) async {
     try {
+      // БЕЗПЕКА: Rate limiting
+      await _applyRateLimit('/apis/login/account');
+
       final passwordMd5 = (password.length == 32)
           ? password.toLowerCase()
           : md5.convert(utf8.encode(password)).toString().toLowerCase();
       final response = await _dio.post('/apis/login/account',
           data: {'account': email, 'password': passwordMd5});
-      log_service.log('Login Response: ${response.data}');
+      // БЕЗПЕКА: Не логуємо повну відповідь яка містить токен
+      app_log.LogService.log('✅ Login successful for account: $email');
 
       if (response.data['code'] == 0) {
         final data = response.data['data'];
@@ -157,7 +190,7 @@ class InverterService {
         return true;
       }
     } catch (e) {
-      log_service.log('Login Exception', error: e);
+      app_log.LogService.log('❌ Login failed for account: $email', error: e);
       return false;
     }
     return false;

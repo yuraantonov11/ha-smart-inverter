@@ -1,6 +1,11 @@
+import 'dart:math' as math;
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
+
 import '../l10n/app_localizations.dart';
 import '../models/inverter_data.dart';
+import '../theme/app_theme.dart';
 
 class EnergyFlowDiagram extends StatefulWidget {
   final InverterData data;
@@ -19,7 +24,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
   void initState() {
     super.initState();
     _controller =
-        AnimationController(vsync: this, duration: const Duration(seconds: 10))
+        AnimationController(vsync: this, duration: const Duration(seconds: 8))
           ..repeat();
   }
 
@@ -31,8 +36,6 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
 
   @override
   Widget build(BuildContext context) {
-    // Always use live realtime values. fullConfigs are static device settings
-    // and may freeze flow visualization after first load.
     final pvPower = widget.data.pvPower.toDouble();
     final loadPower = widget.data.loadPower.toDouble();
     final gridPower = widget.data.gridPower.toDouble();
@@ -44,43 +47,78 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
     final isBatCharging = widget.data.batteryPower > 30;
     final isBatDischarging = widget.data.batteryPower < -30;
 
-    return Container(
-      height: 240,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: Theme.of(context).brightness == Brightness.dark
-            ? [
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final base = isDark ? const Color(0xFF0D172B) : const Color(0xFFEFF5FC);
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(26),
+      child: Stack(
+        children: [
+          Container(
+            height: 280,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  base.withValues(alpha: 0.94),
+                  Theme.of(context)
+                      .cardColor
+                      .withValues(alpha: isDark ? 0.78 : 0.92),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(26),
+              border: Border.all(
+                color: (isDark ? Colors.white : const Color(0xFF9FB2C7))
+                    .withValues(alpha: isDark ? 0.16 : 0.42),
+              ),
+              boxShadow: [
                 BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.2), blurRadius: 20)
-              ]
-            : [
-                BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.05),
-                    blurRadius: 15,
-                    offset: const Offset(0, 5))
+                  color: (isDark ? Colors.black : Colors.blueGrey)
+                      .withValues(alpha: isDark ? 0.35 : 0.14),
+                  blurRadius: 26,
+                  offset: const Offset(0, 12),
+                ),
               ],
-      ),
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, child) {
-          return CustomPaint(
-            // Передаємо безпечні змінні у Painter замість сирого widget.data
-            painter: _FlowPainter(
-              animationValue: _controller.value,
-              pvPower: pvPower,
-              gridPower: gridPower.abs(),
-              loadPower: loadPower,
-              isGridImport: isGridImport,
-              isGridExport: isGridExport,
-              isBatCharging: isBatCharging,
-              isBatDischarging: isBatDischarging,
             ),
-            child: _buildNodes(
-                context, pvPower, loadPower, batterySoc, gridPower.abs()),
-          );
-        },
+          ),
+          Positioned.fill(
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+              child: const SizedBox.expand(),
+            ),
+          ),
+          Positioned.fill(
+            child: RepaintBoundary(
+              child: AnimatedBuilder(
+                animation: _controller,
+                child: _buildNodes(
+                  context,
+                  pvPower,
+                  loadPower,
+                  batterySoc,
+                  gridPower.abs(),
+                ),
+                builder: (context, child) {
+                  return CustomPaint(
+                    painter: _FlowPainter(
+                      animationValue: _controller.value,
+                      pvPower: pvPower,
+                      gridPower: gridPower.abs(),
+                      loadPower: loadPower,
+                      isGridImport: isGridImport,
+                      isGridExport: isGridExport,
+                      isBatCharging: isBatCharging,
+                      isBatDischarging: isBatDischarging,
+                      isDark: isDark,
+                    ),
+                    child: child,
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -88,58 +126,99 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
   Widget _buildNodes(BuildContext context, double pvPower, double loadPower,
       int batterySoc, double gridPower) {
     final l10n = AppLocalizations.of(context)!;
-    return Stack(
-      children: [
-        Align(
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Stack(
+        children: [
+          Align(
             alignment: Alignment.topLeft,
             child: _NodeWidget(
-                icon: Icons.solar_power,
-                color: Colors.amber,
-                title: l10n.solar,
-                value: '${pvPower.toStringAsFixed(0)} W')),
-        // Безпечний PV
-        Align(
+              icon: Icons.solar_power_rounded,
+              color: AppTheme.pvColor,
+              title: l10n.solar,
+              value: '${pvPower.toStringAsFixed(0)} W',
+            ),
+          ),
+          Align(
             alignment: Alignment.topRight,
             child: _NodeWidget(
-                icon: Icons.electric_bolt,
-                color: Colors.blueAccent,
-                title: l10n.grid,
-                value: '${gridPower.toStringAsFixed(0)} W')),
-        Align(
+              icon: Icons.electric_bolt_rounded,
+              color: AppTheme.gridColor,
+              title: l10n.grid,
+              value: '${gridPower.toStringAsFixed(0)} W',
+            ),
+          ),
+          Align(
             alignment: Alignment.bottomLeft,
             child: _NodeWidget(
-                icon: Icons.battery_charging_full,
-                color: Colors.greenAccent,
-                title: l10n.battery,
-                value: '$batterySoc%')),
-        // Безпечний SOC
-        Align(
+              icon: Icons.battery_charging_full_rounded,
+              color: AppTheme.batteryColor,
+              title: l10n.battery,
+              value: '$batterySoc%',
+            ),
+          ),
+          Align(
             alignment: Alignment.bottomRight,
             child: _NodeWidget(
-                icon: Icons.home_rounded,
-                color: Colors.purpleAccent,
-                title: l10n.load,
-                value: '${loadPower.toStringAsFixed(0)} W')),
-        // Безпечне Навантаження
+              icon: Icons.home_rounded,
+              color: AppTheme.loadColor,
+              title: l10n.load,
+              value: '${loadPower.toStringAsFixed(0)} W',
+            ),
+          ),
+          Align(
+            alignment: Alignment.center,
+            child: _CoreHub(animation: _controller),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
-        // Центральний хаб
-        Align(
-          alignment: Alignment.center,
-          child: Container(
-            width: 60,
-            height: 60,
-            decoration: BoxDecoration(
-              color: Theme.of(context).scaffoldBackgroundColor,
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.1), blurRadius: 10)
+class _CoreHub extends StatelessWidget {
+  final AnimationController animation;
+
+  const _CoreHub({required this.animation});
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return AnimatedBuilder(
+      animation: animation,
+      builder: (context, child) {
+        final t = (math.sin(animation.value * math.pi * 2) + 1) / 2;
+        return Container(
+          width: 78,
+          height: 78,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: RadialGradient(
+              colors: [
+                Colors.white.withValues(alpha: isDark ? 0.18 : 0.72),
+                Theme.of(context)
+                    .cardColor
+                    .withValues(alpha: isDark ? 0.74 : 0.96),
               ],
             ),
-            child: const Icon(Icons.swap_horiz, size: 32, color: Colors.grey),
+            border: Border.all(
+              color: AppTheme.gridColor.withValues(alpha: 0.36 + t * 0.4),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: AppTheme.gridColor.withValues(alpha: 0.18 + t * 0.18),
+                blurRadius: 24,
+                spreadRadius: 2,
+              ),
+            ],
           ),
-        ),
-      ],
+          child: Icon(
+            Icons.hub_rounded,
+            size: 34,
+            color: isDark ? Colors.white70 : const Color(0xFF1A2A42),
+          ),
+        );
+      },
     );
   }
 }
@@ -150,39 +229,77 @@ class _NodeWidget extends StatelessWidget {
   final String title;
   final String value;
 
-  const _NodeWidget(
-      {required this.icon,
-      required this.color,
-      required this.title,
-      required this.value});
+  const _NodeWidget({
+    required this.icon,
+    required this.color,
+    required this.title,
+    required this.value,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: 85,
-      height: 90,
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            color.withValues(alpha: 0.15),
-            color.withValues(alpha: 0.05)
-          ],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
+        child: Container(
+          width: 108,
+          height: 96,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                color.withValues(alpha: isDark ? 0.22 : 0.22),
+                Theme.of(context)
+                    .cardColor
+                    .withValues(alpha: isDark ? 0.44 : 0.94),
+              ],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: color.withValues(alpha: isDark ? 0.5 : 0.62),
+              width: 1.1,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: color.withValues(alpha: 0.22),
+                blurRadius: 20,
+                spreadRadius: -1,
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(icon, color: color, size: 24),
+              const SizedBox(height: 5),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontSize: 11,
+                      color: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.color
+                          ?.withValues(alpha: 0.95),
+                    ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                value,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: isDark ? color : color.withValues(alpha: 0.9),
+                ),
+              ),
+            ],
+          ),
         ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: color.withValues(alpha: 0.3), width: 1.5),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, color: color, size: 24),
-          const SizedBox(height: 6),
-          Text(title, style: const TextStyle(fontSize: 10, color: Colors.grey)),
-          Text(value,
-              style: TextStyle(
-                  fontSize: 13, fontWeight: FontWeight.bold, color: color)),
-        ],
       ),
     );
   }
@@ -197,6 +314,7 @@ class _FlowPainter extends CustomPainter {
   final bool isGridExport;
   final bool isBatCharging;
   final bool isBatDischarging;
+  final bool isDark;
 
   _FlowPainter({
     required this.animationValue,
@@ -207,6 +325,7 @@ class _FlowPainter extends CustomPainter {
     required this.isGridExport,
     required this.isBatCharging,
     required this.isBatDischarging,
+    required this.isDark,
   });
 
   Path _createSPath(Offset start, Offset end) {
@@ -226,10 +345,10 @@ class _FlowPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
-    final pvPos = const Offset(42, 45);
-    final gridPos = Offset(size.width - 42, 45);
-    final batPos = Offset(42, size.height - 45);
-    final loadPos = Offset(size.width - 42, size.height - 45);
+    final pvPos = const Offset(64, 56);
+    final gridPos = Offset(size.width - 64, 56);
+    final batPos = Offset(64, size.height - 56);
+    final loadPos = Offset(size.width - 64, size.height - 56);
 
     final pvPath = _createSPath(pvPos, center);
     final gridPath = _createSPath(gridPos, center);
@@ -238,71 +357,117 @@ class _FlowPainter extends CustomPainter {
     final centerToBatPath = _createSPath(center, batPos);
     final centerToGridPath = _createSPath(center, gridPos);
 
-    // Малюємо базові напівпрозорі лінії
-    final linePaint = Paint()
-      ..color = Colors.grey.withValues(alpha: 0.15)
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
+    _drawBaseLine(canvas, pvPath);
+    _drawBaseLine(canvas, gridPath);
+    _drawBaseLine(canvas, batPath);
+    _drawBaseLine(canvas, loadPath);
 
-    canvas.drawPath(pvPath, linePaint);
-    canvas.drawPath(gridPath, linePaint);
-    canvas.drawPath(batPath, linePaint);
-    canvas.drawPath(loadPath, linePaint);
-
-    // Малюємо анімовані точки чітко за фізикою
     if (pvPower > 0) {
-      _drawParticles(canvas, pvPath, Colors.amber, animationValue);
+      _drawEnergy(canvas, pvPath, AppTheme.pvColor, _intensity(pvPower));
     }
+
     if (gridPower > 0) {
       if (isGridImport) {
-        _drawParticles(canvas, gridPath, Colors.blueAccent, animationValue);
+        _drawEnergy(
+            canvas, gridPath, AppTheme.gridColor, _intensity(gridPower));
       } else if (isGridExport) {
-        _drawParticles(
-            canvas, centerToGridPath, Colors.blueAccent, animationValue);
+        _drawEnergy(
+          canvas,
+          centerToGridPath,
+          AppTheme.gridColor,
+          _intensity(gridPower),
+        );
       }
     }
+
     if (loadPower > 0) {
-      _drawParticles(canvas, loadPath, Colors.purpleAccent, animationValue);
+      _drawEnergy(canvas, loadPath, AppTheme.loadColor, _intensity(loadPower));
     }
 
     if (isBatCharging) {
-      // Заряджається (Центр -> Батарея)
-      _drawParticles(
-          canvas, centerToBatPath, Colors.greenAccent, animationValue);
+      _drawEnergy(canvas, centerToBatPath, AppTheme.batteryColor, 0.72);
     } else if (isBatDischarging) {
-      // Розряджається (Батарея -> Центр)
-      _drawParticles(canvas, batPath, Colors.greenAccent, animationValue);
+      _drawEnergy(canvas, batPath, AppTheme.batteryColor, 0.86);
     }
   }
 
-  void _drawParticles(
-      Canvas canvas, Path path, Color color, double animationValue) {
+  void _drawBaseLine(Canvas canvas, Path path) {
+    final linePaint = Paint()
+      ..color = (isDark ? Colors.white : const Color(0xFF6B7F97))
+          .withValues(alpha: isDark ? 0.1 : 0.24)
+      ..strokeWidth = 2.8
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(path, linePaint);
+  }
+
+  double _intensity(double watts) {
+    return (watts / 4000).clamp(0.22, 1.0);
+  }
+
+  void _drawEnergy(Canvas canvas, Path path, Color color, double intensity) {
     final metrics = path.computeMetrics().toList();
     if (metrics.isEmpty) return;
+
     final metric = metrics.first;
-    final length = metric.length;
+    final segment = metric.extractPath(0, metric.length);
+
+    final glow = Paint()
+      ..shader = LinearGradient(
+        colors: [
+          color.withValues(alpha: isDark ? 0.08 : 0.12),
+          color.withValues(alpha: (isDark ? 0.22 : 0.28) + intensity * 0.24),
+          color.withValues(alpha: isDark ? 0.08 : 0.12),
+        ],
+      ).createShader(segment.getBounds())
+      ..strokeWidth = 4 + intensity * 3
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+
+    canvas.drawPath(segment, glow);
+    _drawParticles(canvas, metric, color, intensity);
+  }
+
+  void _drawParticles(
+    Canvas canvas,
+    PathMetric metric,
+    Color color,
+    double intensity,
+  ) {
+    final particleCount = 2 + (intensity * 3).round();
+    final speed = 0.55 + intensity * 1.1;
 
     final particlePaint = Paint()
       ..color = color
       ..style = PaintingStyle.fill
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5);
-
-    // Змінна для кількості частинок. Легко змінити на 4, 5 тощо.
-    const particleCount = 3;
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, 4 + intensity * 3);
 
     for (var i = 0; i < particleCount; i++) {
-      // Динамічний розрахунок відступів замість 0.33
-      var progress = (animationValue + (i * (1.0 / particleCount))) % 1.0;
+      final progress =
+          ((animationValue * speed) + (i * (1.0 / particleCount))) % 1.0;
+      final tangent = metric.getTangentForOffset(metric.length * progress);
+      if (tangent == null) continue;
 
-      final pos = metric.getTangentForOffset(length * progress)?.position;
-      if (pos != null) {
-        // Зверніть увагу: якщо у вас був інший радіус замість 4.0, залиште свій
-        canvas.drawCircle(pos, 4.0, particlePaint);
-      }
+      final pulse = 0.7 + 0.3 * math.sin((animationValue + i) * math.pi * 2);
+      canvas.drawCircle(
+        tangent.position,
+        2.6 + intensity * 2.4 * pulse,
+        particlePaint,
+      );
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant _FlowPainter oldDelegate) {
+    return oldDelegate.animationValue != animationValue ||
+        oldDelegate.pvPower != pvPower ||
+        oldDelegate.gridPower != gridPower ||
+        oldDelegate.loadPower != loadPower ||
+        oldDelegate.isGridImport != isGridImport ||
+        oldDelegate.isGridExport != isGridExport ||
+        oldDelegate.isBatCharging != isBatCharging ||
+        oldDelegate.isBatDischarging != isBatDischarging ||
+        oldDelegate.isDark != isDark;
+  }
 }
