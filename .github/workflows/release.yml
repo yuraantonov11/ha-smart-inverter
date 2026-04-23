@@ -36,6 +36,9 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows\installer_script.iss
 
+      - name: Build MSIX Package
+        run: flutter pub run msix:create
+
       - name: Package Release Files
         shell: pwsh
         run: |
@@ -44,6 +47,9 @@ jobs:
           
           # Rename setup file to include version
           Move-Item -Path "windows\Output\smart_inverter_setup.exe" -Destination "smart_inverter_setup_$version.exe"
+
+          # Rename MSIX package to include version
+          Move-Item -Path "build\windows\x64\runner\Release\inverter_app.msix" -Destination "smart_inverter_app_$version.msix"
           
           # Prepare ZIP for manual installation
           $release_dir = "build\windows\x64\runner\Release"
@@ -66,12 +72,13 @@ jobs:
 
           Assets:
           - Windows installer (.exe)
+          - Windows package (.msix)
           - Portable Windows build (.zip)
           "@ | Set-Content -Path $notesFile -Encoding UTF8
 
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag smart_inverter_setup_*.exe smart_inverter_windows_*.zip --clobber
+            gh release upload $tag smart_inverter_setup_*.exe smart_inverter_app_*.msix smart_inverter_windows_*.zip --clobber
           } else {
-            gh release create $tag smart_inverter_setup_*.exe smart_inverter_windows_*.zip --title $title --notes-file $notesFile
+            gh release create $tag smart_inverter_setup_*.exe smart_inverter_app_*.msix smart_inverter_windows_*.zip --title $title --notes-file $notesFile
           }
