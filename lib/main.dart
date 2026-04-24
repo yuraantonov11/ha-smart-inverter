@@ -16,6 +16,9 @@ import 'screens/main_screen.dart';
 import 'services/log_service.dart';
 import 'services/secure_storage_service.dart';
 
+bool get _isDesktopPlatform =>
+    Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
 void main() async {
   FlutterError.onError = (details) {
     LogService.log('FLUTTER ERROR',
@@ -33,52 +36,47 @@ void main() async {
 
   LogService.log('Додаток запускається...');
 
-  // 1. Ініціалізація автозапуску (тепер безпечно)
-  try {
-    var packageInfo = await PackageInfo.fromPlatform();
-    launchAtStartup.setup(
-      appName: packageInfo.appName,
-      appPath: Platform.resolvedExecutable,
-    );
-  } catch (e) {
-    debugPrint('Помилка ініціалізації автозапуску: $e');
-  }
-
-  // 2. Ініціалізація керування вікном
-  await windowManager.ensureInitialized();
   final prefs = await SharedPreferences.getInstance();
-  final startInTray = prefs.getBool('start_in_tray') ?? false;
-  final savedPass = await SecureStorageService.getPassword();
-  final hasSavedSession =
-      (prefs.getString('saved_email')?.isNotEmpty ?? false) &&
-          (savedPass?.isNotEmpty ?? false);
-  final shouldStartHidden = startInTray && hasSavedSession;
 
-  const windowOptions = WindowOptions(
-    size: Size(1100, 800),
-    minimumSize: Size(900, 650),
-    center: true,
-    title: 'Smart Inverter',
-    backgroundColor: Colors.transparent,
-  );
+  // Desktop-only integrations are disabled on Android/iOS builds.
+  if (_isDesktopPlatform) {
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      launchAtStartup.setup(
+        appName: packageInfo.appName,
+        appPath: Platform.resolvedExecutable,
+      );
+    } catch (e) {
+      debugPrint('Помилка ініціалізації автозапуску: $e');
+    }
 
-  await windowManager.waitUntilReadyToShow(windowOptions, () async {
-    if (Platform.isWindows) {
-      try {
-        await windowManager.setIcon('assets/app_icon.ico');
-      } catch (e) {
-        LogService.log('⚠️ window icon setup failed', error: e);
+    await windowManager.ensureInitialized();
+    final startInTray = prefs.getBool('start_in_tray') ?? false;
+    final savedPass = await SecureStorageService.getPassword();
+    final hasSavedSession =
+        (prefs.getString('saved_email')?.isNotEmpty ?? false) &&
+            (savedPass?.isNotEmpty ?? false);
+    final shouldStartHidden = startInTray && hasSavedSession;
+
+    const windowOptions = WindowOptions(
+      size: Size(1100, 800),
+      minimumSize: Size(900, 650),
+      center: true,
+      title: 'Smart Inverter',
+      backgroundColor: Colors.transparent,
+    );
+
+    await windowManager.waitUntilReadyToShow(windowOptions, () async {
+      if (shouldStartHidden) {
+        await windowManager.hide();
+        LogService.log('🧩 startup: app hidden to tray by user setting');
+      } else {
+        await windowManager.show();
+        await windowManager.focus();
       }
-    }
-    if (shouldStartHidden) {
-      await windowManager.hide();
-      LogService.log('🧩 startup: app hidden to tray by user setting');
-    } else {
-      await windowManager.show();
-      await windowManager.focus();
-    }
-    await windowManager.setPreventClose(true);
-  });
+      await windowManager.setPreventClose(true);
+    });
+  }
 
   // 3. Запуск додатку
   runApp(
@@ -105,18 +103,23 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> with WindowListener {
   @override
   void initState() {
-    windowManager.addListener(this);
+    if (_isDesktopPlatform) {
+      windowManager.addListener(this);
+    }
     super.initState();
   }
 
   @override
   void dispose() {
-    windowManager.removeListener(this);
+    if (_isDesktopPlatform) {
+      windowManager.removeListener(this);
+    }
     super.dispose();
   }
 
   @override
   void onWindowClose() async {
+    if (!_isDesktopPlatform) return;
     var isPreventClose = await windowManager.isPreventClose();
     if (isPreventClose) {
       await windowManager.hide();

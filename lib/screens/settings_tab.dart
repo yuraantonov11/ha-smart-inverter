@@ -19,6 +19,11 @@ class SettingsTab extends StatelessWidget {
     final l10n = AppLocalizations.of(context)!;
     final theme = Theme.of(context);
     final showLanguageInSettings = MediaQuery.of(context).size.width < 980;
+    final isDesktop =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    final isMobilePlatform = Platform.isAndroid || Platform.isIOS;
+    final enableGlassBlur = !isMobilePlatform;
+    final supportsInAppUpdater = Platform.isWindows;
     final updateBanner = _buildUpdateBanner(context, l10n);
 
     return ListView(
@@ -32,15 +37,19 @@ class SettingsTab extends StatelessWidget {
 
         // Блок Налаштувань Додатка
         _buildSectionTitle(l10n.appSettings),
-        if (updateBanner != null) ...[
+        if (supportsInAppUpdater && updateBanner != null) ...[
           updateBanner,
           const SizedBox(height: 12),
         ],
         const SizedBox(height: 16),
-        HardwareSettingsSection(provider: provider), // <--- Додаємо сюди
+        HardwareSettingsSection(
+          provider: provider,
+          enableBlur: enableGlassBlur,
+        ), // <--- Додаємо сюди
         const SizedBox(height: 16),
         AppGlassSurface(
           isStrong: true,
+          enableBlur: enableGlassBlur,
           borderRadius: 24,
           child: Material(
             color: Colors.transparent,
@@ -49,6 +58,9 @@ class SettingsTab extends StatelessWidget {
               l10n,
               theme,
               showLanguageInSettings,
+              isDesktop,
+              supportsInAppUpdater,
+              enableGlassBlur,
             ),
           ),
         ),
@@ -77,6 +89,9 @@ class SettingsTab extends StatelessWidget {
     AppLocalizations l10n,
     ThemeData theme,
     bool showLanguageInSettings,
+    bool isDesktop,
+    bool supportsInAppUpdater,
+    bool enableGlassBlur,
   ) {
     return Padding(
         padding: const EdgeInsets.all(14),
@@ -119,50 +134,54 @@ class SettingsTab extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            _buildSettingsSwitchTile(
-              context,
-              icon: Icons.power_settings_new,
-              title: l10n.startWithWindows,
-              value: provider.isAutostartEnabled,
-              onChanged: provider.toggleAutostart,
-            ),
-            const SizedBox(height: 10),
-            _buildSettingsSwitchTile(
-              context,
-              icon: Icons.minimize_rounded,
-              title: l10n.startInTray,
-              subtitle: l10n.startInTraySubtitle,
-              value: provider.isStartInTrayEnabled,
-              onChanged: provider.toggleStartInTray,
-            ),
-            const SizedBox(height: 10),
-            _buildSettingsTile(
-              context,
-              icon: Icons.update,
-              iconColor: theme.colorScheme.primary,
-              title: l10n.updatesTitle,
-              subtitle: _buildUpdateSubtitle(l10n),
-              trailing: provider.isCheckingForUpdates
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : Icon(
-                      provider.hasPendingUpdate
-                          ? Icons.system_update_alt_rounded
-                          : Icons.chevron_right,
-                      color: provider.hasPendingUpdate
-                          ? theme.colorScheme.secondary
-                          : theme.colorScheme.onSurfaceVariant,
-                    ),
-              onTap: () => _checkForUpdates(context),
-            ),
+            if (isDesktop) ...[
+              _buildSettingsSwitchTile(
+                context,
+                icon: Icons.power_settings_new,
+                title: l10n.startWithWindows,
+                value: provider.isAutostartEnabled,
+                onChanged: provider.toggleAutostart,
+              ),
+              const SizedBox(height: 10),
+              _buildSettingsSwitchTile(
+                context,
+                icon: Icons.minimize_rounded,
+                title: l10n.startInTray,
+                subtitle: l10n.startInTraySubtitle,
+                value: provider.isStartInTrayEnabled,
+                onChanged: provider.toggleStartInTray,
+              ),
+              const SizedBox(height: 10),
+            ],
+            if (supportsInAppUpdater)
+              _buildSettingsTile(
+                context,
+                icon: Icons.update,
+                iconColor: theme.colorScheme.primary,
+                title: l10n.updatesTitle,
+                subtitle: _buildUpdateSubtitle(l10n),
+                trailing: provider.isCheckingForUpdates
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : Icon(
+                        provider.hasPendingUpdate
+                            ? Icons.system_update_alt_rounded
+                            : Icons.chevron_right,
+                        color: provider.hasPendingUpdate
+                            ? theme.colorScheme.secondary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                onTap: () => _checkForUpdates(context),
+              ),
             if (provider.isDeveloperMode) ...[
               const SizedBox(height: 14),
               _buildSectionTitle(l10n.debugLogs),
               AppGlassSurface(
                 isStrong: false,
+                enableBlur: enableGlassBlur,
                 borderRadius: 20,
                 child: Material(
                   color: Colors.transparent,
@@ -263,12 +282,14 @@ class SettingsTab extends StatelessWidget {
 
   Widget? _buildUpdateBanner(BuildContext context, AppLocalizations l10n) {
     final theme = Theme.of(context);
+    final enableGlassBlur = !(Platform.isAndroid || Platform.isIOS);
     final info = provider.updateInfo;
     final checkedAt = provider.lastUpdateCheckAt;
 
     if (provider.isCheckingForUpdates) {
       return AppGlassSurface(
         isStrong: false,
+        enableBlur: enableGlassBlur,
         borderRadius: 14,
         backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.08),
         child: Padding(
@@ -291,6 +312,7 @@ class SettingsTab extends StatelessWidget {
     if (info == null) {
       if (checkedAt == null) return null;
       return AppGlassSurface(
+        enableBlur: enableGlassBlur,
         borderRadius: 14,
         backgroundColor: theme.cardColor.withValues(alpha: 0.45),
         child: Padding(
@@ -324,6 +346,7 @@ class SettingsTab extends StatelessWidget {
       return checkedAt == null
           ? null
           : AppGlassSurface(
+              enableBlur: enableGlassBlur,
               borderRadius: 14,
               backgroundColor: theme.cardColor.withValues(alpha: 0.45),
               child: Padding(
@@ -353,6 +376,7 @@ class SettingsTab extends StatelessWidget {
     if (isSkipped) {
       final amberColor = Theme.of(context).colorScheme.tertiary;
       return AppGlassSurface(
+        enableBlur: enableGlassBlur,
         borderRadius: 14,
         backgroundColor: amberColor.withValues(alpha: 0.1),
         child: Padding(
@@ -383,6 +407,7 @@ class SettingsTab extends StatelessWidget {
 
     final successColor = Theme.of(context).colorScheme.secondary;
     return AppGlassSurface(
+      enableBlur: enableGlassBlur,
       borderRadius: 14,
       backgroundColor: successColor.withValues(alpha: 0.1),
       child: Padding(
@@ -440,6 +465,7 @@ class SettingsTab extends StatelessWidget {
 
   Widget _buildAccountCard(BuildContext context, AppLocalizations l10n) {
     final theme = Theme.of(context);
+    final enableGlassBlur = !(Platform.isAndroid || Platform.isIOS);
 
     final displayName =
         provider.displayName.trim().isNotEmpty && provider.displayName != 'N/A'
@@ -470,6 +496,7 @@ class SettingsTab extends StatelessWidget {
 
     return AppGlassSurface(
       isStrong: true,
+      enableBlur: enableGlassBlur,
       borderRadius: 24,
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -550,6 +577,7 @@ class SettingsTab extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             AppGlassSurface(
+              enableBlur: enableGlassBlur,
               borderRadius: 14,
               child: Padding(
                 padding: const EdgeInsets.all(14),
@@ -1267,8 +1295,13 @@ class _LogsDialogState extends State<_LogsDialog> {
 
 class HardwareSettingsSection extends StatelessWidget {
   final AppStateProvider provider;
+  final bool enableBlur;
 
-  const HardwareSettingsSection({super.key, required this.provider});
+  const HardwareSettingsSection({
+    super.key,
+    required this.provider,
+    this.enableBlur = true,
+  });
 
   void _showEditDialog(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
@@ -1385,6 +1418,7 @@ class HardwareSettingsSection extends StatelessWidget {
     final l10n = AppLocalizations.of(context)!;
     return AppCard(
       borderRadius: AppTheme.radiusLarge,
+      enableBlur: enableBlur,
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () => _showEditDialog(context),

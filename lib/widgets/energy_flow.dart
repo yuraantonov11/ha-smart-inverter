@@ -36,6 +36,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
 
   @override
   Widget build(BuildContext context) {
+    final compact = MediaQuery.sizeOf(context).width < 430;
     final pvPower = widget.data.pvPower.toDouble();
     final loadPower = widget.data.loadPower.toDouble();
     final gridPower = widget.data.gridPower.toDouble();
@@ -50,12 +51,17 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final base = isDark ? const Color(0xFF0D172B) : const Color(0xFFEFF5FC);
 
+    if (!_controller.isAnimating) {
+      _controller.repeat();
+    }
+    final animation = _controller;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(26),
       child: Stack(
         children: [
           Container(
-            height: 280,
+            height: compact ? 252 : 280,
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 colors: [
@@ -68,10 +74,6 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(26),
-              border: Border.all(
-                color: (isDark ? Colors.white : const Color(0xFF9FB2C7))
-                    .withValues(alpha: isDark ? 0.16 : 0.42),
-              ),
               boxShadow: [
                 BoxShadow(
                   color: (isDark ? Colors.black : Colors.blueGrey)
@@ -82,27 +84,29 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               ],
             ),
           ),
-          Positioned.fill(
-            child: BackdropFilter(
-              filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-              child: const SizedBox.expand(),
+          if (!compact)
+            Positioned.fill(
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                child: const SizedBox.expand(),
+              ),
             ),
-          ),
           Positioned.fill(
             child: RepaintBoundary(
               child: AnimatedBuilder(
-                animation: _controller,
+                animation: animation,
                 child: _buildNodes(
                   context,
                   pvPower,
                   loadPower,
                   batterySoc,
                   gridPower.abs(),
+                  compact: compact,
                 ),
                 builder: (context, child) {
                   return CustomPaint(
                     painter: _FlowPainter(
-                      animationValue: _controller.value,
+                      animationValue: animation.value,
                       pvPower: pvPower,
                       gridPower: gridPower.abs(),
                       loadPower: loadPower,
@@ -111,6 +115,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                       isBatCharging: isBatCharging,
                       isBatDischarging: isBatDischarging,
                       isDark: isDark,
+                      reduceEffects: compact,
                     ),
                     child: child,
                   );
@@ -124,7 +129,8 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
   }
 
   Widget _buildNodes(BuildContext context, double pvPower, double loadPower,
-      int batterySoc, double gridPower) {
+      int batterySoc, double gridPower,
+      {required bool compact}) {
     final l10n = AppLocalizations.of(context)!;
     return Padding(
       padding: const EdgeInsets.all(20),
@@ -137,6 +143,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               color: AppTheme.pvColor,
               title: l10n.solar,
               value: '${pvPower.toStringAsFixed(0)} W',
+              compact: compact,
             ),
           ),
           Align(
@@ -146,6 +153,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               color: AppTheme.gridColor,
               title: l10n.grid,
               value: '${gridPower.toStringAsFixed(0)} W',
+              compact: compact,
             ),
           ),
           Align(
@@ -155,6 +163,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               color: AppTheme.batteryColor,
               title: l10n.battery,
               value: '$batterySoc%',
+              compact: compact,
             ),
           ),
           Align(
@@ -164,11 +173,12 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               color: AppTheme.loadColor,
               title: l10n.load,
               value: '${loadPower.toStringAsFixed(0)} W',
+              compact: compact,
             ),
           ),
           Align(
             alignment: Alignment.center,
-            child: _CoreHub(animation: _controller),
+            child: _CoreHub(animation: _controller, compact: compact),
           ),
         ],
       ),
@@ -178,8 +188,9 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
 
 class _CoreHub extends StatelessWidget {
   final AnimationController animation;
+  final bool compact;
 
-  const _CoreHub({required this.animation});
+  const _CoreHub({required this.animation, required this.compact});
 
   @override
   Widget build(BuildContext context) {
@@ -189,8 +200,8 @@ class _CoreHub extends StatelessWidget {
       builder: (context, child) {
         final t = (math.sin(animation.value * math.pi * 2) + 1) / 2;
         return Container(
-          width: 78,
-          height: 78,
+          width: compact ? 64 : 78,
+          height: compact ? 64 : 78,
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: RadialGradient(
@@ -214,7 +225,7 @@ class _CoreHub extends StatelessWidget {
           ),
           child: Icon(
             Icons.hub_rounded,
-            size: 34,
+            size: compact ? 28 : 34,
             color: isDark ? Colors.white70 : const Color(0xFF1A2A42),
           ),
         );
@@ -228,12 +239,14 @@ class _NodeWidget extends StatelessWidget {
   final Color color;
   final String title;
   final String value;
+  final bool compact;
 
   const _NodeWidget({
     required this.icon,
     required this.color,
     required this.title,
     required this.value,
+    required this.compact,
   });
 
   @override
@@ -245,8 +258,8 @@ class _NodeWidget extends StatelessWidget {
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
         child: Container(
-          width: 108,
-          height: 96,
+          width: compact ? 94 : 108,
+          height: compact ? 84 : 96,
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -276,11 +289,11 @@ class _NodeWidget extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(icon, color: color, size: 24),
-              const SizedBox(height: 5),
+              SizedBox(height: compact ? 3 : 5),
               Text(
                 title,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontSize: 11,
+                      fontSize: compact ? 10 : 11,
                       color: Theme.of(context)
                           .textTheme
                           .bodySmall
@@ -292,7 +305,7 @@ class _NodeWidget extends StatelessWidget {
               Text(
                 value,
                 style: TextStyle(
-                  fontSize: 13,
+                  fontSize: compact ? 12 : 13,
                   fontWeight: FontWeight.w700,
                   color: isDark ? color : color.withValues(alpha: 0.9),
                 ),
@@ -315,6 +328,7 @@ class _FlowPainter extends CustomPainter {
   final bool isBatCharging;
   final bool isBatDischarging;
   final bool isDark;
+  final bool reduceEffects;
 
   _FlowPainter({
     required this.animationValue,
@@ -326,6 +340,7 @@ class _FlowPainter extends CustomPainter {
     required this.isBatCharging,
     required this.isBatDischarging,
     required this.isDark,
+    required this.reduceEffects,
   });
 
   Path _createSPath(Offset start, Offset end) {
@@ -420,13 +435,18 @@ class _FlowPainter extends CustomPainter {
           color.withValues(alpha: isDark ? 0.08 : 0.12),
         ],
       ).createShader(segment.getBounds())
-      ..strokeWidth = 4 + intensity * 3
+      ..strokeWidth =
+          (reduceEffects ? 3.2 : 4) + intensity * (reduceEffects ? 1.8 : 3)
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
-      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6);
+      ..maskFilter = reduceEffects
+          ? const MaskFilter.blur(BlurStyle.normal, 3)
+          : const MaskFilter.blur(BlurStyle.normal, 6);
 
     canvas.drawPath(segment, glow);
-    _drawParticles(canvas, metric, color, intensity);
+    if (!reduceEffects) {
+      _drawParticles(canvas, metric, color, intensity);
+    }
   }
 
   void _drawParticles(
@@ -468,6 +488,7 @@ class _FlowPainter extends CustomPainter {
         oldDelegate.isGridExport != isGridExport ||
         oldDelegate.isBatCharging != isBatCharging ||
         oldDelegate.isBatDischarging != isBatDischarging ||
-        oldDelegate.isDark != isDark;
+        oldDelegate.isDark != isDark ||
+        oldDelegate.reduceEffects != reduceEffects;
   }
 }

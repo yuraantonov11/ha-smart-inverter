@@ -48,6 +48,7 @@ class DashboardTab extends StatelessWidget {
           // Energy Flow Diagram
           AppGlassSurface(
             isStrong: true,
+            borderRadius: 26,
             child: ExcludeSemantics(
               child: EnergyFlowDiagram(data: data),
             ),
@@ -60,13 +61,36 @@ class DashboardTab extends StatelessWidget {
 
           const SizedBox(height: AppTheme.spacingL),
 
-          // System Capacity
-          _SystemCapacitySection(provider: provider, data: data),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final wide = constraints.maxWidth >= 1180;
+              if (!wide) {
+                return Column(
+                  children: [
+                    _SystemCapacitySection(provider: provider, data: data),
+                    const SizedBox(height: AppTheme.spacingL),
+                    _EnergyChartSection(provider: provider),
+                  ],
+                );
+              }
 
-          const SizedBox(height: AppTheme.spacingL),
-
-          // Energy Chart
-          _EnergyChartSection(provider: provider),
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    flex: 4,
+                    child:
+                        _SystemCapacitySection(provider: provider, data: data),
+                  ),
+                  const SizedBox(width: AppTheme.spacingL),
+                  Expanded(
+                    flex: 6,
+                    child: _EnergyChartSection(provider: provider),
+                  ),
+                ],
+              );
+            },
+          ),
 
           const SizedBox(height: AppTheme.spacingL),
         ],
@@ -88,6 +112,32 @@ class _StatsSection extends StatelessWidget {
     final daily = provider.service.dailyEnergy.toStringAsFixed(1);
     final total = provider.service.totalEnergy.toStringAsFixed(0);
     final co2 = provider.service.co2Reduction.toStringAsFixed(1);
+    final cards = [
+      AppStatCard(
+        label: l10n.today,
+        value: daily,
+        unit: 'kWh',
+        icon: Icons.today_rounded,
+        color: AppTheme.gridColor,
+        tooltip: l10n.tooltipTodayEnergy,
+      ),
+      AppStatCard(
+        label: l10n.total,
+        value: total,
+        unit: 'kWh',
+        icon: Icons.assessment_rounded,
+        color: AppTheme.pvColor,
+        tooltip: l10n.tooltipTotalEnergy,
+      ),
+      AppStatCard(
+        label: 'CO2',
+        value: co2,
+        unit: 'kg',
+        icon: Icons.eco_rounded,
+        color: AppTheme.batteryColor,
+        tooltip: l10n.tooltipCo2,
+      ),
+    ];
 
     return Column(
       children: [
@@ -98,51 +148,27 @@ class _StatsSection extends StatelessWidget {
         LayoutBuilder(
           builder: (context, constraints) {
             final width = constraints.maxWidth;
-            final columns = width > 1080
-                ? 3
-                : width > 700
-                    ? 2
-                    : 1;
-            final cardWidth =
-                (width - (columns - 1) * AppTheme.spacingL) / columns;
-
-            return Wrap(
-              spacing: AppTheme.spacingL,
-              runSpacing: AppTheme.spacingL,
+            if (width < 640) {
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    for (var i = 0; i < cards.length; i++) ...[
+                      SizedBox(width: 210, child: cards[i]),
+                      if (i != cards.length - 1)
+                        const SizedBox(width: AppTheme.spacingM),
+                    ],
+                  ],
+                ),
+              );
+            }
+            return Row(
               children: [
-                SizedBox(
-                  width: cardWidth,
-                  child: AppStatCard(
-                    label: l10n.today,
-                    value: daily,
-                    unit: 'kWh',
-                    icon: Icons.today_rounded,
-                    color: AppTheme.gridColor,
-                    tooltip: l10n.tooltipTodayEnergy,
-                  ),
-                ),
-                SizedBox(
-                  width: cardWidth,
-                  child: AppStatCard(
-                    label: l10n.total,
-                    value: total,
-                    unit: 'kWh',
-                    icon: Icons.assessment_rounded,
-                    color: AppTheme.pvColor,
-                    tooltip: l10n.tooltipTotalEnergy,
-                  ),
-                ),
-                SizedBox(
-                  width: cardWidth,
-                  child: AppStatCard(
-                    label: 'CO2',
-                    value: co2,
-                    unit: 'kg',
-                    icon: Icons.eco_rounded,
-                    color: AppTheme.batteryColor,
-                    tooltip: l10n.tooltipCo2,
-                  ),
-                ),
+                for (var i = 0; i < cards.length; i++) ...[
+                  Expanded(child: cards[i]),
+                  if (i != cards.length - 1)
+                    const SizedBox(width: AppTheme.spacingL),
+                ],
               ],
             );
           },
@@ -184,21 +210,51 @@ class _SystemCapacitySection extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  l10n.equipmentStatus,
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                _ConnectionBadge(
-                  isOffline: isOffline,
-                  onlineLabel: l10n.connectionOnline,
-                  offlineLabel: l10n.connectionOffline,
-                  lastUpdatedPrefix: l10n.lastRealtimeUpdate,
-                  lastUpdatedAt: provider.lastSuccessfulRealtimeAt,
-                ),
-              ],
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final compact = constraints.maxWidth < 640;
+                if (compact) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        l10n.equipmentStatus,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const SizedBox(height: AppTheme.spacingS),
+                      _ConnectionBadge(
+                        isOffline: isOffline,
+                        onlineLabel: l10n.connectionOnline,
+                        offlineLabel: l10n.connectionOffline,
+                        lastUpdatedPrefix: l10n.lastRealtimeUpdate,
+                        lastUpdatedAt: provider.lastSuccessfulRealtimeAt,
+                      ),
+                    ],
+                  );
+                }
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        l10n.equipmentStatus,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    const SizedBox(width: AppTheme.spacingS),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      child: _ConnectionBadge(
+                        isOffline: isOffline,
+                        onlineLabel: l10n.connectionOnline,
+                        offlineLabel: l10n.connectionOffline,
+                        lastUpdatedPrefix: l10n.lastRealtimeUpdate,
+                        lastUpdatedAt: provider.lastSuccessfulRealtimeAt,
+                      ),
+                    ),
+                  ],
+                );
+              },
             ),
             const SizedBox(height: AppTheme.spacingL),
             AppProgressBar(
@@ -251,7 +307,7 @@ class _ConnectionBadge extends StatelessWidget {
         : '${updated.hour.toString().padLeft(2, '0')}:${updated.minute.toString().padLeft(2, '0')}:${updated.second.toString().padLeft(2, '0')}';
 
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Container(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -265,12 +321,17 @@ class _ConnectionBadge extends StatelessWidget {
             children: [
               Icon(icon, size: 14, color: color),
               const SizedBox(width: 6),
-              Text(
-                text,
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: color,
-                      fontWeight: FontWeight.w700,
-                    ),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 150),
+                child: Text(
+                  text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: color,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
               ),
             ],
           ),
@@ -278,6 +339,8 @@ class _ConnectionBadge extends StatelessWidget {
         const SizedBox(height: 4),
         Text(
           '$lastUpdatedPrefix: $timeLabel',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           style: Theme.of(context)
               .textTheme
               .labelSmall
@@ -586,24 +649,50 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(l10n.energyOverview,
-                    style: Theme.of(context).textTheme.titleLarge),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final isCompact = constraints.maxWidth < 760;
+                final controls = Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     if (_lastChartRefreshedAt != null)
                       _ChartRefreshBadge(
                         refreshedAt: _lastChartRefreshedAt!,
                         isRefreshing: _isBackgroundRefreshing,
                       ),
-                    const SizedBox(width: 6),
                     buildTimeSelector(l10n),
                   ],
-                ),
-              ],
+                );
+
+                if (isCompact) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(l10n.energyOverview,
+                          style: Theme.of(context).textTheme.titleLarge),
+                      const SizedBox(height: AppTheme.spacingS),
+                      controls,
+                    ],
+                  );
+                }
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        l10n.energyOverview,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    ),
+                    const SizedBox(width: AppTheme.spacingS),
+                    controls,
+                  ],
+                );
+              },
             ),
             const SizedBox(height: AppTheme.spacingM),
             buildDateNavigator(),
@@ -764,50 +853,53 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
   }
 
   Widget buildTimeSelector(AppLocalizations l10n) {
-    return Container(
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            Theme.of(context).cardColor.withValues(alpha: 0.8),
-            Theme.of(context).colorScheme.surface.withValues(alpha: 0.58),
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              Theme.of(context).cardColor.withValues(alpha: 0.8),
+              Theme.of(context).colorScheme.surface.withValues(alpha: 0.58),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+          border: Border.all(
+            color: Theme.of(context).dividerColor.withValues(alpha: 0.7),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _TimeButton(
+              label: l10n.day,
+              isActive: _selectedRange == 0,
+              onTap: () {
+                setState(() => _selectedRange = 0);
+                _startRangeLoadingState();
+                _scheduleFetchChartData();
+              },
+            ),
+            _TimeButton(
+              label: l10n.week,
+              isActive: _selectedRange == 1,
+              onTap: () {
+                setState(() => _selectedRange = 1);
+                _startRangeLoadingState();
+                _scheduleFetchChartData();
+              },
+            ),
+            _TimeButton(
+              label: l10n.month,
+              isActive: _selectedRange == 2,
+              onTap: () {
+                setState(() => _selectedRange = 2);
+                _startRangeLoadingState();
+                _scheduleFetchChartData();
+              },
+            ),
           ],
         ),
-        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-        border: Border.all(
-          color: Theme.of(context).dividerColor.withValues(alpha: 0.7),
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _TimeButton(
-            label: l10n.day,
-            isActive: _selectedRange == 0,
-            onTap: () {
-              setState(() => _selectedRange = 0);
-              _startRangeLoadingState();
-              _scheduleFetchChartData();
-            },
-          ),
-          _TimeButton(
-            label: l10n.week,
-            isActive: _selectedRange == 1,
-            onTap: () {
-              setState(() => _selectedRange = 1);
-              _startRangeLoadingState();
-              _scheduleFetchChartData();
-            },
-          ),
-          _TimeButton(
-            label: l10n.month,
-            isActive: _selectedRange == 2,
-            onTap: () {
-              setState(() => _selectedRange = 2);
-              _startRangeLoadingState();
-              _scheduleFetchChartData();
-            },
-          ),
-        ],
       ),
     );
   }
@@ -829,22 +921,30 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             ? currentWeek.isBefore(maxWeek)
             : currentMonth.isBefore(maxMonth);
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    return Wrap(
+      alignment: WrapAlignment.center,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      spacing: 4,
+      runSpacing: 6,
       children: [
         IconButton(
           icon: const Icon(Icons.chevron_left),
           onPressed: () => changeDate(-1),
         ),
-        Text(
-          getDateText(),
-          style: Theme.of(context).textTheme.titleMedium,
+        ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 140, maxWidth: 260),
+          child: Text(
+            getDateText(),
+            style: Theme.of(context).textTheme.titleMedium,
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
         ),
         IconButton(
           icon: const Icon(Icons.chevron_right),
           onPressed: canGoForward ? () => changeDate(1) : null,
         ),
-        const SizedBox(width: 4),
         IconButton(
           icon: _isBackgroundRefreshing
               ? SizedBox(

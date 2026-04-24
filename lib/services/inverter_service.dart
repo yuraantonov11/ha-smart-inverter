@@ -32,6 +32,8 @@ class InverterService {
 
   Map<String, dynamic>? _cachedFullConfigs;
   DateTime? _lastConfigFetchTime;
+  DateTime? _configPollingBlockedUntil;
+  DateTime? _lastConfigConnectionErrorLogAt;
   bool _isConfigFetching = false;
   String? _configBatchReadId;
   final Set<String> _loggedMissingHistoryKeys = <String>{};
@@ -536,6 +538,7 @@ class InverterService {
   /// Invalidates the config cache so the next call forces a re-fetch
   void invalidateConfigCache() {
     _lastConfigFetchTime = null;
+    _configPollingBlockedUntil = null;
     _cachedFullConfigs = null;
     _configBatchReadId = null;
   }
@@ -562,6 +565,10 @@ class InverterService {
     if (deviceSn == null) return _cachedFullConfigs;
 
     final now = DateTime.now();
+    if (_configPollingBlockedUntil != null &&
+        now.isBefore(_configPollingBlockedUntil!)) {
+      return _cachedFullConfigs;
+    }
     if (_lastConfigFetchTime != null &&
         now.difference(_lastConfigFetchTime!).inSeconds < 65) {
       return _cachedFullConfigs;
@@ -595,6 +602,18 @@ class InverterService {
       }
     } catch (e) {
       _isConfigFetching = false;
+      if (e is DioException && e.type == DioExceptionType.connectionError) {
+        _configPollingBlockedUntil =
+            DateTime.now().add(const Duration(minutes: 2));
+        final shouldLog = _lastConfigConnectionErrorLogAt == null ||
+            DateTime.now().difference(_lastConfigConnectionErrorLogAt!) >
+                const Duration(seconds: 45);
+        if (shouldLog) {
+          _lastConfigConnectionErrorLogAt = DateTime.now();
+          debugPrint(
+              '⚠️ Config fetch paused for 2 min due to connection error');
+        }
+      }
       debugPrint('getDeviceFullConfigs error: $e');
     }
     return _cachedFullConfigs;
@@ -607,6 +626,11 @@ class InverterService {
     Duration delay = const Duration(seconds: 5),
   }) async {
     if (deviceSn == null) return _cachedFullConfigs;
+    final now = DateTime.now();
+    if (_configPollingBlockedUntil != null &&
+        now.isBefore(_configPollingBlockedUntil!)) {
+      return _cachedFullConfigs;
+    }
 
     // If batch id is missing, trigger a fresh batch read first.
     if (_configBatchReadId == null) {
@@ -640,6 +664,19 @@ class InverterService {
         }
         debugPrint('⏳ Конфіги не готові (${i + 1}/$maxAttempts)...');
       } catch (e) {
+        if (e is DioException && e.type == DioExceptionType.connectionError) {
+          _configPollingBlockedUntil =
+              DateTime.now().add(const Duration(minutes: 2));
+          final shouldLog = _lastConfigConnectionErrorLogAt == null ||
+              DateTime.now().difference(_lastConfigConnectionErrorLogAt!) >
+                  const Duration(seconds: 45);
+          if (shouldLog) {
+            _lastConfigConnectionErrorLogAt = DateTime.now();
+            debugPrint(
+                '⚠️ Config background polling paused for 2 min (network/DNS issue)');
+          }
+          break;
+        }
         debugPrint('pollForConfigsBackground error: $e');
       }
     }

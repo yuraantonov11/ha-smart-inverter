@@ -72,13 +72,22 @@ class _MainScreenState extends State<MainScreen> {
         final langCode = provider.lang.toUpperCase();
 
         return Scaffold(
-          extendBody: true,
+          // Keep body extension for rail layout, but avoid overlap under mobile bottom bar.
+          extendBody: useRail,
           appBar: AppBar(
             title: Text(
               l10n.appTitle,
               style: Theme.of(context).textTheme.titleLarge,
             ),
             actions: [
+              if (!useRail)
+                TextButton.icon(
+                  onPressed: () => provider.setLanguage(
+                    provider.lang == 'en' ? 'uk' : 'en',
+                  ),
+                  icon: const Icon(Icons.language_rounded, size: 18),
+                  label: Text(langCode),
+                ),
               Tooltip(
                 message: isDark ? l10n.lightTheme : l10n.darkTheme,
                 child: IconButton(

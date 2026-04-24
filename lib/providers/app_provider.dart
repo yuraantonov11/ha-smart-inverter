@@ -26,6 +26,9 @@ class AppStateProvider extends ChangeNotifier {
   late HemsAlgorithmService hemsService;
   final SystemTray systemTray = SystemTray();
 
+  bool get _supportsDesktopIntegrations =>
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
   InverterData? data;
   bool isDataLoading = false;
   String statusMessage = '';
@@ -140,7 +143,11 @@ class AppStateProvider extends ChangeNotifier {
 
     smartMode = prefs.getInt('smart_mode') ?? 0;
     lang = prefs.getString('app_lang') ?? 'en';
-    isAutostartEnabled = await launchAtStartup.isEnabled();
+    if (_supportsDesktopIntegrations) {
+      isAutostartEnabled = await launchAtStartup.isEnabled();
+    } else {
+      isAutostartEnabled = false;
+    }
     isStartInTrayEnabled = prefs.getBool(_startInTrayKey) ?? false;
     final l10n = await _getL10n();
     userName = prefs.getString('user_name') ?? l10n.userNameDefault;
@@ -348,7 +355,10 @@ class AppStateProvider extends ChangeNotifier {
   void startTimers() {
     if (_timersStarted) return;
     _timersStarted = true;
-    _initTray();
+    if (_supportsDesktopIntegrations) {
+      // ignore: unawaited_futures
+      _initTray();
+    }
     fetchData();
     _dataTimer = Timer.periodic(const Duration(minutes: 1), (_) => fetchData());
     _automationTimer =
@@ -363,7 +373,9 @@ class AppStateProvider extends ChangeNotifier {
     _dataTimer?.cancel();
     _automationTimer?.cancel();
     _weatherTimer?.cancel();
-    systemTray.destroy();
+    if (_supportsDesktopIntegrations) {
+      systemTray.destroy();
+    }
   }
 
   Future<void> setLanguage(String newLang) async {
@@ -371,7 +383,9 @@ class AppStateProvider extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('app_lang', lang);
     await _updateStatusMessage(true);
-    if (isAuthenticated) await _updateTrayMenu();
+    if (isAuthenticated && _supportsDesktopIntegrations) {
+      await _updateTrayMenu();
+    }
     notifyListeners();
   }
 
@@ -401,6 +415,11 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> toggleAutostart(bool val) async {
+    if (!_supportsDesktopIntegrations) {
+      isAutostartEnabled = false;
+      notifyListeners();
+      return;
+    }
     if (val) {
       await launchAtStartup.enable();
     } else {
@@ -412,6 +431,11 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> toggleStartInTray(bool val) async {
+    if (!_supportsDesktopIntegrations) {
+      isStartInTrayEnabled = false;
+      notifyListeners();
+      return;
+    }
     isStartInTrayEnabled = val;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_startInTrayKey, val);
@@ -523,6 +547,7 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> _initTray() async {
+    if (!_supportsDesktopIntegrations) return;
     await systemTray.initSystemTray(
       title: 'Inverter',
       iconPath:
@@ -538,6 +563,7 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> _updateTrayMenu() async {
+    if (!_supportsDesktopIntegrations) return;
     final l10n = await _getL10n();
     final menu = Menu();
     await menu.buildFrom([
@@ -644,7 +670,9 @@ class AppStateProvider extends ChangeNotifier {
       await prefs.setString(
           _lastSnapshotKey, json.encode(newData.toCacheMap()));
       await _updateStatusMessage(true);
-      if (isAuthenticated) await _updateTrayMenu();
+      if (isAuthenticated && _supportsDesktopIntegrations) {
+        await _updateTrayMenu();
+      }
 
       if (avgHourlyConsumptionStats.isEmpty &&
           service.currentStationId != null) {

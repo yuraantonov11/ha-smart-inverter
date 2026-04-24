@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import '../l10n/app_localizations.dart';
 import '../theme/app_theme.dart';
 
 // ======================== КАРТОЧКИ ========================
@@ -12,6 +13,7 @@ class AppCard extends StatelessWidget {
   final VoidCallback? onTap;
   final Color? backgroundColor;
   final double borderRadius;
+  final bool enableBlur;
 
   const AppCard({
     super.key,
@@ -20,6 +22,7 @@ class AppCard extends StatelessWidget {
     this.onTap,
     this.backgroundColor,
     this.borderRadius = AppTheme.radiusLarge,
+    this.enableBlur = true,
   });
 
   @override
@@ -27,6 +30,7 @@ class AppCard extends StatelessWidget {
     Widget content = AppGlassSurface(
       borderRadius: borderRadius,
       backgroundColor: backgroundColor,
+      enableBlur: enableBlur,
       child: Padding(
         padding: padding,
         child: child,
@@ -53,6 +57,7 @@ class AppGlassSurface extends StatelessWidget {
   final double borderRadius;
   final Color? backgroundColor;
   final bool isStrong;
+  final bool enableBlur;
 
   const AppGlassSurface({
     super.key,
@@ -60,57 +65,64 @@ class AppGlassSurface extends StatelessWidget {
     this.borderRadius = AppTheme.radiusLarge,
     this.backgroundColor,
     this.isStrong = false,
+    this.enableBlur = true,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    final isCompact = MediaQuery.sizeOf(context).shortestSide < 600;
+    final sigma = isCompact ? (isStrong ? 8.0 : 4.0) : (isStrong ? 18.0 : 10.0);
+
+    final decoratedChild = Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            (backgroundColor ?? theme.cardColor).withValues(
+                alpha: isDark
+                    ? (isStrong ? 0.84 : 0.74)
+                    : (isStrong ? 1.0 : 0.98)),
+            theme.colorScheme.surface.withValues(
+                alpha: isDark
+                    ? (isStrong ? 0.72 : 0.58)
+                    : (isStrong ? 0.98 : 0.94)),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(borderRadius),
+        border: Border.all(
+          color: isDark
+              ? Colors.white.withValues(alpha: isStrong ? 0.18 : 0.14)
+              : theme.dividerColor.withValues(alpha: isStrong ? 1 : 0.9),
+          width: 1,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: (isDark ? Colors.black : Colors.blueGrey).withValues(
+                alpha: isDark
+                    ? (isStrong ? 0.36 : 0.3)
+                    : (isStrong ? 0.16 : 0.12)),
+            blurRadius: isStrong ? 28 : 20,
+            offset: Offset(0, isStrong ? 12 : 8),
+          ),
+        ],
+      ),
+      child: child,
+    );
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(borderRadius),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(
-          sigmaX: isStrong ? 18 : 10,
-          sigmaY: isStrong ? 18 : 10,
-        ),
-        child: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                (backgroundColor ?? theme.cardColor).withValues(
-                    alpha: isDark
-                        ? (isStrong ? 0.84 : 0.74)
-                        : (isStrong ? 1.0 : 0.98)),
-                theme.colorScheme.surface.withValues(
-                    alpha: isDark
-                        ? (isStrong ? 0.72 : 0.58)
-                        : (isStrong ? 0.98 : 0.94)),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(borderRadius),
-            border: Border.all(
-              color: isDark
-                  ? Colors.white.withValues(alpha: isStrong ? 0.18 : 0.14)
-                  : theme.dividerColor.withValues(alpha: isStrong ? 1 : 0.9),
-              width: 1,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: (isDark ? Colors.black : Colors.blueGrey).withValues(
-                    alpha: isDark
-                        ? (isStrong ? 0.36 : 0.3)
-                        : (isStrong ? 0.16 : 0.12)),
-                blurRadius: isStrong ? 28 : 20,
-                offset: Offset(0, isStrong ? 12 : 8),
+      child: enableBlur
+          ? BackdropFilter(
+              filter: ImageFilter.blur(
+                sigmaX: sigma,
+                sigmaY: sigma,
               ),
-            ],
-          ),
-          child: child,
-        ),
-      ),
+              child: decoratedChild,
+            )
+          : decoratedChild,
     );
   }
 }
@@ -632,6 +644,7 @@ class AppEmptyState extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(AppTheme.spacingXL),
@@ -662,7 +675,7 @@ class AppEmptyState extends StatelessWidget {
               ElevatedButton.icon(
                 onPressed: onRetry,
                 icon: const Icon(Icons.refresh),
-                label: const Text('Спробувати знову'),
+                label: Text(l10n?.retry ?? 'Retry'),
               ),
             ],
           ],
