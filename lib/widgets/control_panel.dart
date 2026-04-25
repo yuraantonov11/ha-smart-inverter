@@ -65,7 +65,10 @@ class ControlPanel extends StatelessWidget {
                   icon: Icons.wb_sunny_rounded,
                   isActive: currentOutputPriority == '2',
                   activeColor: const Color(0xFFF59E0B),
-                  onTap: () => provider.setMode(2),
+                  onTap: () {
+                    provider.hemsService.armManualOverride();
+                    provider.setMode(2);
+                  },
                 ),
               ),
               const SizedBox(width: AppTheme.spacingL),
@@ -76,7 +79,10 @@ class ControlPanel extends StatelessWidget {
                   icon: Icons.power_rounded,
                   isActive: currentOutputPriority == '0',
                   activeColor: const Color(0xFF06B6D4),
-                  onTap: () => provider.setMode(0),
+                  onTap: () {
+                    provider.hemsService.armManualOverride();
+                    provider.setMode(0);
+                  },
                 ),
               ),
             ],
@@ -125,6 +131,7 @@ class _SettingsModal extends StatelessWidget {
             ],
             onChanged: (val) {
               if (val != null) {
+                provider.hemsService.armManualOverride();
                 provider.changeSetting('outputSourcePrioritySetting', val);
                 Navigator.pop(context);
               }

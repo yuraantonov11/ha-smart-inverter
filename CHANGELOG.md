@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.2] - 2026-04-25
+### Added
+- **HEMS v2: Realtime PV-surplus override** — when PV−Load ≥ 250W and SOC ≥ 30%, algorithm immediately switches to SBU regardless of forecast. Fixes the core issue where sun was available but inverter stayed in USB mode.
+- **Anti-flapping dwell guard** (20 min) — prevents rapid USB↔SBU oscillation during passing clouds.
+- **Command deduplication** (30 s window) — avoids hammering inverter API with identical commands.
+- **Manual override detection + hold** (30 min) — algorithm detects when user changed mode externally and pauses output decisions; tapping SBU/USB buttons in the app explicitly arms the hold.
+- **`HemsTunables` class** — all HEMS thresholds centralised: `pvSurplusEnterW`, `pvSurplusExitW`, `reserveSoc`, `minOperatingSoc`, `midSoc`, `minModeHold`, `manualOverrideHold`, `commandDedupWindow`.
+- **Fuzzy forecast key lookup** — tries multiple date-format variants for Open-Meteo keys before falling back to 0, eliminating phantom evening deficits caused by key-format mismatches.
+- **Smarter load fallback** in simulation — uses live `loadPower` instead of flat 500W when historical stats are unavailable, improving short-horizon accuracy.
+- **Structured reason-coded logs** — every mode decision logs `reason=…` with live metrics (`pv=NW load=NW surplus=NW soc=N% def=NWh`).
+- **`armManualOverride()` wired to UI** — SBU/USB buttons and advanced settings dropdown in `control_panel.dart` now explicitly arm the override hold before sending the command.
+- **`HEMS_MODES.md`** — comprehensive documentation of all modes, time windows, decision trees, real-world examples, tuning guide, and FAQ.
+- **11 unit tests** (was 4) — new scenarios: T1 sunny noon, T2 cloudy deficit, T3 low SOC safety, T4 manual override, T5 dwell guard, T6a/b night tariff SNU/OSO selection.
+
+### Fixed
+- SBU mode not entered during sunny periods when forecast simulation incorrectly predicted evening deficit.
+- Algorithm fighting user's manual mode selection (returns to USB within 1 tick).
+- Duplicate API commands sent every tick when conditions were stable.
+- Forecast lookup returning 0 for valid hours due to key format mismatch.
+
 ## [1.3.0] - 2026-04-22
 ### Security (🔐 CRITICAL)
 - **CRITICAL FIX: Password stored in plain text** — Replaced `SharedPreferences` password storage with `flutter_secure_storage` for encrypted storage using platform-specific secure vaults (DPAPI on Windows, Keychain on macOS/iOS, SecretService on Linux).

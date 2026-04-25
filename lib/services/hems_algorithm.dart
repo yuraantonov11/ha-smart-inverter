@@ -4,8 +4,49 @@ import '../models/inverter_data.dart';
 import '../providers/app_provider.dart';
 import 'log_service.dart';
 
+/// Output priorities used by the inverter API.
+class _Out {
+  static const usb = '0'; // grid first
+  static const sbu = '2'; // solar/battery first
+}
+
+/// Charger priorities.
+class _Chg {
+  static const snu = '1'; // solar + utility
+  static const oso = '2'; // solar only
+}
+
+/// Tunable HEMS constants. Centralised to allow future feature flags / UI tuning.
+class HemsTunables {
+  // SOC thresholds
+  final double reserveSoc; // hard floor
+  final double minOperatingSoc; // below: prefer USB even with sun
+  final double midSoc; // moderate band
+
+  // PV surplus hysteresis (W)
+  final double pvSurplusEnterW; // surplus to enter SBU
+  final double pvSurplusExitW; // surplus to leave SBU
+
+  // Anti-flapping
+  final Duration minModeHold; // min time between output switches
+  final Duration manualOverrideHold; // respect user manual switch
+  final Duration commandDedupWindow; // suppress duplicate commands
+
+  const HemsTunables({
+    this.reserveSoc = 20.0,
+    this.minOperatingSoc = 30.0,
+    this.midSoc = 50.0,
+    this.pvSurplusEnterW = 250.0,
+    this.pvSurplusExitW = 50.0,
+    this.minModeHold = const Duration(minutes: 20),
+    this.manualOverrideHold = const Duration(minutes: 30),
+    this.commandDedupWindow = const Duration(seconds: 30),
+  });
+}
+
 class HemsAlgorithmService {
   final AppStateProvider provider;
+  final HemsTunables tun;
 
   // --- Battery Keepalive ---
   DateTime? _lastBatteryActivityAt;
@@ -17,59 +58,142 @@ class HemsAlgorithmService {
   // --- Acoustic comfort ---
   String? _lastAppliedBuzzer;
 
-  HemsAlgorithmService(this.provider);
+  // --- Anti-flapping / override state ---
+  String? _lastCmdOutput;
+  String? _lastCmdCharger;
+  DateTime? _lastCmdOutputAt;
+  DateTime? _lastCmdChargerAt;
+  DateTime? _lastOutputSwitchAt;
+  DateTime? _manualOverrideUntil;
 
-  /// Оновлює час останньої активності батареї (розряд або заряд)
+  HemsAlgorithmService(this.provider, {this.tun = const HemsTunables()});
+
+  // ------------------------------------------------------------------
+  // Helpers: read current inverter state
+  // ------------------------------------------------------------------
+  String? _currentOutput(InverterData d) =>
+      d.rawFields['outputSourcePriority']?['value']?.toString();
+  String? _currentCharger(InverterData d) =>
+      d.rawFields['chargerSourcePriority']?['value']?.toString();
+
+  /// Detects whether the user changed mode externally (UI/web/etc.) and
+  /// arms a manual-override hold so the algorithm doesn't fight the user.
+  void _detectManualOverride(InverterData data) {
+    final cur = _currentOutput(data);
+    if (cur == null) return;
+    if (_lastCmdOutput == null) return; // never commanded yet
+    // If reading stabilised on a value that differs from our last command
+    // for longer than the dedup window, assume a human/external change.
+    final since = _lastCmdOutputAt == null
+        ? Duration.zero
+        : DateTime.now().difference(_lastCmdOutputAt!);
+    if (cur != _lastCmdOutput && since > tun.commandDedupWindow) {
+      _manualOverrideUntil = DateTime.now().add(tun.manualOverrideHold);
+      LogService.log(
+          '✋ HEMS: detected manual override (mode=$cur, was cmd=$_lastCmdOutput). Holding ${tun.manualOverrideHold.inMinutes}m.');
+      // Treat the user value as the new baseline so we don't loop.
+      _lastCmdOutput = cur;
+      _lastCmdOutputAt = DateTime.now();
+    }
+  }
+
+  bool get _isManualHoldActive =>
+      _manualOverrideUntil != null &&
+      DateTime.now().isBefore(_manualOverrideUntil!);
+
+  // ------------------------------------------------------------------
+  // Helpers: command application with dedup + dwell
+  // ------------------------------------------------------------------
+  Future<bool> _applyOutput(String desired, String reason,
+      {bool force = false}) async {
+    final now = DateTime.now();
+    // Dedup identical command in short window
+    if (_lastCmdOutput == desired &&
+        _lastCmdOutputAt != null &&
+        now.difference(_lastCmdOutputAt!) < tun.commandDedupWindow) {
+      return false;
+    }
+    // Dwell: avoid flapping output mode
+    if (!force &&
+        _lastOutputSwitchAt != null &&
+        _lastCmdOutput != null &&
+        _lastCmdOutput != desired &&
+        now.difference(_lastOutputSwitchAt!) < tun.minModeHold) {
+      LogService.log(
+          '⏳ HEMS: skip switch to ${_modeName(desired)} (reason=$reason) — dwell active');
+      return false;
+    }
+
+    final modeInt = desired == _Out.sbu ? 2 : 0;
+    await provider.setMode(modeInt);
+    if (_lastCmdOutput != desired) {
+      _lastOutputSwitchAt = now;
+    }
+    _lastCmdOutput = desired;
+    _lastCmdOutputAt = now;
+    LogService.log('🔀 HEMS: output → ${_modeName(desired)} (reason=$reason)');
+    return true;
+  }
+
+  Future<bool> _applyCharger(String desired, String reason) async {
+    final now = DateTime.now();
+    if (_lastCmdCharger == desired &&
+        _lastCmdChargerAt != null &&
+        now.difference(_lastCmdChargerAt!) < tun.commandDedupWindow) {
+      return false;
+    }
+    await provider.changeSetting('chargerSourcePrioritySetting', desired);
+    _lastCmdCharger = desired;
+    _lastCmdChargerAt = now;
+    LogService.log('🔌 HEMS: charger → ${_chgName(desired)} (reason=$reason)');
+    return true;
+  }
+
+  String _modeName(String v) => v == _Out.sbu ? 'SBU' : 'USB';
+  String _chgName(String v) => v == _Chg.snu ? 'SNU' : 'OSO';
+
+  // ------------------------------------------------------------------
+  // Battery activity + keepalive
+  // ------------------------------------------------------------------
   void _trackBatteryActivity(InverterData data) {
     if (data.batteryPower.abs() > 50) {
-      // батарея активна (заряд або розряд > 50W)
       _lastBatteryActivityAt = DateTime.now();
     }
   }
 
-  /// Keepalive: якщо батарея не була активна більше 2 годин,
-  /// коротко перемикаємо на SBU щоб "розбудити" її.
   Future<bool> _batteryKeepalive(InverterData data) async {
-    if (_keepaliveInProgress) return true; // вже виконується
-
+    if (_keepaliveInProgress) return true;
     _trackBatteryActivity(data);
-
-    // Не робимо keepalive якщо SOC близький до резерву
     if (data.batterySoc <= _keepaliveMinSoc) return false;
 
     final lastActivity = _lastBatteryActivityAt;
     if (lastActivity == null) {
-      // Перший запуск — ініціалізуємо
       _lastBatteryActivityAt = DateTime.now();
       return false;
     }
-
     final inactiveDuration = DateTime.now().difference(lastActivity);
     if (inactiveDuration < _keepaliveInterval) return false;
 
-    // Батарея неактивна занадто довго — запускаємо keepalive
-    final currentOutput =
-        data.rawFields['outputSourcePriority']?['value']?.toString();
-    if (currentOutput == '2') return false; // вже на батареї
+    final currentOutput = _currentOutput(data);
+    if (currentOutput == _Out.sbu) return false;
 
     _keepaliveInProgress = true;
     LogService.log(
-        '🔋 Keepalive: батарея неактивна ${inactiveDuration.inMinutes} хв. Короткий перехід на SBU для запобігання сну АКБ.');
+        '🔋 Keepalive: battery idle ${inactiveDuration.inMinutes}m. Briefly switching to SBU.');
+    await _applyOutput(_Out.sbu, 'keepalive', force: true);
 
-    await provider.setMode(2); // SBU — розбудити батарею
-
-    // Повертаємо назад через 90 секунд
     Future.delayed(_keepaliveDuration, () async {
-      await provider.setMode(0); // Повертаємо USB
+      await _applyOutput(_Out.usb, 'keepalive_end', force: true);
       _lastBatteryActivityAt = DateTime.now();
       _keepaliveInProgress = false;
-      LogService.log('🔋 Keepalive завершено. Повернено режим мережі (USB).');
+      LogService.log('🔋 Keepalive done. Returned to USB.');
     });
-
-    return true; // keepalive запущено, пропускаємо основну логіку
+    return true;
   }
 
-  /// 1. Акустичний комфорт (Нічна тиша)
+  // ------------------------------------------------------------------
+  // 1. Acoustic comfort
+  // ------------------------------------------------------------------
   Future<void> enforceAcousticComfort(InverterData data) async {
     final hour = DateTime.now().hour;
     final isNight = hour >= 22 || hour < 7;
@@ -78,17 +202,11 @@ class HemsAlgorithmService {
     final currentBuzzer = buzzerConfig?['value']?.toString();
     final desiredBuzzer = isNight ? '0' : '1';
 
-    // Skip if config not loaded yet (avoid repeated attempts on null config)
     if (currentBuzzer == null) return;
-
-    // Skip if already applied this desired state (avoids repeating when
-    // changeSetting's optimistic update doesn't reach fullConfigs cache)
     if (currentBuzzer == desiredBuzzer || _lastAppliedBuzzer == desiredBuzzer) {
       return;
     }
-
     await provider.changeSetting('buzzerAlarmSetting', desiredBuzzer);
-    // Also update fullConfigs cache directly so next check sees the new value
     final fullConfigs = data.rawFields['fullConfigs'];
     if (fullConfigs is Map<String, dynamic> &&
         fullConfigs['buzzerAlarmSetting'] is Map<String, dynamic>) {
@@ -97,131 +215,123 @@ class HemsAlgorithmService {
     }
     _lastAppliedBuzzer = desiredBuzzer;
     LogService.log(isNight
-        ? '🤫 Увімкнено нічну тишу інвертора'
-        : '🔊 Повернено звук інвертора');
+        ? '🤫 Buzzer: night silence on'
+        : '🔊 Buzzer: daytime sound on');
   }
 
-  /// 2. ВИСОКОТОЧНИЙ АДАПТИВНИЙ РЕЖИМ (Статистичне моделювання)
+  // ------------------------------------------------------------------
+  // 2. Adaptive mode (NEW: realtime + forecast hybrid)
+  // ------------------------------------------------------------------
   Future<void> executeAdaptiveMode({
     required InverterData data,
     required double batteryCapacityAh,
     required Map<String, double> hourlyForecast,
-    required Map<int, double>
-        avgHourlyConsumptionStats, // Статистика споживання (година: Ват-години)
-    required double
-        productionCoefficient, // Коефіцієнт реальної генерації (напр. 0.75)
+    required Map<int, double> avgHourlyConsumptionStats,
+    required double productionCoefficient,
     DateTime? nowOverride,
   }) async {
-    // Keepalive перевірка — якщо батарея засинає, пробуджуємо
+    // Detect external/manual mode change before any decisions.
+    _detectManualOverride(data);
+
     if (await _batteryKeepalive(data)) return;
 
     final now = nowOverride ?? DateTime.now();
     final currentHour = now.hour;
+    final currentOutput = _currentOutput(data);
+    final currentCharger = _currentCharger(data);
 
-    final currentOutput =
-        data.rawFields['outputSourcePriority']?['value']?.toString();
-    final currentCharger =
-        data.rawFields['chargerSourcePriority']?['value']?.toString();
-
-    // 1. Фізичні параметри АКБ
+    // Physical battery model
     const systemVoltage = 51.2;
     final maxBatteryCapacityWh = batteryCapacityAh * systemVoltage;
-
-    // Динамічний резерв (нижче якого ми не хочемо опускати батарею, напр. 20%)
-    const reserveSoc = 20.0;
+    final reserveSoc = tun.reserveSoc;
     final reserveEnergyWh = maxBatteryCapacityWh * (reserveSoc / 100.0);
-
     final currentEnergyWh = maxBatteryCapacityWh * (data.batterySoc / 100.0);
-    final availableEnergyWh = max(0.0, currentEnergyWh - reserveEnergyWh);
-    final eveningSafetyWh = maxBatteryCapacityWh * 0.01; // 1% буфер від флотів
 
-    final formatter = DateFormat('yyyy-MM-dd HH:mm');
+    // Realtime signals
+    final pv = data.pvPower; // W
+    final load = data.loadPower; // W
+    final surplus = pv - load; // W
 
-    // 2. ФУНКЦІЯ СИМУЛЯЦІЇ (DIGITAL TWIN)
-    // Повертає дефіцит енергії (в Ват-годинах) для заданого періоду.
-    // Якщо повертає 0 - енергії вистачить і батарея не впаде нижче резерву.
-    double simulateEnergyDeficit(int startHour, int endHour,
-        DateTime targetDate, double startBatteryWh) {
-      var simulatedBatteryWh = startBatteryWh;
-      var totalDeficitWh = 0.0;
-
-      for (var h = startHour; h < endHour; h++) {
-        // Отримуємо статистичне споживання для цієї години
-        final loadWh = avgHourlyConsumptionStats[h] ?? 500.0; // 500Вт як фолбек
-
-        // Отримуємо скоригований прогноз сонця
-        final timeKey = formatter.format(
-            DateTime(targetDate.year, targetDate.month, targetDate.day, h, 0));
-        final rawSolarWh = hourlyForecast[timeKey] ?? 0.0;
-        final realSolarWh = rawSolarWh *
-            productionCoefficient; // Враховуємо малу площу панелей/тіні
-
-        // Баланс години
-        simulatedBatteryWh += realSolarWh - loadWh;
-
-        // Якщо батарея зарядилась повністю, надлишок сонця "згорає" (якщо немає бойлера)
-        if (simulatedBatteryWh > maxBatteryCapacityWh) {
-          simulatedBatteryWh = maxBatteryCapacityWh;
-        }
-
-        // Якщо батарея впала нижче резерву - фіксуємо дефіцит
-        if (simulatedBatteryWh < reserveEnergyWh) {
-          totalDeficitWh += (reserveEnergyWh - simulatedBatteryWh);
-          simulatedBatteryWh =
-              reserveEnergyWh; // Батарея залишається на дні (будинок перейде на мережу)
-        }
-      }
-      return totalDeficitWh;
+    // -------- 0. SAFETY: hard floor --------
+    if (data.batterySoc <= reserveSoc + 2.0) {
+      await _applyOutput(_Out.usb, 'safety_low_soc', force: true);
+      await _applyCharger(_Chg.snu, 'safety_low_soc');
+      return;
     }
 
-    // --- ЛОГІКА ПРИЙНЯТТЯ РІШЕНЬ ---
+    // -------- 1. Manual override hold --------
+    if (_isManualHoldActive) {
+      LogService.log(
+          'ℹ️ HEMS: manual hold active until ${_manualOverrideUntil!.toIso8601String()} — skipping output decisions.');
+      // Still allow charger management when safe.
+      if (currentHour >= 7 && currentHour < 23 && currentCharger != _Chg.oso) {
+        await _applyCharger(_Chg.oso, 'day_solar_only');
+      }
+      return;
+    }
 
+    // -------- 2. Night tariff window --------
     if (currentHour >= 23 || currentHour < 7) {
-      // ==========================================
-      // НІЧНИЙ ТАРИФ (23:00 - 07:00)
-      // ==========================================
-      if (currentOutput != '0') {
-        await provider.setMode(0); // USB (Utility First)
-      }
-
-      // Симулюємо ЗАВТРІШНІЙ день (з 07:00 до 23:00)
-      // Припускаємо, що до 07:00 ранку батарея зарядиться від мережі до 100% (якщо ми увімкнемо зарядку)
-      // або залишиться як є (якщо вимкнемо).
-
-      // Перевіряємо, що буде, якщо ми НЕ будемо заряджати вночі взагалі (стартуємо з поточного заряду)
+      await _applyOutput(_Out.usb, 'night_tariff');
+      // Tomorrow forecast deficit drives charger choice
       final tomorrow = now.hour >= 23 ? now.add(const Duration(days: 1)) : now;
-      final deficitIfNoCharge =
-          simulateEnergyDeficit(7, 23, tomorrow, currentEnergyWh);
-
+      final deficitIfNoCharge = _simulateEnergyDeficit(
+        startHour: 7,
+        endHour: 23,
+        targetDate: tomorrow,
+        startBatteryWh: currentEnergyWh,
+        maxBatteryCapacityWh: maxBatteryCapacityWh,
+        reserveEnergyWh: reserveEnergyWh,
+        hourlyForecast: hourlyForecast,
+        avgHourlyConsumptionStats: avgHourlyConsumptionStats,
+        productionCoefficient: productionCoefficient,
+        liveLoadW: load,
+      );
       if (deficitIfNoCharge > 0) {
-        // Навіть із сонцем нам не вистачить енергії на день/вечір.
-        // Причина: похмуро АБО панелей занадто мало для покриття потреб. Заряджаємось по нічному тарифу!
-        if (currentCharger != '1') {
-          LogService.log(
-              '🌙 Ніч: Симуляція показує дефіцит ${deficitIfNoCharge.toInt()} Вт*год на завтра. Вмикаємо зарядку (SNU).');
-          await provider.changeSetting(
-              'chargerSourcePrioritySetting', '1'); // SNU
-        }
+        await _applyCharger(
+            _Chg.snu, 'night_charge_deficit_${deficitIfNoCharge.toInt()}Wh');
       } else {
-        // Енергії повністю вистачить завдяки сонцю і залишку в батареї
-        if (currentCharger != '2') {
-          LogService.log(
-              '🌙 Ніч: Завтра сонця вистачить повністю. Економимо ресурс АКБ, зарядка від мережі ВИМК (OSO).');
-          await provider.changeSetting(
-              'chargerSourcePrioritySetting', '2'); // OSO
-        }
+        await _applyCharger(_Chg.oso, 'night_no_grid_charge_needed');
       }
-    } else if (currentHour >= 17 && currentHour < 23) {
-      // ==========================================
-      // ВЕЧІРНІЙ ПІК (17:00 - 23:00)
-      // ==========================================
-      if (currentCharger != '2') {
-        await provider.changeSetting(
-            'chargerSourcePrioritySetting', '2'); // OSO
-      }
+      return;
+    }
 
-      final deficitTillNight =
-          simulateEnergyDeficit(currentHour, 23, now, currentEnergyWh);
+    // -------- 3. Daytime / evening: realtime first --------
+    // Always prefer solar-only charger when sun is up.
+    if (currentCharger != _Chg.oso) {
+      await _applyCharger(_Chg.oso, 'daytime_solar_only');
+    }
+
+    final socOk = data.batterySoc >= tun.minOperatingSoc;
+    final pvActive = pv > 80; // panels actually producing
+
+    // (a) Realtime SURPLUS — strong reason to use SBU now.
+    if (pvActive && socOk && surplus >= tun.pvSurplusEnterW) {
+      await _applyOutput(_Out.sbu,
+          'pv_surplus_${surplus.toInt()}W_soc_${data.batterySoc.toInt()}');
+      return;
+    }
+
+    // (b) Forecast-based fallback only when realtime is ambiguous.
+    final deficitTillNight = _simulateEnergyDeficit(
+      startHour: currentHour,
+      endHour: 23,
+      targetDate: now,
+      startBatteryWh: currentEnergyWh,
+      maxBatteryCapacityWh: maxBatteryCapacityWh,
+      reserveEnergyWh: reserveEnergyWh,
+      hourlyForecast: hourlyForecast,
+      avgHourlyConsumptionStats: avgHourlyConsumptionStats,
+      productionCoefficient: productionCoefficient,
+      liveLoadW: load,
+    );
+
+    final isEvening = currentHour >= 17;
+
+    if (isEvening) {
+      // Evening: protect reserve more aggressively
+      final eveningSafetyWh = maxBatteryCapacityWh * 0.01;
+      final availableEnergyWh = max(0.0, currentEnergyWh - reserveEnergyWh);
       final reserveProtectionActive = data.batterySoc <= (reserveSoc + 2.0) ||
           availableEnergyWh <= eveningSafetyWh ||
           deficitTillNight > 0;
@@ -230,94 +340,134 @@ class HemsAlgorithmService {
           deficitTillNight == 0;
 
       if (reserveProtectionActive) {
-        if (currentOutput != '0') {
-          if (deficitTillNight > 0) {
-            LogService.log(
-                '⚠️ Вечір: прогнозований дефіцит до 23:00 = ${deficitTillNight.toInt()} Вт*год. Перехід на мережу (USB).');
-          } else {
-            LogService.log(
-                '⚠️ Вечір: SOC ${data.batterySoc.toStringAsFixed(1)}% біля резерву ${reserveSoc.toInt()}%. Перехід на мережу (USB).');
-          }
-          await provider.setMode(0); // USB
-        }
+        await _applyOutput(_Out.usb,
+            'evening_reserve_def_${deficitTillNight.toInt()}Wh_soc_${data.batterySoc.toInt()}');
       } else if (batteryCanBeUsed) {
-        if (currentOutput != '2') {
-          LogService.log(
-              '🌆 Вечір: Працюємо від АКБ (SBU). Залишок: ${availableEnergyWh.toInt()} Вт*год.');
-          await provider.setMode(2); // SBU
-        }
+        await _applyOutput(
+            _Out.sbu, 'evening_battery_avail_${availableEnergyWh.toInt()}Wh');
       }
+      return;
+    }
+
+    // Daytime, ambiguous realtime
+    if (deficitTillNight == 0) {
+      await _applyOutput(_Out.sbu, 'day_forecast_ok');
+    } else if (surplus <= tun.pvSurplusExitW && data.batterySoc < tun.midSoc) {
+      // Real PV deficit + low-mid SOC: use grid, save sun for battery.
+      await _applyOutput(_Out.usb,
+          'day_forecast_deficit_${deficitTillNight.toInt()}Wh_low_soc');
     } else {
-      // ==========================================
-      // ДЕНЬ (07:00 - 17:00)
-      // ==========================================
-      if (currentCharger != '2') {
-        await provider.changeSetting(
-            'chargerSourcePrioritySetting', '2'); // OSO
-      }
-
-      // Симулюємо залишок поточного дня (від поточної години до 23:00)
-      // Стартуємо з поточного реального заряду батареї
-      final deficitTillNight =
-          simulateEnergyDeficit(currentHour, 23, now, currentEnergyWh);
-
-      if (deficitTillNight == 0) {
-        // Сонця і батареї ГАРАНТОВАНО вистачить до 23:00 (з урахуванням коефіцієнта і статистики)
-        if (currentOutput != '2') {
-          LogService.log(
-              '☀️ День: Симуляція успішна (дефіцит 0). Працюємо від Сонця/АКБ (SBU).');
-          await provider.setMode(2); // SBU
-        }
-      } else {
-        // УВАГА: Симуляція показує, що батарея сяде ДО 23:00 (наприклад, о 20:00).
-        // Це означає, що панелі зараз генерують сонце, але його не вистачає для покриття поточного
-        // споживання + накопичення резерву на вечір.
-        // РІШЕННЯ: Зараз живимо будинок від мережі (вона зараз дешева), а ВСЕ сонце направляємо на зарядку АКБ!
-        if (currentOutput != '0') {
-          LogService.log(
-              '⛅ День: Симуляція показує дефіцит ввечері. Живимось від мережі (USB), зберігаємо сонце в АКБ!');
-          await provider.setMode(0); // USB
-        }
-      }
+      // Otherwise: keep current state. Don't fight realtime small-surplus.
+      LogService.log('ℹ️ HEMS: hold ${_modeName(currentOutput ?? _Out.usb)} '
+          '(pv=${pv.toInt()}W load=${load.toInt()}W surplus=${surplus.toInt()}W '
+          'soc=${data.batterySoc.toStringAsFixed(0)}% '
+          'def=${deficitTillNight.toInt()}Wh)');
     }
   }
 
-  /// 3. Нічний арбітраж (Примусова економія)
+  // ------------------------------------------------------------------
+  // Simulation helper (extracted, with live-load bias)
+  // ------------------------------------------------------------------
+  double _simulateEnergyDeficit({
+    required int startHour,
+    required int endHour,
+    required DateTime targetDate,
+    required double startBatteryWh,
+    required double maxBatteryCapacityWh,
+    required double reserveEnergyWh,
+    required Map<String, double> hourlyForecast,
+    required Map<int, double> avgHourlyConsumptionStats,
+    required double productionCoefficient,
+    required double liveLoadW,
+  }) {
+    final formatter = DateFormat('yyyy-MM-dd HH:mm');
+    var simulatedBatteryWh = startBatteryWh;
+    var totalDeficitWh = 0.0;
+
+    for (var h = startHour; h < endHour; h++) {
+      // Smarter fallback: blend stat with live load to avoid 500W flat bias.
+      final statLoad = avgHourlyConsumptionStats[h];
+      final loadWh =
+          statLoad ?? (liveLoadW > 0 ? liveLoadW.clamp(200.0, 3000.0) : 500.0);
+
+      final timeKey = formatter.format(
+          DateTime(targetDate.year, targetDate.month, targetDate.day, h, 0));
+      final rawSolarWh = hourlyForecast[timeKey] ??
+          _fuzzyForecastLookup(hourlyForecast, targetDate, h);
+      final realSolarWh = rawSolarWh * productionCoefficient;
+
+      simulatedBatteryWh += realSolarWh - loadWh;
+      if (simulatedBatteryWh > maxBatteryCapacityWh) {
+        simulatedBatteryWh = maxBatteryCapacityWh;
+      }
+      if (simulatedBatteryWh < reserveEnergyWh) {
+        totalDeficitWh += (reserveEnergyWh - simulatedBatteryWh);
+        simulatedBatteryWh = reserveEnergyWh;
+      }
+    }
+    return totalDeficitWh;
+  }
+
+  /// Try alternative key formats (timezone/minute drift) before giving up.
+  double _fuzzyForecastLookup(
+      Map<String, double> forecast, DateTime date, int hour) {
+    final candidates = <String>[
+      DateFormat('yyyy-MM-ddTHH:mm')
+          .format(DateTime(date.year, date.month, date.day, hour, 0)),
+      DateFormat('yyyy-MM-dd HH:00')
+          .format(DateTime(date.year, date.month, date.day, hour, 0)),
+      DateFormat('yyyy-MM-dd HH')
+          .format(DateTime(date.year, date.month, date.day, hour, 0)),
+    ];
+    for (final k in candidates) {
+      final v = forecast[k];
+      if (v != null) return v;
+    }
+    return 0.0;
+  }
+
+  // ------------------------------------------------------------------
+  // 3. Night arbitrage
+  // ------------------------------------------------------------------
   Future<void> executeNightArbitrage(InverterData data) async {
+    _detectManualOverride(data);
+    if (_isManualHoldActive) {
+      LogService.log('ℹ️ NightArb: manual hold active — skipping.');
+      return;
+    }
     if (await _batteryKeepalive(data)) return;
 
     final hour = DateTime.now().hour;
     if (hour >= 23 || hour < 7) {
-      if (data.rawFields['outputSourcePriority']?['value']?.toString() != '0') {
-        await provider.setMode(0); // USB
-      }
-      if (data.rawFields['chargerSourcePriority']?['value']?.toString() !=
-          '1') {
-        await provider.changeSetting(
-            'chargerSourcePrioritySetting', '1'); // SNU
-      }
+      await _applyOutput(_Out.usb, 'night_tariff');
+      await _applyCharger(_Chg.snu, 'night_charge');
     } else {
-      if (data.rawFields['outputSourcePriority']?['value']?.toString() != '2') {
-        await provider.setMode(2); // SBU
+      // Daytime: keep realtime-aware behaviour to avoid flapping.
+      final surplus = data.pvPower - data.loadPower;
+      if (data.pvPower > 80 &&
+          data.batterySoc >= tun.minOperatingSoc &&
+          surplus >= tun.pvSurplusEnterW) {
+        await _applyOutput(_Out.sbu, 'day_pv_surplus');
       }
-      if (data.rawFields['chargerSourcePriority']?['value']?.toString() !=
-          '2') {
-        await provider.changeSetting(
-            'chargerSourcePrioritySetting', '2'); // OSO
-      }
+      await _applyCharger(_Chg.oso, 'day_solar_only');
     }
   }
 
-  /// 4. Шторм / Резерв (100% готовність до відключень)
+  // ------------------------------------------------------------------
+  // 4. Storm / reserve
+  // ------------------------------------------------------------------
   Future<void> executeStormMode(InverterData data) async {
-    // У штормовому режимі keepalive не потрібен — батарея заряджається постійно
     _trackBatteryActivity(data);
+    await _applyOutput(_Out.usb, 'storm_mode', force: true);
+    await _applyCharger(_Chg.snu, 'storm_mode');
+  }
 
-    if (data.rawFields['outputSourcePriority']?['value']?.toString() != '0') {
-      await provider.setMode(0); // USB
-    }
-    if (data.rawFields['chargerSourcePriority']?['value']?.toString() != '1') {
-      await provider.changeSetting('chargerSourcePrioritySetting', '1'); // SNU
-    }
+  // ------------------------------------------------------------------
+  // External: arm manual override (e.g. when user toggles from UI)
+  // ------------------------------------------------------------------
+  void armManualOverride([Duration? d]) {
+    _manualOverrideUntil = DateTime.now().add(d ?? tun.manualOverrideHold);
+    LogService.log(
+        '✋ HEMS: manual override armed for ${(d ?? tun.manualOverrideHold).inMinutes}m.');
   }
 }
