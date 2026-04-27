@@ -49,7 +49,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
     final isBatDischarging = widget.data.batteryPower < -30;
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final base = isDark ? const Color(0xFF0D172B) : const Color(0xFFEFF5FC);
+    final base = isDark ? const Color(0xFF0D172B) : const Color(0xFFF4F8FC);
 
     if (!_controller.isAnimating) {
       _controller.repeat();
@@ -77,9 +77,9 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               boxShadow: [
                 BoxShadow(
                   color: (isDark ? Colors.black : Colors.blueGrey)
-                      .withValues(alpha: isDark ? 0.35 : 0.14),
-                  blurRadius: 26,
-                  offset: const Offset(0, 12),
+                      .withValues(alpha: isDark ? 0.35 : 0.1),
+                  blurRadius: 24,
+                  offset: const Offset(0, 8),
                 ),
               ],
             ),
@@ -218,7 +218,7 @@ class _CoreHub extends StatelessWidget {
             boxShadow: [
               BoxShadow(
                 color: AppTheme.gridColor.withValues(alpha: 0.18 + t * 0.18),
-                blurRadius: 24,
+                blurRadius: isDark ? 24 : 14,
                 spreadRadius: 2,
               ),
             ],
@@ -279,8 +279,8 @@ class _NodeWidget extends StatelessWidget {
             ),
             boxShadow: [
               BoxShadow(
-                color: color.withValues(alpha: 0.22),
-                blurRadius: 20,
+                color: color.withValues(alpha: isDark ? 0.22 : 0.16),
+                blurRadius: isDark ? 20 : 14,
                 spreadRadius: -1,
               ),
             ],
@@ -430,9 +430,11 @@ class _FlowPainter extends CustomPainter {
     final glow = Paint()
       ..shader = LinearGradient(
         colors: [
-          color.withValues(alpha: isDark ? 0.08 : 0.12),
-          color.withValues(alpha: (isDark ? 0.22 : 0.28) + intensity * 0.24),
-          color.withValues(alpha: isDark ? 0.08 : 0.12),
+          color.withValues(alpha: isDark ? 0.08 : 0.08),
+          color.withValues(
+              alpha:
+                  (isDark ? 0.22 : 0.2) + intensity * (isDark ? 0.24 : 0.14)),
+          color.withValues(alpha: isDark ? 0.08 : 0.08),
         ],
       ).createShader(segment.getBounds())
       ..strokeWidth =
@@ -441,7 +443,7 @@ class _FlowPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..maskFilter = reduceEffects
           ? const MaskFilter.blur(BlurStyle.normal, 3)
-          : const MaskFilter.blur(BlurStyle.normal, 6);
+          : MaskFilter.blur(BlurStyle.normal, isDark ? 6 : 3);
 
     canvas.drawPath(segment, glow);
     if (!reduceEffects) {

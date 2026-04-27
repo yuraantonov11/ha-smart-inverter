@@ -3,21 +3,21 @@ import 'package:google_fonts/google_fonts.dart';
 
 class AppTheme {
   // Semantic energy colors kept stable across widgets/charts.
-  static const Color pvColor = Color(0xFFF6C453);
-  static const Color gridColor = Color(0xFF38BDF8);
-  static const Color batteryColor = Color(0xFF34D399);
-  static const Color loadColor = Color(0xFFB794F6);
-  static const Color pvGlowColor = Color(0xFFF9D26E);
-  static const Color gridGlowColor = Color(0xFF7DD3FC);
-  static const Color batteryGlowColor = Color(0xFF6EE7B7);
-  static const Color loadGlowColor = Color(0xFFD8B4FE);
+  static const Color pvColor = Color(0xFFEE9A0E);
+  static const Color gridColor = Color(0xFF0A8AC8);
+  static const Color batteryColor = Color(0xFF179F6F);
+  static const Color loadColor = Color(0xFF7B26D9);
+  static const Color pvGlowColor = Color(0xFFF3B446);
+  static const Color gridGlowColor = Color(0xFF3AB1E2);
+  static const Color batteryGlowColor = Color(0xFF3DB98B);
+  static const Color loadGlowColor = Color(0xFF9958E4);
 
-  static const Color _lightBg = Color(0xFFEEF3FA);
-  static const Color _lightSurface = Color(0xFFF7FBFF);
-  static const Color _lightMuted = Color(0xFFDCE6F2);
-  static const Color _lightText = Color(0xFF112034);
-  static const Color _lightTextSecondary = Color(0xFF2F4460);
-  static const Color _lightBorder = Color(0xFFB8C8DA);
+  static const Color _lightBg = Color(0xFFF4F8FC);
+  static const Color _lightSurface = Color(0xFFFFFFFF);
+  static const Color _lightMuted = Color(0xFFE8EEF5);
+  static const Color _lightText = Color(0xFF151F2D);
+  static const Color _lightTextSecondary = Color(0xFF4E5D72);
+  static const Color _lightBorder = Color(0xFFD0D9E6);
 
   static const Color _darkBg = Color(0xFF090F1D);
   static const Color _darkSurface = Color(0xFF121B2E);

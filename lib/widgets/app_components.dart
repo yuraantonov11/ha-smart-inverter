@@ -74,19 +74,25 @@ class AppGlassSurface extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
     final isCompact = MediaQuery.sizeOf(context).shortestSide < 600;
     final sigma = isCompact ? (isStrong ? 8.0 : 4.0) : (isStrong ? 18.0 : 10.0);
+    final lightTop = (backgroundColor ?? Colors.white).withValues(
+      alpha: isStrong ? 0.9 : 0.72,
+    );
+    final lightBottom = theme.colorScheme.surface.withValues(
+      alpha: isStrong ? 0.86 : 0.68,
+    );
 
     final decoratedChild = Container(
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            (backgroundColor ?? theme.cardColor).withValues(
-                alpha: isDark
-                    ? (isStrong ? 0.84 : 0.74)
-                    : (isStrong ? 1.0 : 0.98)),
-            theme.colorScheme.surface.withValues(
-                alpha: isDark
-                    ? (isStrong ? 0.72 : 0.58)
-                    : (isStrong ? 0.98 : 0.94)),
+            isDark
+                ? (backgroundColor ?? theme.cardColor)
+                    .withValues(alpha: isStrong ? 0.84 : 0.74)
+                : lightTop,
+            isDark
+                ? theme.colorScheme.surface
+                    .withValues(alpha: isStrong ? 0.72 : 0.58)
+                : lightBottom,
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
@@ -95,7 +101,7 @@ class AppGlassSurface extends StatelessWidget {
         border: Border.all(
           color: isDark
               ? Colors.white.withValues(alpha: isStrong ? 0.18 : 0.14)
-              : theme.dividerColor.withValues(alpha: isStrong ? 1 : 0.9),
+              : theme.dividerColor.withValues(alpha: isStrong ? 0.72 : 0.6),
           width: 1,
         ),
         boxShadow: [
@@ -103,9 +109,9 @@ class AppGlassSurface extends StatelessWidget {
             color: (isDark ? Colors.black : Colors.blueGrey).withValues(
                 alpha: isDark
                     ? (isStrong ? 0.36 : 0.3)
-                    : (isStrong ? 0.16 : 0.12)),
-            blurRadius: isStrong ? 28 : 20,
-            offset: Offset(0, isStrong ? 12 : 8),
+                    : (isStrong ? 0.14 : 0.08)),
+            blurRadius: isStrong ? 30 : 20,
+            offset: Offset(0, isStrong ? 10 : 6),
           ),
         ],
       ),

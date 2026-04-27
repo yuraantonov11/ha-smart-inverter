@@ -163,7 +163,7 @@ class _StatsSection extends StatelessWidget {
             : '$savingsPrefix${savedMoney.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.savings_rounded,
-        color: const Color(0xFF10B981),
+        color: AppTheme.batteryColor,
         tooltip: savedTooltip,
       ),
       AppStatCard(
@@ -173,7 +173,7 @@ class _StatsSection extends StatelessWidget {
             : '$paymentPrefix${monthToPay.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.receipt_long_rounded,
-        color: const Color(0xFFFB923C),
+        color: AppTheme.pvColor,
         tooltip: paymentTooltip,
       ),
       AppStatCard(
@@ -183,7 +183,7 @@ class _StatsSection extends StatelessWidget {
             : '$projectionPrefix${projectedSavedMoney.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.trending_up_rounded,
-        color: const Color(0xFF34D399),
+        color: AppTheme.batteryColor,
         tooltip: l10n.tooltipProjectedSavedMonth,
       ),
       AppStatCard(
@@ -193,7 +193,7 @@ class _StatsSection extends StatelessWidget {
             : '$projectionPrefix${projectedMonthToPay.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.calendar_month_rounded,
-        color: const Color(0xFFF59E0B),
+        color: AppTheme.pvColor,
         tooltip: l10n.tooltipProjectedPaymentMonth,
       ),
     ];
@@ -351,14 +351,14 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
           _BreakdownItem(
             label: l10n.calculationSourceLabel,
             value: sourceValue,
-            color: const Color(0xFF3B82F6),
+            color: AppTheme.gridColor,
             tooltip: economicsMethod,
           ),
           const SizedBox(height: AppTheme.spacingS),
           _BreakdownItem(
             label: l10n.calculationAccuracyLabel,
             value: accuracyValue,
-            color: const Color(0xFF8B5CF6),
+            color: AppTheme.loadColor,
           ),
           const SizedBox(height: AppTheme.spacingM),
           LayoutBuilder(builder: (context, constraints) {
@@ -417,13 +417,13 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
                 label: l10n.monthSavedCost,
                 value:
                     '${savedCost == null || savedCost == 0.0 ? '0.0' : '$savingsPrefix${savedCost.toStringAsFixed(1)}'} ${l10n.currencyUah}',
-                color: const Color(0xFF10B981),
+                color: AppTheme.batteryColor,
               ),
               _BreakdownItem(
                 label: l10n.monthEffectiveTariff,
                 value:
                     '${provider.effectiveTariffUahPerKwh.toStringAsFixed(2)} ${l10n.energyTariffUnit}',
-                color: const Color(0xFF8B5CF6),
+                color: AppTheme.loadColor,
                 tooltip: effectiveTariffTooltip,
               ),
             ];
@@ -483,7 +483,7 @@ class _MonthEconomicsMiniChart extends StatelessWidget {
                 toY: d.savedUah,
                 width: 6,
                 borderRadius: BorderRadius.circular(2),
-                color: const Color(0xFF10B981),
+                color: AppTheme.batteryColor,
               ),
             ],
             barsSpace: 3,
