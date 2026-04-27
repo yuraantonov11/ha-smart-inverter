@@ -27,7 +27,11 @@ A modern, fast, and elegant desktop application built with Flutter for monitorin
 * **Instant Control**: Switch between SBU and USB modes with a single click.
 * **Advanced Settings**: Remote control of output and charger priorities (CSO, SNU, OSO).
 * **System Tray Integration**: Run silently in the background with battery status on hover.
-* **Smart HEMS Algorithm**: Advanced weather-based and statistical automation.
+* **Smart HEMS Algorithm v2**: Advanced weather-based, tariff-aware, and adaptive automation (NEW in v1.4).
+* **Adaptive Optimization**: Dynamic thresholds, battery health awareness, and anti-flapping (NEW in v1.4).
+* **Tariff Intelligence**: Time-of-use pricing support with cost-aware charging (NEW in v1.4).
+* **Grid Reliability**: Planned outage detection with automatic emergency precharge (NEW in v1.4).
+* **Diagnostics Dashboard**: Real-time parameter visibility for troubleshooting (NEW in v1.4).
 
 ## 🧠 Smart Algorithm (HEMS) How It Works
 The Home Energy Management System (HEMS) makes decisions based on family habits and weather forecasts.
@@ -57,7 +61,11 @@ Automatically mutes the inverter buzzer from 22:00 to 07:00 for a peaceful sleep
 ## Можливості 🚀
 * **Моніторинг у реальному часі**: Візуалізація потоків енергії між сонцем, мережею та АКБ.
 * **Миттєве керування**: Перемикання режимів SBU/USB в один клік.
-* **Розумний Алгоритм HEMS**: Адаптивна автоматизація на основі погоди та вашої статистики.
+* **Розумний Алгоритм HEMS v2**: Адаптивна автоматизація з урахуванням погоди, тарифів та батареї (НОВИЙ у v1.4).
+* **Динамічна оптимізація**: Адаптивні пороги, обізнаність про здоров'я батареї, анти-флепінг (НОВИЙ у v1.4).
+* **Розумність тарифів**: Підтримка багатозонних тарифів з економічною зарядкою (НОВИЙ у v1.4).
+* **Надійність мережі**: Детекція передбачених відключень та автоматична передзарядка (НОВИЙ у v1.4).
+* **Діагностична панель**: Візуалізація параметрів вгадування в реальному часі (НОВИЙ у v1.4).
 * **Робота у треї**: Моніторинг заряду АКБ без відкриття вікна програми.
 
 ## 🧠 Розумний Алгоритм (HEMS) – Як це працює?
