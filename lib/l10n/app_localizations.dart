@@ -1459,6 +1459,48 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Battery: {level}%'**
   String batteryLevel(String level);
+
+  /// No description provided for @batteryInstallYearLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery installation year'**
+  String get batteryInstallYearLabel;
+
+  /// No description provided for @hemsStrategyLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'HEMS optimization strategy'**
+  String get hemsStrategyLabel;
+
+  /// No description provided for @hemsStrategyEconomical.
+  ///
+  /// In en, this message translates to:
+  /// **'Economical (minimize grid cost)'**
+  String get hemsStrategyEconomical;
+
+  /// No description provided for @hemsStrategySolarMaxed.
+  ///
+  /// In en, this message translates to:
+  /// **'Solar Maxed (maximize self-consumption)'**
+  String get hemsStrategySolarMaxed;
+
+  /// No description provided for @hemsStrategyBatteryLife.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery Life (conservative cycles)'**
+  String get hemsStrategyBatteryLife;
+
+  /// No description provided for @hemsStrategyGridReliance.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid Reliance (resilience / off-grid)'**
+  String get hemsStrategyGridReliance;
+
+  /// No description provided for @hemsStrategyHybrid.
+  ///
+  /// In en, this message translates to:
+  /// **'Hybrid (balanced — recommended)'**
+  String get hemsStrategyHybrid;
 }
 
 class _AppLocalizationsDelegate

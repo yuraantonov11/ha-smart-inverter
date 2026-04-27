@@ -413,5 +413,12 @@
         "type": "String"
       }
     }
-  }
+  },
+  "batteryInstallYearLabel": "Battery installation year",
+  "hemsStrategyLabel": "HEMS optimization strategy",
+  "hemsStrategyEconomical": "Economical (minimize grid cost)",
+  "hemsStrategySolarMaxed": "Solar Maxed (maximize self-consumption)",
+  "hemsStrategyBatteryLife": "Battery Life (conservative cycles)",
+  "hemsStrategyGridReliance": "Grid Reliance (resilience / off-grid)",
+  "hemsStrategyHybrid": "Hybrid (balanced — recommended)"
 }

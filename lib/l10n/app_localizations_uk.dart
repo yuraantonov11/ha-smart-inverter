@@ -756,4 +756,29 @@ class AppLocalizationsUk extends AppLocalizations {
   String batteryLevel(String level) {
     return 'АКБ: $level%';
   }
+
+  @override
+  String get batteryInstallYearLabel => 'Рік встановлення АКБ';
+
+  @override
+  String get hemsStrategyLabel => 'Стратегія оптимізації HEMS';
+
+  @override
+  String get hemsStrategyEconomical =>
+      'Економна (мінімізація витрат на мережу)';
+
+  @override
+  String get hemsStrategySolarMaxed =>
+      'Максимум сонця (максимум самоспоживання)';
+
+  @override
+  String get hemsStrategyBatteryLife =>
+      'Довговічність АКБ (консервативні цикли)';
+
+  @override
+  String get hemsStrategyGridReliance =>
+      'Автономність (резервний / автономний режим)';
+
+  @override
+  String get hemsStrategyHybrid => 'Гібридна (збалансована — рекомендовано)';
 }

@@ -754,4 +754,27 @@ class AppLocalizationsEn extends AppLocalizations {
   String batteryLevel(String level) {
     return 'Battery: $level%';
   }
+
+  @override
+  String get batteryInstallYearLabel => 'Battery installation year';
+
+  @override
+  String get hemsStrategyLabel => 'HEMS optimization strategy';
+
+  @override
+  String get hemsStrategyEconomical => 'Economical (minimize grid cost)';
+
+  @override
+  String get hemsStrategySolarMaxed =>
+      'Solar Maxed (maximize self-consumption)';
+
+  @override
+  String get hemsStrategyBatteryLife => 'Battery Life (conservative cycles)';
+
+  @override
+  String get hemsStrategyGridReliance =>
+      'Grid Reliance (resilience / off-grid)';
+
+  @override
+  String get hemsStrategyHybrid => 'Hybrid (balanced — recommended)';
 }

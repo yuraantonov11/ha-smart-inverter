@@ -413,5 +413,12 @@
         "type": "String"
       }
     }
-  }
+  },
+  "batteryInstallYearLabel": "Рік встановлення АКБ",
+  "hemsStrategyLabel": "Стратегія оптимізації HEMS",
+  "hemsStrategyEconomical": "Економна (мінімізація витрат на мережу)",
+  "hemsStrategySolarMaxed": "Максимум сонця (максимум самоспоживання)",
+  "hemsStrategyBatteryLife": "Довговічність АКБ (консервативні цикли)",
+  "hemsStrategyGridReliance": "Автономність (резервний / автономний режим)",
+  "hemsStrategyHybrid": "Гібридна (збалансована — рекомендовано)"
 }

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../l10n/app_localizations.dart';
+import '../models/hems_optimization_profile.dart';
 import '../providers/app_provider.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
@@ -1303,104 +1304,318 @@ class HardwareSettingsSection extends StatelessWidget {
     this.enableBlur = true,
   });
 
+  static const List<_GeoPreset> _geoPresets = [
+    _GeoPreset('kyiv', 'Kyiv, UA', 50.4501, 30.5234, 'Europe/Kyiv'),
+    _GeoPreset('lviv', 'Lviv, UA', 49.8397, 24.0297, 'Europe/Kyiv'),
+    _GeoPreset('odesa', 'Odesa, UA', 46.4825, 30.7233, 'Europe/Kyiv'),
+    _GeoPreset('dnipro', 'Dnipro, UA', 48.4647, 35.0462, 'Europe/Kyiv'),
+    _GeoPreset('kharkiv', 'Kharkiv, UA', 49.9935, 36.2304, 'Europe/Kyiv'),
+    _GeoPreset('warsaw', 'Warsaw, PL', 52.2297, 21.0122, 'Europe/Warsaw'),
+    _GeoPreset('berlin', 'Berlin, DE', 52.5200, 13.4050, 'Europe/Berlin'),
+    _GeoPreset('custom', 'Custom (manual)', 0, 0, 'UTC'),
+  ];
+
+  static _GeoPreset _matchPreset(double lat, double lon) {
+    for (final p in _geoPresets.where((e) => e.id != 'custom')) {
+      final latOk = (p.latitude - lat).abs() < 0.2;
+      final lonOk = (p.longitude - lon).abs() < 0.2;
+      if (latOk && lonOk) return p;
+    }
+    return _geoPresets.last;
+  }
+
+  static double _sanitizeLatitude(double value, double fallback) {
+    if (!value.isFinite) return fallback;
+    return value.clamp(-90.0, 90.0).toDouble();
+  }
+
+  static double _sanitizeLongitude(double value, double fallback) {
+    if (!value.isFinite) return fallback;
+    return value.clamp(-180.0, 180.0).toDouble();
+  }
+
+  String _geoPresetLabel(AppLocalizations l10n, _GeoPreset preset) {
+    switch (preset.id) {
+      case 'kyiv':
+        return l10n.geoPresetKyiv;
+      case 'lviv':
+        return l10n.geoPresetLviv;
+      case 'odesa':
+        return l10n.geoPresetOdesa;
+      case 'dnipro':
+        return l10n.geoPresetDnipro;
+      case 'kharkiv':
+        return l10n.geoPresetKharkiv;
+      case 'warsaw':
+        return l10n.geoPresetWarsaw;
+      case 'berlin':
+        return l10n.geoPresetBerlin;
+      case 'custom':
+        return l10n.geoPresetCustom;
+      default:
+        return preset.label;
+    }
+  }
+
   void _showEditDialog(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
-    // Ініціалізуємо контролери поточними значеннями з провайдера
     final batteryCtrl = TextEditingController(
         text: provider.batteryCapacityAh.toStringAsFixed(0));
     final pvCtrl = TextEditingController(
         text: provider.pvTotalCapacityW.toStringAsFixed(0));
     final inverterCtrl = TextEditingController(
         text: provider.inverterMaxPowerW.toStringAsFixed(0));
+    final latitudeCtrl =
+        TextEditingController(text: provider.siteLatitude.toStringAsFixed(4));
+    final longitudeCtrl =
+        TextEditingController(text: provider.siteLongitude.toStringAsFixed(4));
+    final timeZoneCtrl = TextEditingController(text: provider.siteTimeZone);
+    final dayStartCtrl =
+        TextEditingController(text: provider.manualDayStartHour.toString());
+    final eveningStartCtrl =
+        TextEditingController(text: provider.manualEveningStartHour.toString());
+    final nightStartCtrl =
+        TextEditingController(text: provider.manualNightStartHour.toString());
+    final installYearCtrl = TextEditingController(
+        text: provider.batteryInstallDate.year.toString());
+    var autoWindows = provider.useAstronomicalWindows;
+    var selectedPreset =
+        _matchPreset(provider.siteLatitude, provider.siteLongitude);
+    var selectedStrategy = provider.hemsStrategy;
 
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Icon(Icons.solar_power_rounded,
-                color: Theme.of(context).colorScheme.primary),
-            const SizedBox(width: 12),
-            Text(l10n.stationParameters, style: const TextStyle(fontSize: 20)),
-          ],
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setStateDialog) => AlertDialog(
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
             children: [
-              Text(
-                l10n.stationParametersHint,
-                style: TextStyle(
-                    fontSize: 13,
-                    color: Theme.of(context).colorScheme.onSurfaceVariant),
-              ),
-              const SizedBox(height: 20),
-              _buildTextField(context, batteryCtrl, l10n.batteryCapacityLabel,
-                  'Ah', Icons.battery_charging_full_rounded),
-              const SizedBox(height: 16),
-              _buildTextField(context, pvCtrl, l10n.panelPowerLabel, 'W',
-                  Icons.grid_4x4_rounded),
-              const SizedBox(height: 16),
-              _buildTextField(context, inverterCtrl, l10n.inverterPowerLabel,
-                  'W', Icons.bolt_rounded),
+              Icon(Icons.solar_power_rounded,
+                  color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: 12),
+              Text(l10n.stationParameters,
+                  style: const TextStyle(fontSize: 20)),
             ],
           ),
-        ),
-        actionsPadding: const EdgeInsets.only(right: 16, bottom: 16),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(l10n.cancel,
-                style:
-                    TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: Theme.of(context).colorScheme.primary,
-              foregroundColor: Theme.of(context).colorScheme.onPrimary,
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12)),
-            ),
-            onPressed: () {
-              // Парсимо значення, якщо поле пусте або з помилкою - беремо старе значення
-              final bat = double.tryParse(batteryCtrl.text) ??
-                  provider.batteryCapacityAh;
-              final pv =
-                  double.tryParse(pvCtrl.text) ?? provider.pvTotalCapacityW;
-              final inv = double.tryParse(inverterCtrl.text) ??
-                  provider.inverterMaxPowerW;
-
-              provider.saveHardwareSettings(bat, pv, inv);
-              Navigator.pop(context); // Закриваємо діалог
-
-              // Візуальний фідбек для користувача
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(
-                  content: Text(l10n.hardwareSettingsSaved),
-                  duration: Duration(seconds: 2),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  l10n.stationParametersHint,
+                  style: TextStyle(
+                      fontSize: 13,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant),
                 ),
-              );
-            },
-            child:
-                Text(l10n.save, style: TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 20),
+                _buildTextField(context, batteryCtrl, l10n.batteryCapacityLabel,
+                    'Ah', Icons.battery_charging_full_rounded),
+                const SizedBox(height: 16),
+                _buildTextField(
+                    context,
+                    installYearCtrl,
+                    l10n.batteryInstallYearLabel,
+                    '',
+                    Icons.calendar_today_outlined),
+                const SizedBox(height: 16),
+                _buildTextField(context, pvCtrl, l10n.panelPowerLabel, 'W',
+                    Icons.grid_4x4_rounded),
+                const SizedBox(height: 16),
+                _buildTextField(context, inverterCtrl, l10n.inverterPowerLabel,
+                    'W', Icons.bolt_rounded),
+                const SizedBox(height: 16),
+                // HEMS strategy selector
+                DropdownButtonFormField<HemsOptimizationStrategy>(
+                  initialValue: selectedStrategy,
+                  decoration: InputDecoration(
+                    labelText: l10n.hemsStrategyLabel,
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    prefixIcon: Icon(Icons.tune_rounded,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                  items: HemsOptimizationStrategy.values
+                      .map((s) => DropdownMenuItem(
+                            value: s,
+                            child: Text(_strategyLabel(l10n, s)),
+                          ))
+                      .toList(),
+                  onChanged: (s) {
+                    if (s != null) setStateDialog(() => selectedStrategy = s);
+                  },
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: selectedPreset.id,
+                  decoration: InputDecoration(
+                    labelText: l10n.locationPreset,
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    prefixIcon: Icon(Icons.map_outlined,
+                        color: Theme.of(context).colorScheme.onSurfaceVariant),
+                  ),
+                  items: _geoPresets
+                      .map((p) => DropdownMenuItem(
+                            value: p.id,
+                            child: Text(_geoPresetLabel(l10n, p)),
+                          ))
+                      .toList(),
+                  onChanged: (id) {
+                    if (id == null) return;
+                    final preset = _geoPresets.firstWhere((p) => p.id == id);
+                    setStateDialog(() => selectedPreset = preset);
+                    if (preset.id != 'custom') {
+                      latitudeCtrl.text = preset.latitude.toStringAsFixed(4);
+                      longitudeCtrl.text = preset.longitude.toStringAsFixed(4);
+                      timeZoneCtrl.text = preset.timeZone;
+                    }
+                  },
+                ),
+                if (selectedPreset.id == 'custom') ...[
+                  const SizedBox(height: 16),
+                  _buildTextField(context, latitudeCtrl, l10n.latitudeLabel,
+                      'deg', Icons.place_outlined),
+                  const SizedBox(height: 16),
+                  _buildTextField(context, longitudeCtrl, l10n.longitudeLabel,
+                      'deg', Icons.explore_outlined),
+                ],
+                const SizedBox(height: 16),
+                _buildTextField(context, timeZoneCtrl, l10n.timeZoneLabel, '',
+                    Icons.schedule_rounded,
+                    allowDecimalOnly: false),
+                const SizedBox(height: 16),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(l10n.astronomicalWindowsTitle),
+                  subtitle: Text(autoWindows
+                      ? l10n.astronomicalWindowsAutoSubtitle
+                      : l10n.astronomicalWindowsManualSubtitle),
+                  value: autoWindows,
+                  onChanged: (v) => setStateDialog(() => autoWindows = v),
+                ),
+                if (!autoWindows) ...[
+                  const SizedBox(height: 12),
+                  _buildTextField(context, dayStartCtrl,
+                      l10n.manualDayStartHour, 'h', Icons.wb_sunny_outlined),
+                  const SizedBox(height: 12),
+                  _buildTextField(context, eveningStartCtrl,
+                      l10n.manualEveningStartHour, 'h', Icons.nightlight_round),
+                  const SizedBox(height: 12),
+                  _buildTextField(context, nightStartCtrl,
+                      l10n.manualNightStartHour, 'h', Icons.bedtime_outlined),
+                ],
+              ],
+            ),
           ),
-        ],
+          actionsPadding: const EdgeInsets.only(right: 16, bottom: 16),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(l10n.cancel,
+                  style: TextStyle(
+                      color: isDark ? Colors.white70 : Colors.black54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                foregroundColor: Theme.of(context).colorScheme.onPrimary,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: () {
+                final bat = double.tryParse(batteryCtrl.text) ??
+                    provider.batteryCapacityAh;
+                final pv =
+                    double.tryParse(pvCtrl.text) ?? provider.pvTotalCapacityW;
+                final inv = double.tryParse(inverterCtrl.text) ??
+                    provider.inverterMaxPowerW;
+                final installYear = int.tryParse(installYearCtrl.text) ??
+                    provider.batteryInstallDate.year;
+                final installDate = DateTime(
+                    installYear.clamp(2000, DateTime.now().year), 1, 1);
+
+                final rawLat = selectedPreset.id == 'custom'
+                    ? (double.tryParse(latitudeCtrl.text) ??
+                        provider.siteLatitude)
+                    : selectedPreset.latitude;
+                final rawLon = selectedPreset.id == 'custom'
+                    ? (double.tryParse(longitudeCtrl.text) ??
+                        provider.siteLongitude)
+                    : selectedPreset.longitude;
+                final lat = _sanitizeLatitude(rawLat, provider.siteLatitude);
+                final lon = _sanitizeLongitude(rawLon, provider.siteLongitude);
+                final tz = timeZoneCtrl.text.trim().isEmpty
+                    ? provider.siteTimeZone
+                    : timeZoneCtrl.text.trim();
+                final dayStart = (int.tryParse(dayStartCtrl.text) ??
+                        provider.manualDayStartHour)
+                    .clamp(0, 23);
+                final eveningStart = (int.tryParse(eveningStartCtrl.text) ??
+                        provider.manualEveningStartHour)
+                    .clamp(0, 23);
+                final nightStart = (int.tryParse(nightStartCtrl.text) ??
+                        provider.manualNightStartHour)
+                    .clamp(0, 23);
+
+                provider.saveHardwareSettings(bat, pv, inv,
+                    installDate: installDate);
+                provider.saveGeoSettings(
+                  latitude: lat,
+                  longitude: lon,
+                  timeZone: tz,
+                  useAstronomical: autoWindows,
+                  dayStartHour: dayStart,
+                  eveningStartHour: eveningStart,
+                  nightStartHour: nightStart,
+                );
+                provider.saveHemsStrategy(selectedStrategy);
+                Navigator.pop(context);
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(l10n.hardwareSettingsSaved),
+                    duration: const Duration(seconds: 2),
+                  ),
+                );
+              },
+              child: Text(l10n.save,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
       ),
     );
   }
 
+  String _strategyLabel(AppLocalizations l10n, HemsOptimizationStrategy s) {
+    switch (s) {
+      case HemsOptimizationStrategy.economical:
+        return l10n.hemsStrategyEconomical;
+      case HemsOptimizationStrategy.solarMaxed:
+        return l10n.hemsStrategySolarMaxed;
+      case HemsOptimizationStrategy.batteryLife:
+        return l10n.hemsStrategyBatteryLife;
+      case HemsOptimizationStrategy.gridReliance:
+        return l10n.hemsStrategyGridReliance;
+      case HemsOptimizationStrategy.hybrid:
+        return l10n.hemsStrategyHybrid;
+    }
+  }
+
   Widget _buildTextField(BuildContext context, TextEditingController controller,
-      String label, String suffix, IconData icon) {
+      String label, String suffix, IconData icon,
+      {bool allowDecimalOnly = true}) {
     return TextField(
       controller: controller,
-      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-      // Дозволяємо вводити тільки цифри та крапку
-      inputFormatters: [
-        FilteringTextInputFormatter.allow(RegExp(r'^\d+\.?\d*'))
-      ],
+      keyboardType: allowDecimalOnly
+          ? const TextInputType.numberWithOptions(decimal: true)
+          : TextInputType.text,
+      inputFormatters: allowDecimalOnly
+          ? [FilteringTextInputFormatter.allow(RegExp(r'^-?\d+\.?\d*'))]
+          : null,
       decoration: InputDecoration(
         labelText: label,
         suffixText: suffix,
@@ -1455,6 +1670,32 @@ class HardwareSettingsSection extends StatelessWidget {
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                           height: 1.4),
                     ),
+                    const SizedBox(height: 2),
+                    Text(
+                      l10n.geoSummary(
+                        provider.siteLatitude.toStringAsFixed(4),
+                        provider.siteLongitude.toStringAsFixed(4),
+                        provider.siteTimeZone,
+                      ),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          height: 1.3),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      provider.useAstronomicalWindows
+                          ? l10n.windowsAstronomicalAuto
+                          : l10n.windowsManualSummary(
+                              provider.manualDayStartHour.toString(),
+                              provider.manualEveningStartHour.toString(),
+                              provider.manualNightStartHour.toString(),
+                            ),
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          height: 1.3),
+                    ),
                   ],
                 ),
               ),
@@ -1466,4 +1707,20 @@ class HardwareSettingsSection extends StatelessWidget {
       ),
     );
   }
+}
+
+class _GeoPreset {
+  final String id;
+  final String label;
+  final double latitude;
+  final double longitude;
+  final String timeZone;
+
+  const _GeoPreset(
+    this.id,
+    this.label,
+    this.latitude,
+    this.longitude,
+    this.timeZone,
+  );
 }

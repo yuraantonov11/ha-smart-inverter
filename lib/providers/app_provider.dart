@@ -10,11 +10,13 @@ import 'package:window_manager/window_manager.dart';
 import '../l10n/app_localizations.dart';
 import '../services/inverter_service.dart';
 import '../services/hems_algorithm.dart';
+import '../services/hems_tuning_service.dart';
 import '../services/weather_service.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
 import '../services/secure_storage_service.dart';
 import '../models/inverter_data.dart';
+import '../models/hems_optimization_profile.dart';
 
 class AppStateProvider extends ChangeNotifier {
   static const String _defaultAppVersionLabel = 'Version --';
@@ -42,6 +44,23 @@ class AppStateProvider extends ChangeNotifier {
   double batteryCapacityAh = 230.0;
   double pvTotalCapacityW = 3000.0;
   double inverterMaxPowerW = 5000.0;
+
+  /// Battery installation date — used by BatteryHealthModel for adaptive reserve SOC.
+  DateTime batteryInstallDate = DateTime(DateTime.now().year - 2, 1, 1);
+
+  /// HEMS optimization strategy selected by user.
+  HemsOptimizationStrategy hemsStrategy = HemsOptimizationStrategy.hybrid;
+
+  // Geo settings are editable by user; defaults are practical for Ukraine.
+  double siteLatitude = 49.0;
+  double siteLongitude = 31.0;
+  String siteTimeZone = 'Europe/Kyiv';
+
+  // HEMS time windows: user can choose astronomical (auto) or manual hours.
+  bool useAstronomicalWindows = true;
+  int manualDayStartHour = 7;
+  int manualEveningStartHour = 17;
+  int manualNightStartHour = 23;
 
   String solcastApiKey = '';
   String solcastResourceId = '';
@@ -103,7 +122,31 @@ class AppStateProvider extends ChangeNotifier {
       _updateInfo!.latestVersion != _skippedUpdateVersion;
 
   AppStateProvider() {
-    hemsService = HemsAlgorithmService(this);
+    // Initial build with defaults; will be rebuilt after loadSettings().
+    _rebuildHemsService();
+  }
+
+  /// (Re)creates HemsOptimizationProfile + HemsTuningService from current
+  /// provider fields and wires them into hemsService.
+  /// Call this after loading or changing any HEMS-relevant setting.
+  void _rebuildHemsService() {
+    final profile = HemsOptimizationProfile(
+      systemId: 'home',
+      pvPeakW: pvTotalCapacityW,
+      batteryCapacityAh: batteryCapacityAh,
+      optimizationStrategy: hemsStrategy,
+      batteryHealth: BatteryHealthModel(installationDate: batteryInstallDate),
+    );
+    final tuning = HemsTuningService(profile);
+    hemsService = HemsAlgorithmService(
+      this,
+      optimizationProfile: profile,
+      tuningService: tuning,
+    );
+    LogService.log(
+      '⚙️ HEMS profile rebuilt: pv=${pvTotalCapacityW.toInt()}W bat=${batteryCapacityAh.toInt()}Ah '
+      'strategy=${hemsStrategy.name} installDate=${batteryInstallDate.year}',
+    );
   }
 
   Future<AppLocalizations> _getL10n() async {
@@ -140,6 +183,26 @@ class AppStateProvider extends ChangeNotifier {
     batteryCapacityAh = prefs.getDouble('battery_capacity_ah') ?? 230.0;
     pvTotalCapacityW = prefs.getDouble('pv_total_capacity_w') ?? 3000.0;
     inverterMaxPowerW = prefs.getDouble('inverter_max_power_w') ?? 5000.0;
+    siteLatitude = prefs.getDouble('site_latitude') ?? 49.0;
+    siteLongitude = prefs.getDouble('site_longitude') ?? 31.0;
+    siteTimeZone = prefs.getString('site_time_zone') ?? 'Europe/Kyiv';
+    useAstronomicalWindows = prefs.getBool('use_astronomical_windows') ?? true;
+    manualDayStartHour = prefs.getInt('manual_day_start_hour') ?? 7;
+    manualEveningStartHour = prefs.getInt('manual_evening_start_hour') ?? 17;
+    manualNightStartHour = prefs.getInt('manual_night_start_hour') ?? 23;
+
+    // Battery health
+    final installMs = prefs.getInt('battery_install_date_ms');
+    if (installMs != null) {
+      batteryInstallDate = DateTime.fromMillisecondsSinceEpoch(installMs);
+    }
+    // HEMS strategy
+    final strategyIdx = prefs.getInt('hems_strategy_index') ?? 4; // hybrid
+    hemsStrategy = HemsOptimizationStrategy.values[
+        strategyIdx.clamp(0, HemsOptimizationStrategy.values.length - 1)];
+
+    // Rebuild service now that real settings are loaded.
+    _rebuildHemsService();
 
     smartMode = prefs.getInt('smart_mode') ?? 0;
     lang = prefs.getString('app_lang') ?? 'en';
@@ -262,8 +325,8 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> saveHardwareSettings(
-      double battery, double pv, double inverter) async {
+  Future<void> saveHardwareSettings(double battery, double pv, double inverter,
+      {DateTime? installDate}) async {
     final prefs = await SharedPreferences.getInstance();
     batteryCapacityAh = battery;
     pvTotalCapacityW = pv;
@@ -271,8 +334,62 @@ class AppStateProvider extends ChangeNotifier {
     await prefs.setDouble('battery_capacity_ah', battery);
     await prefs.setDouble('pv_total_capacity_w', pv);
     await prefs.setDouble('inverter_max_power_w', inverter);
+    if (installDate != null) {
+      batteryInstallDate = installDate;
+      await prefs.setInt(
+          'battery_install_date_ms', installDate.millisecondsSinceEpoch);
+    }
+    _rebuildHemsService();
     notifyListeners();
     await _updateWeatherForecast();
+  }
+
+  Future<void> saveHemsStrategy(HemsOptimizationStrategy strategy) async {
+    hemsStrategy = strategy;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('hems_strategy_index',
+        HemsOptimizationStrategy.values.indexOf(strategy));
+    _rebuildHemsService();
+    notifyListeners();
+    LogService.log('⚙️ HEMS strategy changed: ${strategy.name}');
+  }
+
+  Future<void> saveGeoSettings({
+    required double latitude,
+    required double longitude,
+    required String timeZone,
+    bool? useAstronomical,
+    int? dayStartHour,
+    int? eveningStartHour,
+    int? nightStartHour,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    siteLatitude = latitude;
+    siteLongitude = longitude;
+    siteTimeZone = timeZone.trim().isEmpty ? 'UTC' : timeZone.trim();
+    if (useAstronomical != null) {
+      useAstronomicalWindows = useAstronomical;
+    }
+    if (dayStartHour != null) {
+      manualDayStartHour = dayStartHour.clamp(0, 23);
+    }
+    if (eveningStartHour != null) {
+      manualEveningStartHour = eveningStartHour.clamp(0, 23);
+    }
+    if (nightStartHour != null) {
+      manualNightStartHour = nightStartHour.clamp(0, 23);
+    }
+    await prefs.setDouble('site_latitude', siteLatitude);
+    await prefs.setDouble('site_longitude', siteLongitude);
+    await prefs.setString('site_time_zone', siteTimeZone);
+    await prefs.setBool('use_astronomical_windows', useAstronomicalWindows);
+    await prefs.setInt('manual_day_start_hour', manualDayStartHour);
+    await prefs.setInt('manual_evening_start_hour', manualEveningStartHour);
+    await prefs.setInt('manual_night_start_hour', manualNightStartHour);
+    _rebuildHemsService();
+    LogService.log(
+        '📍 geo/settings updated: lat=${siteLatitude.toStringAsFixed(4)}, lon=${siteLongitude.toStringAsFixed(4)}, tz=$siteTimeZone, astro=$useAstronomicalWindows, manual=[$manualDayStartHour,$manualEveningStartHour,$manualNightStartHour]');
+    notifyListeners();
   }
 
   Future<void> _updateWeatherForecast() async {
@@ -859,6 +976,12 @@ class AppStateProvider extends ChangeNotifier {
           hourlyForecast: hourlyForecast,
           avgHourlyConsumptionStats: avgHourlyConsumptionStats,
           productionCoefficient: 0.85,
+          useAstronomicalWindows: useAstronomicalWindows,
+          latitude: siteLatitude,
+          longitude: siteLongitude,
+          manualDayStartHour: manualDayStartHour,
+          manualEveningStartHour: manualEveningStartHour,
+          manualNightStartHour: manualNightStartHour,
         );
         break;
       case 1: // Нічний арбітраж
