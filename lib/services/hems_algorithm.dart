@@ -281,6 +281,71 @@ class HemsAlgorithmService {
     }
   }
 
+  // ------------------------------------------------------------------
+  // --- Phase 3a helpers: tariff-aware charging ---
+
+  /// Returns true if the current hour is cheap enough for grid charging.
+  /// Falls back to true (allow charging) when no tariff data is available.
+  bool _isChargingCheapNow(DateTime now) {
+    try {
+      final tf = optimizationProfile?.tariffForecast;
+      if (tf == null) return true;
+      final priceMap = tf.pricePerKwh as Map<DateTime, double>;
+      if (priceMap.isEmpty) return true;
+      final currentKey = DateTime(now.year, now.month, now.day, now.hour);
+      final currentPrice = priceMap[currentKey];
+      if (currentPrice == null) return true;
+      final avg = priceMap.values.reduce((a, b) => a + b) / priceMap.length;
+      final isCheap = currentPrice <= avg * 1.05;
+      if (!isCheap) {
+        LogService.log(
+            '💰 HEMS: tariff check — current ${currentPrice.toStringAsFixed(2)}'
+            ' > avg ${avg.toStringAsFixed(2)} UAH/kWh → expensive hour');
+      }
+      return isCheap;
+    } catch (_) {
+      return true; // fail-safe: allow charging
+    }
+  }
+
+  /// Returns the next DateTime where a 2-hour cheap charging window starts,
+  /// or null if no such window exists in the forecast.
+  DateTime? _getNextCheapChargingWindow(DateTime now) {
+    try {
+      final tf = optimizationProfile?.tariffForecast;
+      if (tf == null) return null;
+      // priceMargin=1.1 → accept prices up to 10% above median (finds cheap block)
+      return tf.getNextCheapWindow(const Duration(hours: 2), 1.1) as DateTime?;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // --- Phase 3b helper: demand-forecast-aware load estimate ---
+
+  /// Returns forecasted load (Wh) for the given hour.
+  /// Prefers DemandForecastData from the optimizationProfile when available;
+  /// falls back to historical stats or live-load estimate.
+  double _getLoadForecastWh(
+    int hour,
+    Map<int, double> stats,
+    DateTime targetDate,
+    double liveLoadW,
+  ) {
+    try {
+      final df = optimizationProfile?.demandForecast;
+      if (df != null) {
+        final isWeekend = targetDate.weekday >= 6;
+        final predicted =
+            (df.predictLoad(hour, isWeekend: isWeekend) as num).toDouble();
+        return predicted.clamp(100.0, 8000.0);
+      }
+    } catch (_) {}
+    final statLoad = stats[hour];
+    return statLoad ?? (liveLoadW > 0 ? liveLoadW.clamp(200.0, 3000.0) : 500.0);
+  }
+
   // --- 2. Adaptive mode (realtime + forecast hybrid)
   // ------------------------------------------------------------------
   Future<void> executeAdaptiveMode({
@@ -372,9 +437,28 @@ class HemsAlgorithmService {
         productionCoefficient: productionCoefficient,
         liveLoadW: load,
       );
+      // Phase 3a: tariff-aware night charging decision
       if (deficitIfNoCharge > 0) {
-        await _applyCharger(
-            _Chg.snu, 'night_charge_deficit_${deficitIfNoCharge.toInt()}Wh');
+        if (_isChargingCheapNow(now)) {
+          await _applyCharger(_Chg.snu,
+              'night_charge_deficit_tariff_ok_${deficitIfNoCharge.toInt()}Wh');
+        } else {
+          final cheapAt = _getNextCheapChargingWindow(now);
+          if (cheapAt != null &&
+              cheapAt.isAfter(now) &&
+              cheapAt.difference(now) <= const Duration(hours: 4)) {
+            // Upcoming cheap window is within 4 hours — defer grid charge
+            await _applyCharger(_Chg.oso,
+                'night_defer_tariff_expensive_cheap_at_${cheapAt.hour}h');
+            LogService.log(
+                '💰 HEMS: tariff deferral — deficit=${deficitIfNoCharge.toInt()}Wh,'
+                ' cheap window at ${cheapAt.hour}:00');
+          } else {
+            // No near-future cheap window — charge now despite higher price
+            await _applyCharger(_Chg.snu,
+                'night_charge_deficit_no_cheap_window_${deficitIfNoCharge.toInt()}Wh');
+          }
+        }
       } else {
         await _applyCharger(_Chg.oso, 'night_no_grid_charge_needed');
       }
@@ -473,10 +557,9 @@ class HemsAlgorithmService {
     var totalDeficitWh = 0.0;
 
     for (var h = startHour; h < endHour; h++) {
-      // Smarter fallback: blend stat with live load to avoid 500W flat bias.
-      final statLoad = avgHourlyConsumptionStats[h];
-      final loadWh =
-          statLoad ?? (liveLoadW > 0 ? liveLoadW.clamp(200.0, 3000.0) : 500.0);
+      // Phase 3b: prefer demand forecast from profile when available
+      final loadWh = _getLoadForecastWh(
+          h, avgHourlyConsumptionStats, targetDate, liveLoadW);
 
       final timeKey = formatter.format(
           DateTime(targetDate.year, targetDate.month, targetDate.day, h, 0));

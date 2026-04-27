@@ -90,7 +90,8 @@ class BatteryHealthModel {
 
     final healthPenalty = (1.0 - healthFactor) * 10.0;
     final adaptive = baseReserveSoc + agePenalty + healthPenalty;
-    return adaptive.clamp(baseReserveSoc, maxReserveSoc);
+    // Allow aggressive (lower) reserve for young batteries; clamp at 15% hard floor.
+    return adaptive.clamp(15.0, maxReserveSoc);
   }
 }
 

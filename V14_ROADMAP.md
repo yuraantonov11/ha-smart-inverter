@@ -1,7 +1,7 @@
 <!-- markdownlint-disable MD033 -->
 # v1.4 Optimization Roadmap (HEMS v2)
 
-> **Status:** Beta  
+> **Status:** Release Candidate  
 > **Release target:** May 2026  
 > **Priority:** HIGH (fundamental algorithm improvements)
 
@@ -79,20 +79,20 @@ if (soc <= adaptiveReserve + 2) { /* safety */ }
 
 ---
 
-### Phase 3: Forecasting & Economics (v1.4-rc, FUTURE)
+### Phase 3: Forecasting & Economics (v1.4-rc, DONE ✓)
 **Focus:** Tariff + demand + grid intelligence
 
 #### 3a. Tariff-aware charging (TOU / day-ahead)
-- **File:** New `TariffForecastService` (API: Nordpool / ENTSO-E / local)
-- **Logic:** Find cheapest charging window in next 24h, defer charging if needed
-- **Impact:** +15–25% cost reduction (volatile tariffs)
-- **Effort:** 3–5 hours
+- **File:** `lib/services/hems_algorithm.dart` — `_isChargingCheapNow()`, `_getNextCheapChargingWindow()`
+- **Logic:** During night window, check if current hour is cheaper than average; defer to next cheap 2-hour block (up to 4h ahead) when expensive
+- **Impact:** +15–25% cost reduction on TOU/multi-zone tariffs; graceful no-op on flat tariffs
+- **Status:** ✅ DONE
 
 #### 3b. Demand prediction
-- **File:** Extend `DemandForecastService` with EWMA learning
-- **Logic:** Track hourly patterns + season → better simulation accuracy
-- **Impact:** +10–15% forecast precision
-- **Effort:** 2–3 hours
+- **File:** `lib/services/hems_algorithm.dart` — `_getLoadForecastWh()`
+- **Logic:** `_simulateEnergyDeficit` prefers `DemandForecastData.predictLoad(h)` (weekend/season-aware) over flat EWMA map when profile is wired
+- **Impact:** +10–15% forecast precision on seasonal + weekend transitions
+- **Status:** ✅ DONE
 
 #### 3c. Grid reliability alerts
 - **File:** `GridReliabilityForecast` + UI calendar for planned outages
@@ -175,16 +175,16 @@ HemsAlgorithmService (v1.4)
 - [x] `flutter analyze` — No issues found
 - [x] Commit v1.4-beta
 
-### v1.4-rc (FUTURE)
-- [ ] Tariff forecast integration (API setup)
-- [ ] Demand learning (1 month data collection)
-- [ ] Grid reliability UI (calendar of outages)
-- [ ] Thermal load relay control
-- [ ] Advanced anti-flap test coverage
-- [ ] Commit v1.4-rc
+### v1.4-rc ✅ COMPLETE (2026-04-27)
+- [x] Tariff forecast integration — `_isChargingCheapNow` + `_getNextCheapChargingWindow`
+- [x] Demand forecast in energy simulation — `_getLoadForecastWh`
+- [x] Grid reliability UI (calendar of outages) — settings dialog + `_checkAutomations`
+- [ ] Thermal load relay control — deferred to v1.5
+- [x] Advanced anti-flap test coverage (T7–T13, 19 tests total passing)
+- [x] Commit v1.4-rc
 
 ### v1.4 Release (FUTURE)
-- [ ] Settings UI for strategy selection
+- [x] Settings UI for strategy selection
 - [ ] Parameter visualization (tunables over time)
 - [ ] Comprehensive logging + reason codes
 - [ ] README + migration guide
@@ -279,6 +279,6 @@ final profile = HemsOptimizationProfile(
 ---
 
 *Last updated: 2026-04-27*  
-*v1.4-alpha (foundation complete)*
+*v1.4-rc complete — Phase 3a tariff-aware charging + Phase 3b demand forecast integration*
 
 

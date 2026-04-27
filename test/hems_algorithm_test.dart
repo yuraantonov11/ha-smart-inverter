@@ -1,7 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:inverter_app/models/hems_optimization_profile.dart';
 import 'package:inverter_app/models/inverter_data.dart';
 import 'package:inverter_app/providers/app_provider.dart';
 import 'package:inverter_app/services/hems_algorithm.dart';
+import 'package:inverter_app/services/hems_tuning_service.dart';
 
 class _FakeAppStateProvider extends AppStateProvider {
   final List<int> setModeCalls = [];
@@ -379,6 +381,249 @@ void main() {
       final chargerChange = provider.changeSettingCalls.where(
           (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '2');
       expect(chargerChange, isNotEmpty); // OSO — no grid charge needed
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // T7: Adaptive PV surplus threshold — cloudy vs clear
+  // ----------------------------------------------------------------
+  group('T7: adaptive PV surplus threshold (HemsTuningService)', () {
+    test('cloudy surplus history yields higher threshold than clear sky', () {
+      final profile = HemsOptimizationProfile(
+          systemId: 'test', pvPeakW: 3000, batteryCapacityAh: 230);
+      final tuning = HemsTuningService(profile);
+
+      // Highly variable surplus (cloudy day: strong patches alternating with clouds)
+      final cloudyHistory = <double>[];
+      for (var i = 0; i < 15; i++) {
+        cloudyHistory.addAll([1200.0, -250.0]);
+      }
+      final thresholdCloudy = tuning.computeAdaptivePvSurplus(cloudyHistory);
+
+      // Stable surplus (clear sky)
+      final clearHistory = List.generate(30, (_) => 500.0);
+      final thresholdClear = tuning.computeAdaptivePvSurplus(clearHistory);
+
+      expect(thresholdCloudy, greaterThan(thresholdClear));
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // T8: Adaptive dwell time — cloudy vs clear
+  // ----------------------------------------------------------------
+  group('T8: adaptive dwell time (HemsTuningService)', () {
+    test('cloudy surplus history yields shorter dwell than clear sky', () {
+      final profile = HemsOptimizationProfile(
+          systemId: 'test', pvPeakW: 3000, batteryCapacityAh: 230);
+      final tuning = HemsTuningService(profile);
+
+      // High variance (cloudy) → stdDev > 300 → 8 min dwell (fast reaction)
+      final cloudyHistory = <double>[];
+      for (var i = 0; i < 15; i++) {
+        cloudyHistory.addAll([1200.0, -250.0]);
+      }
+      final dwellCloudy = tuning.computeAdaptiveDwell(cloudyHistory);
+
+      // Low variance (clear) → stdDev ≈ 0 → 25 min dwell (stable hold)
+      final clearHistory = List.generate(30, (_) => 500.0);
+      final dwellClear = tuning.computeAdaptiveDwell(clearHistory);
+
+      expect(dwellCloudy.inMinutes, lessThan(dwellClear.inMinutes));
+      expect(dwellCloudy.inMinutes, equals(8));
+      expect(dwellClear.inMinutes, equals(25));
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // T9–T10: Reserve SOC by battery age (BatteryHealthModel)
+  // ----------------------------------------------------------------
+  group('T9-T10: reserve SOC by battery age', () {
+    test('new battery (<2y) gets lower reserve than old battery (>8y)', () {
+      final youngBattery = BatteryHealthModel(
+          installationDate: DateTime.now().subtract(const Duration(days: 365)));
+      final oldBattery = BatteryHealthModel(
+          installationDate:
+              DateTime.now().subtract(const Duration(days: 365 * 9)));
+
+      final youngReserve = youngBattery.getAdaptiveReserveSoc();
+      final oldReserve = oldBattery.getAdaptiveReserveSoc();
+
+      // <2y: agePenalty = -2 → reserve = 18%
+      expect(youngReserve, lessThan(20.0));
+      // >8y: agePenalty = +8 → reserve = 28%
+      expect(oldReserve, greaterThanOrEqualTo(25.0));
+      expect(oldReserve, greaterThan(youngReserve));
+    });
+
+    test('mid-age battery (3y) returns base reserve SOC (20%)', () {
+      final midBattery = BatteryHealthModel(
+          installationDate:
+              DateTime.now().subtract(const Duration(days: 365 * 3)));
+      final reserve = midBattery.getAdaptiveReserveSoc();
+      expect(reserve, equals(20.0)); // 2–5y → agePenalty=0 → exactly base
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // T11–T12: Astronomical time windows (summer vs winter)
+  // ----------------------------------------------------------------
+  group('T11-T12: astronomical time windows', () {
+    test('summer 14:30 with astro windows is daytime (high surplus → SBU)',
+        () async {
+      final provider = _FakeAppStateProvider();
+      final service = HemsAlgorithmService(provider, tun: _testTun);
+
+      // Jun 21, 14:30 — summer, eveningStart ≈ 17 → 14:30 is daytime
+      await service.executeAdaptiveMode(
+        data: _buildData(
+            soc: 70,
+            outputPriority: '0',
+            chargerPriority: '2',
+            pvPower: 2000,
+            loadPower: 500),
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 21, 14, 30),
+        useAstronomicalWindows: true,
+        latitude: 50.45,
+        longitude: 30.52,
+      );
+
+      // Realtime surplus 1500W > adaptive threshold, SOC=70 → must switch SBU
+      expect(provider.setModeCalls, contains(2));
+    });
+
+    test(
+        'winter 14:30 with astro windows is evening (early sunset → reserve → USB)',
+        () async {
+      final provider = _FakeAppStateProvider();
+      final service = HemsAlgorithmService(provider, tun: _testTun);
+
+      // Dec 21, 14:30 — winter, eveningStart ≈ 14 → 14:30 is in evening window
+      // SOC near reserve: 24% with high consumption → deficit → USB safety
+      await service.executeAdaptiveMode(
+        data: _buildData(
+            soc: 24.0,
+            outputPriority: '2',
+            chargerPriority: '2',
+            pvPower: 200,
+            loadPower: 400),
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 12, 21, 14, 30),
+        useAstronomicalWindows: true,
+        latitude: 50.45,
+        longitude: 30.52,
+      );
+
+      // Evening + forecast deficit + SOC tight → reserve protection → USB
+      expect(provider.setModeCalls, contains(0));
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // T13: Tariff-aware night charging (Phase 3a)
+  // ----------------------------------------------------------------
+  group('T13: tariff-aware night charging (Phase 3a)', () {
+    test(
+        'defers grid charge when current hour is expensive & cheap window is upcoming',
+        () async {
+      final provider = _FakeAppStateProvider();
+
+      // Build custom tariff: midnight is expensive, 02:00–04:00 is cheap
+      final priceMap = <DateTime, double>{
+        DateTime(2026, 6, 1, 0): 4.50,
+        DateTime(2026, 6, 1, 1): 4.50,
+        DateTime(2026, 6, 1, 2): 1.50,
+        DateTime(2026, 6, 1, 3): 1.50,
+        DateTime(2026, 6, 1, 4): 1.50,
+      };
+      final profile = HemsOptimizationProfile(
+        systemId: 'test',
+        pvPeakW: 3000,
+        batteryCapacityAh: 230,
+        tariffForecast: TariffForecastData(pricePerKwh: priceMap),
+      );
+      final tuning = HemsTuningService(profile);
+      final service = HemsAlgorithmService(provider,
+          tun: _testTun, optimizationProfile: profile, tuningService: tuning);
+
+      // SOC=50%, no PV, high consumption → deficit → would charge grid
+      // but tariff is expensive right now → should defer
+      await service.executeAdaptiveMode(
+        data: _buildData(
+            soc: 50,
+            outputPriority: '0',
+            chargerPriority: '2',
+            pvPower: 0,
+            loadPower: 0),
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: {
+          for (var h = 7; h < 23; h++) h: 900.0,
+        },
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 0), // midnight, expensive tariff hour
+      );
+
+      // Must NOT activate SNU now (defer grid charge)
+      final snuCalls = provider.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1');
+      expect(snuCalls, isEmpty,
+          reason: 'Grid charging should be deferred to cheap window at 02:00');
+
+      // Must stay on OSO (solar-only / defer)
+      final osoCalls = provider.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '2');
+      expect(osoCalls, isNotEmpty,
+          reason: 'Should use OSO while deferring to cheap window');
+    });
+
+    test('charges from grid immediately when current tariff is cheap',
+        () async {
+      final provider = _FakeAppStateProvider();
+
+      // Build custom tariff: 02:00–04:00 all cheap
+      final priceMap = <DateTime, double>{
+        DateTime(2026, 6, 1, 2): 1.50,
+        DateTime(2026, 6, 1, 3): 1.50,
+        DateTime(2026, 6, 1, 4): 1.50,
+      };
+      final profile = HemsOptimizationProfile(
+        systemId: 'test',
+        pvPeakW: 3000,
+        batteryCapacityAh: 230,
+        tariffForecast: TariffForecastData(pricePerKwh: priceMap),
+      );
+      final tuning = HemsTuningService(profile);
+      final service = HemsAlgorithmService(provider,
+          tun: _testTun, optimizationProfile: profile, tuningService: tuning);
+
+      await service.executeAdaptiveMode(
+        data: _buildData(
+            soc: 50,
+            outputPriority: '0',
+            chargerPriority: '2',
+            pvPower: 0,
+            loadPower: 0),
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: {
+          for (var h = 7; h < 23; h++) h: 900.0,
+        },
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 2), // 2am, cheap tariff hour
+      );
+
+      // Current hour IS cheap → charge from grid now
+      final snuCalls = provider.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1');
+      expect(snuCalls, isNotEmpty,
+          reason: 'Cheap tariff at 02:00 → SNU should be enabled');
     });
   });
 }

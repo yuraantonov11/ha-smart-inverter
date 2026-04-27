@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0-rc] - 2026-04-27
+### Added — HEMS v2 Phase 3: Forecasting & Economics
+
+#### Phase 3a — Tariff-aware night charging
+- **`_isChargingCheapNow()`** — checks if the current hour price is ≤ average tariff × 1.05; allows graceful no-op on flat tariffs and enables cost savings on TOU / multi-zone tariffs.
+- **`_getNextCheapChargingWindow()`** — uses `TariffForecastData.getNextCheapWindow` (priceMargin=1.1) to find the next 2-hour cheap block within the next 4 hours.
+- **Tariff deferral logic in night window** — if current hour is expensive AND a cheaper window is within 4 hours, algorithm waits (charger stays OSO); otherwise charges normally (SNU). Backwards-compatible: no `optimizationProfile` → always charges (existing behaviour).
+
+#### Phase 3b — Demand-forecast-aware energy simulation
+- **`_getLoadForecastWh()`** — when `optimizationProfile.demandForecast` is available, uses `DemandForecastData.predictLoad(h, isWeekend)` for hour-level load estimates; falls back to EWMA stats or live-load estimate. Weekend and seasonal adjustments are now reflected in overnight simulations.
+
+#### Phase 3c — Grid reliability alerts (completed in v1.4-beta)
+- Planned outage UI in settings + auto Storm-mode precharge when outage is within 6 hours (already shipped in v1.4-beta, documented here for completeness).
+
+#### Bug Fix — `BatteryHealthModel`
+- `getAdaptiveReserveSoc()` was clamping result to `baseReserveSoc` (20%) as a lower bound, preventing the young-battery aggressive reserve (-2%) from ever taking effect. Fixed to clamp at 15% hard floor, allowing batteries < 2 years old to use 18% reserve as documented.
+
+#### Testing
+- **19 unit tests** (was 11) — added T7–T13 covering: adaptive PV threshold cloudy vs clear, adaptive dwell cloudy vs clear, battery reserve SOC by age (3 tests), astronomical windows summer/winter (2 tests), tariff-aware deferral and immediate charge (2 tests).
+- All 19 tests pass; `flutter analyze` — no issues.
+
 ## [1.3.2] - 2026-04-25
 ### Added
 - **HEMS v2: Realtime PV-surplus override** — when PV−Load ≥ 250W and SOC ≥ 30%, algorithm immediately switches to SBU regardless of forecast. Fixes the core issue where sun was available but inverter stayed in USB mode.
