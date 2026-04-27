@@ -236,6 +236,53 @@
   "batteryCapacityLabel": "Battery capacity",
   "panelPowerLabel": "Panel power",
   "inverterPowerLabel": "Inverter power",
+  "locationPreset": "Location preset",
+  "latitudeLabel": "Latitude",
+  "longitudeLabel": "Longitude",
+  "timeZoneLabel": "Time zone",
+  "astronomicalWindowsTitle": "Astronomical windows (sunrise/sunset)",
+  "astronomicalWindowsAutoSubtitle": "Auto windows from geo coordinates",
+  "astronomicalWindowsManualSubtitle": "Use manual hour boundaries",
+  "manualDayStartHour": "Manual day start hour",
+  "manualEveningStartHour": "Manual evening start hour",
+  "manualNightStartHour": "Manual night start hour",
+  "geoPresetKyiv": "Kyiv, UA",
+  "geoPresetLviv": "Lviv, UA",
+  "geoPresetOdesa": "Odesa, UA",
+  "geoPresetDnipro": "Dnipro, UA",
+  "geoPresetKharkiv": "Kharkiv, UA",
+  "geoPresetWarsaw": "Warsaw, PL",
+  "geoPresetBerlin": "Berlin, DE",
+  "geoPresetCustom": "Custom (manual)",
+  "geoSummary": "Geo: {latitude}, {longitude} ({timeZone})",
+  "@geoSummary": {
+    "placeholders": {
+      "latitude": {
+        "type": "String"
+      },
+      "longitude": {
+        "type": "String"
+      },
+      "timeZone": {
+        "type": "String"
+      }
+    }
+  },
+  "windowsAstronomicalAuto": "Windows: astronomical (auto)",
+  "windowsManualSummary": "Windows: manual {day}:00 / {evening}:00 / {night}:00",
+  "@windowsManualSummary": {
+    "placeholders": {
+      "day": {
+        "type": "String"
+      },
+      "evening": {
+        "type": "String"
+      },
+      "night": {
+        "type": "String"
+      }
+    }
+  },
   "hardwareSettingsSaved": "Hardware settings saved!",
   "hardwareSummary": "Battery: {battery} Ah • PV: {pv} W\nInverter: {inverter} W",
   "@hardwareSummary": {
@@ -280,9 +327,29 @@
   },
   "solarSbu": "SOLAR (SBU)",
   "gridUsb": "GRID (USB)",
+  "modeFromSolar": "From solar",
+  "modeFromGrid": "From grid",
   "utilityFirstUsb": "Utility First (USB)",
   "solarFirstSub": "Solar First (SUB)",
   "solarUtilitySnu": "Solar + Utility (SNU)",
+  "presetDisabled": "Disabled",
+  "presetEnabled": "Enabled",
+  "presetOutputUsb": "USB - Grid priority",
+  "presetOutputSub": "SUB - Solar first",
+  "presetOutputSbu": "SBU - Solar/Battery priority",
+  "presetChargerCso": "CSO - Solar first",
+  "presetChargerSnu": "SNU - Solar + Utility",
+  "presetChargerOso": "OSO - Solar only",
+  "presetChargerUtilityOnly": "Utility only",
+  "presetFrequency50Hz": "50 Hz",
+  "presetFrequency60Hz": "60 Hz",
+  "presetAcInputAplWide": "APL - Wide range",
+  "presetAcInputUpsNarrow": "UPS - Narrow range",
+  "presetBatteryTypeAgm": "AGM",
+  "presetBatteryTypeFlooded": "Flooded",
+  "presetBatteryTypeUser": "User-defined",
+  "presetBatteryTypeLib": "LIB (Lithium)",
+  "presetBatteryTypeLife": "LiFe",
   "signInCloud": "Sign in to Siseli Cloud",
   "loginFailed": "Login failed. Check credentials.",
   "today": "Today",

@@ -233,7 +233,7 @@ class DetailsTab extends StatelessWidget {
     final currentValue = cfg['value']?.toString() ?? '';
     final unit = cfg['unit']?.toString() ?? '';
 
-    final presets = _getPresets(key);
+    final presets = _getPresets(key, l10n);
     var selected = currentValue;
     // Ensure selected is a valid preset option
     if (presets != null && !presets.any((e) => e.value == selected)) {
@@ -314,10 +314,11 @@ class DetailsTab extends StatelessWidget {
   // Presets for known settings
   // ---------------------------------------------------------------------------
 
-  List<DropdownMenuItem<String>>? _getPresets(String key) {
-    const enableDisable = [
-      DropdownMenuItem(value: '0', child: Text('Вимкнено (Disable)')),
-      DropdownMenuItem(value: '1', child: Text('Увімкнено (Enable)')),
+  List<DropdownMenuItem<String>>? _getPresets(
+      String key, AppLocalizations l10n) {
+    final enableDisable = [
+      DropdownMenuItem(value: '0', child: Text(l10n.presetDisabled)),
+      DropdownMenuItem(value: '1', child: Text(l10n.presetEnabled)),
     ];
     const onOff = [
       DropdownMenuItem(value: '0', child: Text('OFF')),
@@ -326,27 +327,29 @@ class DetailsTab extends StatelessWidget {
 
     switch (key) {
       case 'outputSourcePrioritySetting':
-        return const [
-          DropdownMenuItem(value: '0', child: Text('USB — Пріоритет мережі')),
-          DropdownMenuItem(value: '1', child: Text('SUB')),
-          DropdownMenuItem(value: '2', child: Text('SBU — Пріоритет сонця')),
+        return [
+          DropdownMenuItem(value: '0', child: Text(l10n.presetOutputUsb)),
+          DropdownMenuItem(value: '1', child: Text(l10n.presetOutputSub)),
+          DropdownMenuItem(value: '2', child: Text(l10n.presetOutputSbu)),
         ];
       case 'chargerSourcePrioritySetting':
-        return const [
-          DropdownMenuItem(value: '0', child: Text('CSO — Спочатку сонце')),
-          DropdownMenuItem(value: '1', child: Text('SNU — Сонце + Мережа')),
-          DropdownMenuItem(value: '2', child: Text('OSO — Тільки сонце')),
-          DropdownMenuItem(value: '3', child: Text('Тільки мережа')),
+        return [
+          DropdownMenuItem(value: '0', child: Text(l10n.presetChargerCso)),
+          DropdownMenuItem(value: '1', child: Text(l10n.presetChargerSnu)),
+          DropdownMenuItem(value: '2', child: Text(l10n.presetChargerOso)),
+          DropdownMenuItem(
+              value: '3', child: Text(l10n.presetChargerUtilityOnly)),
         ];
       case 'outputFrequencySetting':
-        return const [
-          DropdownMenuItem(value: '0', child: Text('50 Гц')),
-          DropdownMenuItem(value: '1', child: Text('60 Гц')),
+        return [
+          DropdownMenuItem(value: '0', child: Text(l10n.presetFrequency50Hz)),
+          DropdownMenuItem(value: '1', child: Text(l10n.presetFrequency60Hz)),
         ];
       case 'acInputRangeSetting':
-        return const [
-          DropdownMenuItem(value: '0', child: Text('APL — Широкий діапазон')),
-          DropdownMenuItem(value: '1', child: Text('UPS — Вузький діапазон')),
+        return [
+          DropdownMenuItem(value: '0', child: Text(l10n.presetAcInputAplWide)),
+          DropdownMenuItem(
+              value: '1', child: Text(l10n.presetAcInputUpsNarrow)),
         ];
       case 'outputVoltageSettings':
         return const [
@@ -356,12 +359,13 @@ class DetailsTab extends StatelessWidget {
           DropdownMenuItem(value: '240', child: Text('240 V')),
         ];
       case 'settingBatteryType':
-        return const [
-          DropdownMenuItem(value: '0', child: Text('AGM')),
-          DropdownMenuItem(value: '1', child: Text('Flooded (залитий)')),
-          DropdownMenuItem(value: '2', child: Text('User (власні параметри)')),
-          DropdownMenuItem(value: '3', child: Text('LIB (Літієвий)')),
-          DropdownMenuItem(value: '4', child: Text('Life')),
+        return [
+          DropdownMenuItem(value: '0', child: Text(l10n.presetBatteryTypeAgm)),
+          DropdownMenuItem(
+              value: '1', child: Text(l10n.presetBatteryTypeFlooded)),
+          DropdownMenuItem(value: '2', child: Text(l10n.presetBatteryTypeUser)),
+          DropdownMenuItem(value: '3', child: Text(l10n.presetBatteryTypeLib)),
+          DropdownMenuItem(value: '4', child: Text(l10n.presetBatteryTypeLife)),
         ];
       case 'batteryPowerLimitingSetting':
       case 'cutOffVoltBatteryForSmartMainLoad':

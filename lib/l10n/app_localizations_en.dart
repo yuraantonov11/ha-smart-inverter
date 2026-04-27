@@ -448,6 +448,75 @@ class AppLocalizationsEn extends AppLocalizations {
   String get inverterPowerLabel => 'Inverter power';
 
   @override
+  String get locationPreset => 'Location preset';
+
+  @override
+  String get latitudeLabel => 'Latitude';
+
+  @override
+  String get longitudeLabel => 'Longitude';
+
+  @override
+  String get timeZoneLabel => 'Time zone';
+
+  @override
+  String get astronomicalWindowsTitle =>
+      'Astronomical windows (sunrise/sunset)';
+
+  @override
+  String get astronomicalWindowsAutoSubtitle =>
+      'Auto windows from geo coordinates';
+
+  @override
+  String get astronomicalWindowsManualSubtitle => 'Use manual hour boundaries';
+
+  @override
+  String get manualDayStartHour => 'Manual day start hour';
+
+  @override
+  String get manualEveningStartHour => 'Manual evening start hour';
+
+  @override
+  String get manualNightStartHour => 'Manual night start hour';
+
+  @override
+  String get geoPresetKyiv => 'Kyiv, UA';
+
+  @override
+  String get geoPresetLviv => 'Lviv, UA';
+
+  @override
+  String get geoPresetOdesa => 'Odesa, UA';
+
+  @override
+  String get geoPresetDnipro => 'Dnipro, UA';
+
+  @override
+  String get geoPresetKharkiv => 'Kharkiv, UA';
+
+  @override
+  String get geoPresetWarsaw => 'Warsaw, PL';
+
+  @override
+  String get geoPresetBerlin => 'Berlin, DE';
+
+  @override
+  String get geoPresetCustom => 'Custom (manual)';
+
+  @override
+  String geoSummary(String latitude, String longitude, String timeZone) {
+    return 'Geo: $latitude, $longitude ($timeZone)';
+  }
+
+  @override
+  String get windowsAstronomicalAuto => 'Windows: astronomical (auto)';
+
+  @override
+  String windowsManualSummary(String day, String evening, String night) {
+    return 'Windows: manual $day:00 / $evening:00 / $night:00';
+  }
+
+  @override
   String get hardwareSettingsSaved => 'Hardware settings saved!';
 
   @override
@@ -497,6 +566,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get gridUsb => 'GRID (USB)';
 
   @override
+  String get modeFromSolar => 'From solar';
+
+  @override
+  String get modeFromGrid => 'From grid';
+
+  @override
   String get utilityFirstUsb => 'Utility First (USB)';
 
   @override
@@ -504,6 +579,60 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get solarUtilitySnu => 'Solar + Utility (SNU)';
+
+  @override
+  String get presetDisabled => 'Disabled';
+
+  @override
+  String get presetEnabled => 'Enabled';
+
+  @override
+  String get presetOutputUsb => 'USB - Grid priority';
+
+  @override
+  String get presetOutputSub => 'SUB - Solar first';
+
+  @override
+  String get presetOutputSbu => 'SBU - Solar/Battery priority';
+
+  @override
+  String get presetChargerCso => 'CSO - Solar first';
+
+  @override
+  String get presetChargerSnu => 'SNU - Solar + Utility';
+
+  @override
+  String get presetChargerOso => 'OSO - Solar only';
+
+  @override
+  String get presetChargerUtilityOnly => 'Utility only';
+
+  @override
+  String get presetFrequency50Hz => '50 Hz';
+
+  @override
+  String get presetFrequency60Hz => '60 Hz';
+
+  @override
+  String get presetAcInputAplWide => 'APL - Wide range';
+
+  @override
+  String get presetAcInputUpsNarrow => 'UPS - Narrow range';
+
+  @override
+  String get presetBatteryTypeAgm => 'AGM';
+
+  @override
+  String get presetBatteryTypeFlooded => 'Flooded';
+
+  @override
+  String get presetBatteryTypeUser => 'User-defined';
+
+  @override
+  String get presetBatteryTypeLib => 'LIB (Lithium)';
+
+  @override
+  String get presetBatteryTypeLife => 'LiFe';
 
   @override
   String get signInCloud => 'Sign in to Siseli Cloud';

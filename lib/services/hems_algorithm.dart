@@ -4,6 +4,12 @@ import '../models/inverter_data.dart';
 import '../providers/app_provider.dart';
 import 'log_service.dart';
 
+class DailyTimeWindows {
+  DailyTimeWindows();
+
+  factory DailyTimeWindows.defaultTemperate() => DailyTimeWindows();
+}
+
 /// Output priorities used by the inverter API.
 class _Out {
   static const usb = '0'; // grid first
@@ -47,6 +53,8 @@ class HemsTunables {
 class HemsAlgorithmService {
   final AppStateProvider provider;
   final HemsTunables tun;
+  final dynamic optimizationProfile;
+  final dynamic tuningService;
 
   // --- Battery Keepalive ---
   DateTime? _lastBatteryActivityAt;
@@ -66,7 +74,15 @@ class HemsAlgorithmService {
   DateTime? _lastOutputSwitchAt;
   DateTime? _manualOverrideUntil;
 
-  HemsAlgorithmService(this.provider, {this.tun = const HemsTunables()});
+  final List<double> _recentSurplusHistory = <double>[];
+  static const int _surplusHistorySize = 30;
+
+  HemsAlgorithmService(
+    this.provider, {
+    this.tun = const HemsTunables(),
+    this.optimizationProfile,
+    this.tuningService,
+  });
 
   // ------------------------------------------------------------------
   // Helpers: read current inverter state
@@ -113,14 +129,15 @@ class HemsAlgorithmService {
         now.difference(_lastCmdOutputAt!) < tun.commandDedupWindow) {
       return false;
     }
-    // Dwell: avoid flapping output mode
+    // Dwell: avoid flapping output mode — Phase 2b: use adaptive dwell time
+    final dwell = _getAdaptiveDwellTime();
     if (!force &&
         _lastOutputSwitchAt != null &&
         _lastCmdOutput != null &&
         _lastCmdOutput != desired &&
-        now.difference(_lastOutputSwitchAt!) < tun.minModeHold) {
+        now.difference(_lastOutputSwitchAt!) < dwell) {
       LogService.log(
-          '⏳ HEMS: skip switch to ${_modeName(desired)} (reason=$reason) — dwell active');
+          '⏳ HEMS: skip switch to ${_modeName(desired)} (reason=$reason) — dwell ${dwell.inMinutes}m active');
       return false;
     }
 
@@ -220,29 +237,28 @@ class HemsAlgorithmService {
   }
 
   // ------------------------------------------------------------------
-  // --- Helper: get effective time window (static or astronomical) ---
-  DailyTimeWindows _getTimeWindows() {
-    if (optimizationProfile?.timeWindows != null) {
-      return optimizationProfile!.timeWindows;
-    }
-    return DailyTimeWindows.defaultTemperate();
-  }
+  // --- Phase 2b helpers: adaptive thresholds ---
 
-  /// Get adaptive PV surplus threshold (may change based on variance)
-  double _getAdaptivePvSurplusEnter() {
-    if (tuningService != null && _recentSurplusHistory.isNotEmpty) {
-      return tuningService!.computeAdaptivePvSurplus(_recentSurplusHistory);
-    }
-    return optimizationProfile?.getAdaptivePvSurplusEnter() ??
-        tun.pvSurplusEnterW;
-  }
-
-  /// Get adaptive dwell time (may vary by conditions)
+  /// Adaptive dwell time between output mode switches (variance-aware)
   Duration _getAdaptiveDwellTime() {
     if (tuningService != null && _recentSurplusHistory.isNotEmpty) {
       return tuningService!.computeAdaptiveDwell(_recentSurplusHistory);
     }
-    return _currentDwellTime;
+    if (optimizationProfile != null) {
+      return optimizationProfile!.getAdaptiveModeHold();
+    }
+    return tun.minModeHold;
+  }
+
+  /// Adaptive PV surplus threshold before entering SBU (variance-aware)
+  double _getAdaptivePvSurplusEnter() {
+    if (tuningService != null && _recentSurplusHistory.isNotEmpty) {
+      return tuningService!.computeAdaptivePvSurplus(_recentSurplusHistory);
+    }
+    if (optimizationProfile != null) {
+      return optimizationProfile!.getAdaptivePvSurplusEnter();
+    }
+    return tun.pvSurplusEnterW;
   }
 
   /// Get adaptive reserve SOC
@@ -265,7 +281,7 @@ class HemsAlgorithmService {
     }
   }
 
-  // --- 2. Adaptive mode (NEW: realtime + forecast hybrid + optimization)
+  // --- 2. Adaptive mode (realtime + forecast hybrid)
   // ------------------------------------------------------------------
   Future<void> executeAdaptiveMode({
     required InverterData data,
@@ -274,6 +290,12 @@ class HemsAlgorithmService {
     required Map<int, double> avgHourlyConsumptionStats,
     required double productionCoefficient,
     DateTime? nowOverride,
+    bool useAstronomicalWindows = false,
+    double latitude = 49.0,
+    double longitude = 31.0,
+    int manualDayStartHour = 7,
+    int manualEveningStartHour = 17,
+    int manualNightStartHour = 23,
   }) async {
     // Detect external/manual mode change before any decisions.
     _detectManualOverride(data);
@@ -282,13 +304,23 @@ class HemsAlgorithmService {
 
     final now = nowOverride ?? DateTime.now();
     final currentHour = now.hour;
+    final windows = _resolveWindows(
+      now: now,
+      useAstronomicalWindows: useAstronomicalWindows,
+      latitude: latitude,
+      longitude: longitude,
+      manualDayStartHour: manualDayStartHour,
+      manualEveningStartHour: manualEveningStartHour,
+      manualNightStartHour: manualNightStartHour,
+    );
     final currentOutput = _currentOutput(data);
     final currentCharger = _currentCharger(data);
 
     // Physical battery model
     const systemVoltage = 51.2;
     final maxBatteryCapacityWh = batteryCapacityAh * systemVoltage;
-    final reserveSoc = tun.reserveSoc;
+    // Phase 2c: use adaptive reserve SOC (battery age/health/strategy aware)
+    final reserveSoc = _getAdaptiveReserveSoc();
     final reserveEnergyWh = maxBatteryCapacityWh * (reserveSoc / 100.0);
     final currentEnergyWh = maxBatteryCapacityWh * (data.batterySoc / 100.0);
 
@@ -296,6 +328,12 @@ class HemsAlgorithmService {
     final pv = data.pvPower; // W
     final load = data.loadPower; // W
     final surplus = pv - load; // W
+
+    // Phase 2b: track surplus history for adaptive threshold learning
+    _trackSurplus(surplus);
+
+    // Phase 2b: adaptive PV surplus threshold (variance-aware)
+    final adaptivePvSurplusEnter = _getAdaptivePvSurplusEnter();
 
     // -------- 0. SAFETY: hard floor --------
     if (data.batterySoc <= reserveSoc + 2.0) {
@@ -316,10 +354,12 @@ class HemsAlgorithmService {
     }
 
     // -------- 2. Night tariff window --------
-    if (currentHour >= 23 || currentHour < 7) {
+    if (currentHour >= windows.nightStart || currentHour < windows.dayStart) {
       await _applyOutput(_Out.usb, 'night_tariff');
       // Tomorrow forecast deficit drives charger choice
-      final tomorrow = now.hour >= 23 ? now.add(const Duration(days: 1)) : now;
+      final tomorrow = now.hour >= windows.nightStart
+          ? now.add(const Duration(days: 1))
+          : now;
       final deficitIfNoCharge = _simulateEnergyDeficit(
         startHour: 7,
         endHour: 23,
@@ -351,9 +391,10 @@ class HemsAlgorithmService {
     final pvActive = pv > 80; // panels actually producing
 
     // (a) Realtime SURPLUS — strong reason to use SBU now.
-    if (pvActive && socOk && surplus >= tun.pvSurplusEnterW) {
+    // Phase 2b: use adaptive threshold instead of fixed tun.pvSurplusEnterW
+    if (pvActive && socOk && surplus >= adaptivePvSurplusEnter) {
       await _applyOutput(_Out.sbu,
-          'pv_surplus_${surplus.toInt()}W_soc_${data.batterySoc.toInt()}');
+          'pv_surplus_${surplus.toInt()}W_soc_${data.batterySoc.toInt()}_thr_${adaptivePvSurplusEnter.toInt()}W');
       return;
     }
 
@@ -371,7 +412,8 @@ class HemsAlgorithmService {
       liveLoadW: load,
     );
 
-    final isEvening = currentHour >= 17;
+    final isEvening =
+        currentHour >= windows.eveningStart && currentHour < windows.nightStart;
 
     if (isEvening) {
       // Evening: protect reserve more aggressively
@@ -406,7 +448,8 @@ class HemsAlgorithmService {
       LogService.log('ℹ️ HEMS: hold ${_modeName(currentOutput ?? _Out.usb)} '
           '(pv=${pv.toInt()}W load=${load.toInt()}W surplus=${surplus.toInt()}W '
           'soc=${data.batterySoc.toStringAsFixed(0)}% '
-          'def=${deficitTillNight.toInt()}Wh)');
+          'def=${deficitTillNight.toInt()}Wh '
+          'thr=${adaptivePvSurplusEnter.toInt()}W)');
     }
   }
 
@@ -514,5 +557,43 @@ class HemsAlgorithmService {
     _manualOverrideUntil = DateTime.now().add(d ?? tun.manualOverrideHold);
     LogService.log(
         '✋ HEMS: manual override armed for ${(d ?? tun.manualOverrideHold).inMinutes}m.');
+  }
+
+  ({int dayStart, int eveningStart, int nightStart}) _resolveWindows({
+    required DateTime now,
+    required bool useAstronomicalWindows,
+    required double latitude,
+    required double longitude,
+    required int manualDayStartHour,
+    required int manualEveningStartHour,
+    required int manualNightStartHour,
+  }) {
+    if (!useAstronomicalWindows) {
+      return (
+        dayStart: manualDayStartHour.clamp(0, 23),
+        eveningStart: manualEveningStartHour.clamp(0, 23),
+        nightStart: manualNightStartHour.clamp(0, 23),
+      );
+    }
+
+    final dayOfYear = now.difference(DateTime(now.year, 1, 1)).inDays + 1;
+    final latRad = latitude * pi / 180.0;
+    final decl = 0.409 * sin((2 * pi / 365.0) * dayOfYear - 1.39);
+    final cosH =
+        ((sin(-0.01454) - sin(latRad) * sin(decl)) / (cos(latRad) * cos(decl)))
+            .clamp(-1.0, 1.0);
+    final h = acos(cosH);
+    final daylightHours = (2 * h) * 24 / (2 * pi);
+    final sunrise = 12.0 - daylightHours / 2.0 - (longitude / 15.0);
+    final sunset = 12.0 + daylightHours / 2.0 - (longitude / 15.0);
+
+    final sunriseHour = sunrise.floor().clamp(0, 23);
+    final sunsetHour = sunset.floor().clamp(0, 23);
+
+    return (
+      dayStart: (sunriseHour - 1).clamp(4, 12),
+      eveningStart: (sunsetHour - 1).clamp(14, 22),
+      nightStart: (sunsetHour + 1).clamp(18, 23),
+    );
   }
 }

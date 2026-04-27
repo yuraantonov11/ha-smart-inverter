@@ -236,6 +236,53 @@
   "batteryCapacityLabel": "Ємність АКБ",
   "panelPowerLabel": "Потужність панелей",
   "inverterPowerLabel": "Потужність інвертора",
+  "locationPreset": "Пресет локації",
+  "latitudeLabel": "Широта",
+  "longitudeLabel": "Довгота",
+  "timeZoneLabel": "Часовий пояс",
+  "astronomicalWindowsTitle": "Астрономічні вікна (схід/захід сонця)",
+  "astronomicalWindowsAutoSubtitle": "Автовікна за географічними координатами",
+  "astronomicalWindowsManualSubtitle": "Використовувати ручні часові межі",
+  "manualDayStartHour": "Ручний старт дня",
+  "manualEveningStartHour": "Ручний старт вечора",
+  "manualNightStartHour": "Ручний старт ночі",
+  "geoPresetKyiv": "Київ, UA",
+  "geoPresetLviv": "Львів, UA",
+  "geoPresetOdesa": "Одеса, UA",
+  "geoPresetDnipro": "Дніпро, UA",
+  "geoPresetKharkiv": "Харків, UA",
+  "geoPresetWarsaw": "Варшава, PL",
+  "geoPresetBerlin": "Берлін, DE",
+  "geoPresetCustom": "Кастомно (вручну)",
+  "geoSummary": "Geo: {latitude}, {longitude} ({timeZone})",
+  "@geoSummary": {
+    "placeholders": {
+      "latitude": {
+        "type": "String"
+      },
+      "longitude": {
+        "type": "String"
+      },
+      "timeZone": {
+        "type": "String"
+      }
+    }
+  },
+  "windowsAstronomicalAuto": "Вікна: астрономічні (авто)",
+  "windowsManualSummary": "Вікна: вручну {day}:00 / {evening}:00 / {night}:00",
+  "@windowsManualSummary": {
+    "placeholders": {
+      "day": {
+        "type": "String"
+      },
+      "evening": {
+        "type": "String"
+      },
+      "night": {
+        "type": "String"
+      }
+    }
+  },
   "hardwareSettingsSaved": "Параметри обладнання збережено!",
   "hardwareSummary": "АКБ: {battery} Ah • PV: {pv} W\nІнвертор: {inverter} W",
   "@hardwareSummary": {
@@ -280,9 +327,29 @@
   },
   "solarSbu": "СОНЦЕ (SBU)",
   "gridUsb": "МЕРЕЖА (USB)",
+  "modeFromSolar": "Від сонця",
+  "modeFromGrid": "Від мережі",
   "utilityFirstUsb": "Мережа (Utility First / USB)",
   "solarFirstSub": "Сонце (Solar First / SUB)",
   "solarUtilitySnu": "Сонце + Мережа (SNU)",
+  "presetDisabled": "Вимкнено",
+  "presetEnabled": "Увімкнено",
+  "presetOutputUsb": "USB - Пріоритет мережі",
+  "presetOutputSub": "SUB - Пріоритет сонця",
+  "presetOutputSbu": "SBU - Пріоритет сонця/АКБ",
+  "presetChargerCso": "CSO - Спочатку сонце",
+  "presetChargerSnu": "SNU - Сонце + Мережа",
+  "presetChargerOso": "OSO - Тільки сонце",
+  "presetChargerUtilityOnly": "Тільки мережа",
+  "presetFrequency50Hz": "50 Гц",
+  "presetFrequency60Hz": "60 Гц",
+  "presetAcInputAplWide": "APL - Широкий діапазон",
+  "presetAcInputUpsNarrow": "UPS - Вузький діапазон",
+  "presetBatteryTypeAgm": "AGM",
+  "presetBatteryTypeFlooded": "Flooded (залитий)",
+  "presetBatteryTypeUser": "User (власні параметри)",
+  "presetBatteryTypeLib": "LIB (літієвий)",
+  "presetBatteryTypeLife": "LiFe",
   "signInCloud": "Увійдіть до Siseli Cloud",
   "loginFailed": "Помилка входу. Перевірте дані.",
   "today": "Сьогодні",

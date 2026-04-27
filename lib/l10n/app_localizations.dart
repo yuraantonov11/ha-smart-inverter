@@ -890,6 +890,132 @@ abstract class AppLocalizations {
   /// **'Inverter power'**
   String get inverterPowerLabel;
 
+  /// No description provided for @locationPreset.
+  ///
+  /// In en, this message translates to:
+  /// **'Location preset'**
+  String get locationPreset;
+
+  /// No description provided for @latitudeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Latitude'**
+  String get latitudeLabel;
+
+  /// No description provided for @longitudeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Longitude'**
+  String get longitudeLabel;
+
+  /// No description provided for @timeZoneLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Time zone'**
+  String get timeZoneLabel;
+
+  /// No description provided for @astronomicalWindowsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Astronomical windows (sunrise/sunset)'**
+  String get astronomicalWindowsTitle;
+
+  /// No description provided for @astronomicalWindowsAutoSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto windows from geo coordinates'**
+  String get astronomicalWindowsAutoSubtitle;
+
+  /// No description provided for @astronomicalWindowsManualSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Use manual hour boundaries'**
+  String get astronomicalWindowsManualSubtitle;
+
+  /// No description provided for @manualDayStartHour.
+  ///
+  /// In en, this message translates to:
+  /// **'Manual day start hour'**
+  String get manualDayStartHour;
+
+  /// No description provided for @manualEveningStartHour.
+  ///
+  /// In en, this message translates to:
+  /// **'Manual evening start hour'**
+  String get manualEveningStartHour;
+
+  /// No description provided for @manualNightStartHour.
+  ///
+  /// In en, this message translates to:
+  /// **'Manual night start hour'**
+  String get manualNightStartHour;
+
+  /// No description provided for @geoPresetKyiv.
+  ///
+  /// In en, this message translates to:
+  /// **'Kyiv, UA'**
+  String get geoPresetKyiv;
+
+  /// No description provided for @geoPresetLviv.
+  ///
+  /// In en, this message translates to:
+  /// **'Lviv, UA'**
+  String get geoPresetLviv;
+
+  /// No description provided for @geoPresetOdesa.
+  ///
+  /// In en, this message translates to:
+  /// **'Odesa, UA'**
+  String get geoPresetOdesa;
+
+  /// No description provided for @geoPresetDnipro.
+  ///
+  /// In en, this message translates to:
+  /// **'Dnipro, UA'**
+  String get geoPresetDnipro;
+
+  /// No description provided for @geoPresetKharkiv.
+  ///
+  /// In en, this message translates to:
+  /// **'Kharkiv, UA'**
+  String get geoPresetKharkiv;
+
+  /// No description provided for @geoPresetWarsaw.
+  ///
+  /// In en, this message translates to:
+  /// **'Warsaw, PL'**
+  String get geoPresetWarsaw;
+
+  /// No description provided for @geoPresetBerlin.
+  ///
+  /// In en, this message translates to:
+  /// **'Berlin, DE'**
+  String get geoPresetBerlin;
+
+  /// No description provided for @geoPresetCustom.
+  ///
+  /// In en, this message translates to:
+  /// **'Custom (manual)'**
+  String get geoPresetCustom;
+
+  /// No description provided for @geoSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Geo: {latitude}, {longitude} ({timeZone})'**
+  String geoSummary(String latitude, String longitude, String timeZone);
+
+  /// No description provided for @windowsAstronomicalAuto.
+  ///
+  /// In en, this message translates to:
+  /// **'Windows: astronomical (auto)'**
+  String get windowsAstronomicalAuto;
+
+  /// No description provided for @windowsManualSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Windows: manual {day}:00 / {evening}:00 / {night}:00'**
+  String windowsManualSummary(String day, String evening, String night);
+
   /// No description provided for @hardwareSettingsSaved.
   ///
   /// In en, this message translates to:
@@ -980,6 +1106,18 @@ abstract class AppLocalizations {
   /// **'GRID (USB)'**
   String get gridUsb;
 
+  /// No description provided for @modeFromSolar.
+  ///
+  /// In en, this message translates to:
+  /// **'From solar'**
+  String get modeFromSolar;
+
+  /// No description provided for @modeFromGrid.
+  ///
+  /// In en, this message translates to:
+  /// **'From grid'**
+  String get modeFromGrid;
+
   /// No description provided for @utilityFirstUsb.
   ///
   /// In en, this message translates to:
@@ -997,6 +1135,114 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Solar + Utility (SNU)'**
   String get solarUtilitySnu;
+
+  /// No description provided for @presetDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled'**
+  String get presetDisabled;
+
+  /// No description provided for @presetEnabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Enabled'**
+  String get presetEnabled;
+
+  /// No description provided for @presetOutputUsb.
+  ///
+  /// In en, this message translates to:
+  /// **'USB - Grid priority'**
+  String get presetOutputUsb;
+
+  /// No description provided for @presetOutputSub.
+  ///
+  /// In en, this message translates to:
+  /// **'SUB - Solar first'**
+  String get presetOutputSub;
+
+  /// No description provided for @presetOutputSbu.
+  ///
+  /// In en, this message translates to:
+  /// **'SBU - Solar/Battery priority'**
+  String get presetOutputSbu;
+
+  /// No description provided for @presetChargerCso.
+  ///
+  /// In en, this message translates to:
+  /// **'CSO - Solar first'**
+  String get presetChargerCso;
+
+  /// No description provided for @presetChargerSnu.
+  ///
+  /// In en, this message translates to:
+  /// **'SNU - Solar + Utility'**
+  String get presetChargerSnu;
+
+  /// No description provided for @presetChargerOso.
+  ///
+  /// In en, this message translates to:
+  /// **'OSO - Solar only'**
+  String get presetChargerOso;
+
+  /// No description provided for @presetChargerUtilityOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Utility only'**
+  String get presetChargerUtilityOnly;
+
+  /// No description provided for @presetFrequency50Hz.
+  ///
+  /// In en, this message translates to:
+  /// **'50 Hz'**
+  String get presetFrequency50Hz;
+
+  /// No description provided for @presetFrequency60Hz.
+  ///
+  /// In en, this message translates to:
+  /// **'60 Hz'**
+  String get presetFrequency60Hz;
+
+  /// No description provided for @presetAcInputAplWide.
+  ///
+  /// In en, this message translates to:
+  /// **'APL - Wide range'**
+  String get presetAcInputAplWide;
+
+  /// No description provided for @presetAcInputUpsNarrow.
+  ///
+  /// In en, this message translates to:
+  /// **'UPS - Narrow range'**
+  String get presetAcInputUpsNarrow;
+
+  /// No description provided for @presetBatteryTypeAgm.
+  ///
+  /// In en, this message translates to:
+  /// **'AGM'**
+  String get presetBatteryTypeAgm;
+
+  /// No description provided for @presetBatteryTypeFlooded.
+  ///
+  /// In en, this message translates to:
+  /// **'Flooded'**
+  String get presetBatteryTypeFlooded;
+
+  /// No description provided for @presetBatteryTypeUser.
+  ///
+  /// In en, this message translates to:
+  /// **'User-defined'**
+  String get presetBatteryTypeUser;
+
+  /// No description provided for @presetBatteryTypeLib.
+  ///
+  /// In en, this message translates to:
+  /// **'LIB (Lithium)'**
+  String get presetBatteryTypeLib;
+
+  /// No description provided for @presetBatteryTypeLife.
+  ///
+  /// In en, this message translates to:
+  /// **'LiFe'**
+  String get presetBatteryTypeLife;
 
   /// No description provided for @signInCloud.
   ///

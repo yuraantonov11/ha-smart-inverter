@@ -447,6 +447,76 @@ class AppLocalizationsUk extends AppLocalizations {
   String get inverterPowerLabel => 'Потужність інвертора';
 
   @override
+  String get locationPreset => 'Пресет локації';
+
+  @override
+  String get latitudeLabel => 'Широта';
+
+  @override
+  String get longitudeLabel => 'Довгота';
+
+  @override
+  String get timeZoneLabel => 'Часовий пояс';
+
+  @override
+  String get astronomicalWindowsTitle =>
+      'Астрономічні вікна (схід/захід сонця)';
+
+  @override
+  String get astronomicalWindowsAutoSubtitle =>
+      'Автовікна за географічними координатами';
+
+  @override
+  String get astronomicalWindowsManualSubtitle =>
+      'Використовувати ручні часові межі';
+
+  @override
+  String get manualDayStartHour => 'Ручний старт дня';
+
+  @override
+  String get manualEveningStartHour => 'Ручний старт вечора';
+
+  @override
+  String get manualNightStartHour => 'Ручний старт ночі';
+
+  @override
+  String get geoPresetKyiv => 'Київ, UA';
+
+  @override
+  String get geoPresetLviv => 'Львів, UA';
+
+  @override
+  String get geoPresetOdesa => 'Одеса, UA';
+
+  @override
+  String get geoPresetDnipro => 'Дніпро, UA';
+
+  @override
+  String get geoPresetKharkiv => 'Харків, UA';
+
+  @override
+  String get geoPresetWarsaw => 'Варшава, PL';
+
+  @override
+  String get geoPresetBerlin => 'Берлін, DE';
+
+  @override
+  String get geoPresetCustom => 'Кастомно (вручну)';
+
+  @override
+  String geoSummary(String latitude, String longitude, String timeZone) {
+    return 'Geo: $latitude, $longitude ($timeZone)';
+  }
+
+  @override
+  String get windowsAstronomicalAuto => 'Вікна: астрономічні (авто)';
+
+  @override
+  String windowsManualSummary(String day, String evening, String night) {
+    return 'Вікна: вручну $day:00 / $evening:00 / $night:00';
+  }
+
+  @override
   String get hardwareSettingsSaved => 'Параметри обладнання збережено!';
 
   @override
@@ -496,6 +566,12 @@ class AppLocalizationsUk extends AppLocalizations {
   String get gridUsb => 'МЕРЕЖА (USB)';
 
   @override
+  String get modeFromSolar => 'Від сонця';
+
+  @override
+  String get modeFromGrid => 'Від мережі';
+
+  @override
   String get utilityFirstUsb => 'Мережа (Utility First / USB)';
 
   @override
@@ -503,6 +579,60 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get solarUtilitySnu => 'Сонце + Мережа (SNU)';
+
+  @override
+  String get presetDisabled => 'Вимкнено';
+
+  @override
+  String get presetEnabled => 'Увімкнено';
+
+  @override
+  String get presetOutputUsb => 'USB - Пріоритет мережі';
+
+  @override
+  String get presetOutputSub => 'SUB - Пріоритет сонця';
+
+  @override
+  String get presetOutputSbu => 'SBU - Пріоритет сонця/АКБ';
+
+  @override
+  String get presetChargerCso => 'CSO - Спочатку сонце';
+
+  @override
+  String get presetChargerSnu => 'SNU - Сонце + Мережа';
+
+  @override
+  String get presetChargerOso => 'OSO - Тільки сонце';
+
+  @override
+  String get presetChargerUtilityOnly => 'Тільки мережа';
+
+  @override
+  String get presetFrequency50Hz => '50 Гц';
+
+  @override
+  String get presetFrequency60Hz => '60 Гц';
+
+  @override
+  String get presetAcInputAplWide => 'APL - Широкий діапазон';
+
+  @override
+  String get presetAcInputUpsNarrow => 'UPS - Вузький діапазон';
+
+  @override
+  String get presetBatteryTypeAgm => 'AGM';
+
+  @override
+  String get presetBatteryTypeFlooded => 'Flooded (залитий)';
+
+  @override
+  String get presetBatteryTypeUser => 'User (власні параметри)';
+
+  @override
+  String get presetBatteryTypeLib => 'LIB (літієвий)';
+
+  @override
+  String get presetBatteryTypeLife => 'LiFe';
 
   @override
   String get signInCloud => 'Увійдіть до Siseli Cloud';

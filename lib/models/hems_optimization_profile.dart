@@ -1,8 +1,6 @@
 /// HEMS Optimization Profile — unified model for all tuning parameters
-/// Consolidates: base runables + auto-tuning + learned drift
+/// Consolidates: base tunables + auto-tuning + learned drift
 library;
-
-import 'package:flutter/foundation.dart';
 
 /// Optimization strategy for HEMS decision-making
 enum HemsOptimizationStrategy {
@@ -15,10 +13,10 @@ enum HemsOptimizationStrategy {
 
 /// Daily/seasonal time windows (computed from sunrise/sunset or manual)
 class DailyTimeWindows {
-  DateTime dayStart; // sunrise - 1h (or 06:00 fallback)
-  DateTime dayEnd; // sunset + 1h (or 20:00 fallback)
-  DateTime eveningPeakStart; // sunset - 1h (or 17:00 fallback)
-  DateTime nightStart; // sunset + 1h (or 23:00 fallback)
+  DateTime dayStart;
+  DateTime dayEnd;
+  DateTime eveningPeakStart;
+  DateTime nightStart;
 
   DailyTimeWindows({
     required this.dayStart,
@@ -39,14 +37,14 @@ class DailyTimeWindows {
     );
   }
 
-  /// Fallback for when astronomical data unavailable
   factory DailyTimeWindows.defaultTemperate() {
-    // Broad assumptions for 50°N latitude
+    final now = DateTime.now();
     return DailyTimeWindows(
-      dayStart: DateTime.now().copyWith(hour: 6, minute: 0),
-      dayEnd: DateTime.now().copyWith(hour: 20, minute: 0),
-      eveningPeakStart: DateTime.now().copyWith(hour: 17, minute: 0),
-      nightStart: DateTime.now().copyWith(hour: 23, minute: 0),
+      dayStart: now.copyWith(hour: 6, minute: 0, second: 0, millisecond: 0),
+      dayEnd: now.copyWith(hour: 20, minute: 0, second: 0, millisecond: 0),
+      eveningPeakStart:
+          now.copyWith(hour: 17, minute: 0, second: 0, millisecond: 0),
+      nightStart: now.copyWith(hour: 23, minute: 0, second: 0, millisecond: 0),
     );
   }
 
@@ -61,8 +59,8 @@ class DailyTimeWindows {
 /// Battery health / degradation model
 class BatteryHealthModel {
   DateTime installationDate;
-  int? cycleCountEstimated; // user input or inferredFromInverter
-  double? healthPercentage; // 100% = new, <80% = somewhat degraded
+  int? cycleCountEstimated;
+  double? healthPercentage; // 100% = new
   DateTime lastHealthCheckAt;
 
   BatteryHealthModel({
@@ -72,7 +70,6 @@ class BatteryHealthModel {
     DateTime? lastHealthCheckAt,
   }) : lastHealthCheckAt = lastHealthCheckAt ?? DateTime.now();
 
-  /// Adaptive reserve SOC based on battery age/health
   double getAdaptiveReserveSoc({
     double baseReserveSoc = 20.0,
     double maxReserveSoc = 35.0,
@@ -80,24 +77,18 @@ class BatteryHealthModel {
     final ageYears = DateTime.now().difference(installationDate).inDays / 365.0;
     final healthFactor = (healthPercentage ?? 100.0) / 100.0;
 
-    // Age-based: older batteries get higher reserve
-    var agePenalty = 0.0;
-    if (agevar< 2) {
-      agePenalty = -2; // aggressiv {
-    }
-       (18%)
-    else if (ageYears < 5)
-
-    } agePenalty = 0; // normal (20%)
-    else if (ageYears, < 8)
+    double agePenalty;
+    if (ageYears < 2) {
+      agePenalty = -2; // aggressive (18%)
+    } else if (ageYears < 5) {
+      agePenalty = 0; // normal (20%)
+    } else if (ageYears < 8) {
       agePenalty = 3; // cautious (23%)
-    else
+    } else {
       agePenalty = 8; // very old (28%)
+    }
 
-    // Health-based: degraded battery needs higher safety margin
-    final healthPenalty =
-        (1.0 - healthFactor) * 10.0; // 0–10% depending on wear
-
+    final healthPenalty = (1.0 - healthFactor) * 10.0;
     final adaptive = baseReserveSoc + agePenalty + healthPenalty;
     return adaptive.clamp(baseReserveSoc, maxReserveSoc);
   }
@@ -108,7 +99,7 @@ class ThermalLoadModel {
   double targetTemperatureC;
   double currentTemperatureC;
   double boilerCapacityKwh;
-  double heatingEfficiency; // 0.85 typical for electric resistive
+  double heatingEfficiency;
   DateTime lastHeatingAt;
 
   ThermalLoadModel({
@@ -119,15 +110,11 @@ class ThermalLoadModel {
     DateTime? lastHeatingAt,
   }) : lastHeatingAt = lastHeatingAt ?? DateTime.now();
 
-  /// Energy needed to reach target from current temp (Wh)
   double getHeatingDeficitWh() {
     if (currentTemperatureC >= targetTemperatureC) return 0.0;
     final tempDelta = targetTemperatureC - currentTemperatureC;
-    // Assume ~4.2 kJ per liter per °C (water specific heat)
-    // For 200L boiler: 200 * 4.2 * tempDelta = 840 * tempDelta kJ
-    // Converting to Wh: kJ / 3.6 = Wh
     final theoreticalWh =
-        (boilerCapacityKwh * 1e6 / 3600.0) * tempDelta / 100.0; // rough formula
+        (boilerCapacityKwh * 1e6 / 3600.0) * tempDelta / 100.0;
     return theoreticalWh / heatingEfficiency;
   }
 
@@ -136,8 +123,8 @@ class ThermalLoadModel {
 
 /// Tariff forecast (prices for grid energy, day-ahead or TOU)
 class TariffForecastData {
-  final Map<DateTime, double> pricePerKwh; // EUR/kWh or local currency
-  final String externalSource; // 'nordpool', 'local_fixed', 'manual', etc.
+  final Map<DateTime, double> pricePerKwh;
+  final String externalSource;
   final DateTime fetchedAt;
 
   TariffForecastData({
@@ -146,47 +133,39 @@ class TariffForecastData {
     DateTime? fetchedAt,
   }) : fetchedAt = fetchedAt ?? DateTime.now();
 
-  /// Find cheapest charging window in next N hours
-  DateTime? getNextCheapWindow(
-    Duration minDuration,
-    double priceMargin, // e.g. 1.2 = max 120% of median
-  ) {
-    if (pricePerKwh.isEmpty) return null;
+  double get _averagePrice {
+    if (pricePerKwh.isEmpty) return 0.0;
+    return pricePerKwh.values.reduce((a, b) => a + b) / pricePerKwh.length;
+  }
 
-    final prices = pricePerKwh.values.toList();
-    final median = prices.isEmpty ? 0.0 : prices[prices.length ~/ 2];
+  DateTime? getNextCheapWindow(Duration minDuration, double priceMargin) {
+    if (pricePerKwh.isEmpty) return null;
+    final prices = pricePerKwh.values.toList()..sort();
+    final median = prices[prices.length ~/ 2];
     final maxPrice = median * priceMargin;
 
-    for (final entry in pricePerKwh.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key))) {
+    for (final entry in (pricePerKwh.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key)))) {
       if (entry.value <= maxPrice) {
-        // Check if window is long enough
-        var endTime = entry.key;
         var cheapDuration = Duration.zero;
-
         for (final futureEntry in pricePerKwh.entries) {
           if (futureEntry.key.isAfter(entry.key) &&
               futureEntry.value <= maxPrice) {
-            endTime = futureEntry.key;
-            cheapDuration = endTime.difference(entry.key);
+            cheapDuration = futureEntry.key.difference(entry.key);
           }
         }
-
-        if (cheapDuration >= minDuration) {
-          return entry.key;
-        }
+        if (cheapDuration >= minDuration) return entry.key;
       }
     }
     return null;
   }
 
-  /// Estimate cost (EUR/kWh × kW × hours)
   double estimateCost(DateTime start, DateTime end, double powerKw) {
     var totalCost = 0.0;
     var current = start;
     while (current.isBefore(end)) {
-      final price = pricePerKwh[current] ?? pricePerKwh.values.average;
-      totalCost += price * powerKw * (1.0 / 3600.0); // per second cost
+      final price = pricePerKwh[current] ?? _averagePrice;
+      totalCost += price * powerKw * (1.0 / 3600.0);
       current = current.add(const Duration(seconds: 1));
     }
     return totalCost;
@@ -195,10 +174,8 @@ class TariffForecastData {
 
 /// Demand forecast (predicted load for future hours/days)
 class DemandForecastData {
-  // Map of hour (0–23) to percentile-based load predictions
-  // E.g., { 0: {p50: 300W, p75: 450W}, 1: {...}, ... }
   final Map<int, DemandMetrics> hourlyMetrics;
-  final String season; // 'winter', 'spring', 'summer', 'autumn'
+  final String season;
   final DateTime learnedAt;
 
   DemandForecastData({
@@ -207,38 +184,25 @@ class DemandForecastData {
     DateTime? learnedAt,
   }) : learnedAt = learnedAt ?? DateTime.now();
 
-  /// Predict load for a given hour, accounting for patterns
-  double predictLoad(
-    int hour, {
-    bool isWeekend = false,
-    int? heatingDemanAheadDays,
-  }) {
-    var metrics = hourlyMetrics[hour];
-    if (metrics == null) return 500.0; // fallback
-
-    // Base prediction from median
+  double predictLoad(int hour,
+      {bool isWeekend = false, int? heatingDemandAheadDays}) {
+    final metrics = hourlyMetrics[hour];
+    if (metrics == null) return 500.0;
     var predicted = metrics.p50;
-
-    // Adjust for season / heating
-    if (season == 'winter' && (heatingDemanAheadDays ?? 0) > 0) {
-      predicted *= 1.3; // winter heating pump demand
+    if (season == 'winter' && (heatingDemandAheadDays ?? 0) > 0) {
+      predicted *= 1.3;
     }
-
-    // Weekends typically lower than weekdays
-    if (isWeekend) {
-      predicted *= 0.85;
-    }
-
+    if (isWeekend) predicted *= 0.85;
     return predicted;
   }
 }
 
 /// Metrics for a given hour (learned from history)
 class DemandMetrics {
-  double p25; // 25th percentile (Wh)
-  double p50; // median (Wh)
-  double p75; // 75th percentile (Wh)
-  double p90; // 90th percentile (Wh)
+  double p25;
+  double p50;
+  double p75;
+  double p90;
 
   DemandMetrics({
     required this.p25,
@@ -248,17 +212,21 @@ class DemandMetrics {
   });
 
   static DemandMetrics fromHistory(List<double> samples) {
-    samples.sort();
+    final sorted = List<double>.from(samples)..sort();
+    final len = sorted.length;
+    if (len == 0) {
+      return DemandMetrics(p25: 0, p50: 0, p75: 0, p90: 0);
+    }
     return DemandMetrics(
-      p25: samples[(samples.length * 0.25).toInt()],
-      p50: samples[(samples.length * 0.50).toInt()],
-      p75: samples[(samples.length * 0.75).toInt()],
-      p90: samples[(samples.length * 0.90).toInt()],
+      p25: sorted[(len * 0.25).toInt().clamp(0, len - 1)],
+      p50: sorted[(len * 0.50).toInt().clamp(0, len - 1)],
+      p75: sorted[(len * 0.75).toInt().clamp(0, len - 1)],
+      p90: sorted[(len * 0.90).toInt().clamp(0, len - 1)],
     );
   }
 }
 
-/// Grid reliability forecast (planned outages, instability)
+/// Grid reliability forecast
 class GridReliabilityForecast {
   final List<GridOutageEvent> plannedOutages;
   final List<GridInstabilityEvent> instabilityZones;
@@ -270,18 +238,14 @@ class GridReliabilityForecast {
     DateTime? forecastedAt,
   }) : forecastedAt = forecastedAt ?? DateTime.now();
 
-  /// Next planned outage within N hours
   GridOutageEvent? getNextOutage(Duration within) {
     final soon = DateTime.now().add(within);
     for (final outage in plannedOutages) {
-      if (outage.startTime.isBefore(soon)) {
-        return outage;
-      }
+      if (outage.startTime.isBefore(soon)) return outage;
     }
     return null;
   }
 
-  /// Should we precharge battery for stability?
   bool shouldPrechargeForStability() {
     final nextOutage = getNextOutage(const Duration(hours: 6));
     final instability = instabilityZones.any((e) => e.isActiveNow());
@@ -292,7 +256,7 @@ class GridReliabilityForecast {
 class GridOutageEvent {
   DateTime startTime;
   DateTime endTime;
-  String reason; // 'maintenance', 'weather', 'unknown'
+  String reason;
 
   GridOutageEvent({
     required this.startTime,
@@ -304,7 +268,7 @@ class GridOutageEvent {
 class GridInstabilityEvent {
   DateTime startTime;
   DateTime endTime;
-  double volatilityScore; // 0–1, higher = more unstable
+  double volatilityScore;
 
   GridInstabilityEvent({
     required this.startTime,
@@ -320,35 +284,25 @@ class GridInstabilityEvent {
 
 /// Comprehensive tuning profile
 class HemsOptimizationProfile {
-  // Identity
   final String systemId;
-  final double pvPeakW; // 1000 = 1 kW
+  final double pvPeakW;
   final double batteryCapacityAh;
   double get batteryCapacityKwh => batteryCapacityAh * 51.2 / 1000.0;
 
-  // Strategy
   HemsOptimizationStrategy optimizationStrategy;
-
-  // Time windows
   DailyTimeWindows timeWindows;
-
-  // System conditions
   BatteryHealthModel batteryHealth;
   ThermalLoadModel? thermalLoad;
-
-  // Forecasts
   TariffForecastData? tariffForecast;
   DemandForecastData? demandForecast;
   GridReliabilityForecast? gridForecast;
 
-  // Auto-computed runables (override defaults)
   double? _adaptivePvSurplusEnterW;
   double? _adaptiveReserveSoc;
   double? _adaptiveModeHold;
 
-  // Learning / drift tracking
   DateTime lastAutotuneAt;
-  Map<String, double> learningMetrics; // variance, flappingCount, etc.
+  Map<String, double> learningMetrics;
 
   HemsOptimizationProfile({
     required this.systemId,
@@ -356,58 +310,46 @@ class HemsOptimizationProfile {
     required this.batteryCapacityAh,
     this.optimizationStrategy = HemsOptimizationStrategy.hybrid,
     DailyTimeWindows? timeWindows,
-    BatteryHthis.yHealth,
-    Therthis.lLoad,
-    TariffForthis.ecast,
-    DemandForthis.,
+    BatteryHealthModel? batteryHealth,
+    this.thermalLoad,
+    this.tariffForecast,
+    this.demandForecast,
     this.gridForecast,
     DateTime? lastAutotuneAt,
     Map<String, double>? learningMetrics,
   })  : timeWindows = timeWindows ?? DailyTimeWindows.defaultTemperate(),
         batteryHealth = batteryHealth ??
-            Batteryorecast,
+            BatteryHealthModel(installationDate: DateTime.now()),
         lastAutotuneAt = lastAutotuneAt ?? DateTime.now(),
         learningMetrics = learningMetrics ?? {};
 
-  /// Get adaptive PV surplus threshold for current time
   double getAdaptivePvSurplusEnter() {
     if (_adaptivePvSurplusEnterW != null) return _adaptivePvSurplusEnterW!;
 
-    // Formula: 10% of peak + 5% of avg daily load
-    final now = DateTime.now();
+    final hour = DateTime.now().hour;
     final baseThreshold = 0.10 * pvPeakW;
-
-    // Time-of-day stability factor
-    final hour = now.hour;
     final stabilityFactor = (hour < 10 || hour > 16) ? 1.5 : 0.9;
-
-    // Get recent variance if available
     final variance = learningMetrics['pvVariance'] ?? 0.0;
     final variancePenalty = variance > 200 ? 1.3 : 1.0;
 
     return (baseThreshold * stabilityFactor * variancePenalty).clamp(70, 600);
   }
 
-  /// Get adaptive reserve SOC
   double getAdaptiveReserveSoc() {
     if (_adaptiveReserveSoc != null) return _adaptiveReserveSoc!;
     return batteryHealth.getAdaptiveReserveSoc();
   }
 
-  /// Get adaptive mode hold duration
   Duration getAdaptiveModeHold() {
     if (_adaptiveModeHold != null) {
       return Duration(minutes: _adaptiveModeHold!.toInt());
     }
-
-    // If high PV variance (cloudy), shorten dwell; clear sky, lengthen it
     final variance = learningMetrics['pvVariance'] ?? 0.0;
-    if (variance > 300) return const Duration(minutes: 8); // cloudy
-    if (variance < 50) return const Duration(minutes: 25); // clear
-    return const Duration(minutes: 15); // normal
+    if (variance > 300) return const Duration(minutes: 8);
+    if (variance < 50) return const Duration(minutes: 25);
+    return const Duration(minutes: 15);
   }
 
-  /// Mark profile as "just auto-tuned"
   void markAutotuned() {
     lastAutotuneAt = DateTime.now();
   }
