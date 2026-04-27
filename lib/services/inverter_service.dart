@@ -581,8 +581,16 @@ class InverterService {
           '⚠️ monthly.summary: load/grid zeros from chart API (load=${loadWh.toStringAsFixed(0)}, grid=${gridWh.toStringAsFixed(0)}), falling back to telemetry aggregation');
       final telemetry = await _aggregateMonthFromTelemetry(targetDate);
       if (telemetry != null) {
-        if (loadWh <= 0) loadWh = telemetry.loadWh;
-        if (gridWh <= 0) gridWh = telemetry.gridWh;
+        if (loadWh <= 0) {
+          loadWh = telemetry.loadWh;
+          app_log.LogService.log(
+              '✅ Telemetry load: ${loadWh.toStringAsFixed(0)}Wh');
+        }
+        if (gridWh <= 0) {
+          gridWh = telemetry.gridWh;
+          app_log.LogService.log(
+              '✅ Telemetry grid: ${gridWh.toStringAsFixed(0)}Wh');
+        }
         app_log.LogService.log(
             '✅ monthly.summary telemetry fallback: load=${loadWh.toStringAsFixed(0)}Wh, grid=${gridWh.toStringAsFixed(0)}Wh');
       }
@@ -624,6 +632,15 @@ class InverterService {
         totalGridWh += energy['grid'] ?? 0.0;
       }
       chunkStart = chunkStart.add(const Duration(days: 5, seconds: 1));
+    }
+
+    // Validate grid <= load relationship even from telemetry
+    if (totalGridWh > totalLoadWh && totalLoadWh > 0 && totalGridWh > 0) {
+      app_log.LogService.log(
+          '⚠️ ENERGY DATA SWAP DETECTED IN TELEMETRY: load($totalLoadWh Wh) < grid($totalGridWh Wh), fields were swapped, correcting...');
+      final temp = totalGridWh;
+      totalGridWh = totalLoadWh;
+      totalLoadWh = temp;
     }
 
     app_log.LogService.log(
@@ -1328,11 +1345,17 @@ class InverterService {
         }
       }
 
-      double gridW;
+      var gridW = 0.0;
       if (i < gridPower.length && gridPower[i] != null) {
         gridW = (gridPower[i] as num).toDouble() * 1000.0;
-      } else {
-        final derivedGrid = loadW + (batteryW > 0 ? batteryW : 0.0) - pvW;
+      }
+
+      // If gridW is missing or seems invalid (grid > load+battery), derive it
+      final totalDemand = loadW + (batteryW > 0 ? batteryW : 0.0);
+      final derivedGrid = totalDemand - pvW;
+
+      if (gridW <= 0 || (gridW > totalDemand && derivedGrid > 0)) {
+        // Use derived value if grid is missing or suspiciously high
         gridW = derivedGrid > 0 ? derivedGrid : 0.0;
       }
 
