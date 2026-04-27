@@ -529,15 +529,30 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> _updateMonthlyEconomics({bool force = false}) async {
-    if (service.currentStationId == null) return;
-    final now = DateTime.now();
-    if (!force &&
-        _lastEconomicsRefreshAt != null &&
-        now.difference(_lastEconomicsRefreshAt!) <
-            const Duration(minutes: 20)) {
+    if (service.currentStationId == null) {
+      LogService.log('⚠️ monthly economics: no station ID, skipping');
       return;
     }
+    final now = DateTime.now();
+
+    // Force update if values are null (first load) or after 20 minutes
+    final shouldUpdate = force ||
+        _monthLoadWh == null ||
+        _monthGridWh == null ||
+        (_lastEconomicsRefreshAt != null &&
+            now.difference(_lastEconomicsRefreshAt!) >=
+                const Duration(minutes: 20));
+
+    if (!shouldUpdate) {
+      LogService.log(
+          '📊 monthly economics: skipping (cached, force=$force, lastRefresh=${_lastEconomicsRefreshAt?.toString() ?? "never"})');
+      return;
+    }
+
     try {
+      LogService.log(
+          '📊 monthly economics: fetching (force=$force, loadWh=${_monthLoadWh?.toStringAsFixed(0) ?? "null"}, gridWh=${_monthGridWh?.toStringAsFixed(0) ?? "null"})');
+
       final summary = await service.getMonthlyEnergySummary(now);
       final dailyEnergy = await service.getMonthlyDailyEnergy(now);
 
@@ -556,17 +571,24 @@ class AppStateProvider extends ChangeNotifier {
       if (summary != null) {
         _monthLoadWh = summary.loadWh;
         _monthGridWh = summary.gridWh;
+        LogService.log(
+            '✅ monthly economics: summary loaded: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh, saved=${monthSavedUah?.toStringAsFixed(1) ?? "null"}');
       } else if (dailyEnergy.isNotEmpty) {
         _monthLoadWh =
             dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.loadWh);
         _monthGridWh =
             dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.gridWh);
+        LogService.log(
+            '✅ monthly economics: aggregated from daily: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh, saved=${monthSavedUah?.toStringAsFixed(1) ?? "null"}');
+      } else {
+        LogService.log(
+            '⚠️ monthly economics: no data available (summary=null, daily_count=${dailyEnergy.length})');
       }
 
       _lastEconomicsRefreshAt = now;
       notifyListeners();
     } catch (e) {
-      LogService.log('⚠️ monthly economics refresh failed', error: e);
+      LogService.log('❌ monthly economics refresh failed', error: e);
     }
   }
 
@@ -1075,6 +1097,9 @@ class AppStateProvider extends ChangeNotifier {
         await _updateConsumptionStats();
       }
       await _updateMonthlyEconomics();
+      // Update CO2 reduction based on today's energy data (async, non-blocking)
+      // ignore: unawaited_futures
+      service.updateDailyEnergyStats(DateTime.now());
     } else {
       _consecutiveRealtimeNulls++;
       final now = DateTime.now();

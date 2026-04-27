@@ -26,6 +26,9 @@ class InverterService {
   double totalEnergy = 0.0;
   double co2Reduction = 0.0;
 
+  // Carbon emission factor (kg CO2 per kWh) - typical for grid electricity in Ukraine
+  static const double _carbonEmissionFactorKgPerKwh = 0.42;
+
   // БЕЗПЕКА: Rate limiting для запобігання DoS атакам
   final Map<String, DateTime> _lastRequestTime = {};
   static const _minRequestIntervalMs = 1000; // 1 запит за секунду мінімум
@@ -1612,5 +1615,47 @@ class InverterService {
     if (value == null) return 0.0;
     if (value is num) return value.toDouble();
     return double.tryParse(value.toString()) ?? 0.0;
+  }
+
+  /// Updates CO2 reduction based on current daily and total energy values
+  /// Called after fetching chart data to calculate CO2 emissions avoided
+  void updateCo2Reduction() {
+    // CO2 reduction is based on total PV energy generated (in Wh, convert to kWh)
+    final totalEnergyKwh = totalEnergy / 1000.0;
+    co2Reduction = totalEnergyKwh * _carbonEmissionFactorKgPerKwh;
+    app_log.LogService.log(
+        '♻️ CO2 reduction updated: ${co2Reduction.toStringAsFixed(2)} kg CO2 saved (total: ${totalEnergyKwh.toStringAsFixed(2)} kWh)');
+  }
+
+  /// Updates daily energy based on chart data
+  void updateDailyEnergyFromChart(Map<String, List<FlSpot>> chartData) {
+    final pvSpots = chartData['pv'] ?? [];
+    if (pvSpots.isEmpty) {
+      dailyEnergy = 0.0;
+    } else {
+      // Sum all PV energy points for the day (already in Wh)
+      dailyEnergy = pvSpots.fold<double>(
+          0.0, (sum, spot) => sum + (spot.y.isFinite ? spot.y : 0.0));
+    }
+  }
+
+  /// Fetches and updates daily energy from chart data, then calculates CO2
+  /// Call this periodically to keep CO2 values fresh
+  Future<void> updateDailyEnergyStats(DateTime targetDate) async {
+    if (currentStationId == null || deviceSn == null) {
+      return;
+    }
+
+    try {
+      final chartData = await getChartData(0, targetDate);
+      if (chartData['pv'] != null && (chartData['pv']?.isNotEmpty ?? false)) {
+        updateDailyEnergyFromChart(chartData);
+        // For CO2, use daily energy as total for single day calculation
+        totalEnergy = dailyEnergy;
+        updateCo2Reduction();
+      }
+    } catch (e) {
+      app_log.LogService.log('⚠️ updateDailyEnergyStats failed', error: e);
+    }
   }
 }

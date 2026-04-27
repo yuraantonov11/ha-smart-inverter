@@ -143,7 +143,9 @@ class _StatsSection extends StatelessWidget {
       ),
       AppStatCard(
         label: l10n.moneySavedMonth,
-        value: savedMoney == null ? '--' : savedMoney.toStringAsFixed(0),
+        value: savedMoney == null || savedMoney == 0.0
+            ? '0.0'
+            : savedMoney.toStringAsFixed(1),
         unit: l10n.currencyUah,
         icon: Icons.savings_rounded,
         color: const Color(0xFF10B981),
@@ -151,7 +153,9 @@ class _StatsSection extends StatelessWidget {
       ),
       AppStatCard(
         label: l10n.paymentThisMonth,
-        value: monthToPay == null ? '--' : monthToPay.toStringAsFixed(0),
+        value: monthToPay == null || monthToPay == 0.0
+            ? '0.0'
+            : monthToPay.toStringAsFixed(1),
         unit: l10n.currencyUah,
         icon: Icons.receipt_long_rounded,
         color: const Color(0xFFFB923C),
@@ -159,9 +163,9 @@ class _StatsSection extends StatelessWidget {
       ),
       AppStatCard(
         label: l10n.projectedSavedMonth,
-        value: projectedSavedMoney == null
-            ? '--'
-            : projectedSavedMoney.toStringAsFixed(0),
+        value: projectedSavedMoney == null || projectedSavedMoney == 0.0
+            ? '0.0'
+            : projectedSavedMoney.toStringAsFixed(1),
         unit: l10n.currencyUah,
         icon: Icons.trending_up_rounded,
         color: const Color(0xFF34D399),
@@ -169,9 +173,9 @@ class _StatsSection extends StatelessWidget {
       ),
       AppStatCard(
         label: l10n.projectedPaymentMonth,
-        value: projectedMonthToPay == null
-            ? '--'
-            : projectedMonthToPay.toStringAsFixed(0),
+        value: projectedMonthToPay == null || projectedMonthToPay == 0.0
+            ? '0.0'
+            : projectedMonthToPay.toStringAsFixed(1),
         unit: l10n.currencyUah,
         icon: Icons.calendar_month_rounded,
         color: const Color(0xFFF59E0B),
@@ -249,9 +253,20 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
                   color: Theme.of(context).colorScheme.primary),
               const SizedBox(width: AppTheme.spacingS),
               Expanded(
-                child: Text(
-                  l10n.monthlyEnergyBreakdown,
-                  style: Theme.of(context).textTheme.titleMedium,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      l10n.monthlyEnergyBreakdown,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    Text(
+                      '${DateTime.now().month.toString().padLeft(2, '0')}.${DateTime.now().year}',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: Theme.of(context).hintColor,
+                          ),
+                    ),
+                  ],
                 ),
               ),
               Tooltip(
@@ -328,13 +343,13 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
               _BreakdownItem(
                 label: l10n.monthGridCost,
                 value:
-                    '${gridCost == null ? '--' : gridCost.toStringAsFixed(0)} ${l10n.currencyUah}',
+                    '${gridCost == null || gridCost == 0.0 ? '0.0' : gridCost.toStringAsFixed(1)} ${l10n.currencyUah}',
                 color: AppTheme.gridColor,
               ),
               _BreakdownItem(
                 label: l10n.monthSavedCost,
                 value:
-                    '${savedCost == null ? '--' : savedCost.toStringAsFixed(0)} ${l10n.currencyUah}',
+                    '${savedCost == null || savedCost == 0.0 ? '0.0' : savedCost.toStringAsFixed(1)} ${l10n.currencyUah}',
                 color: const Color(0xFF10B981),
               ),
               _BreakdownItem(
