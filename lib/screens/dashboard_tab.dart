@@ -279,11 +279,14 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 4),
-          Text(
-            '${l10n.monthLoadEnergy} = ${l10n.monthGridImport} + ${l10n.monthSelfConsumed}',
-            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Theme.of(context).hintColor,
-                ),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Text(
+              '${l10n.monthLoadEnergy} = ${l10n.monthGridImport} + ${l10n.monthSelfConsumed}',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).hintColor,
+                  ),
+            ),
           ),
           const SizedBox(height: AppTheme.spacingS),
           ClipRRect(

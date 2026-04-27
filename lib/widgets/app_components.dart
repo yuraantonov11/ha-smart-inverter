@@ -342,30 +342,46 @@ class AppStatCard extends StatelessWidget {
                 ),
           ),
           const SizedBox(height: AppTheme.spacingXS),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Text(
-                value,
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
+          ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: double.infinity),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      value,
+                      style:
+                          Theme.of(context).textTheme.headlineSmall?.copyWith(
+                                fontWeight: FontWeight.w700,
+                              ),
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 1,
                     ),
-              ),
-              if (unit != null) ...[
-                const SizedBox(width: AppTheme.spacingXS),
-                Text(
-                  unit!,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context)
-                            .textTheme
-                            .bodySmall
-                            ?.color
-                            ?.withValues(alpha: 0.85),
+                  ),
+                  if (unit != null) ...[
+                    const SizedBox(width: AppTheme.spacingXS),
+                    Flexible(
+                      child: Text(
+                        unit!,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.color
+                                  ?.withValues(alpha: 0.85),
+                            ),
+                        overflow: TextOverflow.ellipsis,
+                        maxLines: 1,
                       ),
-                ),
-              ],
-            ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ),
         ],
       ),
