@@ -542,7 +542,7 @@ class InverterService {
 
   Future<({double loadWh, double gridWh})?> getMonthlyEnergySummary(
       DateTime targetDate) async {
-    if (currentStationId == null || deviceSn == null) return null;
+    if (currentStationId == null) return null;
 
     final monthKey =
         '${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}';
@@ -619,7 +619,7 @@ class InverterService {
 
   Future<List<({int day, double loadWh, double gridWh})>> getMonthlyDailyEnergy(
       DateTime targetDate) async {
-    if (currentStationId == null || deviceSn == null) return const [];
+    if (currentStationId == null) return const [];
 
     final chart = await getChartData(2, targetDate);
     final loadSpots = chart['load'] ?? const <FlSpot>[];

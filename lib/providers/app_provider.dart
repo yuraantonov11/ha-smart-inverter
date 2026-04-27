@@ -510,19 +510,26 @@ class AppStateProvider extends ChangeNotifier {
     }
     var total = 0.0;
     var night = 0.0;
+    var day = 0.0;
     for (var h = 0; h < 24; h++) {
-      final v = (avgHourlyConsumptionStats[h] ?? 0.0).clamp(0.0, 1e9);
+      final raw = avgHourlyConsumptionStats[h] ?? 0.0;
+      final v = raw.isFinite ? raw.clamp(0.0, 1e9).toDouble() : 0.0;
       total += v;
       if (h >= 23 || h < 7) {
         night += v;
+      } else {
+        day += v;
       }
     }
-    if (total <= 0) return nightEnergySharePercent;
-    return ((night / total) * 100.0).clamp(0.0, 100.0).toDouble();
+    // Keep existing value when profile is too sparse/biased (prevents accidental 0%).
+    if (total < 100 || night <= 0 || day <= 0) return nightEnergySharePercent;
+    final estimated = (night / total) * 100.0;
+    if (!estimated.isFinite) return nightEnergySharePercent;
+    return estimated.clamp(1.0, 99.0).toDouble();
   }
 
   Future<void> _updateMonthlyEconomics({bool force = false}) async {
-    if (service.currentStationId == null || service.deviceSn == null) return;
+    if (service.currentStationId == null) return;
     final now = DateTime.now();
     if (!force &&
         _lastEconomicsRefreshAt != null &&
@@ -533,23 +540,31 @@ class AppStateProvider extends ChangeNotifier {
     try {
       final summary = await service.getMonthlyEnergySummary(now);
       final dailyEnergy = await service.getMonthlyDailyEnergy(now);
+
+      _monthDailyEconomics = dailyEnergy.map((e) {
+        final gridKwh = e.gridWh / 1000.0;
+        final loadKwh = e.loadWh / 1000.0;
+        final selfKwh = (loadKwh - gridKwh).clamp(0.0, double.infinity);
+        final dayPart = gridKwh * (1.0 - nightEnergyShareFraction);
+        final nightPart = gridKwh * nightEnergyShareFraction;
+        final payable =
+            (dayPart * dayTariffUahPerKwh) + (nightPart * nightTariffUahPerKwh);
+        final saved = selfKwh * effectiveTariffUahPerKwh;
+        return (day: e.day, payableUah: payable, savedUah: saved);
+      }).toList(growable: false);
+
       if (summary != null) {
         _monthLoadWh = summary.loadWh;
         _monthGridWh = summary.gridWh;
-        _monthDailyEconomics = dailyEnergy.map((e) {
-          final gridKwh = e.gridWh / 1000.0;
-          final loadKwh = e.loadWh / 1000.0;
-          final selfKwh = (loadKwh - gridKwh).clamp(0.0, double.infinity);
-          final dayPart = gridKwh * (1.0 - nightEnergyShareFraction);
-          final nightPart = gridKwh * nightEnergyShareFraction;
-          final payable = (dayPart * dayTariffUahPerKwh) +
-              (nightPart * nightTariffUahPerKwh);
-          final saved = selfKwh * effectiveTariffUahPerKwh;
-          return (day: e.day, payableUah: payable, savedUah: saved);
-        }).toList(growable: false);
-        _lastEconomicsRefreshAt = now;
-        notifyListeners();
+      } else if (dailyEnergy.isNotEmpty) {
+        _monthLoadWh =
+            dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.loadWh);
+        _monthGridWh =
+            dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.gridWh);
       }
+
+      _lastEconomicsRefreshAt = now;
+      notifyListeners();
     } catch (e) {
       LogService.log('⚠️ monthly economics refresh failed', error: e);
     }

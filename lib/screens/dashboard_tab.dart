@@ -263,6 +263,13 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
               ),
             ],
           ),
+          const SizedBox(height: 4),
+          Text(
+            '${l10n.monthLoadEnergy} = ${l10n.monthGridImport} + ${l10n.monthSelfConsumed}',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).hintColor,
+                ),
+          ),
           const SizedBox(height: AppTheme.spacingS),
           ClipRRect(
             borderRadius: BorderRadius.circular(999),
@@ -382,6 +389,7 @@ class _MonthEconomicsMiniChart extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final bars = data
         .map(
           (d) => BarChartGroupData(
@@ -410,6 +418,24 @@ class _MonthEconomicsMiniChart extends StatelessWidget {
       child: BarChart(
         BarChartData(
           barGroups: bars,
+          barTouchData: BarTouchData(
+            enabled: true,
+            touchTooltipData: BarTouchTooltipData(
+              getTooltipColor: (_) => Theme.of(context).cardColor,
+              getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                final label =
+                    rodIndex == 0 ? l10n.monthGridCost : l10n.monthSavedCost;
+                final amount = rod.toY.isFinite ? rod.toY : 0.0;
+                return BarTooltipItem(
+                  '${group.x}\n$label: ${amount.toStringAsFixed(0)} ${l10n.currencyUah}',
+                  TextStyle(
+                    color: rod.color,
+                    fontWeight: FontWeight.w700,
+                  ),
+                );
+              },
+            ),
+          ),
           gridData: const FlGridData(show: false),
           borderData: FlBorderData(show: false),
           titlesData: FlTitlesData(
