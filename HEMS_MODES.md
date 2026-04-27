@@ -1,5 +1,6 @@
 # HEMS Modes — Detailed Reference
 
+> [English](HEMS_MODES.md) | [Українська](HEMS_MODES_UA.md)  
 > **Smart Inverter App** — Home Energy Management System  
 > Algorithm file: `lib/services/hems_algorithm.dart`  
 > Tuning constants: `HemsTunables` (all adjustable)
@@ -635,4 +636,3 @@ For winter, try `pvSurplusEnterW: 100.0` in `HemsTunables`. Monitor for a few da
 ---
 
 *Last updated: 2026-04-25 | Version: 1.3.2*
-

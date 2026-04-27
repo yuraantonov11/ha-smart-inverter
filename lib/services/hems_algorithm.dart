@@ -220,7 +220,52 @@ class HemsAlgorithmService {
   }
 
   // ------------------------------------------------------------------
-  // 2. Adaptive mode (NEW: realtime + forecast hybrid)
+  // --- Helper: get effective time window (static or astronomical) ---
+  DailyTimeWindows _getTimeWindows() {
+    if (optimizationProfile?.timeWindows != null) {
+      return optimizationProfile!.timeWindows;
+    }
+    return DailyTimeWindows.defaultTemperate();
+  }
+
+  /// Get adaptive PV surplus threshold (may change based on variance)
+  double _getAdaptivePvSurplusEnter() {
+    if (tuningService != null && _recentSurplusHistory.isNotEmpty) {
+      return tuningService!.computeAdaptivePvSurplus(_recentSurplusHistory);
+    }
+    return optimizationProfile?.getAdaptivePvSurplusEnter() ??
+        tun.pvSurplusEnterW;
+  }
+
+  /// Get adaptive dwell time (may vary by conditions)
+  Duration _getAdaptiveDwellTime() {
+    if (tuningService != null && _recentSurplusHistory.isNotEmpty) {
+      return tuningService!.computeAdaptiveDwell(_recentSurplusHistory);
+    }
+    return _currentDwellTime;
+  }
+
+  /// Get adaptive reserve SOC
+  double _getAdaptiveReserveSoc() {
+    if (optimizationProfile != null) {
+      return tuningService?.computeAdaptiveReserveSoc(
+            baseReserveSoc: tun.reserveSoc,
+            isTimeOfUseTariff: optimizationProfile?.tariffForecast != null,
+          ) ??
+          optimizationProfile!.getAdaptiveReserveSoc();
+    }
+    return tun.reserveSoc;
+  }
+
+  /// Track rolling surplus for learning
+  void _trackSurplus(double surplus) {
+    _recentSurplusHistory.add(surplus);
+    if (_recentSurplusHistory.length > _surplusHistorySize) {
+      _recentSurplusHistory.removeAt(0);
+    }
+  }
+
+  // --- 2. Adaptive mode (NEW: realtime + forecast hybrid + optimization)
   // ------------------------------------------------------------------
   Future<void> executeAdaptiveMode({
     required InverterData data,

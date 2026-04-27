@@ -92,6 +92,27 @@ HEMS — це система, що приймає рішення на основ
 ## Installation 📥
 Download the EXE from the [Releases](https://github.com/yuraantonov11/siseli-app/releases) section. Supports Windows 10/11.
 
+## Android Release (AAB/APK) 🤖
+1. Create an upload keystore inside `android/`:
+
+```powershell
+keytool -genkey -v -keystore android\upload-keystore.jks -keyalg RSA -keysize 2048 -validity 10000 -alias upload
+```
+
+2. Create `android/key.properties` from `android/key.properties.example` and fill in real passwords/alias.
+
+3. Build release artifacts:
+
+```powershell
+flutter pub get
+flutter build appbundle --release
+flutter build apk --release
+```
+
+Generated files:
+- `build/app/outputs/bundle/release/app-release.aab`
+- `build/app/outputs/flutter-apk/app-release.apk`
+
 ## License 📄
 This project is licensed under the MIT License.
 

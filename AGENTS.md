@@ -14,6 +14,8 @@ This is a Flutter desktop application for monitoring and controlling PowMr/Smart
 - **HemsAlgorithmService**: Implements smart modes (Adaptive, Night Arbitrage, Storm) with tariff-aware logic and weather integration
 - **WeatherService**: Fetches solar radiation forecasts from Open-Meteo API, learns dynamic conversion ratios from historical PV data
 - **LogService**: Centralized logging with 1000-entry buffer, used throughout app instead of print/debugPrint
+- **SecureStorageService**: Wraps `flutter_secure_storage` for credential/token storage (Windows: DPAPI). Use `SecureStorageService.savePassword/getPassword/saveToken/getToken` — do NOT store secrets in `SharedPreferences`
+- **UpdateService**: Checks GitHub Releases API (`yuraantonov11/siseli-app`) for new versions, downloads installer (`.exe`/`.msi`/`.msix` priority order) to temp dir, and launches it via `Process.run`/`Process.start` with `runInShell: false`
 
 ## Control Modes & Settings
 - **Output Priority**: 0=USB (Grid priority), 2=SBU (Solar priority)
@@ -22,8 +24,9 @@ This is a Flutter desktop application for monitoring and controlling PowMr/Smart
 
 ## Development Workflow
 - **Build**: `flutter build windows --release` (Windows x64 target)
-- **Package**: Inno Setup script (`windows/installer_script.iss`) creates MSI installer
-- **Test**: `flutter test` (minimal test coverage in `test/widget_test.dart`)
+- **Package (Inno Setup)**: Inno Setup script (`windows/installer_script.iss`) creates EXE installer
+- **Package (MSIX)**: `flutter pub run msix:create` uses `msix_config` in `pubspec.yaml` (identity: `YuraAntonov.SmartInverterApp`)
+- **Test**: `flutter test` — includes `test/hems_algorithm_test.dart` (unit tests for `HemsAlgorithmService` adaptive mode logic) and `test/widget_test.dart`
 - **Localize**: ARB files (`lib/l10n/app_*.arb`) with placeholders for dynamic strings
 - **Icons**: `flutter_launcher_icons` generates from `assets/app_icon.png`
 
@@ -34,12 +37,12 @@ This is a Flutter desktop application for monitoring and controlling PowMr/Smart
 - **Window Management**: `window_manager` for desktop window controls (minimize to tray, prevent close)
 
 ## Integration Points
-- **External APIs**: solar.siseli.com (inverter control), open-meteo.com (weather forecasts)
+- **External APIs**: solar.siseli.com (inverter control), open-meteo.com (weather forecasts), api.github.com (update checks via `UpdateService`)
 - **Desktop Features**: Auto-startup (`launch_at_startup`), system tray, window management
-- **Security**: MD5 password hashing, API signature generation with crypto package
+- **Security**: Credentials/tokens stored via `SecureStorageService` (DPAPI on Windows); API requests signed with MD5 using `crypto` package; `encrypt` package available for additional encryption needs
 
 ## Common Tasks
 - **Add new control mode**: Update `InverterService.setControlMode()` and `HemsAlgorithmService` logic
 - **New UI screen**: Create in `lib/screens/`, add to `main_screen.dart` TabBarView, update localization
 - **API endpoint**: Add method to `InverterService` with proper headers/signing
-- **Settings persistence**: Use `SharedPreferences` in `AppProvider` for user prefs
+- **Settings persistence**: Use `SharedPreferences` in `AppProvider` for non-sensitive user prefs; use `SecureStorageService` for passwords and tokens
