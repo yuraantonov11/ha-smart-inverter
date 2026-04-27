@@ -1,6 +1,6 @@
 # Smart Inverter Desktop ⚡️
 
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/yuraantonov11/siseli-app/releases)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/yuraantonov11/siseli-app/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Flutter](https://img.shields.io/badge/Flutter-%2302569B.svg?style=flat&logo=Flutter&logoColor=white)](https://flutter.dev)
 

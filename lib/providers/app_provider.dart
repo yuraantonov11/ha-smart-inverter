@@ -11,6 +11,8 @@ import '../l10n/app_localizations.dart';
 import '../services/inverter_service.dart';
 import '../services/hems_algorithm.dart';
 import '../services/hems_tuning_service.dart';
+import '../services/tariff_forecast_service.dart';
+import '../services/demand_forecast_service.dart';
 import '../services/weather_service.dart';
 import '../services/log_service.dart';
 import '../services/update_service.dart';
@@ -25,6 +27,8 @@ class AppStateProvider extends ChangeNotifier {
   static const String _startInTrayKey = 'start_in_tray';
   final InverterService service = InverterService();
   final WeatherService weatherService = WeatherService();
+  final TariffForecastService tariffForecastService = TariffForecastService();
+  final DemandForecastService demandForecastService = DemandForecastService();
   late HemsAlgorithmService hemsService;
   final SystemTray systemTray = SystemTray();
 
@@ -61,6 +65,21 @@ class AppStateProvider extends ChangeNotifier {
   int manualDayStartHour = 7;
   int manualEveningStartHour = 17;
   int manualNightStartHour = 23;
+
+  // Phase 3c: manual grid reliability input (no external API).
+  bool plannedOutageEnabled = false;
+  DateTime? plannedOutageStartAt;
+  DateTime? plannedOutageEndAt;
+
+  // Economics (monthly estimate cards on dashboard)
+  double dayTariffUahPerKwh = 4.32;
+  double nightTariffUahPerKwh = 2.16;
+  double nightEnergySharePercent = 35.0;
+  double? _monthLoadWh;
+  double? _monthGridWh;
+  List<({int day, double payableUah, double savedUah})> _monthDailyEconomics =
+      const [];
+  DateTime? _lastEconomicsRefreshAt;
 
   String solcastApiKey = '';
   String solcastResourceId = '';
@@ -120,6 +139,66 @@ class AppStateProvider extends ChangeNotifier {
       _updateInfo != null &&
       _updateInfo!.hasUpdate &&
       _updateInfo!.latestVersion != _skippedUpdateVersion;
+  double? get monthLoadKwh =>
+      _monthLoadWh == null ? null : _monthLoadWh! / 1000.0;
+  double? get monthGridKwh =>
+      _monthGridWh == null ? null : _monthGridWh! / 1000.0;
+  double get nightEnergyShareFraction =>
+      (nightEnergySharePercent / 100.0).clamp(0.0, 1.0).toDouble();
+  double get effectiveTariffUahPerKwh =>
+      (dayTariffUahPerKwh * (1.0 - nightEnergyShareFraction)) +
+      (nightTariffUahPerKwh * nightEnergyShareFraction);
+  // Backward compatibility for existing UI/usage.
+  double get tariffUahPerKwh => effectiveTariffUahPerKwh;
+
+  double? get monthToPayUah {
+    final grid = monthGridKwh;
+    if (grid == null) return null;
+    final dayPart = grid * (1.0 - nightEnergyShareFraction);
+    final nightPart = grid * nightEnergyShareFraction;
+    return (dayPart * dayTariffUahPerKwh) + (nightPart * nightTariffUahPerKwh);
+  }
+
+  double? get monthSelfConsumedKwh {
+    if (monthLoadKwh == null || monthGridKwh == null) return null;
+    return (monthLoadKwh! - monthGridKwh!)
+        .clamp(0.0, double.infinity)
+        .toDouble();
+  }
+
+  double? get monthSavedUah {
+    final selfConsumed = monthSelfConsumedKwh;
+    if (selfConsumed == null) return null;
+    return selfConsumed * effectiveTariffUahPerKwh;
+  }
+
+  List<({int day, double payableUah, double savedUah})>
+      get monthDailyEconomics => _monthDailyEconomics;
+
+  double get _monthProgressFraction {
+    final now = DateTime.now();
+    final daysInMonth = DateTime(now.year, now.month + 1, 0).day;
+    final elapsed = (now.day - 1) + (now.hour / 24.0) + (now.minute / 1440.0);
+    // Keep a small non-zero floor to avoid extreme division during app startup.
+    return (elapsed / daysInMonth).clamp(1.0 / daysInMonth, 1.0).toDouble();
+  }
+
+  double get monthProgressFraction => _monthProgressFraction;
+  int get monthProgressPercent => (monthProgressFraction * 100).round();
+
+  double? get projectedMonthToPayUah {
+    final actual = monthToPayUah;
+    if (actual == null) return null;
+    final projected = actual / _monthProgressFraction;
+    return projected.isFinite ? projected : null;
+  }
+
+  double? get projectedMonthSavedUah {
+    final actual = monthSavedUah;
+    if (actual == null) return null;
+    final projected = actual / _monthProgressFraction;
+    return projected.isFinite ? projected : null;
+  }
 
   AppStateProvider() {
     // Initial build with defaults; will be rebuilt after loadSettings().
@@ -130,12 +209,41 @@ class AppStateProvider extends ChangeNotifier {
   /// provider fields and wires them into hemsService.
   /// Call this after loading or changing any HEMS-relevant setting.
   void _rebuildHemsService() {
+    final tariffForecast = tariffForecastService.buildDayNightForecast(
+      dayTariffUahPerKwh: dayTariffUahPerKwh,
+      nightTariffUahPerKwh: nightTariffUahPerKwh,
+      dayStartHour: manualDayStartHour,
+      nightStartHour: manualNightStartHour,
+    );
+    final demandForecast =
+        demandForecastService.toDemandForecastData(avgHourlyConsumptionStats);
+    final plannedOutages = <GridOutageEvent>[];
+    if (plannedOutageEnabled &&
+        plannedOutageStartAt != null &&
+        plannedOutageEndAt != null &&
+        plannedOutageEndAt!.isAfter(plannedOutageStartAt!)) {
+      plannedOutages.add(
+        GridOutageEvent(
+          startTime: plannedOutageStartAt!,
+          endTime: plannedOutageEndAt!,
+          reason: 'manual_planned_outage',
+        ),
+      );
+    }
+    final gridForecast = GridReliabilityForecast(
+      plannedOutages: plannedOutages,
+      instabilityZones: const [],
+    );
+
     final profile = HemsOptimizationProfile(
       systemId: 'home',
       pvPeakW: pvTotalCapacityW,
       batteryCapacityAh: batteryCapacityAh,
       optimizationStrategy: hemsStrategy,
       batteryHealth: BatteryHealthModel(installationDate: batteryInstallDate),
+      tariffForecast: tariffForecast,
+      demandForecast: demandForecast,
+      gridForecast: gridForecast,
     );
     final tuning = HemsTuningService(profile);
     hemsService = HemsAlgorithmService(
@@ -190,6 +298,23 @@ class AppStateProvider extends ChangeNotifier {
     manualDayStartHour = prefs.getInt('manual_day_start_hour') ?? 7;
     manualEveningStartHour = prefs.getInt('manual_evening_start_hour') ?? 17;
     manualNightStartHour = prefs.getInt('manual_night_start_hour') ?? 23;
+    plannedOutageEnabled = prefs.getBool('planned_outage_enabled') ?? false;
+    final plannedStartMs = prefs.getInt('planned_outage_start_ms');
+    final plannedEndMs = prefs.getInt('planned_outage_end_ms');
+    plannedOutageStartAt = plannedStartMs == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(plannedStartMs);
+    plannedOutageEndAt = plannedEndMs == null
+        ? null
+        : DateTime.fromMillisecondsSinceEpoch(plannedEndMs);
+    final legacyTariff = prefs.getDouble('energy_tariff_uah_per_kwh');
+    dayTariffUahPerKwh = prefs.getDouble('energy_tariff_day_uah_per_kwh') ??
+        legacyTariff ??
+        4.32;
+    nightTariffUahPerKwh = prefs.getDouble('energy_tariff_night_uah_per_kwh') ??
+        ((legacyTariff ?? dayTariffUahPerKwh) * 0.5);
+    nightEnergySharePercent =
+        prefs.getDouble('energy_night_share_percent') ?? 35.0;
 
     // Battery health
     final installMs = prefs.getInt('battery_install_date_ms');
@@ -230,6 +355,20 @@ class AppStateProvider extends ChangeNotifier {
       }
     }
 
+    final consumptionProfileStr = prefs.getString('consumption_profile_ewma');
+    if (consumptionProfileStr != null && consumptionProfileStr.isNotEmpty) {
+      try {
+        final decoded =
+            json.decode(consumptionProfileStr) as Map<String, dynamic>;
+        avgHourlyConsumptionStats = decoded.map(
+          (k, v) => MapEntry(int.tryParse(k) ?? 0, (v as num).toDouble()),
+        );
+      } catch (e) {
+        LogService.log('Error loading EWMA consumption profile: $e');
+        avgHourlyConsumptionStats = demandForecastService.buildDefaultProfile();
+      }
+    }
+
     // Load last successful realtime snapshot (used when inverter is offline).
     final snapshotStr = prefs.getString(_lastSnapshotKey);
     if (snapshotStr != null && snapshotStr.isNotEmpty) {
@@ -254,6 +393,9 @@ class AppStateProvider extends ChangeNotifier {
 
     await _loadAppVersion();
     await _updateWeatherForecast();
+    if (loggedIn) {
+      await _updateMonthlyEconomics(force: true);
+    }
     await _updateStatusMessage(true);
     // Fire-and-forget startup check for a non-intrusive update badge in Settings.
     // ignore: unawaited_futures
@@ -325,6 +467,94 @@ class AppStateProvider extends ChangeNotifier {
     }
   }
 
+  Future<void> saveTariffUahPerKwh(double tariff) async {
+    final clamped = tariff.clamp(0.0, 999.0).toDouble();
+    dayTariffUahPerKwh = clamped;
+    nightTariffUahPerKwh = (clamped * 0.5).clamp(0.0, 999.0).toDouble();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('energy_tariff_uah_per_kwh', clamped);
+    await prefs.setDouble('energy_tariff_day_uah_per_kwh', dayTariffUahPerKwh);
+    await prefs.setDouble(
+        'energy_tariff_night_uah_per_kwh', nightTariffUahPerKwh);
+    notifyListeners();
+    // Recompute money cards immediately with new tariff.
+    await _updateMonthlyEconomics(force: false);
+  }
+
+  Future<void> saveTimeOfUseTariffs({
+    required double dayTariff,
+    required double nightTariff,
+    required double nightSharePercent,
+  }) async {
+    dayTariffUahPerKwh = dayTariff.clamp(0.0, 999.0).toDouble();
+    nightTariffUahPerKwh = nightTariff.clamp(0.0, 999.0).toDouble();
+    nightEnergySharePercent = nightSharePercent.clamp(0.0, 100.0).toDouble();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble('energy_tariff_day_uah_per_kwh', dayTariffUahPerKwh);
+    await prefs.setDouble(
+        'energy_tariff_night_uah_per_kwh', nightTariffUahPerKwh);
+    await prefs.setDouble(
+        'energy_night_share_percent', nightEnergySharePercent);
+    // Keep legacy key in sync for older builds/migrations.
+    await prefs.setDouble(
+        'energy_tariff_uah_per_kwh', effectiveTariffUahPerKwh);
+
+    notifyListeners();
+    await _updateMonthlyEconomics(force: false);
+  }
+
+  double estimateNightEnergySharePercent() {
+    if (avgHourlyConsumptionStats.isEmpty) {
+      return nightEnergySharePercent;
+    }
+    var total = 0.0;
+    var night = 0.0;
+    for (var h = 0; h < 24; h++) {
+      final v = (avgHourlyConsumptionStats[h] ?? 0.0).clamp(0.0, 1e9);
+      total += v;
+      if (h >= 23 || h < 7) {
+        night += v;
+      }
+    }
+    if (total <= 0) return nightEnergySharePercent;
+    return ((night / total) * 100.0).clamp(0.0, 100.0).toDouble();
+  }
+
+  Future<void> _updateMonthlyEconomics({bool force = false}) async {
+    if (service.currentStationId == null || service.deviceSn == null) return;
+    final now = DateTime.now();
+    if (!force &&
+        _lastEconomicsRefreshAt != null &&
+        now.difference(_lastEconomicsRefreshAt!) <
+            const Duration(minutes: 20)) {
+      return;
+    }
+    try {
+      final summary = await service.getMonthlyEnergySummary(now);
+      final dailyEnergy = await service.getMonthlyDailyEnergy(now);
+      if (summary != null) {
+        _monthLoadWh = summary.loadWh;
+        _monthGridWh = summary.gridWh;
+        _monthDailyEconomics = dailyEnergy.map((e) {
+          final gridKwh = e.gridWh / 1000.0;
+          final loadKwh = e.loadWh / 1000.0;
+          final selfKwh = (loadKwh - gridKwh).clamp(0.0, double.infinity);
+          final dayPart = gridKwh * (1.0 - nightEnergyShareFraction);
+          final nightPart = gridKwh * nightEnergyShareFraction;
+          final payable = (dayPart * dayTariffUahPerKwh) +
+              (nightPart * nightTariffUahPerKwh);
+          final saved = selfKwh * effectiveTariffUahPerKwh;
+          return (day: e.day, payableUah: payable, savedUah: saved);
+        }).toList(growable: false);
+        _lastEconomicsRefreshAt = now;
+        notifyListeners();
+      }
+    } catch (e) {
+      LogService.log('⚠️ monthly economics refresh failed', error: e);
+    }
+  }
+
   Future<void> saveHardwareSettings(double battery, double pv, double inverter,
       {DateTime? installDate}) async {
     final prefs = await SharedPreferences.getInstance();
@@ -392,6 +622,31 @@ class AppStateProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> savePlannedOutage({
+    required bool enabled,
+    DateTime? startAt,
+    DateTime? endAt,
+  }) async {
+    plannedOutageEnabled = enabled;
+    plannedOutageStartAt = startAt;
+    plannedOutageEndAt = endAt;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('planned_outage_enabled', plannedOutageEnabled);
+    if (startAt != null) {
+      await prefs.setInt(
+          'planned_outage_start_ms', startAt.millisecondsSinceEpoch);
+    } else {
+      await prefs.remove('planned_outage_start_ms');
+    }
+    if (endAt != null) {
+      await prefs.setInt('planned_outage_end_ms', endAt.millisecondsSinceEpoch);
+    } else {
+      await prefs.remove('planned_outage_end_ms');
+    }
+    _rebuildHemsService();
+    notifyListeners();
+  }
+
   Future<void> _updateWeatherForecast() async {
     final dynamicForecastMap = await weatherService.fetchLocalForecast(
       pvCapacityW: pvTotalCapacityW,
@@ -407,18 +662,21 @@ class AppStateProvider extends ChangeNotifier {
     if (service.currentStationId == null) return;
 
     try {
-      // Оскільки HemsDataMiner не використовується в поточній версії hems_algorithm,
-      // задаємо базову статистику родини.
-      avgHourlyConsumptionStats = {
-        0: 250, 1: 200, 2: 200, 3: 200, 4: 200, 5: 250, 6: 500, // Ніч
-        7: 1500, 8: 1200, 9: 600, 10: 500, 11: 500, 12: 500, // Ранок-Обід
-        13: 500, 14: 600, 15: 800, 16: 900, 17: 1500, 18: 2000, // День-Вечір
-        19: 3000, 20: 2500, 21: 2000, 22: 1000, 23: 500 // Пік
-      };
+      if (avgHourlyConsumptionStats.isEmpty) {
+        avgHourlyConsumptionStats = demandForecastService.buildDefaultProfile();
+      }
       notifyListeners();
     } catch (e) {
       debugPrint('Помилка завантаження статистики: $e');
     }
+  }
+
+  Future<void> _persistConsumptionProfile() async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = avgHourlyConsumptionStats.map(
+      (k, v) => MapEntry(k.toString(), v),
+    );
+    await prefs.setString('consumption_profile_ewma', json.encode(encoded));
   }
 
   void _recordPvHistory(InverterData currentData) async {
@@ -783,6 +1041,12 @@ class AppStateProvider extends ChangeNotifier {
       data = newData;
       _cachedSnapshotData = newData;
       _recordPvHistory(newData);
+      avgHourlyConsumptionStats = demandForecastService.updateEwmaProfile(
+        avgHourlyConsumptionStats,
+        timestamp: DateTime.now(),
+        loadW: newData.loadPower,
+      );
+      await _persistConsumptionProfile();
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
           _lastSnapshotKey, json.encode(newData.toCacheMap()));
@@ -795,6 +1059,7 @@ class AppStateProvider extends ChangeNotifier {
           service.currentStationId != null) {
         await _updateConsumptionStats();
       }
+      await _updateMonthlyEconomics();
     } else {
       _consecutiveRealtimeNulls++;
       final now = DateTime.now();
@@ -965,6 +1230,19 @@ class AppStateProvider extends ChangeNotifier {
 
     if (!isManualTrigger) {
       await hemsService.enforceAcousticComfort(data!);
+    }
+
+    // Phase 3c: if a planned outage is near, precharge by forcing Storm mode.
+    if (plannedOutageEnabled && plannedOutageStartAt != null) {
+      final now = DateTime.now();
+      final untilOutage = plannedOutageStartAt!.difference(now);
+      if (untilOutage.inMinutes >= 0 &&
+          untilOutage <= const Duration(hours: 6)) {
+        LogService.log(
+            '⚠️ Grid alert: planned outage in ${untilOutage.inMinutes}m — forcing Storm mode precharge.');
+        await hemsService.executeStormMode(data!);
+        return;
+      }
     }
 
     switch (smartMode) {

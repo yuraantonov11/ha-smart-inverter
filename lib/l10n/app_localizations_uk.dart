@@ -781,4 +781,101 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get hemsStrategyHybrid => 'Гібридна (збалансована — рекомендовано)';
+
+  @override
+  String get moneySavedMonth => 'Зекономлено за місяць';
+
+  @override
+  String get paymentThisMonth => 'До оплати за місяць';
+
+  @override
+  String get currencyUah => 'грн';
+
+  @override
+  String get energyTariffLabel => 'Тариф на електроенергію';
+
+  @override
+  String get energyTariffDayLabel => 'Денний тариф';
+
+  @override
+  String get energyTariffNightLabel => 'Нічний тариф';
+
+  @override
+  String get energyTariffUnit => 'грн/кВт·год';
+
+  @override
+  String get nightEnergyShareLabel => 'Частка нічного споживання';
+
+  @override
+  String get nightEnergyShareUnit => '%';
+
+  @override
+  String get autoEstimateNightShare => 'Автооцінка нічної частки';
+
+  @override
+  String effectiveTariffFormula(String day, String night, String share) {
+    return 'Формула: $day*(1-$share%) + $night*$share%';
+  }
+
+  @override
+  String get tooltipMoneySavedMonth =>
+      'Оціночна економія за місяць за рахунок власного сонячного споживання';
+
+  @override
+  String get tooltipPaymentThisMonth =>
+      'Оціночна сума до сплати за мережеву електроенергію цього місяця';
+
+  @override
+  String get projectedSavedMonth => 'Прогноз економії до кінця місяця';
+
+  @override
+  String get projectedPaymentMonth => 'Прогноз оплати до кінця місяця';
+
+  @override
+  String get tooltipProjectedSavedMonth =>
+      'Прогноз на основі поточного тренду власного сонячного споживання за місяць';
+
+  @override
+  String get tooltipProjectedPaymentMonth =>
+      'Прогноз на основі поточного тренду споживання мережевої електроенергії за місяць';
+
+  @override
+  String get monthlyEnergyBreakdown => 'Структура енергії за місяць';
+
+  @override
+  String get monthLoadEnergy => 'Навантаження за місяць';
+
+  @override
+  String get monthGridImport => 'Імпорт з мережі';
+
+  @override
+  String get monthSelfConsumed => 'Власне сонячне споживання';
+
+  @override
+  String get monthGridCost => 'Вартість мережі за місяць';
+
+  @override
+  String get monthSavedCost => 'Зекономлена сума за місяць';
+
+  @override
+  String get monthEffectiveTariff => 'Ефективний тариф';
+
+  @override
+  String get tooltipMonthProgress => 'Поточний прогрес місяця';
+
+  @override
+  String get plannedOutageTitle => 'Попередження про планове відключення';
+
+  @override
+  String get plannedOutageEnabledSubtitle => 'Автопідзаряд перед відключенням';
+
+  @override
+  String get plannedOutageDisabledSubtitle =>
+      'Немає ручного графіка відключень';
+
+  @override
+  String get plannedOutageStartLabel => 'Початок відключення';
+
+  @override
+  String get plannedOutageEndLabel => 'Кінець відключення';
 }

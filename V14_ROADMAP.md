@@ -25,7 +25,7 @@ v1.4 adds **10 optimization layers** to HEMS algorithm:
 
 ---
 
-##Release Plan (phased)
+## Release Plan (phased)
 
 ### Phase 1: Foundation (v1.4-alpha, DONE ✓)
 - [x] `HemsOptimizationProfile` model + data classes
@@ -110,13 +110,61 @@ if (soc <= adaptiveReserve + 2) { /* safety */ }
 
 ---
 
-### Phase 4: Polish & Testing (v1.4 RELEASE, FUTURE)
-- [ ] UI: Settings tab for strategy selection + parameter tuning
-- [ ] Logs: Reason codes for every parameter change
-- [ ] Tests: Unit tests for new tunables + scenario playback
-- [ ] Docs: Update `HEMS_MODES.md` + FAQ
+### Phase 4: Polish & Testing (v1.4 RELEASE, IN PROGRESS)
+- [x] UI: Settings tab for strategy selection
+- [x] UI: Parameter visualization (tunables over time)
+- [x] Logs: Reason codes for every parameter change
+- [x] Tests: Unit tests for new tunables + scenario playback
+- [ ] Docs: Update `HEMS_MODES.md` + FAQ + migration notes
 
-**Timeline:** 2 weeks | **Deliverable:** v1.4 stable release
+**Timeline:** 1–2 weeks | **Deliverable:** v1.4 stable release
+
+#### Phase 4 Execution Track (from 2026-04-27)
+
+**Scope freeze (P0, ~0.5 day)**
+- Confirm `3a` + `3b` + `3c` are release scope for v1.4
+- Keep `3d` thermal relay control out of v1.4 (explicitly moved to v1.5)
+- **DoD:** roadmap/checklists contain no conflicting scope notes
+
+**Task A - HEMS tunables visibility (P0, 1-1.5 days) ✅ DONE (2026-04-27)**
+- **Files:** `lib/screens/settings_tab.dart`, optional helper widget in `lib/widgets/`
+- Add compact diagnostics card with current adaptive values:
+  - dynamic windows (day/evening/night)
+  - adaptive surplus threshold
+  - adaptive dwell minutes
+  - adaptive reserve SOC
+  - tariff mode hint (cheap/expensive window)
+- **DoD:** values update live after settings changes and are visible without debug mode ✅
+
+**Task B - Reason-coded logs (P0, ~1 day) ✅ DONE (2026-04-27)**
+- **Files:** `lib/services/hems_algorithm.dart`, `lib/services/hems_tuning_service.dart`
+- Standardize reason tags for every mode/parameter decision:
+  - `reason=tariff_expensive_defer`
+  - `reason=surplus_enter_sbu`
+  - `reason=reserve_soc_protection`
+  - `reason=dwell_lock`
+  - `reason=grid_outage_precharge`
+- **DoD:** every control write and skip path has machine-searchable `reason=` code ✅
+
+**Task C - Test gate (P0, 1.5-2 days) ✅ DONE (2026-04-27)**
+- **Files:** `test/hems_algorithm_test.dart`
+- Add/finish tests for:
+  - tunables sensitivity (thresholds, dwell, reserve)
+  - tariff-aware defer-to-cheap-window behavior
+  - outage precharge trigger and anti-flap stability
+  - backward-compat default profile behavior
+- **DoD:** `flutter test` green; no regressions in v1.3 baseline cases ✅
+
+**Task D - Docs + release prep (P1, ~1 day)**
+- **Files:** `HEMS_MODES.md`, `HEMS_MODES_UA.md`, `README.md`, `CHANGELOG.md`
+- Add migration notes `v1.3 -> v1.4`, new strategy/tuning explanations, known limits
+- **DoD:** docs and changelog match final behavior and settings UI
+
+**Task E - Release (P0, ~0.5 day)**
+- Build + smoke test + tag `v1.4` + GitHub Release assets
+- **DoD:** published release with release notes and install artifacts
+
+**Execution order:** Scope freeze -> Task A -> Task B -> Task C -> Task D -> Task E
 
 ---
 
@@ -185,8 +233,9 @@ HemsAlgorithmService (v1.4)
 
 ### v1.4 Release (FUTURE)
 - [x] Settings UI for strategy selection
-- [ ] Parameter visualization (tunables over time)
-- [ ] Comprehensive logging + reason codes
+- [x] Parameter visualization (tunables over time)
+- [x] Comprehensive logging + reason codes
+- [x] Test gate: tunables + playback + backward-compat
 - [ ] README + migration guide
 - [ ] Release notes + changelog
 - [ ] Tag `v1.4` + create GitHub Release
@@ -232,16 +281,16 @@ final profile = HemsOptimizationProfile(
 ## Testing Strategy
 
 ### Unit Tests (`test/hems_algorithm_test.dart`)
-- [ ] `test_adaptive_pv_enter_threshold_cloudy()`
-- [ ] `test_adaptive_pv_enter_threshold_clear()`
-- [ ] `test_reserve_soc_battery_age_2y()`
-- [ ] `test_reserve_soc_battery_age_10y()`
-- [ ] `test_time_window_summer_equinox()`
-- [ ] `test_time_window_winter_solstice()`
-- [ ] `test_tariff_aware_charging_nocturnal()`
+- [x] `test_adaptive_pv_enter_threshold_cloudy()`
+- [x] `test_adaptive_pv_enter_threshold_clear()`
+- [x] `test_reserve_soc_battery_age_2y()`
+- [x] `test_reserve_soc_battery_age_10y()`
+- [x] `test_time_window_summer_equinox()`
+- [x] `test_time_window_winter_solstice()`
+- [x] `test_tariff_aware_charging_nocturnal()`
 - [ ] `test_thermal_load_heating_demand()`
-- [ ] `test_dwell_cloudy_vs_clear()`
-- [ ] `test_grid_outage_precharge_trigger()`
+- [x] `test_dwell_cloudy_vs_clear()`
+- [x] `test_grid_outage_precharge_trigger()`
 
 ### Integration Tests (Live system)
 - [ ] 5–7 days of morning/noon/evening/night transitions
@@ -250,8 +299,8 @@ final profile = HemsOptimizationProfile(
 - [ ] Verify: no false positives (unexpected USB when surplus > threshold)
 
 ### Regression Tests (Backward compatibility)
-- [ ] All v1.3 test cases still pass
-- [ ] Default `HemsOptimizationProfile` behaves like v1.3 (backward compat)
+- [x] All v1.3 test cases still pass
+- [x] Default `HemsOptimizationProfile` keeps v1.3 core decisions (backward compat)
 
 ---
 
@@ -279,6 +328,4 @@ final profile = HemsOptimizationProfile(
 ---
 
 *Last updated: 2026-04-27*  
-*v1.4-rc complete — Phase 3a tariff-aware charging + Phase 3b demand forecast integration*
-
-
+*v1.4 release track in progress — Phase 4 Task A+B+C complete (tunables visibility + reason-coded logs + test gate)*

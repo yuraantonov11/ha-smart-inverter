@@ -420,5 +420,48 @@
   "hemsStrategySolarMaxed": "Максимум сонця (максимум самоспоживання)",
   "hemsStrategyBatteryLife": "Довговічність АКБ (консервативні цикли)",
   "hemsStrategyGridReliance": "Автономність (резервний / автономний режим)",
-  "hemsStrategyHybrid": "Гібридна (збалансована — рекомендовано)"
+  "hemsStrategyHybrid": "Гібридна (збалансована — рекомендовано)",
+  "moneySavedMonth": "Зекономлено за місяць",
+  "paymentThisMonth": "До оплати за місяць",
+  "currencyUah": "грн",
+  "energyTariffLabel": "Тариф на електроенергію",
+  "energyTariffDayLabel": "Денний тариф",
+  "energyTariffNightLabel": "Нічний тариф",
+  "energyTariffUnit": "грн/кВт·год",
+  "nightEnergyShareLabel": "Частка нічного споживання",
+  "nightEnergyShareUnit": "%",
+  "autoEstimateNightShare": "Автооцінка нічної частки",
+  "effectiveTariffFormula": "Формула: {day}*(1-{share}%) + {night}*{share}%",
+  "@effectiveTariffFormula": {
+    "placeholders": {
+      "day": {
+        "type": "String"
+      },
+      "night": {
+        "type": "String"
+      },
+      "share": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipMoneySavedMonth": "Оціночна економія за місяць за рахунок власного сонячного споживання",
+  "tooltipPaymentThisMonth": "Оціночна сума до сплати за мережеву електроенергію цього місяця",
+  "projectedSavedMonth": "Прогноз економії до кінця місяця",
+  "projectedPaymentMonth": "Прогноз оплати до кінця місяця",
+  "tooltipProjectedSavedMonth": "Прогноз на основі поточного тренду власного сонячного споживання за місяць",
+  "tooltipProjectedPaymentMonth": "Прогноз на основі поточного тренду споживання мережевої електроенергії за місяць",
+  "monthlyEnergyBreakdown": "Структура енергії за місяць",
+  "monthLoadEnergy": "Навантаження за місяць",
+  "monthGridImport": "Імпорт з мережі",
+  "monthSelfConsumed": "Власне сонячне споживання",
+  "monthGridCost": "Вартість мережі за місяць",
+  "monthSavedCost": "Зекономлена сума за місяць",
+  "monthEffectiveTariff": "Ефективний тариф",
+  "tooltipMonthProgress": "Поточний прогрес місяця",
+  "plannedOutageTitle": "Попередження про планове відключення",
+  "plannedOutageEnabledSubtitle": "Автопідзаряд перед відключенням",
+  "plannedOutageDisabledSubtitle": "Немає ручного графіка відключень",
+  "plannedOutageStartLabel": "Початок відключення",
+  "plannedOutageEndLabel": "Кінець відключення"
 }

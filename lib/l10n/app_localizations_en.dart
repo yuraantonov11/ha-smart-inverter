@@ -777,4 +777,100 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hemsStrategyHybrid => 'Hybrid (balanced — recommended)';
+
+  @override
+  String get moneySavedMonth => 'Saved this month';
+
+  @override
+  String get paymentThisMonth => 'To pay this month';
+
+  @override
+  String get currencyUah => 'UAH';
+
+  @override
+  String get energyTariffLabel => 'Electricity tariff';
+
+  @override
+  String get energyTariffDayLabel => 'Day tariff';
+
+  @override
+  String get energyTariffNightLabel => 'Night tariff';
+
+  @override
+  String get energyTariffUnit => 'UAH/kWh';
+
+  @override
+  String get nightEnergyShareLabel => 'Night energy share';
+
+  @override
+  String get nightEnergyShareUnit => '%';
+
+  @override
+  String get autoEstimateNightShare => 'Auto estimate night share';
+
+  @override
+  String effectiveTariffFormula(String day, String night, String share) {
+    return 'Formula: $day*(1-$share%) + $night*$share%';
+  }
+
+  @override
+  String get tooltipMoneySavedMonth =>
+      'Estimated money saved this month from self-consumed solar energy';
+
+  @override
+  String get tooltipPaymentThisMonth =>
+      'Estimated monthly bill for imported grid energy';
+
+  @override
+  String get projectedSavedMonth => 'Projected saved by month end';
+
+  @override
+  String get projectedPaymentMonth => 'Projected payment by month end';
+
+  @override
+  String get tooltipProjectedSavedMonth =>
+      'Forecast based on current month trend of self-consumed solar energy';
+
+  @override
+  String get tooltipProjectedPaymentMonth =>
+      'Forecast based on current month trend of imported grid energy';
+
+  @override
+  String get monthlyEnergyBreakdown => 'Monthly energy breakdown';
+
+  @override
+  String get monthLoadEnergy => 'Load this month';
+
+  @override
+  String get monthGridImport => 'Grid import';
+
+  @override
+  String get monthSelfConsumed => 'Self-consumed solar';
+
+  @override
+  String get monthGridCost => 'Grid cost this month';
+
+  @override
+  String get monthSavedCost => 'Saved cost this month';
+
+  @override
+  String get monthEffectiveTariff => 'Effective tariff';
+
+  @override
+  String get tooltipMonthProgress => 'Current month progress';
+
+  @override
+  String get plannedOutageTitle => 'Planned outage alert';
+
+  @override
+  String get plannedOutageEnabledSubtitle => 'Auto-precharge before outage';
+
+  @override
+  String get plannedOutageDisabledSubtitle => 'No manual outage schedule';
+
+  @override
+  String get plannedOutageStartLabel => 'Outage start';
+
+  @override
+  String get plannedOutageEndLabel => 'Outage end';
 }

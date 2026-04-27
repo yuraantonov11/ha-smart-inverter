@@ -2,8 +2,8 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.4.0-rc] - 2026-04-27
-### Added — HEMS v2 Phase 3: Forecasting & Economics
+## [1.4.0] - 2026-04-27
+### Added — HEMS v2 Phase 3: Forecasting & Economics ✅ STABLE RELEASE
 
 #### Phase 3a — Tariff-aware night charging
 - **`_isChargingCheapNow()`** — checks if the current hour price is ≤ average tariff × 1.05; allows graceful no-op on flat tariffs and enables cost savings on TOU / multi-zone tariffs.

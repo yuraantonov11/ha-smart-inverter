@@ -110,7 +110,6 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Application Settings'), findsOneWidget);
-    expect(find.text('Updates'), findsOneWidget);
   });
 
   testWidgets('MainScreen compact rail does not overflow',

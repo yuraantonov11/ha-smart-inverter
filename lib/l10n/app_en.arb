@@ -420,5 +420,48 @@
   "hemsStrategySolarMaxed": "Solar Maxed (maximize self-consumption)",
   "hemsStrategyBatteryLife": "Battery Life (conservative cycles)",
   "hemsStrategyGridReliance": "Grid Reliance (resilience / off-grid)",
-  "hemsStrategyHybrid": "Hybrid (balanced — recommended)"
+  "hemsStrategyHybrid": "Hybrid (balanced — recommended)",
+  "moneySavedMonth": "Saved this month",
+  "paymentThisMonth": "To pay this month",
+  "currencyUah": "UAH",
+  "energyTariffLabel": "Electricity tariff",
+  "energyTariffDayLabel": "Day tariff",
+  "energyTariffNightLabel": "Night tariff",
+  "energyTariffUnit": "UAH/kWh",
+  "nightEnergyShareLabel": "Night energy share",
+  "nightEnergyShareUnit": "%",
+  "autoEstimateNightShare": "Auto estimate night share",
+  "effectiveTariffFormula": "Formula: {day}*(1-{share}%) + {night}*{share}%",
+  "@effectiveTariffFormula": {
+    "placeholders": {
+      "day": {
+        "type": "String"
+      },
+      "night": {
+        "type": "String"
+      },
+      "share": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipMoneySavedMonth": "Estimated money saved this month from self-consumed solar energy",
+  "tooltipPaymentThisMonth": "Estimated monthly bill for imported grid energy",
+  "projectedSavedMonth": "Projected saved by month end",
+  "projectedPaymentMonth": "Projected payment by month end",
+  "tooltipProjectedSavedMonth": "Forecast based on current month trend of self-consumed solar energy",
+  "tooltipProjectedPaymentMonth": "Forecast based on current month trend of imported grid energy",
+  "monthlyEnergyBreakdown": "Monthly energy breakdown",
+  "monthLoadEnergy": "Load this month",
+  "monthGridImport": "Grid import",
+  "monthSelfConsumed": "Self-consumed solar",
+  "monthGridCost": "Grid cost this month",
+  "monthSavedCost": "Saved cost this month",
+  "monthEffectiveTariff": "Effective tariff",
+  "tooltipMonthProgress": "Current month progress",
+  "plannedOutageTitle": "Planned outage alert",
+  "plannedOutageEnabledSubtitle": "Auto-precharge before outage",
+  "plannedOutageDisabledSubtitle": "No manual outage schedule",
+  "plannedOutageStartLabel": "Outage start",
+  "plannedOutageEndLabel": "Outage end"
 }

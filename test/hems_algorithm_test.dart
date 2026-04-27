@@ -626,4 +626,255 @@ void main() {
           reason: 'Cheap tariff at 02:00 → SNU should be enabled');
     });
   });
+
+  // ----------------------------------------------------------------
+  // T14: Tunables sensitivity (threshold / reserve / dwell)
+  // ----------------------------------------------------------------
+  group('T14: tunables sensitivity', () {
+    test('higher pvSurplusEnterW prevents SBU for borderline surplus',
+        () async {
+      final providerLoose = _FakeAppStateProvider();
+      final providerStrict = _FakeAppStateProvider();
+
+      const looseTun = HemsTunables(
+        pvSurplusEnterW: 250,
+        minModeHold: Duration.zero,
+        commandDedupWindow: Duration(milliseconds: 1),
+      );
+      const strictTun = HemsTunables(
+        pvSurplusEnterW: 500,
+        minModeHold: Duration.zero,
+        commandDedupWindow: Duration(milliseconds: 1),
+      );
+
+      final loose = HemsAlgorithmService(providerLoose, tun: looseTun);
+      final strict = HemsAlgorithmService(providerStrict, tun: strictTun);
+
+      final data = _buildData(
+        soc: 70,
+        outputPriority: '0',
+        chargerPriority: '2',
+        pvPower: 1100,
+        loadPower: 800, // surplus = 300W
+      );
+
+      await loose.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 12),
+      );
+      await strict.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 12),
+      );
+
+      expect(providerLoose.setModeCalls, contains(2));
+      expect(providerStrict.setModeCalls, isNot(contains(2)));
+    });
+
+    test('higher reserveSoc triggers earlier USB+SNU protection', () async {
+      final providerLowReserve = _FakeAppStateProvider();
+      final providerHighReserve = _FakeAppStateProvider();
+
+      const lowReserveTun = HemsTunables(
+        reserveSoc: 20,
+        minModeHold: Duration.zero,
+        commandDedupWindow: Duration(milliseconds: 1),
+      );
+      const highReserveTun = HemsTunables(
+        reserveSoc: 30,
+        minModeHold: Duration.zero,
+        commandDedupWindow: Duration(milliseconds: 1),
+      );
+
+      final lowReserve =
+          HemsAlgorithmService(providerLowReserve, tun: lowReserveTun);
+      final highReserve =
+          HemsAlgorithmService(providerHighReserve, tun: highReserveTun);
+
+      final data = _buildData(
+        soc: 28,
+        outputPriority: '2',
+        chargerPriority: '2',
+        pvPower: 2000,
+        loadPower: 500,
+      );
+
+      await lowReserve.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 13),
+      );
+      await highReserve.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 13),
+      );
+
+      final highReserveSnu = providerHighReserve.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1');
+      final lowReserveSnu = providerLowReserve.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1');
+
+      expect(highReserveSnu, isNotEmpty,
+          reason: 'Higher reserve SOC should trigger protection at SOC=28%');
+      expect(lowReserveSnu, isEmpty,
+          reason: 'Lower reserve SOC should not trigger protection at SOC=28%');
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // T15: Storm mode precharge trigger + idempotency
+  // ----------------------------------------------------------------
+  group('T15: storm precharge', () {
+    test('executeStormMode sets USB + SNU and dedups immediate repeats',
+        () async {
+      final provider = _FakeAppStateProvider();
+      const tun = HemsTunables(
+        commandDedupWindow: Duration(minutes: 1),
+      );
+      final service = HemsAlgorithmService(provider, tun: tun);
+
+      final data = _buildData(
+        soc: 65,
+        outputPriority: '2',
+        chargerPriority: '2',
+        pvPower: 1000,
+        loadPower: 700,
+      );
+
+      await service.executeStormMode(data);
+      await service.executeStormMode(data);
+
+      final usbWrites = provider.setModeCalls.where((m) => m == 0).length;
+      final snuWrites = provider.changeSettingCalls
+          .where(
+              (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1')
+          .length;
+
+      expect(usbWrites, equals(1));
+      expect(snuWrites, equals(1));
+    });
+  });
+
+  // ----------------------------------------------------------------
+  // T16: Regression backward-compat (default profile baseline)
+  // ----------------------------------------------------------------
+  group('T16: backward compatibility with default profile', () {
+    test('default profile keeps core daytime-surplus behavior (SBU)', () async {
+      final legacyProvider = _FakeAppStateProvider();
+      final profProvider = _FakeAppStateProvider();
+
+      final legacy = HemsAlgorithmService(legacyProvider, tun: _testTun);
+
+      final profile = HemsOptimizationProfile(
+        systemId: 'compat',
+        pvPeakW: 3000,
+        batteryCapacityAh: 230,
+      );
+      final tuning = HemsTuningService(profile);
+      final profiled = HemsAlgorithmService(
+        profProvider,
+        tun: _testTun,
+        optimizationProfile: profile,
+        tuningService: tuning,
+      );
+
+      final data = _buildData(
+        soc: 70,
+        outputPriority: '0',
+        chargerPriority: '2',
+        pvPower: 2200,
+        loadPower: 700,
+      );
+
+      await legacy.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 12),
+      );
+      await profiled.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 12),
+      );
+
+      expect(legacyProvider.setModeCalls, contains(2));
+      expect(profProvider.setModeCalls, contains(2));
+    });
+
+    test('default profile keeps low-SOC safety protection behavior', () async {
+      final legacyProvider = _FakeAppStateProvider();
+      final profProvider = _FakeAppStateProvider();
+
+      final legacy = HemsAlgorithmService(legacyProvider, tun: _testTun);
+
+      final profile = HemsOptimizationProfile(
+        systemId: 'compat',
+        pvPeakW: 3000,
+        batteryCapacityAh: 230,
+      );
+      final tuning = HemsTuningService(profile);
+      final profiled = HemsAlgorithmService(
+        profProvider,
+        tun: _testTun,
+        optimizationProfile: profile,
+        tuningService: tuning,
+      );
+
+      final data = _buildData(
+        soc: 19.5,
+        outputPriority: '2',
+        chargerPriority: '2',
+        pvPower: 1800,
+        loadPower: 700,
+      );
+
+      await legacy.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 13),
+      );
+      await profiled.executeAdaptiveMode(
+        data: data,
+        batteryCapacityAh: 230,
+        hourlyForecast: const {},
+        avgHourlyConsumptionStats: const {},
+        productionCoefficient: 0.85,
+        nowOverride: DateTime(2026, 6, 1, 13),
+      );
+
+      final legacySnu = legacyProvider.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1');
+      final profSnu = profProvider.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1');
+
+      expect(legacyProvider.setModeCalls, contains(0));
+      expect(profProvider.setModeCalls, contains(0));
+      expect(legacySnu, isNotEmpty);
+      expect(profSnu, isNotEmpty);
+    });
+  });
 }

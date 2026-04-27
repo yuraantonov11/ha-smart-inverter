@@ -1089,8 +1089,10 @@ class _LogsDialogState extends State<_LogsDialog> {
 
   int get _infoCount =>
       widget.entries.where((e) => e.level == LogLevel.info).length;
+
   int get _warnCount =>
       widget.entries.where((e) => e.level == LogLevel.warn).length;
+
   int get _errorCount =>
       widget.entries.where((e) => e.level == LogLevel.error).length;
 
@@ -1378,7 +1380,16 @@ class HardwareSettingsSection extends StatelessWidget {
         TextEditingController(text: provider.manualNightStartHour.toString());
     final installYearCtrl = TextEditingController(
         text: provider.batteryInstallDate.year.toString());
+    final dayTariffCtrl = TextEditingController(
+        text: provider.dayTariffUahPerKwh.toStringAsFixed(2));
+    final nightTariffCtrl = TextEditingController(
+        text: provider.nightTariffUahPerKwh.toStringAsFixed(2));
+    final nightShareCtrl = TextEditingController(
+        text: provider.nightEnergySharePercent.toStringAsFixed(0));
     var autoWindows = provider.useAstronomicalWindows;
+    var outageEnabled = provider.plannedOutageEnabled;
+    var outageStartAt = provider.plannedOutageStartAt;
+    var outageEndAt = provider.plannedOutageEndAt;
     var selectedPreset =
         _matchPreset(provider.siteLatitude, provider.siteLongitude);
     var selectedStrategy = provider.hemsStrategy;
@@ -1420,6 +1431,41 @@ class HardwareSettingsSection extends StatelessWidget {
                     l10n.batteryInstallYearLabel,
                     '',
                     Icons.calendar_today_outlined),
+                const SizedBox(height: 16),
+                _buildTextField(
+                    context,
+                    dayTariffCtrl,
+                    l10n.energyTariffDayLabel,
+                    l10n.energyTariffUnit,
+                    Icons.sunny_snowing),
+                const SizedBox(height: 16),
+                _buildTextField(
+                    context,
+                    nightTariffCtrl,
+                    l10n.energyTariffNightLabel,
+                    l10n.energyTariffUnit,
+                    Icons.nightlight_round),
+                const SizedBox(height: 16),
+                _buildTextField(
+                    context,
+                    nightShareCtrl,
+                    l10n.nightEnergyShareLabel,
+                    l10n.nightEnergyShareUnit,
+                    Icons.pie_chart_outline_rounded),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton.icon(
+                    onPressed: () {
+                      final estimated =
+                          provider.estimateNightEnergySharePercent();
+                      setStateDialog(() {
+                        nightShareCtrl.text = estimated.toStringAsFixed(0);
+                      });
+                    },
+                    icon: const Icon(Icons.auto_awesome_rounded, size: 16),
+                    label: Text(l10n.autoEstimateNightShare),
+                  ),
+                ),
                 const SizedBox(height: 16),
                 _buildTextField(context, pvCtrl, l10n.panelPowerLabel, 'W',
                     Icons.grid_4x4_rounded),
@@ -1507,6 +1553,94 @@ class HardwareSettingsSection extends StatelessWidget {
                   _buildTextField(context, nightStartCtrl,
                       l10n.manualNightStartHour, 'h', Icons.bedtime_outlined),
                 ],
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(l10n.plannedOutageTitle),
+                  subtitle: Text(outageEnabled
+                      ? l10n.plannedOutageEnabledSubtitle
+                      : l10n.plannedOutageDisabledSubtitle),
+                  value: outageEnabled,
+                  onChanged: (v) => setStateDialog(() => outageEnabled = v),
+                ),
+                if (outageEnabled) ...[
+                  const SizedBox(height: 8),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.event_available_rounded),
+                    title: Text(l10n.plannedOutageStartLabel),
+                    subtitle: Text(outageStartAt == null
+                        ? l10n.notProvided
+                        : '${outageStartAt!.day.toString().padLeft(2, '0')}.${outageStartAt!.month.toString().padLeft(2, '0')}.${outageStartAt!.year} '
+                            '${outageStartAt!.hour.toString().padLeft(2, '0')}:${outageStartAt!.minute.toString().padLeft(2, '0')}'),
+                    trailing: TextButton(
+                      onPressed: () async {
+                        final now = DateTime.now();
+                        final date = await showDatePicker(
+                          context: context,
+                          initialDate: outageStartAt ?? now,
+                          firstDate: now.subtract(const Duration(days: 1)),
+                          lastDate: now.add(const Duration(days: 365)),
+                        );
+                        if (date == null || !context.mounted) return;
+                        final time = await showTimePicker(
+                          context: context,
+                          initialTime:
+                              TimeOfDay.fromDateTime(outageStartAt ?? now),
+                        );
+                        if (time == null) return;
+                        setStateDialog(() {
+                          outageStartAt = DateTime(
+                            date.year,
+                            date.month,
+                            date.day,
+                            time.hour,
+                            time.minute,
+                          );
+                        });
+                      },
+                      child: Text(l10n.selectValue),
+                    ),
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.event_busy_rounded),
+                    title: Text(l10n.plannedOutageEndLabel),
+                    subtitle: Text(outageEndAt == null
+                        ? l10n.notProvided
+                        : '${outageEndAt!.day.toString().padLeft(2, '0')}.${outageEndAt!.month.toString().padLeft(2, '0')}.${outageEndAt!.year} '
+                            '${outageEndAt!.hour.toString().padLeft(2, '0')}:${outageEndAt!.minute.toString().padLeft(2, '0')}'),
+                    trailing: TextButton(
+                      onPressed: () async {
+                        final base = outageStartAt ?? DateTime.now();
+                        final date = await showDatePicker(
+                          context: context,
+                          initialDate:
+                              outageEndAt ?? base.add(const Duration(hours: 2)),
+                          firstDate: base.subtract(const Duration(days: 1)),
+                          lastDate: base.add(const Duration(days: 365)),
+                        );
+                        if (date == null || !context.mounted) return;
+                        final time = await showTimePicker(
+                          context: context,
+                          initialTime: TimeOfDay.fromDateTime(outageEndAt ??
+                              base.add(const Duration(hours: 2))),
+                        );
+                        if (time == null) return;
+                        setStateDialog(() {
+                          outageEndAt = DateTime(
+                            date.year,
+                            date.month,
+                            date.day,
+                            time.hour,
+                            time.minute,
+                          );
+                        });
+                      },
+                      child: Text(l10n.selectValue),
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1532,6 +1666,12 @@ class HardwareSettingsSection extends StatelessWidget {
                     double.tryParse(pvCtrl.text) ?? provider.pvTotalCapacityW;
                 final inv = double.tryParse(inverterCtrl.text) ??
                     provider.inverterMaxPowerW;
+                final dayTariff = double.tryParse(dayTariffCtrl.text) ??
+                    provider.dayTariffUahPerKwh;
+                final nightTariff = double.tryParse(nightTariffCtrl.text) ??
+                    provider.nightTariffUahPerKwh;
+                final nightShare = double.tryParse(nightShareCtrl.text) ??
+                    provider.nightEnergySharePercent;
                 final installYear = int.tryParse(installYearCtrl.text) ??
                     provider.batteryInstallDate.year;
                 final installDate = DateTime(
@@ -1572,6 +1712,16 @@ class HardwareSettingsSection extends StatelessWidget {
                   nightStartHour: nightStart,
                 );
                 provider.saveHemsStrategy(selectedStrategy);
+                provider.saveTimeOfUseTariffs(
+                  dayTariff: dayTariff,
+                  nightTariff: nightTariff,
+                  nightSharePercent: nightShare,
+                );
+                provider.savePlannedOutage(
+                  enabled: outageEnabled,
+                  startAt: outageStartAt,
+                  endAt: outageEndAt,
+                );
                 Navigator.pop(context);
 
                 ScaffoldMessenger.of(context).showSnackBar(
@@ -1624,6 +1774,116 @@ class HardwareSettingsSection extends StatelessWidget {
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      ),
+    );
+  }
+
+  String _fmtHour(int hour) => '${hour.toString().padLeft(2, '0')}:00';
+
+  String _fmtClock(DateTime dt) =>
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+
+  Widget _buildDiagnosticRow(BuildContext context,
+      {required String label, required String value, IconData? icon}) {
+    final theme = Theme.of(context);
+    return Row(
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: 15, color: theme.colorScheme.onSurfaceVariant),
+          const SizedBox(width: 6),
+        ],
+        Expanded(
+          child: Text(
+            label,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        Text(
+          value,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w700,
+            fontFamily: 'monospace',
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildHemsDiagnosticsCard(BuildContext context) {
+    final theme = Theme.of(context);
+    final d = provider.hemsService.buildDiagnosticsSnapshot();
+    final tariffValue = !d.tariffForecastActive
+        ? 'flat/no forecast'
+        : d.chargingCheapNow
+            ? 'cheap now'
+            : (d.nextCheapChargingWindow == null
+                ? 'expensive now'
+                : 'expensive -> ${_fmtClock(d.nextCheapChargingWindow!)}');
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: theme.cardColor.withValues(alpha: 0.42),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: 0.45)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'HEMS diagnostics',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _buildDiagnosticRow(
+            context,
+            label: 'Windows (day/eve/night)',
+            value:
+                '${_fmtHour(d.dayStartHour)} / ${_fmtHour(d.eveningStartHour)} / ${_fmtHour(d.nightStartHour)}',
+            icon: Icons.schedule_rounded,
+          ),
+          const SizedBox(height: 6),
+          _buildDiagnosticRow(
+            context,
+            label: 'Adaptive PV surplus enter',
+            value: '${d.adaptivePvSurplusEnterW.toStringAsFixed(0)} W',
+            icon: Icons.solar_power_rounded,
+          ),
+          const SizedBox(height: 6),
+          _buildDiagnosticRow(
+            context,
+            label: 'Adaptive dwell',
+            value: '${d.adaptiveDwell.inMinutes} min',
+            icon: Icons.timer_outlined,
+          ),
+          const SizedBox(height: 6),
+          _buildDiagnosticRow(
+            context,
+            label: 'Adaptive reserve SOC',
+            value: '${d.adaptiveReserveSoc.toStringAsFixed(1)} %',
+            icon: Icons.battery_std_rounded,
+          ),
+          const SizedBox(height: 6),
+          _buildDiagnosticRow(
+            context,
+            label: 'Tariff charging hint',
+            value: tariffValue,
+            icon: Icons.bolt_rounded,
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Updated ${_fmtClock(d.capturedAt)}',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1696,6 +1956,7 @@ class HardwareSettingsSection extends StatelessWidget {
                           color: Theme.of(context).colorScheme.onSurfaceVariant,
                           height: 1.3),
                     ),
+                    _buildHemsDiagnosticsCard(context),
                   ],
                 ),
               ),

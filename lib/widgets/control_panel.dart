@@ -61,7 +61,7 @@ class ControlPanel extends StatelessWidget {
               Expanded(
                 child: AppModeButton(
                   title: l10n.solarSbu,
-                  subtitle: 'Від сонця',
+                  subtitle: l10n.modeFromSolar,
                   icon: Icons.wb_sunny_rounded,
                   isActive: currentOutputPriority == '2',
                   activeColor: const Color(0xFFF59E0B),
@@ -75,7 +75,7 @@ class ControlPanel extends StatelessWidget {
               Expanded(
                 child: AppModeButton(
                   title: l10n.gridUsb,
-                  subtitle: 'Від мережі',
+                  subtitle: l10n.modeFromGrid,
                   icon: Icons.power_rounded,
                   isActive: currentOutputPriority == '0',
                   activeColor: const Color(0xFF06B6D4),

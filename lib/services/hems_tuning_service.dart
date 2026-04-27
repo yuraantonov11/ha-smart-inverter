@@ -12,6 +12,13 @@ class HemsTuningService {
 
   HemsTuningService(this.profile);
 
+  static const String _reasonAstronomicalWindows =
+      'reason=astronomical_windows_update';
+  static const String _reasonPvVariance = 'reason=pv_variance_adaptation';
+  static const String _reasonDwellVariance = 'reason=dwell_variance_adaptation';
+  static const String _reasonReserveSoc = 'reason=reserve_soc_adaptation';
+  static const String _reasonDriftCap = 'reason=drift_cap';
+
   /// Calculate sunrise/sunset for given date and location
   /// Simple astronomical formula (good enough for ±5 min accuracy)
   static DateTime calculateSunrise(
@@ -73,7 +80,7 @@ class HemsTuningService {
     );
 
     LogService.log(
-      '🌅 HEMS tuning: astronomical windows updated — sunrise=${DateFormat('HH:mm').format(sunrise)}, sunset=${DateFormat('HH:mm').format(sunset)}',
+      '🌅 HEMS tuning: astronomical windows updated ($_reasonAstronomicalWindows) — sunrise=${DateFormat('HH:mm').format(sunrise)}, sunset=${DateFormat('HH:mm').format(sunset)}',
     );
   }
 
@@ -103,8 +110,11 @@ class HemsTuningService {
     // High variance = cloudy, need higher threshold to avoid flapping
     final variancePenalty = min(1.5, 1.0 + (stdDev / 200.0));
 
-    final adaptive = base * hourPenalty * variancePenalty;
-    return adaptive.clamp(70, 600);
+    final adaptive =
+        (base * hourPenalty * variancePenalty).clamp(70, 600).toDouble();
+    logParameterUpdate('pv_surplus_enter_w', base, adaptive,
+        reasonCode: _reasonPvVariance);
+    return adaptive;
   }
 
   /// Compute adaptive dwell time based on PV stability
@@ -120,9 +130,18 @@ class HemsTuningService {
 
     // Cloudy (high variance) → short dwell (8 min)
     // Clear (low variance) → long dwell (25 min)
-    if (stdDev > 300) return const Duration(minutes: 8);
-    if (stdDev < 50) return const Duration(minutes: 25);
-    return const Duration(minutes: 15);
+    final result = stdDev > 300
+        ? const Duration(minutes: 8)
+        : stdDev < 50
+            ? const Duration(minutes: 25)
+            : const Duration(minutes: 15);
+    logParameterUpdate(
+      'adaptive_dwell_minutes',
+      15,
+      result.inMinutes.toDouble(),
+      reasonCode: _reasonDwellVariance,
+    );
+    return result;
   }
 
   /// Compute reserve SOC based on battery health, tariff, strategy
@@ -149,7 +168,10 @@ class HemsTuningService {
       adaptive -= 1; // can afford lower reserve due to cheap charging
     }
 
-    return adaptive.clamp(15, 35);
+    final clamped = adaptive.clamp(15, 35).toDouble();
+    logParameterUpdate('reserve_soc', baseReserveSoc, clamped,
+        reasonCode: _reasonReserveSoc);
+    return clamped;
   }
 
   /// Get recommended strategy based on profile + forecasts + mode
@@ -180,14 +202,24 @@ class HemsTuningService {
   /// Cap adaptive parameter drift to prevent sudden jumps
   double capDrift(double oldValue, double newValue, double maxDriftPercent) {
     final maxChange = oldValue * (maxDriftPercent / 100.0);
-    return newValue.clamp(oldValue - maxChange, oldValue + maxChange);
+    final capped = newValue.clamp(oldValue - maxChange, oldValue + maxChange);
+    if ((newValue - capped).abs() > 0.01) {
+      LogService.log(
+        '🧱 HEMS tuning: capped drift ($_reasonDriftCap) '
+        'old=${oldValue.toStringAsFixed(2)} new=${newValue.toStringAsFixed(2)} '
+        'capped=${capped.toStringAsFixed(2)} max=${maxDriftPercent.toStringAsFixed(1)}%',
+      );
+    }
+    return capped.toDouble();
   }
 
   /// Log transitions when parameters change
-  void logParameterUpdate(String paramName, double oldValue, double newValue) {
+  void logParameterUpdate(String paramName, double oldValue, double newValue,
+      {String reasonCode = 'reason=parameter_update'}) {
     if ((oldValue - newValue).abs() > 0.01) {
       LogService.log(
-        '🔧 HEMS: parameter adjusted — $paramName: ${oldValue.toStringAsFixed(1)} → ${newValue.toStringAsFixed(1)}',
+        '🔧 HEMS: parameter adjusted ($reasonCode) — '
+        '$paramName: ${oldValue.toStringAsFixed(1)} → ${newValue.toStringAsFixed(1)}',
       );
     }
   }

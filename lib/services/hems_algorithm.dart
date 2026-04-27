@@ -22,6 +22,31 @@ class _Chg {
   static const oso = '2'; // solar only
 }
 
+/// Machine-searchable reason codes for control writes and skip paths.
+class _Reason {
+  static const manualOverrideDetected = 'manual_override_detected';
+  static const manualOverrideHoldSkip = 'manual_override_hold_skip';
+  static const dedupSkipOutput = 'dedup_skip_output';
+  static const dedupSkipCharger = 'dedup_skip_charger';
+  static const dwellLock = 'dwell_lock';
+  static const reserveSocProtection = 'reserve_soc_protection';
+  static const nightWindowUsb = 'night_window_usb';
+  static const tariffExpensiveDefer = 'tariff_expensive_defer';
+  static const nightChargeDeficitCheapNow = 'night_charge_deficit_cheap_now';
+  static const nightChargeNoCheapWindow = 'night_charge_no_cheap_window';
+  static const nightNoGridChargeNeeded = 'night_no_grid_charge_needed';
+  static const chargerDaySolarOnly = 'charger_day_solar_only';
+  static const surplusEnterSbu = 'surplus_enter_sbu';
+  static const eveningReserveProtection = 'evening_reserve_protection';
+  static const eveningBatteryUse = 'evening_battery_use';
+  static const dayForecastOk = 'day_forecast_ok';
+  static const dayForecastDeficitLowSoc = 'day_forecast_deficit_low_soc';
+  static const holdCurrentState = 'hold_current_state';
+  static const keepaliveStart = 'keepalive_start';
+  static const keepaliveEnd = 'keepalive_end';
+  static const gridOutagePrecharge = 'grid_outage_precharge';
+}
+
 /// Tunable HEMS constants. Centralised to allow future feature flags / UI tuning.
 class HemsTunables {
   // SOC thresholds
@@ -47,6 +72,33 @@ class HemsTunables {
     this.minModeHold = const Duration(minutes: 20),
     this.manualOverrideHold = const Duration(minutes: 30),
     this.commandDedupWindow = const Duration(seconds: 30),
+  });
+}
+
+/// Read-only diagnostics values for showing current HEMS adaptive decisions in UI.
+class HemsDiagnosticsSnapshot {
+  final DateTime capturedAt;
+  final int dayStartHour;
+  final int eveningStartHour;
+  final int nightStartHour;
+  final double adaptivePvSurplusEnterW;
+  final Duration adaptiveDwell;
+  final double adaptiveReserveSoc;
+  final bool tariffForecastActive;
+  final bool chargingCheapNow;
+  final DateTime? nextCheapChargingWindow;
+
+  const HemsDiagnosticsSnapshot({
+    required this.capturedAt,
+    required this.dayStartHour,
+    required this.eveningStartHour,
+    required this.nightStartHour,
+    required this.adaptivePvSurplusEnterW,
+    required this.adaptiveDwell,
+    required this.adaptiveReserveSoc,
+    required this.tariffForecastActive,
+    required this.chargingCheapNow,
+    required this.nextCheapChargingWindow,
   });
 }
 
@@ -84,6 +136,35 @@ class HemsAlgorithmService {
     this.tuningService,
   });
 
+  /// Builds current adaptive/runtime values that can be displayed in settings.
+  HemsDiagnosticsSnapshot buildDiagnosticsSnapshot({DateTime? now}) {
+    final ts = now ?? DateTime.now();
+    final windows = _resolveWindows(
+      now: ts,
+      useAstronomicalWindows: provider.useAstronomicalWindows,
+      latitude: provider.siteLatitude,
+      longitude: provider.siteLongitude,
+      manualDayStartHour: provider.manualDayStartHour,
+      manualEveningStartHour: provider.manualEveningStartHour,
+      manualNightStartHour: provider.manualNightStartHour,
+    );
+
+    final tariffActive = optimizationProfile?.tariffForecast != null;
+    return HemsDiagnosticsSnapshot(
+      capturedAt: ts,
+      dayStartHour: windows.dayStart,
+      eveningStartHour: windows.eveningStart,
+      nightStartHour: windows.nightStart,
+      adaptivePvSurplusEnterW: _getAdaptivePvSurplusEnter(),
+      adaptiveDwell: _getAdaptiveDwellTime(),
+      adaptiveReserveSoc: _getAdaptiveReserveSoc(),
+      tariffForecastActive: tariffActive,
+      chargingCheapNow: tariffActive ? _isChargingCheapNow(ts) : true,
+      nextCheapChargingWindow:
+          tariffActive ? _getNextCheapChargingWindow(ts) : null,
+    );
+  }
+
   // ------------------------------------------------------------------
   // Helpers: read current inverter state
   // ------------------------------------------------------------------
@@ -106,7 +187,7 @@ class HemsAlgorithmService {
     if (cur != _lastCmdOutput && since > tun.commandDedupWindow) {
       _manualOverrideUntil = DateTime.now().add(tun.manualOverrideHold);
       LogService.log(
-          '✋ HEMS: detected manual override (mode=$cur, was cmd=$_lastCmdOutput). Holding ${tun.manualOverrideHold.inMinutes}m.');
+          '✋ HEMS: detected manual override (reason=${_Reason.manualOverrideDetected}, mode=$cur, was cmd=$_lastCmdOutput). Holding ${tun.manualOverrideHold.inMinutes}m.');
       // Treat the user value as the new baseline so we don't loop.
       _lastCmdOutput = cur;
       _lastCmdOutputAt = DateTime.now();
@@ -127,6 +208,8 @@ class HemsAlgorithmService {
     if (_lastCmdOutput == desired &&
         _lastCmdOutputAt != null &&
         now.difference(_lastCmdOutputAt!) < tun.commandDedupWindow) {
+      LogService.log(
+          '⏭️ HEMS: skip output write (reason=${_Reason.dedupSkipOutput}, target=${_modeName(desired)})');
       return false;
     }
     // Dwell: avoid flapping output mode — Phase 2b: use adaptive dwell time
@@ -137,7 +220,7 @@ class HemsAlgorithmService {
         _lastCmdOutput != desired &&
         now.difference(_lastOutputSwitchAt!) < dwell) {
       LogService.log(
-          '⏳ HEMS: skip switch to ${_modeName(desired)} (reason=$reason) — dwell ${dwell.inMinutes}m active');
+          '⏳ HEMS: skip switch to ${_modeName(desired)} (reason=${_Reason.dwellLock}, requested=$reason, dwell=${dwell.inMinutes}m)');
       return false;
     }
 
@@ -157,6 +240,8 @@ class HemsAlgorithmService {
     if (_lastCmdCharger == desired &&
         _lastCmdChargerAt != null &&
         now.difference(_lastCmdChargerAt!) < tun.commandDedupWindow) {
+      LogService.log(
+          '⏭️ HEMS: skip charger write (reason=${_Reason.dedupSkipCharger}, target=${_chgName(desired)})');
       return false;
     }
     await provider.changeSetting('chargerSourcePrioritySetting', desired);
@@ -197,10 +282,10 @@ class HemsAlgorithmService {
     _keepaliveInProgress = true;
     LogService.log(
         '🔋 Keepalive: battery idle ${inactiveDuration.inMinutes}m. Briefly switching to SBU.');
-    await _applyOutput(_Out.sbu, 'keepalive', force: true);
+    await _applyOutput(_Out.sbu, _Reason.keepaliveStart, force: true);
 
     Future.delayed(_keepaliveDuration, () async {
-      await _applyOutput(_Out.usb, 'keepalive_end', force: true);
+      await _applyOutput(_Out.usb, _Reason.keepaliveEnd, force: true);
       _lastBatteryActivityAt = DateTime.now();
       _keepaliveInProgress = false;
       LogService.log('🔋 Keepalive done. Returned to USB.');
@@ -300,7 +385,7 @@ class HemsAlgorithmService {
       if (!isCheap) {
         LogService.log(
             '💰 HEMS: tariff check — current ${currentPrice.toStringAsFixed(2)}'
-            ' > avg ${avg.toStringAsFixed(2)} UAH/kWh → expensive hour');
+            ' > avg ${avg.toStringAsFixed(2)} UAH/kWh → expensive hour (reason=tariff_expensive_hour)');
       }
       return isCheap;
     } catch (_) {
@@ -402,25 +487,25 @@ class HemsAlgorithmService {
 
     // -------- 0. SAFETY: hard floor --------
     if (data.batterySoc <= reserveSoc + 2.0) {
-      await _applyOutput(_Out.usb, 'safety_low_soc', force: true);
-      await _applyCharger(_Chg.snu, 'safety_low_soc');
+      await _applyOutput(_Out.usb, _Reason.reserveSocProtection, force: true);
+      await _applyCharger(_Chg.snu, _Reason.reserveSocProtection);
       return;
     }
 
     // -------- 1. Manual override hold --------
     if (_isManualHoldActive) {
       LogService.log(
-          'ℹ️ HEMS: manual hold active until ${_manualOverrideUntil!.toIso8601String()} — skipping output decisions.');
+          'ℹ️ HEMS: manual hold active until ${_manualOverrideUntil!.toIso8601String()} (reason=${_Reason.manualOverrideHoldSkip}) — skipping output decisions.');
       // Still allow charger management when safe.
       if (currentHour >= 7 && currentHour < 23 && currentCharger != _Chg.oso) {
-        await _applyCharger(_Chg.oso, 'day_solar_only');
+        await _applyCharger(_Chg.oso, _Reason.chargerDaySolarOnly);
       }
       return;
     }
 
     // -------- 2. Night tariff window --------
     if (currentHour >= windows.nightStart || currentHour < windows.dayStart) {
-      await _applyOutput(_Out.usb, 'night_tariff');
+      await _applyOutput(_Out.usb, _Reason.nightWindowUsb);
       // Tomorrow forecast deficit drives charger choice
       final tomorrow = now.hour >= windows.nightStart
           ? now.add(const Duration(days: 1))
@@ -440,27 +525,24 @@ class HemsAlgorithmService {
       // Phase 3a: tariff-aware night charging decision
       if (deficitIfNoCharge > 0) {
         if (_isChargingCheapNow(now)) {
-          await _applyCharger(_Chg.snu,
-              'night_charge_deficit_tariff_ok_${deficitIfNoCharge.toInt()}Wh');
+          await _applyCharger(_Chg.snu, _Reason.nightChargeDeficitCheapNow);
         } else {
           final cheapAt = _getNextCheapChargingWindow(now);
           if (cheapAt != null &&
               cheapAt.isAfter(now) &&
               cheapAt.difference(now) <= const Duration(hours: 4)) {
             // Upcoming cheap window is within 4 hours — defer grid charge
-            await _applyCharger(_Chg.oso,
-                'night_defer_tariff_expensive_cheap_at_${cheapAt.hour}h');
+            await _applyCharger(_Chg.oso, _Reason.tariffExpensiveDefer);
             LogService.log(
-                '💰 HEMS: tariff deferral — deficit=${deficitIfNoCharge.toInt()}Wh,'
+                '💰 HEMS: tariff deferral (reason=${_Reason.tariffExpensiveDefer}) — deficit=${deficitIfNoCharge.toInt()}Wh,'
                 ' cheap window at ${cheapAt.hour}:00');
           } else {
             // No near-future cheap window — charge now despite higher price
-            await _applyCharger(_Chg.snu,
-                'night_charge_deficit_no_cheap_window_${deficitIfNoCharge.toInt()}Wh');
+            await _applyCharger(_Chg.snu, _Reason.nightChargeNoCheapWindow);
           }
         }
       } else {
-        await _applyCharger(_Chg.oso, 'night_no_grid_charge_needed');
+        await _applyCharger(_Chg.oso, _Reason.nightNoGridChargeNeeded);
       }
       return;
     }
@@ -468,7 +550,7 @@ class HemsAlgorithmService {
     // -------- 3. Daytime / evening: realtime first --------
     // Always prefer solar-only charger when sun is up.
     if (currentCharger != _Chg.oso) {
-      await _applyCharger(_Chg.oso, 'daytime_solar_only');
+      await _applyCharger(_Chg.oso, _Reason.chargerDaySolarOnly);
     }
 
     final socOk = data.batterySoc >= tun.minOperatingSoc;
@@ -477,8 +559,7 @@ class HemsAlgorithmService {
     // (a) Realtime SURPLUS — strong reason to use SBU now.
     // Phase 2b: use adaptive threshold instead of fixed tun.pvSurplusEnterW
     if (pvActive && socOk && surplus >= adaptivePvSurplusEnter) {
-      await _applyOutput(_Out.sbu,
-          'pv_surplus_${surplus.toInt()}W_soc_${data.batterySoc.toInt()}_thr_${adaptivePvSurplusEnter.toInt()}W');
+      await _applyOutput(_Out.sbu, _Reason.surplusEnterSbu);
       return;
     }
 
@@ -511,25 +592,23 @@ class HemsAlgorithmService {
           deficitTillNight == 0;
 
       if (reserveProtectionActive) {
-        await _applyOutput(_Out.usb,
-            'evening_reserve_def_${deficitTillNight.toInt()}Wh_soc_${data.batterySoc.toInt()}');
+        await _applyOutput(_Out.usb, _Reason.eveningReserveProtection);
       } else if (batteryCanBeUsed) {
-        await _applyOutput(
-            _Out.sbu, 'evening_battery_avail_${availableEnergyWh.toInt()}Wh');
+        await _applyOutput(_Out.sbu, _Reason.eveningBatteryUse);
       }
       return;
     }
 
     // Daytime, ambiguous realtime
     if (deficitTillNight == 0) {
-      await _applyOutput(_Out.sbu, 'day_forecast_ok');
+      await _applyOutput(_Out.sbu, _Reason.dayForecastOk);
     } else if (surplus <= tun.pvSurplusExitW && data.batterySoc < tun.midSoc) {
       // Real PV deficit + low-mid SOC: use grid, save sun for battery.
-      await _applyOutput(_Out.usb,
-          'day_forecast_deficit_${deficitTillNight.toInt()}Wh_low_soc');
+      await _applyOutput(_Out.usb, _Reason.dayForecastDeficitLowSoc);
     } else {
       // Otherwise: keep current state. Don't fight realtime small-surplus.
-      LogService.log('ℹ️ HEMS: hold ${_modeName(currentOutput ?? _Out.usb)} '
+      LogService.log(
+          'ℹ️ HEMS: hold ${_modeName(currentOutput ?? _Out.usb)} (reason=${_Reason.holdCurrentState}) '
           '(pv=${pv.toInt()}W load=${load.toInt()}W surplus=${surplus.toInt()}W '
           'soc=${data.batterySoc.toStringAsFixed(0)}% '
           'def=${deficitTillNight.toInt()}Wh '
@@ -603,24 +682,25 @@ class HemsAlgorithmService {
   Future<void> executeNightArbitrage(InverterData data) async {
     _detectManualOverride(data);
     if (_isManualHoldActive) {
-      LogService.log('ℹ️ NightArb: manual hold active — skipping.');
+      LogService.log(
+          'ℹ️ NightArb: manual hold active (reason=${_Reason.manualOverrideHoldSkip}) — skipping.');
       return;
     }
     if (await _batteryKeepalive(data)) return;
 
     final hour = DateTime.now().hour;
     if (hour >= 23 || hour < 7) {
-      await _applyOutput(_Out.usb, 'night_tariff');
-      await _applyCharger(_Chg.snu, 'night_charge');
+      await _applyOutput(_Out.usb, _Reason.nightWindowUsb);
+      await _applyCharger(_Chg.snu, _Reason.nightChargeDeficitCheapNow);
     } else {
       // Daytime: keep realtime-aware behaviour to avoid flapping.
       final surplus = data.pvPower - data.loadPower;
       if (data.pvPower > 80 &&
           data.batterySoc >= tun.minOperatingSoc &&
           surplus >= tun.pvSurplusEnterW) {
-        await _applyOutput(_Out.sbu, 'day_pv_surplus');
+        await _applyOutput(_Out.sbu, _Reason.surplusEnterSbu);
       }
-      await _applyCharger(_Chg.oso, 'day_solar_only');
+      await _applyCharger(_Chg.oso, _Reason.chargerDaySolarOnly);
     }
   }
 
@@ -629,8 +709,8 @@ class HemsAlgorithmService {
   // ------------------------------------------------------------------
   Future<void> executeStormMode(InverterData data) async {
     _trackBatteryActivity(data);
-    await _applyOutput(_Out.usb, 'storm_mode', force: true);
-    await _applyCharger(_Chg.snu, 'storm_mode');
+    await _applyOutput(_Out.usb, _Reason.gridOutagePrecharge, force: true);
+    await _applyCharger(_Chg.snu, _Reason.gridOutagePrecharge);
   }
 
   // ------------------------------------------------------------------

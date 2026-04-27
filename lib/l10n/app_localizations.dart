@@ -1501,6 +1501,186 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Hybrid (balanced — recommended)'**
   String get hemsStrategyHybrid;
+
+  /// No description provided for @moneySavedMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved this month'**
+  String get moneySavedMonth;
+
+  /// No description provided for @paymentThisMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'To pay this month'**
+  String get paymentThisMonth;
+
+  /// No description provided for @currencyUah.
+  ///
+  /// In en, this message translates to:
+  /// **'UAH'**
+  String get currencyUah;
+
+  /// No description provided for @energyTariffLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Electricity tariff'**
+  String get energyTariffLabel;
+
+  /// No description provided for @energyTariffDayLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Day tariff'**
+  String get energyTariffDayLabel;
+
+  /// No description provided for @energyTariffNightLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Night tariff'**
+  String get energyTariffNightLabel;
+
+  /// No description provided for @energyTariffUnit.
+  ///
+  /// In en, this message translates to:
+  /// **'UAH/kWh'**
+  String get energyTariffUnit;
+
+  /// No description provided for @nightEnergyShareLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Night energy share'**
+  String get nightEnergyShareLabel;
+
+  /// No description provided for @nightEnergyShareUnit.
+  ///
+  /// In en, this message translates to:
+  /// **'%'**
+  String get nightEnergyShareUnit;
+
+  /// No description provided for @autoEstimateNightShare.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto estimate night share'**
+  String get autoEstimateNightShare;
+
+  /// No description provided for @effectiveTariffFormula.
+  ///
+  /// In en, this message translates to:
+  /// **'Formula: {day}*(1-{share}%) + {night}*{share}%'**
+  String effectiveTariffFormula(String day, String night, String share);
+
+  /// No description provided for @tooltipMoneySavedMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated money saved this month from self-consumed solar energy'**
+  String get tooltipMoneySavedMonth;
+
+  /// No description provided for @tooltipPaymentThisMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated monthly bill for imported grid energy'**
+  String get tooltipPaymentThisMonth;
+
+  /// No description provided for @projectedSavedMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Projected saved by month end'**
+  String get projectedSavedMonth;
+
+  /// No description provided for @projectedPaymentMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Projected payment by month end'**
+  String get projectedPaymentMonth;
+
+  /// No description provided for @tooltipProjectedSavedMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Forecast based on current month trend of self-consumed solar energy'**
+  String get tooltipProjectedSavedMonth;
+
+  /// No description provided for @tooltipProjectedPaymentMonth.
+  ///
+  /// In en, this message translates to:
+  /// **'Forecast based on current month trend of imported grid energy'**
+  String get tooltipProjectedPaymentMonth;
+
+  /// No description provided for @monthlyEnergyBreakdown.
+  ///
+  /// In en, this message translates to:
+  /// **'Monthly energy breakdown'**
+  String get monthlyEnergyBreakdown;
+
+  /// No description provided for @monthLoadEnergy.
+  ///
+  /// In en, this message translates to:
+  /// **'Load this month'**
+  String get monthLoadEnergy;
+
+  /// No description provided for @monthGridImport.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid import'**
+  String get monthGridImport;
+
+  /// No description provided for @monthSelfConsumed.
+  ///
+  /// In en, this message translates to:
+  /// **'Self-consumed solar'**
+  String get monthSelfConsumed;
+
+  /// No description provided for @monthGridCost.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid cost this month'**
+  String get monthGridCost;
+
+  /// No description provided for @monthSavedCost.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved cost this month'**
+  String get monthSavedCost;
+
+  /// No description provided for @monthEffectiveTariff.
+  ///
+  /// In en, this message translates to:
+  /// **'Effective tariff'**
+  String get monthEffectiveTariff;
+
+  /// No description provided for @tooltipMonthProgress.
+  ///
+  /// In en, this message translates to:
+  /// **'Current month progress'**
+  String get tooltipMonthProgress;
+
+  /// No description provided for @plannedOutageTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Planned outage alert'**
+  String get plannedOutageTitle;
+
+  /// No description provided for @plannedOutageEnabledSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto-precharge before outage'**
+  String get plannedOutageEnabledSubtitle;
+
+  /// No description provided for @plannedOutageDisabledSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'No manual outage schedule'**
+  String get plannedOutageDisabledSubtitle;
+
+  /// No description provided for @plannedOutageStartLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Outage start'**
+  String get plannedOutageStartLabel;
+
+  /// No description provided for @plannedOutageEndLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Outage end'**
+  String get plannedOutageEndLabel;
 }
 
 class _AppLocalizationsDelegate

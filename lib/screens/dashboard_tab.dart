@@ -112,6 +112,10 @@ class _StatsSection extends StatelessWidget {
     final daily = provider.service.dailyEnergy.toStringAsFixed(1);
     final total = provider.service.totalEnergy.toStringAsFixed(0);
     final co2 = provider.service.co2Reduction.toStringAsFixed(1);
+    final savedMoney = provider.monthSavedUah;
+    final monthToPay = provider.monthToPayUah;
+    final projectedSavedMoney = provider.projectedMonthSavedUah;
+    final projectedMonthToPay = provider.projectedMonthToPayUah;
     final cards = [
       AppStatCard(
         label: l10n.today,
@@ -136,6 +140,42 @@ class _StatsSection extends StatelessWidget {
         icon: Icons.eco_rounded,
         color: AppTheme.batteryColor,
         tooltip: l10n.tooltipCo2,
+      ),
+      AppStatCard(
+        label: l10n.moneySavedMonth,
+        value: savedMoney == null ? '--' : savedMoney.toStringAsFixed(0),
+        unit: l10n.currencyUah,
+        icon: Icons.savings_rounded,
+        color: const Color(0xFF10B981),
+        tooltip: l10n.tooltipMoneySavedMonth,
+      ),
+      AppStatCard(
+        label: l10n.paymentThisMonth,
+        value: monthToPay == null ? '--' : monthToPay.toStringAsFixed(0),
+        unit: l10n.currencyUah,
+        icon: Icons.receipt_long_rounded,
+        color: const Color(0xFFFB923C),
+        tooltip: l10n.tooltipPaymentThisMonth,
+      ),
+      AppStatCard(
+        label: l10n.projectedSavedMonth,
+        value: projectedSavedMoney == null
+            ? '--'
+            : projectedSavedMoney.toStringAsFixed(0),
+        unit: l10n.currencyUah,
+        icon: Icons.trending_up_rounded,
+        color: const Color(0xFF34D399),
+        tooltip: l10n.tooltipProjectedSavedMonth,
+      ),
+      AppStatCard(
+        label: l10n.projectedPaymentMonth,
+        value: projectedMonthToPay == null
+            ? '--'
+            : projectedMonthToPay.toStringAsFixed(0),
+        unit: l10n.currencyUah,
+        icon: Icons.calendar_month_rounded,
+        color: const Color(0xFFF59E0B),
+        tooltip: l10n.tooltipProjectedPaymentMonth,
       ),
     ];
 
@@ -173,8 +213,274 @@ class _StatsSection extends StatelessWidget {
             );
           },
         ),
+        const SizedBox(height: AppTheme.spacingL),
+        _MonthEconomicsBreakdown(provider: provider),
       ],
     );
+  }
+}
+
+class _MonthEconomicsBreakdown extends StatelessWidget {
+  final AppStateProvider provider;
+
+  const _MonthEconomicsBreakdown({required this.provider});
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final load = provider.monthLoadKwh;
+    final grid = provider.monthGridKwh;
+    final selfConsumed = provider.monthSelfConsumedKwh;
+    final gridCost = provider.monthToPayUah;
+    final savedCost = provider.monthSavedUah;
+    final dailyEconomics = provider.monthDailyEconomics;
+    final progress = provider.monthProgressFraction;
+
+    String fmt(double? v) => v == null ? '--' : v.toStringAsFixed(1);
+
+    return AppCard(
+      padding: const EdgeInsets.all(AppTheme.spacingL),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.pie_chart_rounded,
+                  color: Theme.of(context).colorScheme.primary),
+              const SizedBox(width: AppTheme.spacingS),
+              Expanded(
+                child: Text(
+                  l10n.monthlyEnergyBreakdown,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              Tooltip(
+                message: l10n.tooltipMonthProgress,
+                child: Text(
+                  '${provider.monthProgressPercent}%',
+                  style: Theme.of(context).textTheme.labelMedium,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppTheme.spacingS),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(
+              minHeight: 7,
+              value: progress,
+            ),
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          LayoutBuilder(builder: (context, constraints) {
+            final compact = constraints.maxWidth < 700;
+            final items = [
+              _BreakdownItem(
+                label: l10n.monthLoadEnergy,
+                value: '${fmt(load)} kWh',
+                color: AppTheme.pvColor,
+              ),
+              _BreakdownItem(
+                label: l10n.monthGridImport,
+                value: '${fmt(grid)} kWh',
+                color: AppTheme.gridColor,
+              ),
+              _BreakdownItem(
+                label: l10n.monthSelfConsumed,
+                value: '${fmt(selfConsumed)} kWh',
+                color: AppTheme.batteryColor,
+              ),
+            ];
+
+            if (compact) {
+              return Column(
+                children: [
+                  for (var i = 0; i < items.length; i++) ...[
+                    items[i],
+                    if (i != items.length - 1)
+                      const SizedBox(height: AppTheme.spacingS),
+                  ],
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                for (var i = 0; i < items.length; i++) ...[
+                  Expanded(child: items[i]),
+                  if (i != items.length - 1)
+                    const SizedBox(width: AppTheme.spacingM),
+                ],
+              ],
+            );
+          }),
+          const SizedBox(height: AppTheme.spacingM),
+          LayoutBuilder(builder: (context, constraints) {
+            final compact = constraints.maxWidth < 700;
+            final moneyItems = [
+              _BreakdownItem(
+                label: l10n.monthGridCost,
+                value:
+                    '${gridCost == null ? '--' : gridCost.toStringAsFixed(0)} ${l10n.currencyUah}',
+                color: AppTheme.gridColor,
+              ),
+              _BreakdownItem(
+                label: l10n.monthSavedCost,
+                value:
+                    '${savedCost == null ? '--' : savedCost.toStringAsFixed(0)} ${l10n.currencyUah}',
+                color: const Color(0xFF10B981),
+              ),
+              _BreakdownItem(
+                label: l10n.monthEffectiveTariff,
+                value:
+                    '${provider.effectiveTariffUahPerKwh.toStringAsFixed(2)} ${l10n.energyTariffUnit}',
+                color: const Color(0xFF8B5CF6),
+                tooltip: l10n.effectiveTariffFormula(
+                  provider.dayTariffUahPerKwh.toStringAsFixed(2),
+                  provider.nightTariffUahPerKwh.toStringAsFixed(2),
+                  provider.nightEnergySharePercent.toStringAsFixed(0),
+                ),
+              ),
+            ];
+
+            if (compact) {
+              return Column(
+                children: [
+                  for (var i = 0; i < moneyItems.length; i++) ...[
+                    moneyItems[i],
+                    if (i != moneyItems.length - 1)
+                      const SizedBox(height: AppTheme.spacingS),
+                  ],
+                ],
+              );
+            }
+
+            return Row(
+              children: [
+                for (var i = 0; i < moneyItems.length; i++) ...[
+                  Expanded(child: moneyItems[i]),
+                  if (i != moneyItems.length - 1)
+                    const SizedBox(width: AppTheme.spacingM),
+                ],
+              ],
+            );
+          }),
+          if (dailyEconomics.isNotEmpty) ...[
+            const SizedBox(height: AppTheme.spacingM),
+            _MonthEconomicsMiniChart(data: dailyEconomics),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _MonthEconomicsMiniChart extends StatelessWidget {
+  final List<({int day, double payableUah, double savedUah})> data;
+
+  const _MonthEconomicsMiniChart({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    final bars = data
+        .map(
+          (d) => BarChartGroupData(
+            x: d.day,
+            barRods: [
+              BarChartRodData(
+                toY: d.payableUah,
+                width: 6,
+                borderRadius: BorderRadius.circular(2),
+                color: AppTheme.gridColor.withValues(alpha: 0.85),
+              ),
+              BarChartRodData(
+                toY: d.savedUah,
+                width: 6,
+                borderRadius: BorderRadius.circular(2),
+                color: const Color(0xFF10B981),
+              ),
+            ],
+            barsSpace: 3,
+          ),
+        )
+        .toList(growable: false);
+
+    return SizedBox(
+      height: 120,
+      child: BarChart(
+        BarChartData(
+          barGroups: bars,
+          gridData: const FlGridData(show: false),
+          borderData: FlBorderData(show: false),
+          titlesData: FlTitlesData(
+            topTitles:
+                const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles:
+                const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            leftTitles:
+                const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                interval: 5,
+                getTitlesWidget: (value, meta) => Text(
+                  value.toInt().toString(),
+                  style: Theme.of(context).textTheme.labelSmall,
+                ),
+              ),
+            ),
+          ),
+          groupsSpace: 5,
+        ),
+      ),
+    );
+  }
+}
+
+class _BreakdownItem extends StatelessWidget {
+  final String label;
+  final String value;
+  final Color color;
+  final String? tooltip;
+
+  const _BreakdownItem({
+    required this.label,
+    required this.value,
+    required this.color,
+    this.tooltip,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final card = Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTheme.spacingM,
+        vertical: AppTheme.spacingS,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall,
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
+    );
+    if (tooltip == null) return card;
+    return Tooltip(message: tooltip!, child: card);
   }
 }
 

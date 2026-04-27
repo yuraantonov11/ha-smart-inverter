@@ -48,6 +48,11 @@ class InverterService {
 
   bool get lastRealtimeOffline => _lastRealtimeOffline;
 
+  // Cached monthly economics summary to avoid frequent repeated API calls.
+  DateTime? _cachedMonthlySummaryAt;
+  String? _cachedMonthlySummaryKey;
+  ({double loadWh, double gridWh})? _cachedMonthlySummary;
+
   late final String _appSecret = _decryptAppSecret(_appId, _encryptedAppSecret);
 
   InverterService() {
@@ -533,6 +538,166 @@ class InverterService {
     app_log.LogService.log(
         '📉 chart.fetch empty result: range=$rangeLabel($range), date=$dateLabel');
     return {'pv': [], 'load': [], 'grid': [], 'battery': []};
+  }
+
+  Future<({double loadWh, double gridWh})?> getMonthlyEnergySummary(
+      DateTime targetDate) async {
+    if (currentStationId == null || deviceSn == null) return null;
+
+    final monthKey =
+        '${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}';
+    final now = DateTime.now();
+    if (_cachedMonthlySummary != null &&
+        _cachedMonthlySummaryKey == monthKey &&
+        _cachedMonthlySummaryAt != null &&
+        now.difference(_cachedMonthlySummaryAt!) <
+            const Duration(minutes: 20)) {
+      return _cachedMonthlySummary;
+    }
+
+    final chart = await getChartData(2, targetDate);
+    var loadWh = _sumSpotsWh(chart['load'] ?? const []);
+    var gridWh = _sumSpotsWh(chart['grid'] ?? const []);
+
+    // The monthly summary endpoint uses summaryCategoryKey=pvInverterElectricityQuantityClass
+    // which only returns PV generation data. If load/grid come back as zero,
+    // fall back to aggregating from telemetry history (5-day chunks).
+    if (loadWh <= 0 || gridWh <= 0) {
+      app_log.LogService.log(
+          '⚠️ monthly.summary: load/grid zeros from chart API (load=${loadWh.toStringAsFixed(0)}, grid=${gridWh.toStringAsFixed(0)}), falling back to telemetry aggregation');
+      final telemetry = await _aggregateMonthFromTelemetry(targetDate);
+      if (telemetry != null) {
+        if (loadWh <= 0) loadWh = telemetry.loadWh;
+        if (gridWh <= 0) gridWh = telemetry.gridWh;
+        app_log.LogService.log(
+            '✅ monthly.summary telemetry fallback: load=${loadWh.toStringAsFixed(0)}Wh, grid=${gridWh.toStringAsFixed(0)}Wh');
+      }
+    }
+
+    final summary = (loadWh: loadWh, gridWh: gridWh);
+    _cachedMonthlySummary = summary;
+    _cachedMonthlySummaryKey = monthKey;
+    _cachedMonthlySummaryAt = now;
+    return summary;
+  }
+
+  /// Aggregates load and grid Wh for the whole month by fetching telemetry
+  /// in 5-day chunks (≤ 1440 points each @ 5-min cadence) — proven reliable.
+  Future<({double loadWh, double gridWh})?> _aggregateMonthFromTelemetry(
+      DateTime targetDate) async {
+    if (deviceSn == null) return null;
+
+    final firstDay = DateTime(targetDate.year, targetDate.month, 1);
+    // Do not go beyond today for current month.
+    final now = DateTime.now();
+    final lastDay =
+        (targetDate.year == now.year && targetDate.month == now.month)
+            ? now
+            : DateTime(targetDate.year, targetDate.month + 1, 0);
+
+    var totalLoadWh = 0.0;
+    var totalGridWh = 0.0;
+
+    // Split month into 5-day windows (max ~1440 points per window at 5-min cadence).
+    var chunkStart = firstDay;
+    while (!chunkStart.isAfter(lastDay)) {
+      final chunkEnd = chunkStart.add(const Duration(days: 5));
+      final to = chunkEnd.isAfter(lastDay) ? lastDay : chunkEnd;
+      final raw = await _fetchHistoryRaw(from: chunkStart, to: to, count: 1500);
+      if (raw != null) {
+        final energy = _extractEnergyTotalsFromHistoryPayload(raw);
+        totalLoadWh += energy['load'] ?? 0.0;
+        totalGridWh += energy['grid'] ?? 0.0;
+      }
+      chunkStart = chunkStart.add(const Duration(days: 5, seconds: 1));
+    }
+
+    app_log.LogService.log(
+        '📊 monthly.telemetry aggregation done: load=${totalLoadWh.toStringAsFixed(0)}Wh, grid=${totalGridWh.toStringAsFixed(0)}Wh');
+    return (loadWh: totalLoadWh, gridWh: totalGridWh);
+  }
+
+  Future<List<({int day, double loadWh, double gridWh})>> getMonthlyDailyEnergy(
+      DateTime targetDate) async {
+    if (currentStationId == null || deviceSn == null) return const [];
+
+    final chart = await getChartData(2, targetDate);
+    final loadSpots = chart['load'] ?? const <FlSpot>[];
+    final gridSpots = chart['grid'] ?? const <FlSpot>[];
+
+    final loadByDay = <int, double>{};
+    final gridByDay = <int, double>{};
+
+    for (final s in loadSpots) {
+      if (!s.x.isFinite || !s.y.isFinite) continue;
+      final day = s.x.round().clamp(1, 31);
+      loadByDay[day] = (loadByDay[day] ?? 0.0) + s.y;
+    }
+    for (final s in gridSpots) {
+      if (!s.x.isFinite || !s.y.isFinite) continue;
+      final day = s.x.round().clamp(1, 31);
+      gridByDay[day] = (gridByDay[day] ?? 0.0) + s.y;
+    }
+
+    // If load or grid per-day data is empty, fall back to telemetry aggregation.
+    final hasLoad = loadByDay.values.any((v) => v > 0);
+    final hasGrid = gridByDay.values.any((v) => v > 0);
+    if (!hasLoad || !hasGrid) {
+      app_log.LogService.log(
+          '⚠️ monthly.daily: load/grid zeros from chart API, falling back to telemetry per-day');
+      final perDay = await _aggregateMonthDailyFromTelemetry(targetDate);
+      if (perDay.isNotEmpty) return perDay;
+    }
+
+    final days = <int>{...loadByDay.keys, ...gridByDay.keys}.toList()..sort();
+    return days
+        .map((d) => (
+              day: d,
+              loadWh: loadByDay[d] ?? 0.0,
+              gridWh: gridByDay[d] ?? 0.0,
+            ))
+        .toList(growable: false);
+  }
+
+  /// Builds per-day load/grid Wh for the selected month using telemetry.
+  /// Fetches one day at a time (max 31 API calls); called only as a fallback.
+  Future<List<({int day, double loadWh, double gridWh})>>
+      _aggregateMonthDailyFromTelemetry(DateTime targetDate) async {
+    if (deviceSn == null) return const [];
+
+    final firstDay = DateTime(targetDate.year, targetDate.month, 1);
+    final now = DateTime.now();
+    final lastDay =
+        (targetDate.year == now.year && targetDate.month == now.month)
+            ? DateTime(now.year, now.month, now.day)
+            : DateTime(targetDate.year, targetDate.month + 1, 0);
+
+    final results = <({int day, double loadWh, double gridWh})>[];
+    var day = firstDay;
+    while (!day.isAfter(lastDay)) {
+      final raw = await _fetchHistoryRaw(
+        from: day,
+        to: DateTime(day.year, day.month, day.day, 23, 59, 59),
+      );
+      if (raw != null) {
+        final energy = _extractEnergyTotalsFromHistoryPayload(raw);
+        results.add((
+          day: day.day,
+          loadWh: energy['load'] ?? 0.0,
+          gridWh: energy['grid'] ?? 0.0,
+        ));
+      }
+      day = day.add(const Duration(days: 1));
+    }
+    app_log.LogService.log(
+        '📊 monthly.daily telemetry: ${results.length} days aggregated');
+    return results;
+  }
+
+  double _sumSpotsWh(List<FlSpot> spots) {
+    if (spots.isEmpty) return 0.0;
+    return spots.fold<double>(
+        0.0, (sum, s) => sum + (s.y.isFinite ? s.y : 0.0));
   }
 
   /// Invalidates the config cache so the next call forces a re-fetch
