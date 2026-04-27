@@ -572,14 +572,24 @@ class AppStateProvider extends ChangeNotifier {
         _monthLoadWh = summary.loadWh;
         _monthGridWh = summary.gridWh;
         LogService.log(
-            '✅ monthly economics: summary loaded: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh, saved=${monthSavedUah?.toStringAsFixed(1) ?? "null"}');
+            '📊 RAW SUMMARY: load=${summary.loadWh.toStringAsFixed(0)}Wh, grid=${summary.gridWh.toStringAsFixed(0)}Wh');
+        LogService.log(
+            '📊 AFTER SET: _monthLoadWh=${_monthLoadWh?.toStringAsFixed(0)}, _monthGridWh=${_monthGridWh?.toStringAsFixed(0)}');
+        LogService.log(
+            '📊 CALC PROPS: monthLoadKwh=${monthLoadKwh?.toStringAsFixed(1)}, monthGridKwh=${monthGridKwh?.toStringAsFixed(1)}');
+        LogService.log(
+            '📊 SELF CONSUMED: monthSelfConsumedKwh=${monthSelfConsumedKwh?.toStringAsFixed(1)}');
+        LogService.log(
+            '📊 TARIFF: effective=${effectiveTariffUahPerKwh.toStringAsFixed(2)}');
+        LogService.log(
+            '✅ FINAL SAVED: monthSavedUah=${monthSavedUah?.toStringAsFixed(1)}');
       } else if (dailyEnergy.isNotEmpty) {
         _monthLoadWh =
             dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.loadWh);
         _monthGridWh =
             dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.gridWh);
         LogService.log(
-            '✅ monthly economics: aggregated from daily: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh, saved=${monthSavedUah?.toStringAsFixed(1) ?? "null"}');
+            '📊 AGGREGATED: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh');
       } else {
         LogService.log(
             '⚠️ monthly economics: no data available (summary=null, daily_count=${dailyEnergy.length})');

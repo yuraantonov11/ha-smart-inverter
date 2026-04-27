@@ -1671,9 +1671,18 @@ class InverterService {
       final chartData = await getChartData(0, targetDate);
       if (chartData['pv'] != null && (chartData['pv']?.isNotEmpty ?? false)) {
         updateDailyEnergyFromChart(chartData);
-        // For CO2, use daily energy as total for single day calculation
-        totalEnergy = dailyEnergy;
         updateCo2Reduction();
+      }
+
+      // Also update monthly total energy for comparison
+      final now = DateTime.now();
+      final monthlyChart = await getChartData(2, now);
+      if (monthlyChart['pv'] != null &&
+          (monthlyChart['pv']?.isNotEmpty ?? false)) {
+        totalEnergy = (monthlyChart['pv'] as List<FlSpot>).fold<double>(
+            0.0, (sum, spot) => sum + (spot.y.isFinite ? spot.y : 0.0));
+        app_log.LogService.log(
+            '📊 Energy stats updated: daily=${dailyEnergy.toStringAsFixed(0)}Wh, monthly_total=${totalEnergy.toStringAsFixed(0)}Wh');
       }
     } catch (e) {
       app_log.LogService.log('⚠️ updateDailyEnergyStats failed', error: e);
