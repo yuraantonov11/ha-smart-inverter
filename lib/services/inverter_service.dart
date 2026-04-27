@@ -562,6 +562,17 @@ class InverterService {
     var loadWh = _sumSpotsWh(chart['load'] ?? const []);
     var gridWh = _sumSpotsWh(chart['grid'] ?? const []);
 
+    // CRITICAL FIX: Validate grid <= load relationship
+    // If grid > load, the fields are likely swapped from API
+    // In a real system: grid_import <= load (can't import more than consuming)
+    if (gridWh > loadWh && loadWh > 0 && gridWh > 0) {
+      app_log.LogService.log(
+          '⚠️ ENERGY DATA SWAP DETECTED: load($loadWh Wh) < grid($gridWh Wh), fields were swapped, correcting...');
+      final temp = gridWh;
+      gridWh = loadWh;
+      loadWh = temp;
+    }
+
     // The monthly summary endpoint uses summaryCategoryKey=pvInverterElectricityQuantityClass
     // which only returns PV generation data. If load/grid come back as zero,
     // fall back to aggregating from telemetry history (5-day chunks).
@@ -684,10 +695,20 @@ class InverterService {
       );
       if (raw != null) {
         final energy = _extractEnergyTotalsFromHistoryPayload(raw);
+        var dayLoadWh = energy['load'] ?? 0.0;
+        var dayGridWh = energy['grid'] ?? 0.0;
+
+        // Validate grid <= load relationship
+        if (dayGridWh > dayLoadWh && dayLoadWh > 0 && dayGridWh > 0) {
+          final temp = dayGridWh;
+          dayGridWh = dayLoadWh;
+          dayLoadWh = temp;
+        }
+
         results.add((
           day: day.day,
-          loadWh: energy['load'] ?? 0.0,
-          gridWh: energy['grid'] ?? 0.0,
+          loadWh: dayLoadWh,
+          gridWh: dayGridWh,
         ));
       }
       day = day.add(const Duration(days: 1));
