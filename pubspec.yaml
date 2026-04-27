@@ -36,7 +36,7 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_launcher_icons: ^0.14.4 # Пакет для генерації іконок
-  flutter_lints: ^6.0.0 # Пакет для перевірки коду
+  flutter_lints: ^5.0.0 # Пакет для перевірки коду
   msix: ^3.16.7
 dependency_overrides:
   path_provider_android: 2.2.15
