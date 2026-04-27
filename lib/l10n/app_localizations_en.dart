@@ -809,8 +809,72 @@ class AppLocalizationsEn extends AppLocalizations {
   String get autoEstimateNightShare => 'Auto estimate night share';
 
   @override
+  String get batteryRoundTripEfficiencyLabel => 'Battery round-trip efficiency';
+
+  @override
+  String get batteryRoundTripEfficiencyHint =>
+      'Used to reduce savings from battery-shifted energy. Set 100% to disable battery-loss correction.';
+
+  @override
+  String get nightShareFallbackHint =>
+      'Used only as a fallback when hourly telemetry economics is unavailable.';
+
+  @override
+  String economicsMethodTelemetry(String efficiency) {
+    return 'Hourly telemetry • Battery efficiency $efficiency%';
+  }
+
+  @override
+  String economicsMethodEstimated(String share) {
+    return 'Fallback estimate • Night share $share%';
+  }
+
+  @override
+  String get calculationSourceLabel => 'Calculation source';
+
+  @override
+  String get calculationAccuracyLabel => 'Accuracy';
+
+  @override
+  String get calculationSourceTelemetry => 'Hourly telemetry';
+
+  @override
+  String get calculationSourceFallback => 'Fallback estimate';
+
+  @override
+  String get calculationAccuracyHigh => 'High';
+
+  @override
+  String get calculationAccuracyEstimated => 'Estimated';
+
+  @override
   String effectiveTariffFormula(String day, String night, String share) {
     return 'Formula: $day*(1-$share%) + $night*$share%';
+  }
+
+  @override
+  String tooltipMoneySavedMonthTelemetry(String efficiency) {
+    return 'Calculated from telemetry with hourly day/night tariff. Battery-shifted energy is adjusted by $efficiency% round-trip efficiency.';
+  }
+
+  @override
+  String tooltipMoneySavedMonthEstimated(String share, String efficiency) {
+    return 'Estimated from self-consumed solar using fallback night share $share% and battery efficiency $efficiency%.';
+  }
+
+  @override
+  String tooltipPaymentThisMonthTelemetry(String dayStart, String nightStart) {
+    return 'Calculated from telemetry with hourly tariff windows: day from $dayStart:00, night from $nightStart:00.';
+  }
+
+  @override
+  String tooltipPaymentThisMonthEstimated(String share) {
+    return 'Estimated monthly bill using fallback night share $share% for day/night tariff split.';
+  }
+
+  @override
+  String tooltipEffectiveTariffTelemetry(String dayStart, String nightStart) {
+    return 'Reference blended tariff only. Actual payment and savings above are calculated hourly from telemetry using day from $dayStart:00 and night from $nightStart:00.';
   }
 
   @override

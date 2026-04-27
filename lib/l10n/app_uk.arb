@@ -431,6 +431,31 @@
   "nightEnergyShareLabel": "Частка нічного споживання",
   "nightEnergyShareUnit": "%",
   "autoEstimateNightShare": "Автооцінка нічної частки",
+  "batteryRoundTripEfficiencyLabel": "ККД циклу акумулятора",
+  "batteryRoundTripEfficiencyHint": "Використовується для зменшення економії від енергії, що пройшла через акумулятор. 100% вимикає поправку на втрати АКБ.",
+  "nightShareFallbackHint": "Використовується лише як fallback, коли немає погодинної економіки з телеметрії.",
+  "economicsMethodTelemetry": "Погодинна телеметрія • ККД АКБ {efficiency}%",
+  "@economicsMethodTelemetry": {
+    "placeholders": {
+      "efficiency": {
+        "type": "String"
+      }
+    }
+  },
+  "economicsMethodEstimated": "Fallback-оцінка • Нічна частка {share}%",
+  "@economicsMethodEstimated": {
+    "placeholders": {
+      "share": {
+        "type": "String"
+      }
+    }
+  },
+  "calculationSourceLabel": "Джерело розрахунку",
+  "calculationAccuracyLabel": "Точність",
+  "calculationSourceTelemetry": "Погодинна телеметрія",
+  "calculationSourceFallback": "Fallback-оцінка",
+  "calculationAccuracyHigh": "Висока",
+  "calculationAccuracyEstimated": "Оціночна",
   "effectiveTariffFormula": "Формула: {day}*(1-{share}%) + {night}*{share}%",
   "@effectiveTariffFormula": {
     "placeholders": {
@@ -441,6 +466,55 @@
         "type": "String"
       },
       "share": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipMoneySavedMonthTelemetry": "Розраховано з телеметрії по годинах з урахуванням денного/нічного тарифу. Енергія через акумулятор коригується ККД {efficiency}%.",
+  "@tooltipMoneySavedMonthTelemetry": {
+    "placeholders": {
+      "efficiency": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipMoneySavedMonthEstimated": "Оціночна економія на основі власного сонячного споживання, fallback-нічної частки {share}% та ККД АКБ {efficiency}%.",
+  "@tooltipMoneySavedMonthEstimated": {
+    "placeholders": {
+      "share": {
+        "type": "String"
+      },
+      "efficiency": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipPaymentThisMonthTelemetry": "Розраховано з телеметрії по годинах: денний тариф з {dayStart}:00, нічний з {nightStart}:00.",
+  "@tooltipPaymentThisMonthTelemetry": {
+    "placeholders": {
+      "dayStart": {
+        "type": "String"
+      },
+      "nightStart": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipPaymentThisMonthEstimated": "Оціночна сума до сплати з fallback-розподілом день/ніч за нічною часткою {share}%.",
+  "@tooltipPaymentThisMonthEstimated": {
+    "placeholders": {
+      "share": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipEffectiveTariffTelemetry": "Це лише довідковий усереднений тариф. Фактичні суми вище рахуються по годинах із телеметрії: день з {dayStart}:00, ніч з {nightStart}:00.",
+  "@tooltipEffectiveTariffTelemetry": {
+    "placeholders": {
+      "dayStart": {
+        "type": "String"
+      },
+      "nightStart": {
         "type": "String"
       }
     }

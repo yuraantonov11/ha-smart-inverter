@@ -116,6 +116,21 @@ class _StatsSection extends StatelessWidget {
     final monthToPay = provider.monthToPayUah;
     final projectedSavedMoney = provider.projectedMonthSavedUah;
     final projectedMonthToPay = provider.projectedMonthToPayUah;
+    final batteryEff =
+        provider.batteryRoundTripEfficiencyPercent.toStringAsFixed(0);
+    final nightShare = provider.nightEnergySharePercent.toStringAsFixed(0);
+    final dayStart = provider.tariffDayStartHour.toString().padLeft(2, '0');
+    final nightStart = provider.tariffNightStartHour.toString().padLeft(2, '0');
+    final paymentTooltip = provider.monthEconomicsUsesTelemetryTou
+        ? l10n.tooltipPaymentThisMonthTelemetry(dayStart, nightStart)
+        : l10n.tooltipPaymentThisMonthEstimated(nightShare);
+    final savedTooltip = provider.monthEconomicsUsesTelemetryTou
+        ? l10n.tooltipMoneySavedMonthTelemetry(batteryEff)
+        : l10n.tooltipMoneySavedMonthEstimated(nightShare, batteryEff);
+    final paymentPrefix =
+        provider.monthEconomicsUsesEstimatedFallback ? '≈' : '';
+    const savingsPrefix = '≈';
+    const projectionPrefix = '≈';
     final cards = [
       AppStatCard(
         label: l10n.today,
@@ -145,27 +160,27 @@ class _StatsSection extends StatelessWidget {
         label: l10n.moneySavedMonth,
         value: savedMoney == null || savedMoney == 0.0
             ? '0.0'
-            : savedMoney.toStringAsFixed(1),
+            : '$savingsPrefix${savedMoney.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.savings_rounded,
         color: const Color(0xFF10B981),
-        tooltip: l10n.tooltipMoneySavedMonth,
+        tooltip: savedTooltip,
       ),
       AppStatCard(
         label: l10n.paymentThisMonth,
         value: monthToPay == null || monthToPay == 0.0
             ? '0.0'
-            : monthToPay.toStringAsFixed(1),
+            : '$paymentPrefix${monthToPay.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.receipt_long_rounded,
         color: const Color(0xFFFB923C),
-        tooltip: l10n.tooltipPaymentThisMonth,
+        tooltip: paymentTooltip,
       ),
       AppStatCard(
         label: l10n.projectedSavedMonth,
         value: projectedSavedMoney == null || projectedSavedMoney == 0.0
             ? '0.0'
-            : projectedSavedMoney.toStringAsFixed(1),
+            : '$projectionPrefix${projectedSavedMoney.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.trending_up_rounded,
         color: const Color(0xFF34D399),
@@ -175,7 +190,7 @@ class _StatsSection extends StatelessWidget {
         label: l10n.projectedPaymentMonth,
         value: projectedMonthToPay == null || projectedMonthToPay == 0.0
             ? '0.0'
-            : projectedMonthToPay.toStringAsFixed(1),
+            : '$projectionPrefix${projectedMonthToPay.toStringAsFixed(1)}',
         unit: l10n.currencyUah,
         icon: Icons.calendar_month_rounded,
         color: const Color(0xFFF59E0B),
@@ -206,13 +221,23 @@ class _StatsSection extends StatelessWidget {
                 ),
               );
             }
-            return Row(
+            final columns = width >= 1500
+                ? 4
+                : width >= 1080
+                    ? 3
+                    : 2;
+            final cardWidth =
+                (width - (AppTheme.spacingL * (columns - 1))) / columns;
+
+            return Wrap(
+              spacing: AppTheme.spacingL,
+              runSpacing: AppTheme.spacingL,
               children: [
-                for (var i = 0; i < cards.length; i++) ...[
-                  Expanded(child: cards[i]),
-                  if (i != cards.length - 1)
-                    const SizedBox(width: AppTheme.spacingL),
-                ],
+                for (final card in cards)
+                  SizedBox(
+                    width: cardWidth,
+                    child: card,
+                  ),
               ],
             );
           },
@@ -239,6 +264,32 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
     final savedCost = provider.monthSavedUah;
     final dailyEconomics = provider.monthDailyEconomics;
     final progress = provider.monthProgressFraction;
+    final economicsMethod = provider.monthEconomicsUsesTelemetryTou
+        ? l10n.economicsMethodTelemetry(
+            provider.batteryRoundTripEfficiencyPercent.toStringAsFixed(0),
+          )
+        : l10n.economicsMethodEstimated(
+            provider.nightEnergySharePercent.toStringAsFixed(0),
+          );
+    final sourceValue = provider.monthEconomicsUsesTelemetryTou
+        ? l10n.calculationSourceTelemetry
+        : l10n.calculationSourceFallback;
+    final accuracyValue = provider.monthEconomicsUsesTelemetryTou
+        ? l10n.calculationAccuracyHigh
+        : l10n.calculationAccuracyEstimated;
+    final paymentPrefix =
+        provider.monthEconomicsUsesEstimatedFallback ? '≈' : '';
+    const savingsPrefix = '≈';
+    final effectiveTariffTooltip = provider.monthEconomicsUsesTelemetryTou
+        ? l10n.tooltipEffectiveTariffTelemetry(
+            provider.tariffDayStartHour.toString().padLeft(2, '0'),
+            provider.tariffNightStartHour.toString().padLeft(2, '0'),
+          )
+        : l10n.effectiveTariffFormula(
+            provider.dayTariffUahPerKwh.toStringAsFixed(2),
+            provider.nightTariffUahPerKwh.toStringAsFixed(2),
+            provider.nightEnergySharePercent.toStringAsFixed(0),
+          );
 
     String fmt(double? v) => v == null ? '--' : v.toStringAsFixed(1);
 
@@ -297,6 +348,19 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
             ),
           ),
           const SizedBox(height: AppTheme.spacingM),
+          _BreakdownItem(
+            label: l10n.calculationSourceLabel,
+            value: sourceValue,
+            color: const Color(0xFF3B82F6),
+            tooltip: economicsMethod,
+          ),
+          const SizedBox(height: AppTheme.spacingS),
+          _BreakdownItem(
+            label: l10n.calculationAccuracyLabel,
+            value: accuracyValue,
+            color: const Color(0xFF8B5CF6),
+          ),
+          const SizedBox(height: AppTheme.spacingM),
           LayoutBuilder(builder: (context, constraints) {
             final compact = constraints.maxWidth < 700;
             final items = [
@@ -346,13 +410,13 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
               _BreakdownItem(
                 label: l10n.monthGridCost,
                 value:
-                    '${gridCost == null || gridCost == 0.0 ? '0.0' : gridCost.toStringAsFixed(1)} ${l10n.currencyUah}',
+                    '${gridCost == null || gridCost == 0.0 ? '0.0' : '$paymentPrefix${gridCost.toStringAsFixed(1)}'} ${l10n.currencyUah}',
                 color: AppTheme.gridColor,
               ),
               _BreakdownItem(
                 label: l10n.monthSavedCost,
                 value:
-                    '${savedCost == null || savedCost == 0.0 ? '0.0' : savedCost.toStringAsFixed(1)} ${l10n.currencyUah}',
+                    '${savedCost == null || savedCost == 0.0 ? '0.0' : '$savingsPrefix${savedCost.toStringAsFixed(1)}'} ${l10n.currencyUah}',
                 color: const Color(0xFF10B981),
               ),
               _BreakdownItem(
@@ -360,11 +424,7 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
                 value:
                     '${provider.effectiveTariffUahPerKwh.toStringAsFixed(2)} ${l10n.energyTariffUnit}',
                 color: const Color(0xFF8B5CF6),
-                tooltip: l10n.effectiveTariffFormula(
-                  provider.dayTariffUahPerKwh.toStringAsFixed(2),
-                  provider.nightTariffUahPerKwh.toStringAsFixed(2),
-                  provider.nightEnergySharePercent.toStringAsFixed(0),
-                ),
+                tooltip: effectiveTariffTooltip,
               ),
             ];
 

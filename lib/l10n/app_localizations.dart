@@ -1562,11 +1562,107 @@ abstract class AppLocalizations {
   /// **'Auto estimate night share'**
   String get autoEstimateNightShare;
 
+  /// No description provided for @batteryRoundTripEfficiencyLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery round-trip efficiency'**
+  String get batteryRoundTripEfficiencyLabel;
+
+  /// No description provided for @batteryRoundTripEfficiencyHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Used to reduce savings from battery-shifted energy. Set 100% to disable battery-loss correction.'**
+  String get batteryRoundTripEfficiencyHint;
+
+  /// No description provided for @nightShareFallbackHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Used only as a fallback when hourly telemetry economics is unavailable.'**
+  String get nightShareFallbackHint;
+
+  /// No description provided for @economicsMethodTelemetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Hourly telemetry • Battery efficiency {efficiency}%'**
+  String economicsMethodTelemetry(String efficiency);
+
+  /// No description provided for @economicsMethodEstimated.
+  ///
+  /// In en, this message translates to:
+  /// **'Fallback estimate • Night share {share}%'**
+  String economicsMethodEstimated(String share);
+
+  /// No description provided for @calculationSourceLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Calculation source'**
+  String get calculationSourceLabel;
+
+  /// No description provided for @calculationAccuracyLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Accuracy'**
+  String get calculationAccuracyLabel;
+
+  /// No description provided for @calculationSourceTelemetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Hourly telemetry'**
+  String get calculationSourceTelemetry;
+
+  /// No description provided for @calculationSourceFallback.
+  ///
+  /// In en, this message translates to:
+  /// **'Fallback estimate'**
+  String get calculationSourceFallback;
+
+  /// No description provided for @calculationAccuracyHigh.
+  ///
+  /// In en, this message translates to:
+  /// **'High'**
+  String get calculationAccuracyHigh;
+
+  /// No description provided for @calculationAccuracyEstimated.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated'**
+  String get calculationAccuracyEstimated;
+
   /// No description provided for @effectiveTariffFormula.
   ///
   /// In en, this message translates to:
   /// **'Formula: {day}*(1-{share}%) + {night}*{share}%'**
   String effectiveTariffFormula(String day, String night, String share);
+
+  /// No description provided for @tooltipMoneySavedMonthTelemetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Calculated from telemetry with hourly day/night tariff. Battery-shifted energy is adjusted by {efficiency}% round-trip efficiency.'**
+  String tooltipMoneySavedMonthTelemetry(String efficiency);
+
+  /// No description provided for @tooltipMoneySavedMonthEstimated.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated from self-consumed solar using fallback night share {share}% and battery efficiency {efficiency}%.'**
+  String tooltipMoneySavedMonthEstimated(String share, String efficiency);
+
+  /// No description provided for @tooltipPaymentThisMonthTelemetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Calculated from telemetry with hourly tariff windows: day from {dayStart}:00, night from {nightStart}:00.'**
+  String tooltipPaymentThisMonthTelemetry(String dayStart, String nightStart);
+
+  /// No description provided for @tooltipPaymentThisMonthEstimated.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated monthly bill using fallback night share {share}% for day/night tariff split.'**
+  String tooltipPaymentThisMonthEstimated(String share);
+
+  /// No description provided for @tooltipEffectiveTariffTelemetry.
+  ///
+  /// In en, this message translates to:
+  /// **'Reference blended tariff only. Actual payment and savings above are calculated hourly from telemetry using day from {dayStart}:00 and night from {nightStart}:00.'**
+  String tooltipEffectiveTariffTelemetry(String dayStart, String nightStart);
 
   /// No description provided for @tooltipMoneySavedMonth.
   ///

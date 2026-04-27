@@ -813,8 +813,72 @@ class AppLocalizationsUk extends AppLocalizations {
   String get autoEstimateNightShare => 'Автооцінка нічної частки';
 
   @override
+  String get batteryRoundTripEfficiencyLabel => 'ККД циклу акумулятора';
+
+  @override
+  String get batteryRoundTripEfficiencyHint =>
+      'Використовується для зменшення економії від енергії, що пройшла через акумулятор. 100% вимикає поправку на втрати АКБ.';
+
+  @override
+  String get nightShareFallbackHint =>
+      'Використовується лише як fallback, коли немає погодинної економіки з телеметрії.';
+
+  @override
+  String economicsMethodTelemetry(String efficiency) {
+    return 'Погодинна телеметрія • ККД АКБ $efficiency%';
+  }
+
+  @override
+  String economicsMethodEstimated(String share) {
+    return 'Fallback-оцінка • Нічна частка $share%';
+  }
+
+  @override
+  String get calculationSourceLabel => 'Джерело розрахунку';
+
+  @override
+  String get calculationAccuracyLabel => 'Точність';
+
+  @override
+  String get calculationSourceTelemetry => 'Погодинна телеметрія';
+
+  @override
+  String get calculationSourceFallback => 'Fallback-оцінка';
+
+  @override
+  String get calculationAccuracyHigh => 'Висока';
+
+  @override
+  String get calculationAccuracyEstimated => 'Оціночна';
+
+  @override
   String effectiveTariffFormula(String day, String night, String share) {
     return 'Формула: $day*(1-$share%) + $night*$share%';
+  }
+
+  @override
+  String tooltipMoneySavedMonthTelemetry(String efficiency) {
+    return 'Розраховано з телеметрії по годинах з урахуванням денного/нічного тарифу. Енергія через акумулятор коригується ККД $efficiency%.';
+  }
+
+  @override
+  String tooltipMoneySavedMonthEstimated(String share, String efficiency) {
+    return 'Оціночна економія на основі власного сонячного споживання, fallback-нічної частки $share% та ККД АКБ $efficiency%.';
+  }
+
+  @override
+  String tooltipPaymentThisMonthTelemetry(String dayStart, String nightStart) {
+    return 'Розраховано з телеметрії по годинах: денний тариф з $dayStart:00, нічний з $nightStart:00.';
+  }
+
+  @override
+  String tooltipPaymentThisMonthEstimated(String share) {
+    return 'Оціночна сума до сплати з fallback-розподілом день/ніч за нічною часткою $share%.';
+  }
+
+  @override
+  String tooltipEffectiveTariffTelemetry(String dayStart, String nightStart) {
+    return 'Це лише довідковий усереднений тариф. Фактичні суми вище рахуються по годинах із телеметрії: день з $dayStart:00, ніч з $nightStart:00.';
   }
 
   @override

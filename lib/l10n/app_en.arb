@@ -431,6 +431,31 @@
   "nightEnergyShareLabel": "Night energy share",
   "nightEnergyShareUnit": "%",
   "autoEstimateNightShare": "Auto estimate night share",
+  "batteryRoundTripEfficiencyLabel": "Battery round-trip efficiency",
+  "batteryRoundTripEfficiencyHint": "Used to reduce savings from battery-shifted energy. Set 100% to disable battery-loss correction.",
+  "nightShareFallbackHint": "Used only as a fallback when hourly telemetry economics is unavailable.",
+  "economicsMethodTelemetry": "Hourly telemetry • Battery efficiency {efficiency}%",
+  "@economicsMethodTelemetry": {
+    "placeholders": {
+      "efficiency": {
+        "type": "String"
+      }
+    }
+  },
+  "economicsMethodEstimated": "Fallback estimate • Night share {share}%",
+  "@economicsMethodEstimated": {
+    "placeholders": {
+      "share": {
+        "type": "String"
+      }
+    }
+  },
+  "calculationSourceLabel": "Calculation source",
+  "calculationAccuracyLabel": "Accuracy",
+  "calculationSourceTelemetry": "Hourly telemetry",
+  "calculationSourceFallback": "Fallback estimate",
+  "calculationAccuracyHigh": "High",
+  "calculationAccuracyEstimated": "Estimated",
   "effectiveTariffFormula": "Formula: {day}*(1-{share}%) + {night}*{share}%",
   "@effectiveTariffFormula": {
     "placeholders": {
@@ -441,6 +466,55 @@
         "type": "String"
       },
       "share": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipMoneySavedMonthTelemetry": "Calculated from telemetry with hourly day/night tariff. Battery-shifted energy is adjusted by {efficiency}% round-trip efficiency.",
+  "@tooltipMoneySavedMonthTelemetry": {
+    "placeholders": {
+      "efficiency": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipMoneySavedMonthEstimated": "Estimated from self-consumed solar using fallback night share {share}% and battery efficiency {efficiency}%.",
+  "@tooltipMoneySavedMonthEstimated": {
+    "placeholders": {
+      "share": {
+        "type": "String"
+      },
+      "efficiency": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipPaymentThisMonthTelemetry": "Calculated from telemetry with hourly tariff windows: day from {dayStart}:00, night from {nightStart}:00.",
+  "@tooltipPaymentThisMonthTelemetry": {
+    "placeholders": {
+      "dayStart": {
+        "type": "String"
+      },
+      "nightStart": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipPaymentThisMonthEstimated": "Estimated monthly bill using fallback night share {share}% for day/night tariff split.",
+  "@tooltipPaymentThisMonthEstimated": {
+    "placeholders": {
+      "share": {
+        "type": "String"
+      }
+    }
+  },
+  "tooltipEffectiveTariffTelemetry": "Reference blended tariff only. Actual payment and savings above are calculated hourly from telemetry using day from {dayStart}:00 and night from {nightStart}:00.",
+  "@tooltipEffectiveTariffTelemetry": {
+    "placeholders": {
+      "dayStart": {
+        "type": "String"
+      },
+      "nightStart": {
         "type": "String"
       }
     }

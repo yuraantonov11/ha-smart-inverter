@@ -1386,6 +1386,8 @@ class HardwareSettingsSection extends StatelessWidget {
         text: provider.nightTariffUahPerKwh.toStringAsFixed(2));
     final nightShareCtrl = TextEditingController(
         text: provider.nightEnergySharePercent.toStringAsFixed(0));
+    final batteryEffCtrl = TextEditingController(
+        text: provider.batteryRoundTripEfficiencyPercent.toStringAsFixed(0));
     var autoWindows = provider.useAstronomicalWindows;
     var outageEnabled = provider.plannedOutageEnabled;
     var outageStartAt = provider.plannedOutageStartAt;
@@ -1452,6 +1454,16 @@ class HardwareSettingsSection extends StatelessWidget {
                     l10n.nightEnergyShareLabel,
                     l10n.nightEnergyShareUnit,
                     Icons.pie_chart_outline_rounded),
+                const SizedBox(height: 6),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    l10n.nightShareFallbackHint,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                  ),
+                ),
                 Align(
                   alignment: Alignment.centerRight,
                   child: TextButton.icon(
@@ -1464,6 +1476,23 @@ class HardwareSettingsSection extends StatelessWidget {
                     },
                     icon: const Icon(Icons.auto_awesome_rounded, size: 16),
                     label: Text(l10n.autoEstimateNightShare),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildTextField(
+                    context,
+                    batteryEffCtrl,
+                    l10n.batteryRoundTripEfficiencyLabel,
+                    l10n.nightEnergyShareUnit,
+                    Icons.battery_saver_rounded),
+                const SizedBox(height: 6),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    l10n.batteryRoundTripEfficiencyHint,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -1672,6 +1701,9 @@ class HardwareSettingsSection extends StatelessWidget {
                     provider.nightTariffUahPerKwh;
                 final nightShare = double.tryParse(nightShareCtrl.text) ??
                     provider.nightEnergySharePercent;
+                final batteryEfficiency =
+                    double.tryParse(batteryEffCtrl.text) ??
+                        provider.batteryRoundTripEfficiencyPercent;
                 final installYear = int.tryParse(installYearCtrl.text) ??
                     provider.batteryInstallDate.year;
                 final installDate = DateTime(
@@ -1716,6 +1748,7 @@ class HardwareSettingsSection extends StatelessWidget {
                   dayTariff: dayTariff,
                   nightTariff: nightTariff,
                   nightSharePercent: nightShare,
+                  batteryEfficiencyPercent: batteryEfficiency,
                 );
                 provider.savePlannedOutage(
                   enabled: outageEnabled,

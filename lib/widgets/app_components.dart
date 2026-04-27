@@ -336,6 +336,8 @@ class AppStatCard extends StatelessWidget {
           const SizedBox(height: AppTheme.spacingM),
           Text(
             label,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
             style: Theme.of(context).textTheme.labelSmall?.copyWith(
                   color: color,
                   letterSpacing: 0.8,

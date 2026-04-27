@@ -75,11 +75,18 @@ class AppStateProvider extends ChangeNotifier {
   double dayTariffUahPerKwh = 4.32;
   double nightTariffUahPerKwh = 2.16;
   double nightEnergySharePercent = 35.0;
+  double batteryRoundTripEfficiencyPercent = 92.0;
   double? _monthLoadWh;
   double? _monthGridWh;
+  double? _monthSelfConsumedWh;
+  double? _monthPayableUah;
+  double? _monthSavedUah;
   List<({int day, double payableUah, double savedUah})> _monthDailyEconomics =
       const [];
   DateTime? _lastEconomicsRefreshAt;
+  bool _monthEconomicsUsesTelemetryTou = false;
+  Future<void>? _monthlyEconomicsInFlight;
+  bool _monthlyEconomicsPendingForce = false;
 
   String solcastApiKey = '';
   String solcastResourceId = '';
@@ -145,13 +152,22 @@ class AppStateProvider extends ChangeNotifier {
       _monthGridWh == null ? null : _monthGridWh! / 1000.0;
   double get nightEnergyShareFraction =>
       (nightEnergySharePercent / 100.0).clamp(0.0, 1.0).toDouble();
+  double get batteryRoundTripEfficiencyFraction =>
+      (batteryRoundTripEfficiencyPercent / 100.0).clamp(0.5, 1.0).toDouble();
+  int get tariffDayStartHour => 7;
+  int get tariffNightStartHour => 23;
   double get effectiveTariffUahPerKwh =>
       (dayTariffUahPerKwh * (1.0 - nightEnergyShareFraction)) +
       (nightTariffUahPerKwh * nightEnergyShareFraction);
   // Backward compatibility for existing UI/usage.
   double get tariffUahPerKwh => effectiveTariffUahPerKwh;
+  bool get monthEconomicsUsesTelemetryTou => _monthEconomicsUsesTelemetryTou;
+  bool get monthEconomicsUsesEstimatedFallback =>
+      !_monthEconomicsUsesTelemetryTou;
+  bool get isMonthlyEconomicsRefreshing => _monthlyEconomicsInFlight != null;
 
   double? get monthToPayUah {
+    if (_monthPayableUah != null) return _monthPayableUah;
     final grid = monthGridKwh;
     if (grid == null) return null;
     final dayPart = grid * (1.0 - nightEnergyShareFraction);
@@ -160,6 +176,11 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   double? get monthSelfConsumedKwh {
+    if (_monthSelfConsumedWh != null) {
+      return (_monthSelfConsumedWh! / 1000.0)
+          .clamp(0.0, double.infinity)
+          .toDouble();
+    }
     if (monthLoadKwh == null || monthGridKwh == null) return null;
     return (monthLoadKwh! - monthGridKwh!)
         .clamp(0.0, double.infinity)
@@ -167,6 +188,7 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   double? get monthSavedUah {
+    if (_monthSavedUah != null) return _monthSavedUah;
     final selfConsumed = monthSelfConsumedKwh;
     if (selfConsumed == null) return null;
     return selfConsumed * effectiveTariffUahPerKwh;
@@ -315,6 +337,8 @@ class AppStateProvider extends ChangeNotifier {
         ((legacyTariff ?? dayTariffUahPerKwh) * 0.5);
     nightEnergySharePercent =
         prefs.getDouble('energy_night_share_percent') ?? 35.0;
+    batteryRoundTripEfficiencyPercent =
+        prefs.getDouble('battery_round_trip_efficiency_percent') ?? 92.0;
 
     // Battery health
     final installMs = prefs.getInt('battery_install_date_ms');
@@ -478,17 +502,20 @@ class AppStateProvider extends ChangeNotifier {
         'energy_tariff_night_uah_per_kwh', nightTariffUahPerKwh);
     notifyListeners();
     // Recompute money cards immediately with new tariff.
-    await _updateMonthlyEconomics(force: false);
+    await _updateMonthlyEconomics(force: true);
   }
 
   Future<void> saveTimeOfUseTariffs({
     required double dayTariff,
     required double nightTariff,
     required double nightSharePercent,
+    required double batteryEfficiencyPercent,
   }) async {
     dayTariffUahPerKwh = dayTariff.clamp(0.0, 999.0).toDouble();
     nightTariffUahPerKwh = nightTariff.clamp(0.0, 999.0).toDouble();
     nightEnergySharePercent = nightSharePercent.clamp(0.0, 100.0).toDouble();
+    batteryRoundTripEfficiencyPercent =
+        batteryEfficiencyPercent.clamp(50.0, 100.0).toDouble();
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble('energy_tariff_day_uah_per_kwh', dayTariffUahPerKwh);
@@ -496,12 +523,14 @@ class AppStateProvider extends ChangeNotifier {
         'energy_tariff_night_uah_per_kwh', nightTariffUahPerKwh);
     await prefs.setDouble(
         'energy_night_share_percent', nightEnergySharePercent);
+    await prefs.setDouble('battery_round_trip_efficiency_percent',
+        batteryRoundTripEfficiencyPercent);
     // Keep legacy key in sync for older builds/migrations.
     await prefs.setDouble(
         'energy_tariff_uah_per_kwh', effectiveTariffUahPerKwh);
 
     notifyListeners();
-    await _updateMonthlyEconomics(force: false);
+    await _updateMonthlyEconomics(force: true);
   }
 
   double estimateNightEnergySharePercent() {
@@ -529,6 +558,33 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> _updateMonthlyEconomics({bool force = false}) async {
+    if (_monthlyEconomicsInFlight != null) {
+      if (force) {
+        _monthlyEconomicsPendingForce = true;
+      }
+      LogService.log(
+          '📊 monthly economics: join in-flight refresh (force=$force, pendingForce=$_monthlyEconomicsPendingForce)');
+      await _monthlyEconomicsInFlight;
+      return;
+    }
+
+    do {
+      final runForce = force || _monthlyEconomicsPendingForce;
+      _monthlyEconomicsPendingForce = false;
+
+      final refreshFuture = _updateMonthlyEconomicsInternal(force: runForce);
+      _monthlyEconomicsInFlight = refreshFuture;
+      try {
+        await refreshFuture;
+      } finally {
+        _monthlyEconomicsInFlight = null;
+      }
+
+      force = false;
+    } while (_monthlyEconomicsPendingForce);
+  }
+
+  Future<void> _updateMonthlyEconomicsInternal({bool force = false}) async {
     if (service.currentStationId == null) {
       LogService.log('⚠️ monthly economics: no station ID, skipping');
       return;
@@ -553,8 +609,47 @@ class AppStateProvider extends ChangeNotifier {
       LogService.log(
           '📊 monthly economics: fetching (force=$force, loadWh=${_monthLoadWh?.toStringAsFixed(0) ?? "null"}, gridWh=${_monthGridWh?.toStringAsFixed(0) ?? "null"})');
 
+      final telemetryEconomics = await service.getMonthlyTouEconomics(
+        targetDate: now,
+        dayTariffUahPerKwh: dayTariffUahPerKwh,
+        nightTariffUahPerKwh: nightTariffUahPerKwh,
+        dayStartHour: tariffDayStartHour,
+        nightStartHour: tariffNightStartHour,
+        batteryRoundTripEfficiency: batteryRoundTripEfficiencyFraction,
+      );
+
+      if (telemetryEconomics != null) {
+        _monthLoadWh = telemetryEconomics.loadWh;
+        _monthGridWh = telemetryEconomics.gridWh;
+        _monthSelfConsumedWh = telemetryEconomics.selfConsumedWh;
+        _monthPayableUah = telemetryEconomics.payableUah;
+        _monthSavedUah = telemetryEconomics.savedUah;
+        _monthDailyEconomics = telemetryEconomics.daily;
+        _monthEconomicsUsesTelemetryTou = true;
+
+        LogService.log(
+            '📊 TOU TELEMETRY: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh');
+        LogService.log(
+            '📊 TOU MONEY: payable=${_monthPayableUah?.toStringAsFixed(1)}UAH, saved=${_monthSavedUah?.toStringAsFixed(1)}UAH, self=${monthSelfConsumedKwh?.toStringAsFixed(1)}kWh, batteryEff=${batteryRoundTripEfficiencyPercent.toStringAsFixed(0)}%');
+        LogService.log(
+            '📊 CALC PROPS: monthLoadKwh=${monthLoadKwh?.toStringAsFixed(1)}, monthGridKwh=${monthGridKwh?.toStringAsFixed(1)}');
+        LogService.log(
+            '📊 SELF CONSUMED: monthSelfConsumedKwh=${monthSelfConsumedKwh?.toStringAsFixed(1)}');
+        LogService.log(
+            '✅ FINAL SAVED (telemetry): monthSavedUah=${monthSavedUah?.toStringAsFixed(1)}');
+
+        _lastEconomicsRefreshAt = now;
+        notifyListeners();
+        return;
+      }
+
       final summary = await service.getMonthlyEnergySummary(now);
       final dailyEnergy = await service.getMonthlyDailyEnergy(now);
+
+      _monthPayableUah = null;
+      _monthSavedUah = null;
+      _monthSelfConsumedWh = null;
+      _monthEconomicsUsesTelemetryTou = false;
 
       _monthDailyEconomics = dailyEnergy.map((e) {
         final gridKwh = e.gridWh / 1000.0;
@@ -571,6 +666,8 @@ class AppStateProvider extends ChangeNotifier {
       if (summary != null) {
         _monthLoadWh = summary.loadWh;
         _monthGridWh = summary.gridWh;
+        _monthSelfConsumedWh =
+            (_monthLoadWh! - _monthGridWh!).clamp(0.0, double.infinity);
         LogService.log(
             '📊 RAW SUMMARY: load=${summary.loadWh.toStringAsFixed(0)}Wh, grid=${summary.gridWh.toStringAsFixed(0)}Wh');
         LogService.log(
@@ -580,17 +677,20 @@ class AppStateProvider extends ChangeNotifier {
         LogService.log(
             '📊 SELF CONSUMED: monthSelfConsumedKwh=${monthSelfConsumedKwh?.toStringAsFixed(1)}');
         LogService.log(
-            '📊 TARIFF: effective=${effectiveTariffUahPerKwh.toStringAsFixed(2)}');
+            '📊 TARIFF FALLBACK: effective=${effectiveTariffUahPerKwh.toStringAsFixed(2)}, nightShare=${nightEnergySharePercent.toStringAsFixed(0)}%');
         LogService.log(
-            '✅ FINAL SAVED: monthSavedUah=${monthSavedUah?.toStringAsFixed(1)}');
+            '✅ FINAL SAVED (estimated): monthSavedUah=${monthSavedUah?.toStringAsFixed(1)}');
       } else if (dailyEnergy.isNotEmpty) {
         _monthLoadWh =
             dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.loadWh);
         _monthGridWh =
             dailyEnergy.fold<double>(0.0, (sum, e) => sum + e.gridWh);
+        _monthSelfConsumedWh =
+            (_monthLoadWh! - _monthGridWh!).clamp(0.0, double.infinity);
         LogService.log(
             '📊 AGGREGATED: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh');
       } else {
+        _monthSelfConsumedWh = null;
         LogService.log(
             '⚠️ monthly economics: no data available (summary=null, daily_count=${dailyEnergy.length})');
       }
@@ -961,6 +1061,16 @@ class AppStateProvider extends ChangeNotifier {
     data = null;
     _lastSuccessfulRealtimeAt = null;
     _cachedSnapshotData = null;
+    _monthLoadWh = null;
+    _monthGridWh = null;
+    _monthSelfConsumedWh = null;
+    _monthPayableUah = null;
+    _monthSavedUah = null;
+    _monthDailyEconomics = const [];
+    _lastEconomicsRefreshAt = null;
+    _monthEconomicsUsesTelemetryTou = false;
+    _monthlyEconomicsPendingForce = false;
+    _monthlyEconomicsInFlight = null;
     await prefs.remove(_lastSnapshotKey);
 
     stopTimers();
@@ -1107,9 +1217,7 @@ class AppStateProvider extends ChangeNotifier {
         await _updateConsumptionStats();
       }
       await _updateMonthlyEconomics();
-      // Update CO2 reduction based on today's energy data (async, non-blocking)
-      // ignore: unawaited_futures
-      service.updateDailyEnergyStats(DateTime.now());
+      await service.updateDailyEnergyStats(DateTime.now());
     } else {
       _consecutiveRealtimeNulls++;
       final now = DateTime.now();

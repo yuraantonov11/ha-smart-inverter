@@ -510,6 +510,15 @@ class HemsAlgorithmService {
       final tomorrow = now.hour >= windows.nightStart
           ? now.add(const Duration(days: 1))
           : now;
+      final cheapNow = _isChargingCheapNow(now);
+      final cheapAt = _getNextCheapChargingWindow(now);
+      final hoursToCheap =
+          cheapAt == null ? null : cheapAt.difference(now).inMinutes / 60.0;
+      LogService.log(
+          '🌙 HEMS night.ctx: now=${now.toIso8601String()} soc=${data.batterySoc.toStringAsFixed(1)}% '
+          'energy=${currentEnergyWh.toStringAsFixed(0)}Wh reserve=${reserveEnergyWh.toStringAsFixed(0)}Wh '
+          'cheapNow=$cheapNow cheapAt=${cheapAt?.toIso8601String() ?? '-'} '
+          'hoursToCheap=${hoursToCheap?.toStringAsFixed(2) ?? '-'}');
       final deficitIfNoCharge = _simulateEnergyDeficit(
         startHour: 7,
         endHour: 23,
@@ -522,12 +531,18 @@ class HemsAlgorithmService {
         productionCoefficient: productionCoefficient,
         liveLoadW: load,
       );
+      LogService.log(
+          '🌙 HEMS night.deficit: value=${deficitIfNoCharge.toStringAsFixed(0)}Wh '
+          'targetDate=${tomorrow.toIso8601String().substring(0, 10)} '
+          'reason=${deficitIfNoCharge > 0 ? 'charge_needed' : 'no_grid_charge_needed'}');
       // Phase 3a: tariff-aware night charging decision
       if (deficitIfNoCharge > 0) {
-        if (_isChargingCheapNow(now)) {
+        if (cheapNow) {
+          LogService.log(
+              '🌙 HEMS night.action: charger=SNU (reason=${_Reason.nightChargeDeficitCheapNow}) '
+              'deficit=${deficitIfNoCharge.toStringAsFixed(0)}Wh');
           await _applyCharger(_Chg.snu, _Reason.nightChargeDeficitCheapNow);
         } else {
-          final cheapAt = _getNextCheapChargingWindow(now);
           if (cheapAt != null &&
               cheapAt.isAfter(now) &&
               cheapAt.difference(now) <= const Duration(hours: 4)) {
@@ -538,10 +553,19 @@ class HemsAlgorithmService {
                 ' cheap window at ${cheapAt.hour}:00');
           } else {
             // No near-future cheap window — charge now despite higher price
+            LogService.log(
+                '🌙 HEMS night.action: charger=SNU (reason=${_Reason.nightChargeNoCheapWindow}) '
+                'deficit=${deficitIfNoCharge.toStringAsFixed(0)}Wh cheapAt=${cheapAt?.toIso8601String() ?? '-'}');
             await _applyCharger(_Chg.snu, _Reason.nightChargeNoCheapWindow);
           }
         }
       } else {
+        final batteryFullish = data.batterySoc >= 99.5;
+        final noDeficitReason =
+            batteryFullish ? 'battery_full' : 'forecast_sufficient';
+        LogService.log(
+            '🌙 HEMS night.action: charger=OSO (reason=${_Reason.nightNoGridChargeNeeded}, detail=$noDeficitReason) '
+            'soc=${data.batterySoc.toStringAsFixed(1)}% deficit=${deficitIfNoCharge.toStringAsFixed(0)}Wh');
         await _applyCharger(_Chg.oso, _Reason.nightNoGridChargeNeeded);
       }
       return;
@@ -690,6 +714,9 @@ class HemsAlgorithmService {
 
     final hour = DateTime.now().hour;
     if (hour >= 23 || hour < 7) {
+      LogService.log(
+          '🌙 NightArb: forcing night strategy (soc=${data.batterySoc.toStringAsFixed(1)}%, hour=$hour) '
+          '-> output=${_Out.usb}, charger=${_Chg.snu}');
       await _applyOutput(_Out.usb, _Reason.nightWindowUsb);
       await _applyCharger(_Chg.snu, _Reason.nightChargeDeficitCheapNow);
     } else {

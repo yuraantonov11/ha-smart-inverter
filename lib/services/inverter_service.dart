@@ -22,6 +22,7 @@ class InverterService {
   String? currentStationId;
   int? currentMode;
 
+  // Energy overview cards expect kWh values.
   double dailyEnergy = 0.0;
   double totalEnergy = 0.0;
   double co2Reduction = 0.0;
@@ -219,6 +220,7 @@ class InverterService {
           currentStationId = dev['stationId']?.toString();
           dailyEnergy = _parseDouble(dev['dailyProducedQuantity']);
           totalEnergy = _parseDouble(dev['totalProducedQuantity']);
+          updateCo2Reduction();
         }
       }
     } catch (e) {
@@ -688,6 +690,228 @@ class InverterService {
               gridWh: gridByDay[d] ?? 0.0,
             ))
         .toList(growable: false);
+  }
+
+  bool _isNightTariffHour(
+    DateTime dt, {
+    required int dayStartHour,
+    required int nightStartHour,
+  }) {
+    final dayStart = dayStartHour.clamp(0, 23);
+    final nightStart = nightStartHour.clamp(0, 23);
+    final hour = dt.hour;
+
+    if (dayStart == nightStart) {
+      return hour < 7 || hour >= 23;
+    }
+
+    if (dayStart < nightStart) {
+      return hour < dayStart || hour >= nightStart;
+    }
+
+    return hour >= nightStart && hour < dayStart;
+  }
+
+  Future<
+      ({
+        double loadWh,
+        double gridWh,
+        double selfConsumedWh,
+        double payableUah,
+        double savedUah,
+        List<({int day, double payableUah, double savedUah})> daily,
+      })?> getMonthlyTouEconomics({
+    required DateTime targetDate,
+    required double dayTariffUahPerKwh,
+    required double nightTariffUahPerKwh,
+    required int dayStartHour,
+    required int nightStartHour,
+    required double batteryRoundTripEfficiency,
+  }) async {
+    if (deviceSn == null) return null;
+
+    final efficiency = batteryRoundTripEfficiency.clamp(0.5, 1.0).toDouble();
+    final firstDay = DateTime(targetDate.year, targetDate.month, 1);
+    final now = DateTime.now();
+    final lastDay =
+        (targetDate.year == now.year && targetDate.month == now.month)
+            ? now
+            : DateTime(targetDate.year, targetDate.month + 1, 0);
+
+    var totalLoadWh = 0.0;
+    var totalGridWh = 0.0;
+    var totalSelfConsumedWh = 0.0;
+    var totalPayableUah = 0.0;
+    var totalSavedUah = 0.0;
+    var processedSamples = 0;
+
+    final payableByDay = <int, double>{};
+    final savedByDay = <int, double>{};
+
+    var chunkStart = firstDay;
+    while (!chunkStart.isAfter(lastDay)) {
+      final chunkEnd = chunkStart.add(const Duration(days: 5));
+      final to = chunkEnd.isAfter(lastDay) ? lastDay : chunkEnd;
+      final raw = await _fetchHistoryRaw(from: chunkStart, to: to, count: 1500);
+      if (raw != null) {
+        final payload = (raw['payload'] as Map<String, dynamic>?) ?? raw;
+        final timeSeries = payload['timeSeries'] as List<dynamic>? ?? [];
+        final fields = payload['fields'] as Map<String, dynamic>? ?? {};
+
+        List<dynamic> pick(List<String> keys) {
+          for (final key in keys) {
+            final value = fields[key];
+            if (value is List<dynamic> &&
+                value.any((element) => element != null)) {
+              return value;
+            }
+          }
+          return const [];
+        }
+
+        final genPower = pick(['generationPower']);
+        final loadPower = pick(['acOutputActivePower', 'loadPower']);
+        final batPower = pick([
+          'batteryPower',
+          'batteryActivePower',
+          'batteryChargePower',
+          'batteryDischargePower',
+        ]);
+        final gridPower =
+            pick(['acInputActivePower', 'gridPower', 'acInputPower']);
+        final batChargeCurrent = pick(['batteryChargingCurrent']);
+        final batDischargeCurrent = pick(['batteryDischargeCurrent']);
+        final batVoltage = pick(['batteryVoltage']);
+
+        DateTime? previousDt;
+
+        for (var i = 0; i < timeSeries.length; i++) {
+          final dt = DateTime.tryParse(timeSeries[i].toString())?.toLocal();
+          if (dt == null) continue;
+          if (dt.year != targetDate.year || dt.month != targetDate.month) {
+            previousDt = dt;
+            continue;
+          }
+
+          final minutesFromPrevious = previousDt == null
+              ? 5.0
+              : dt.difference(previousDt).inMinutes.toDouble();
+          final sampleMinutes = minutesFromPrevious <= 0
+              ? 5.0
+              : minutesFromPrevious > 30
+                  ? 5.0
+                  : minutesFromPrevious;
+          final sampleHours = sampleMinutes / 60.0;
+          previousDt = dt;
+
+          final pvW = (i < genPower.length && genPower[i] != null)
+              ? (genPower[i] as num).toDouble() * 1000.0
+              : 0.0;
+          final loadW = (i < loadPower.length && loadPower[i] != null)
+              ? (loadPower[i] as num).toDouble() * 1000.0
+              : 0.0;
+
+          var batteryW = 0.0;
+          if (i < batPower.length && batPower[i] != null) {
+            batteryW = (batPower[i] as num).toDouble() * 1000.0;
+          } else if (i < batVoltage.length && batVoltage[i] != null) {
+            final voltage = (batVoltage[i] as num).toDouble();
+            final chargeCurrent =
+                i < batChargeCurrent.length && batChargeCurrent[i] != null
+                    ? (batChargeCurrent[i] as num).toDouble()
+                    : 0.0;
+            final dischargeCurrent =
+                i < batDischargeCurrent.length && batDischargeCurrent[i] != null
+                    ? (batDischargeCurrent[i] as num).toDouble()
+                    : 0.0;
+            if (chargeCurrent > 0) {
+              batteryW = voltage * chargeCurrent;
+            } else if (dischargeCurrent > 0) {
+              batteryW = -(voltage * dischargeCurrent);
+            }
+          }
+
+          var gridW = 0.0;
+          if (i < gridPower.length && gridPower[i] != null) {
+            gridW = (gridPower[i] as num).toDouble() * 1000.0;
+          }
+
+          final totalDemand = loadW + (batteryW > 0 ? batteryW : 0.0);
+          final derivedGrid = totalDemand - pvW;
+          if (gridW <= 0 || (gridW > totalDemand && derivedGrid > 0)) {
+            gridW = derivedGrid > 0 ? derivedGrid : 0.0;
+          }
+
+          final sampleLoadWh = loadW * sampleHours;
+          final sampleGridWh = gridW * sampleHours;
+          totalLoadWh += sampleLoadWh;
+          totalGridWh += sampleGridWh;
+          processedSamples++;
+
+          final day = dt.day;
+          final isNight = _isNightTariffHour(
+            dt,
+            dayStartHour: dayStartHour,
+            nightStartHour: nightStartHour,
+          );
+          final tariff = isNight ? nightTariffUahPerKwh : dayTariffUahPerKwh;
+
+          final payable = (sampleGridWh / 1000.0) * tariff;
+          totalPayableUah += payable;
+          payableByDay[day] = (payableByDay[day] ?? 0.0) + payable;
+
+          final selfConsumedLoadW =
+              (loadW - gridW).clamp(0.0, double.infinity).toDouble();
+          final directSolarToLoadW = min(selfConsumedLoadW, pvW);
+          final batteryDischargeToLoadW = min(
+            max(0.0, selfConsumedLoadW - directSolarToLoadW),
+            max(0.0, -batteryW),
+          );
+          final remainingSelfConsumedW = max(
+            0.0,
+            selfConsumedLoadW - directSolarToLoadW - batteryDischargeToLoadW,
+          );
+          final adjustedSelfConsumedWh = (directSolarToLoadW +
+                  remainingSelfConsumedW +
+                  (batteryDischargeToLoadW * efficiency)) *
+              sampleHours;
+          totalSelfConsumedWh += adjustedSelfConsumedWh;
+          final saved = (adjustedSelfConsumedWh / 1000.0) * tariff;
+          totalSavedUah += saved;
+          savedByDay[day] = (savedByDay[day] ?? 0.0) + saved;
+        }
+      }
+
+      chunkStart = chunkStart.add(const Duration(days: 5, seconds: 1));
+    }
+
+    if (processedSamples == 0) {
+      app_log.LogService.log(
+          '⚠️ monthly.tou: no telemetry samples available for month ${targetDate.year}-${targetDate.month.toString().padLeft(2, '0')}');
+      return null;
+    }
+
+    final days = <int>{...payableByDay.keys, ...savedByDay.keys}.toList()
+      ..sort();
+    final daily = days
+        .map((day) => (
+              day: day,
+              payableUah: payableByDay[day] ?? 0.0,
+              savedUah: savedByDay[day] ?? 0.0,
+            ))
+        .toList(growable: false);
+
+    app_log.LogService.log(
+        '📊 monthly.tou telemetry: load=${totalLoadWh.toStringAsFixed(0)}Wh, grid=${totalGridWh.toStringAsFixed(0)}Wh, self=${totalSelfConsumedWh.toStringAsFixed(0)}Wh, payable=${totalPayableUah.toStringAsFixed(1)}UAH, saved=${totalSavedUah.toStringAsFixed(1)}UAH, batteryEff=${(efficiency * 100).toStringAsFixed(0)}%');
+
+    return (
+      loadWh: totalLoadWh,
+      gridWh: totalGridWh,
+      selfConsumedWh: totalSelfConsumedWh,
+      payableUah: totalPayableUah,
+      savedUah: totalSavedUah,
+      daily: daily,
+    );
   }
 
   /// Builds per-day load/grid Wh for the selected month using telemetry.
@@ -1661,30 +1885,54 @@ class InverterService {
     return double.tryParse(value.toString()) ?? 0.0;
   }
 
-  /// Updates CO2 reduction based on current daily and total energy values
-  /// Called after fetching chart data to calculate CO2 emissions avoided
+  /// Updates CO2 reduction based on lifetime PV generation in kWh.
   void updateCo2Reduction() {
-    // CO2 reduction is based on total PV energy generated (in Wh, convert to kWh)
-    final totalEnergyKwh = totalEnergy / 1000.0;
+    final totalEnergyKwh = totalEnergy;
     co2Reduction = totalEnergyKwh * _carbonEmissionFactorKgPerKwh;
     app_log.LogService.log(
         '♻️ CO2 reduction updated: ${co2Reduction.toStringAsFixed(2)} kg CO2 saved (total: ${totalEnergyKwh.toStringAsFixed(2)} kWh)');
   }
 
-  /// Updates daily energy based on chart data
+  double _integratePowerSpotsToKwh(List<FlSpot> spots) {
+    final sorted = spots
+        .where((spot) => spot.x.isFinite && spot.y.isFinite)
+        .toList(growable: false)
+      ..sort((a, b) => a.x.compareTo(b.x));
+
+    if (sorted.isEmpty) return 0.0;
+    if (sorted.length == 1) {
+      return (sorted.first.y * (5.0 / 60.0)) / 1000.0;
+    }
+
+    var totalWh = 0.0;
+    for (var i = 0; i < sorted.length - 1; i++) {
+      final current = sorted[i];
+      final next = sorted[i + 1];
+      final deltaHoursRaw = next.x - current.x;
+      final deltaHours = deltaHoursRaw <= 0 || deltaHoursRaw > 0.5
+          ? (5.0 / 60.0)
+          : deltaHoursRaw;
+      final averagePowerW =
+          ((current.y + next.y) / 2.0).clamp(0.0, double.infinity).toDouble();
+      totalWh += averagePowerW * deltaHours;
+    }
+
+    return totalWh / 1000.0;
+  }
+
+  /// Updates today's generated solar energy in kWh from the day chart.
   void updateDailyEnergyFromChart(Map<String, List<FlSpot>> chartData) {
     final pvSpots = chartData['pv'] ?? [];
     if (pvSpots.isEmpty) {
       dailyEnergy = 0.0;
     } else {
-      // Sum all PV energy points for the day (already in Wh)
-      dailyEnergy = pvSpots.fold<double>(
-          0.0, (sum, spot) => sum + (spot.y.isFinite ? spot.y : 0.0));
+      dailyEnergy = _integratePowerSpotsToKwh(pvSpots);
     }
   }
 
-  /// Fetches and updates daily energy from chart data, then calculates CO2
-  /// Call this periodically to keep CO2 values fresh
+  /// Refreshes the energy overview cards:
+  /// - `dailyEnergy`: today's PV generation in kWh
+  /// - `totalEnergy`: lifetime PV generation from device metadata in kWh
   Future<void> updateDailyEnergyStats(DateTime targetDate) async {
     if (currentStationId == null || deviceSn == null) {
       return;
@@ -1694,19 +1942,11 @@ class InverterService {
       final chartData = await getChartData(0, targetDate);
       if (chartData['pv'] != null && (chartData['pv']?.isNotEmpty ?? false)) {
         updateDailyEnergyFromChart(chartData);
-        updateCo2Reduction();
       }
 
-      // Also update monthly total energy for comparison
-      final now = DateTime.now();
-      final monthlyChart = await getChartData(2, now);
-      if (monthlyChart['pv'] != null &&
-          (monthlyChart['pv']?.isNotEmpty ?? false)) {
-        totalEnergy = (monthlyChart['pv'] as List<FlSpot>).fold<double>(
-            0.0, (sum, spot) => sum + (spot.y.isFinite ? spot.y : 0.0));
-        app_log.LogService.log(
-            '📊 Energy stats updated: daily=${dailyEnergy.toStringAsFixed(0)}Wh, monthly_total=${totalEnergy.toStringAsFixed(0)}Wh');
-      }
+      updateCo2Reduction();
+      app_log.LogService.log(
+          '📊 Energy stats updated: daily=${dailyEnergy.toStringAsFixed(2)}kWh, lifetime_total=${totalEnergy.toStringAsFixed(2)}kWh');
     } catch (e) {
       app_log.LogService.log('⚠️ updateDailyEnergyStats failed', error: e);
     }
