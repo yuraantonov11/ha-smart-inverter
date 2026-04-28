@@ -24,7 +24,7 @@ class SettingsTab extends StatelessWidget {
         Platform.isWindows || Platform.isLinux || Platform.isMacOS;
     final isMobilePlatform = Platform.isAndroid || Platform.isIOS;
     final enableGlassBlur = !isMobilePlatform;
-    final supportsInAppUpdater = Platform.isWindows;
+    final supportsInAppUpdater = Platform.isWindows || Platform.isAndroid;
     final updateBanner = _buildUpdateBanner(context, l10n);
 
     return ListView(
@@ -919,9 +919,18 @@ class SettingsTab extends StatelessWidget {
           '🚀 update.ui install confirmed: version=${info.latestVersion}, path=$path');
       final success = await UpdateService.installUpdate(path);
       if (success) {
-        LogService.log(
-            '🚪 update.ui installer started successfully, exiting app');
-        exit(0);
+        if (Platform.isAndroid) {
+          // Android: system installer dialog overlays the app — stay open.
+          LogService.log(
+              '📦 update.ui Android installer launched, returning to app');
+          scaffoldMessenger.showSnackBar(
+            SnackBar(content: Text(l10n.updatesDialogInstall)),
+          );
+        } else {
+          LogService.log(
+              '🚪 update.ui installer started successfully, exiting app');
+          exit(0);
+        }
       } else {
         LogService.log('❌ update.ui install failed for path=$path');
         scaffoldMessenger.showSnackBar(
@@ -1504,7 +1513,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 const SizedBox(height: 16),
                 // HEMS strategy selector
                 DropdownButtonFormField<HemsOptimizationStrategy>(
-                  value: selectedStrategy,
+                  initialValue: selectedStrategy,
                   decoration: InputDecoration(
                     labelText: l10n.hemsStrategyLabel,
                     border: OutlineInputBorder(
@@ -1524,7 +1533,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedPreset.id,
+                  initialValue: selectedPreset.id,
                   decoration: InputDecoration(
                     labelText: l10n.locationPreset,
                     border: OutlineInputBorder(
