@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.4] - 2026-04-28
+### Fixed
+- **fl_chart pinned to 0.70.2** — replaced the `^1.1.0` constraint with an exact `0.70.2` pin to eliminate the transitive `vector_math` SDK version conflict that was breaking `flutter pub get` in fresh environments.
+- **NavigationRail removed deprecated `scrollable: true`** — the property was removed in Flutter 3.29 and caused a compile warning; the rail now scrolls automatically via the parent `SingleChildScrollView`.
+
 ## [1.4.0] - 2026-04-27
 ### Added — HEMS v2 Phase 3: Forecasting & Economics ✅ STABLE RELEASE
 

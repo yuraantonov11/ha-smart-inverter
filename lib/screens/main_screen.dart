@@ -119,7 +119,6 @@ class _MainScreenState extends State<MainScreen> {
                                     setState(() => _selectedIndex = index);
                                   },
                                   extended: extendedRail,
-                                  scrollable: true,
                                   labelType: extendedRail
                                       ? null
                                       : NavigationRailLabelType.none,

@@ -1,7 +1,7 @@
 name: inverter_app
 description: A modern desktop application for monitoring and controlling PowMr / SmartESS solar inverters.
 publish_to: 'none'
-version: 1.4.0+25
+version: 1.4.4+26
 
 # Repository and homepage
 repository: https://github.com/yuraantonov11/siseli-app
@@ -24,7 +24,7 @@ dependencies:
   launch_at_startup: ^0.5.1 # Пакет для автозапуску з Windows
 
   intl: any
-  fl_chart: ^1.1.0
+  fl_chart: 0.70.2
   window_manager: ^0.5.1
   package_info_plus: ^9.0.1
   url_launcher: ^6.3.2
