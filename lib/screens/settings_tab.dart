@@ -1504,7 +1504,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 const SizedBox(height: 16),
                 // HEMS strategy selector
                 DropdownButtonFormField<HemsOptimizationStrategy>(
-                  initialValue: selectedStrategy,
+                  value: selectedStrategy,
                   decoration: InputDecoration(
                     labelText: l10n.hemsStrategyLabel,
                     border: OutlineInputBorder(
@@ -1524,7 +1524,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedPreset.id,
+                  initialValue: selectedPreset.id,
                   decoration: InputDecoration(
                     labelText: l10n.locationPreset,
                     border: OutlineInputBorder(
