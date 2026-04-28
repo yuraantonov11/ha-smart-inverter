@@ -1524,7 +1524,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedPreset.id,
+                  initialValue: selectedPreset.id,
                   decoration: InputDecoration(
                     labelText: l10n.locationPreset,
                     border: OutlineInputBorder(
