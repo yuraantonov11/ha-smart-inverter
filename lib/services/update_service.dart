@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'log_service.dart';
@@ -32,7 +33,8 @@ class UpdateService {
       'https://api.github.com/repos/yuraantonov11/siseli-app/releases/latest';
   static final _client = http.Client();
 
-  static const _supportedAssetExtensions = ['.exe', '.msi', '.msix'];
+  static List<String> get _supportedAssetExtensions =>
+      Platform.isAndroid ? ['.apk'] : ['.exe', '.msi', '.msix'];
 
   static Map<String, String> get _headers => {
         'Accept': 'application/vnd.github+json',
@@ -130,25 +132,39 @@ class UpdateService {
 
   static Map<String, dynamic>? _pickBestInstallerAsset(
       List<Map<String, dynamic>> assets) {
+    final extensions = _supportedAssetExtensions;
+
+    final supported = assets.where((asset) {
+      final name = asset['name']?.toString().toLowerCase() ?? '';
+      return extensions.any((ext) => name.endsWith(ext));
+    }).toList();
+
+    if (supported.isEmpty) return null;
+
+    // Android: prefer arm64-v8a, then armeabi-v7a, then any APK
+    if (Platform.isAndroid) {
+      const abiPriority = ['arm64-v8a', 'armeabi-v7a', 'x86_64'];
+      for (final abi in abiPriority) {
+        final match = supported.cast<Map<String, dynamic>?>().firstWhere(
+              (a) => (a?['name']?.toString() ?? '').contains(abi),
+              orElse: () => null,
+            );
+        if (match != null) return match;
+      }
+      return supported.first;
+    }
+
+    // Windows: sort by extension priority (.exe > .msi > .msix)
     int extRank(String name) {
       final lower = name.toLowerCase();
-      for (var i = 0; i < _supportedAssetExtensions.length; i++) {
-        if (lower.endsWith(_supportedAssetExtensions[i])) return i;
+      for (var i = 0; i < extensions.length; i++) {
+        if (lower.endsWith(extensions[i])) return i;
       }
       return 999;
     }
 
-    final supported = assets.where((asset) {
-      final name = asset['name']?.toString().toLowerCase() ?? '';
-      return _supportedAssetExtensions.any((ext) => name.endsWith(ext));
-    }).toList();
-
-    if (supported.isEmpty) return null;
     supported.sort((a, b) {
-      final byExt =
-          extRank(a['name'].toString()) - extRank(b['name'].toString());
-      if (byExt != 0) return byExt;
-      return 0;
+      return extRank(a['name'].toString()) - extRank(b['name'].toString());
     });
     return supported.first;
   }
@@ -177,7 +193,8 @@ class UpdateService {
       LogService.log(
           '⬇️ update.download start: file=$fileName, url=$downloadUrl');
       final tempDir = await getTemporaryDirectory();
-      final filePath = '${tempDir.path}\\$fileName';
+      final sep = Platform.isWindows ? '\\' : '/';
+      final filePath = '${tempDir.path}$sep$fileName';
       final request = http.Request('GET', Uri.parse(downloadUrl));
       request.headers.addAll(_headers);
       final response = await _client.send(request).timeout(
@@ -231,16 +248,24 @@ class UpdateService {
     try {
       LogService.log('🚀 update.install start: path=$path');
 
-      // БЕЗПЕКА: Перевірка цілісності файлу перед запуском
       final file = File(path);
       if (!await file.exists()) {
         LogService.log('❌ update.install failed: file does not exist');
         return false;
       }
 
+      // Android: open APK via system package installer
+      if (Platform.isAndroid) {
+        final result = await OpenFile.open(path);
+        final ok = result.type == ResultType.done;
+        LogService.log(ok
+            ? '✅ update.install Android APK opened: $path'
+            : '⚠️ update.install Android failed: ${result.message}');
+        return ok;
+      }
+
       final lower = path.toLowerCase();
       if (lower.endsWith('.msi')) {
-        // БЕЗПЕКА: runInShell: false запобігає shell injection атакам
         final result = await Process.run(
           'msiexec',
           ['/i', path, '/passive', '/norestart'],
@@ -257,8 +282,7 @@ class UpdateService {
         return ok;
       }
 
-      // Inno/EXE/MSIX - start installer and return immediately.
-      // БЕЗПЕКА: runInShell: false запобігає shell injection атакам
+      // Inno/EXE/MSIX
       await Process.start(path, [], runInShell: false);
       LogService.log('✅ update.install process started: $path');
       return true;
