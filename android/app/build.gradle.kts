@@ -30,7 +30,7 @@ android {
 
     defaultConfig {
         applicationId = "com.yuraantonov.smartinverterapp"
-        minSdk = flutter.minSdkVersion
+        minSdk = maxOf(flutter.minSdkVersion, 24)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
