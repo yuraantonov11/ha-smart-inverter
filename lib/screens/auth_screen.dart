@@ -150,59 +150,51 @@ class _AuthScreenState extends State<AuthScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isDark = theme.brightness == Brightness.dark;
+    final motion = context.motion;
+    final expressive = context.expressive;
     final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
-      body: Stack(
-        children: [
-          Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [
-                    theme.colorScheme.primary
-                        .withValues(alpha: isDark ? 0.10 : 0.08),
-                    theme.scaffoldBackgroundColor,
-                    AppTheme.loadColor.withValues(alpha: isDark ? 0.10 : 0.06),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          Center(
+      body: AppShellBackground(
+        child: Center(
+          child: AnimatedPadding(
+            duration: motion.regular,
+            curve: motion.standardCurve,
+            padding: const EdgeInsets.all(AppTheme.spacingL),
             child: SingleChildScrollView(
               child: ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 430),
                 child: AppGlassSurface(
                   isStrong: true,
-                  borderRadius: AppTheme.radiusXL,
+                  borderRadius: expressive.cornerXL,
                   child: Padding(
                     padding: const EdgeInsets.all(32),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Container(
-                          width: 74,
-                          height: 74,
+                          width: 82,
+                          height: 82,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: AppTheme.pvColor.withValues(alpha: 0.16),
+                            color: theme.colorScheme.tertiaryContainer
+                                .withValues(alpha: 0.82),
                             border: Border.all(
-                                color: AppTheme.pvColor.withValues(alpha: 0.5)),
+                              color: theme.colorScheme.tertiary
+                                  .withValues(alpha: 0.52),
+                            ),
                             boxShadow: [
                               BoxShadow(
-                                color: AppTheme.pvColor.withValues(alpha: 0.32),
+                                color: theme.colorScheme.tertiary
+                                    .withValues(alpha: 0.24),
                                 blurRadius: 22,
                               ),
                             ],
                           ),
-                          child: const Icon(
+                          child: Icon(
                             Icons.solar_power_rounded,
                             size: 40,
-                            color: AppTheme.pvColor,
+                            color: theme.colorScheme.tertiary,
                           ),
                         ),
                         const SizedBox(height: 16),
@@ -231,7 +223,8 @@ class _AuthScreenState extends State<AuthScreen> {
                               labelText: l10n.email,
                               prefixIcon: const Icon(Icons.email_outlined),
                               border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(14)),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
                             ),
                           ),
                         ),
@@ -248,14 +241,18 @@ class _AuthScreenState extends State<AuthScreen> {
                               labelText: l10n.password,
                               prefixIcon: const Icon(Icons.lock_outline),
                               suffixIcon: IconButton(
-                                icon: Icon(_obscurePassword
-                                    ? Icons.visibility_off
-                                    : Icons.visibility),
+                                icon: Icon(
+                                  _obscurePassword
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                ),
                                 onPressed: () => setState(
-                                    () => _obscurePassword = !_obscurePassword),
+                                  () => _obscurePassword = !_obscurePassword,
+                                ),
                               ),
                               border: OutlineInputBorder(
-                                  borderRadius: BorderRadius.circular(14)),
+                                borderRadius: BorderRadius.circular(14),
+                              ),
                             ),
                             onSubmitted: (_) => _handleLogin(),
                           ),
@@ -264,26 +261,23 @@ class _AuthScreenState extends State<AuthScreen> {
                         SizedBox(
                           width: double.infinity,
                           height: 50,
-                          child: ElevatedButton(
+                          child: FilledButton(
                             onPressed: _isLoading ? null : _handleLogin,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: theme.colorScheme.primary,
-                              foregroundColor: theme.colorScheme.onPrimary,
-                              shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(14)),
-                            ),
                             child: _isLoading
                                 ? SizedBox(
                                     width: 24,
                                     height: 24,
                                     child: CircularProgressIndicator(
-                                        color: theme.colorScheme.onPrimary,
-                                        strokeWidth: 2),
+                                      color: theme.colorScheme.onPrimary,
+                                      strokeWidth: 2,
+                                    ),
                                   )
                                 : Text(
                                     l10n.login,
-                                    style: theme.textTheme.titleMedium
-                                        ?.copyWith(fontWeight: FontWeight.w700),
+                                    style:
+                                        theme.textTheme.titleMedium?.copyWith(
+                                      fontWeight: FontWeight.w700,
+                                    ),
                                   ),
                           ),
                         ),
@@ -294,7 +288,7 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }

@@ -42,8 +42,19 @@ class UpdateService {
       };
 
   static String _cleanVersion(String raw) {
-    final noPrefix = raw.startsWith('v') ? raw.substring(1) : raw;
-    return noPrefix.split('+')[0];
+    return raw.trim().startsWith('v') ? raw.trim().substring(1) : raw.trim();
+  }
+
+  static ({List<int> semantic, int build}) _parseVersion(String rawVersion) {
+    final cleaned = _cleanVersion(rawVersion);
+    final plusParts = cleaned.split('+');
+    final semanticPart = plusParts.first;
+    final semantic = semanticPart
+        .split('.')
+        .map((part) => int.tryParse(part) ?? 0)
+        .toList(growable: true);
+    final build = plusParts.length > 1 ? int.tryParse(plusParts[1]) ?? 0 : 0;
+    return (semantic: semantic, build: build);
   }
 
   static String _twoDigits(int value) => value.toString().padLeft(2, '0');
@@ -56,7 +67,8 @@ class UpdateService {
 
   static Future<UpdateInfo> fetchUpdateInfo() async {
     final packageInfo = await PackageInfo.fromPlatform();
-    final currentVersion = _cleanVersion(packageInfo.version);
+    final buildNumber = int.tryParse(packageInfo.buildNumber) ?? 0;
+    final currentVersion = '${_cleanVersion(packageInfo.version)}+$buildNumber';
 
     try {
       final response = await _client
@@ -108,10 +120,10 @@ class UpdateService {
   }
 
   static bool _isVersionNewer(String latest, String current) {
-    final latestParts =
-        latest.split('.').map((e) => int.tryParse(e) ?? 0).toList();
-    final currentParts =
-        current.split('.').map((e) => int.tryParse(e) ?? 0).toList();
+    final latestVersion = _parseVersion(latest);
+    final currentVersion = _parseVersion(current);
+    final latestParts = List<int>.from(latestVersion.semantic);
+    final currentParts = List<int>.from(currentVersion.semantic);
 
     final maxLen = latestParts.length > currentParts.length
         ? latestParts.length
@@ -127,7 +139,7 @@ class UpdateService {
       if (latestParts[i] > currentParts[i]) return true;
       if (latestParts[i] < currentParts[i]) return false;
     }
-    return false;
+    return latestVersion.build > currentVersion.build;
   }
 
   static Map<String, dynamic>? _pickBestInstallerAsset(

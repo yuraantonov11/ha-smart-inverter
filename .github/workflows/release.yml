@@ -11,9 +11,13 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    name: Build Windows App
+  build_windows:
+    name: Build Windows
     runs-on: windows-latest
 
     steps:
@@ -23,63 +27,165 @@ jobs:
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
-          flutter-version: '3.29.3'
+          channel: stable
+          flutter-version: 3.29.3
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Build Windows
+      - name: Build Windows app
         run: flutter build windows --release
 
-      - name: Build Inno Setup Installer
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build Inno Setup installer
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" windows\installer_script.iss
+          $rawVersion = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart('v') } else { "dev-${{ github.run_number }}" }
+          $releaseVersion = ($rawVersion -split '\+')[0]
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$releaseVersion" "windows\installer_script.iss"
 
-      - name: Build MSIX Package
+      - name: Build MSIX package
         run: flutter pub run msix:create
 
-      - name: Package Release Files
+      - name: Package Windows artifacts
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}"
-          if ($version -eq "" -or $version -match "main") { $version = "latest" }
-          
-          # Rename setup file to include version
-          Move-Item -Path "windows\Output\smart_inverter_setup.exe" -Destination "smart_inverter_setup_$version.exe"
+          $rawVersion = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart('v') } else { "dev-${{ github.run_number }}" }
+          $releaseVersion = ($rawVersion -split '\+')[0]
+          New-Item -Path artifacts -ItemType Directory -Force | Out-Null
 
-          # Rename MSIX package to include version
-          Move-Item -Path "build\windows\x64\runner\Release\inverter_app.msix" -Destination "smart_inverter_app_$version.msix"
-          
-          # Prepare ZIP for manual installation
-          $release_dir = "build\windows\x64\runner\Release"
-          mkdir release_zip
-          copy-item -Path "$release_dir\*" -Destination "release_zip" -Recurse -Exclude "*.msix"
-          compress-archive -Path "release_zip\*" -DestinationPath "smart_inverter_windows_$version.zip"
+          Copy-Item "windows\Output\smart_inverter_setup.exe" "artifacts\smart_inverter_setup_$releaseVersion.exe" -Force
+          Copy-Item "build\windows\x64\runner\Release\inverter_app.msix" "artifacts\smart_inverter_v$releaseVersion.msix" -Force
 
-      - name: Create or Update Release
-        if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
+          $portableDir = "windows_portable"
+          Remove-Item -Path $portableDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -Path $portableDir -ItemType Directory | Out-Null
+          Copy-Item -Path "build\windows\x64\runner\Release\*" -Destination $portableDir -Recurse -Exclude "*.msix"
+          Compress-Archive -Path "$portableDir\*" -DestinationPath "artifacts\inverter_app_portable_$releaseVersion.zip" -Force
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-assets
+          path: artifacts/*
+          retention-days: 14
+
+  build_android:
+    name: Build Android
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.29.3
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Android APK
+        run: flutter build apk --release
+
+      - name: Build Android AAB
+        run: flutter build appbundle --release
+
+      - name: Package Android artifacts
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            RAW_VERSION="${GITHUB_REF_NAME#v}"
+            RELEASE_VERSION="${RAW_VERSION%%+*}"
+          else
+            RELEASE_VERSION="dev-${GITHUB_RUN_NUMBER}"
+          fi
+          mkdir -p artifacts
+          cp build/app/outputs/flutter-apk/app-release.apk "artifacts/smart_inverter_android_v${RELEASE_VERSION}.apk"
+          cp build/app/outputs/bundle/release/app-release.aab "artifacts/smart_inverter_android_v${RELEASE_VERSION}.aab"
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-assets
+          path: artifacts/*
+          retention-days: 14
+
+  publish_release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    needs: [build_windows, build_android]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-assets
+          path: release_assets
+
+      - name: Download Android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-assets
+          path: release_assets
+
+      - name: Generate SHA256 checksums
+        working-directory: release_assets
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Prepare release notes
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          FULL_VERSION="${TAG_NAME#v}"
+          VERSION="${FULL_VERSION%%+*}"
+          NOTES_FILE="release_notes_${VERSION}.md"
+          if [ -f "$NOTES_FILE" ]; then
+            cp "$NOTES_FILE" release_notes.md
+          else
+            cat > release_notes.md <<EOF
+          Smart Inverter App $TAG_NAME
+
+          Automated multi-platform release.
+
+          Included assets:
+          - Windows installer (.exe)
+          - Windows MSIX (.msix)
+          - Windows portable (.zip)
+          - Android APK (.apk)
+          - Android App Bundle (.aab)
+          - SHA256SUMS.txt
+          EOF
+          fi
+
+      - name: Create or update release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}"
-          $title = $tag
-          $notesFile = Join-Path $env:RUNNER_TEMP "release_notes.md"
-
-          @"
-          Automated release for $tag
-
-          Assets:
-          - Windows installer (.exe)
-          - Windows package (.msix)
-          - Portable Windows build (.zip)
-          "@ | Set-Content -Path $notesFile -Encoding UTF8
-
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag smart_inverter_setup_*.exe smart_inverter_app_*.msix smart_inverter_windows_*.zip --clobber
-          } else {
-            gh release create $tag smart_inverter_setup_*.exe smart_inverter_app_*.msix smart_inverter_windows_*.zip --title $title --notes-file $notesFile
-          }
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release_assets/* --clobber
+            gh release edit "$TAG_NAME" --notes-file release_notes.md
+          else
+            gh release create "$TAG_NAME" release_assets/* --title "Smart Inverter App $TAG_NAME" --notes-file release_notes.md
+          fi

@@ -299,9 +299,17 @@ class InverterService {
 
       Response<dynamic> response;
       try {
+        // Realtime endpoints should fail fast to keep UI responsive,
+        // then retry once for transient DNS/timeout hiccups.
+        final realtimeOptions = Options(
+          connectTimeout: const Duration(seconds: 8),
+          sendTimeout: const Duration(seconds: 10),
+          receiveTimeout: const Duration(seconds: 12),
+        );
         response = usePost
-            ? await _dio.post(endpoint, data: params)
-            : await _dio.get(endpoint, queryParameters: params);
+            ? await _dio.post(endpoint, data: params, options: realtimeOptions)
+            : await _dio.get(endpoint,
+                queryParameters: params, options: realtimeOptions);
       } on DioException catch (e) {
         final statusCode = e.response?.statusCode;
         if (usePost && statusCode == 405) {
@@ -314,11 +322,37 @@ class InverterService {
           return null;
         }
 
-        _logRealtimeIssueThrottled(
-          'dio:${e.type}:$endpoint:$usePost:$statusCode',
-          'Realtime request issue: endpoint=$endpoint, method=${usePost ? 'POST' : 'GET'}, type=${e.type}, status=$statusCode',
-        );
-        return null;
+        final isTransient = e.type == DioExceptionType.connectionTimeout ||
+            e.type == DioExceptionType.receiveTimeout ||
+            e.type == DioExceptionType.sendTimeout ||
+            e.type == DioExceptionType.connectionError;
+
+        if (isTransient) {
+          try {
+            await Future.delayed(const Duration(milliseconds: 450));
+            final retryOptions = Options(
+              connectTimeout: const Duration(seconds: 10),
+              sendTimeout: const Duration(seconds: 12),
+              receiveTimeout: const Duration(seconds: 14),
+            );
+            response = usePost
+                ? await _dio.post(endpoint, data: params, options: retryOptions)
+                : await _dio.get(endpoint,
+                    queryParameters: params, options: retryOptions);
+          } on DioException catch (retryError) {
+            _logRealtimeIssueThrottled(
+              'dio:${retryError.type}:$endpoint:$usePost:${retryError.response?.statusCode}',
+              'Realtime request issue: endpoint=$endpoint, method=${usePost ? 'POST' : 'GET'}, type=${retryError.type}, status=${retryError.response?.statusCode}',
+            );
+            return null;
+          }
+        } else {
+          _logRealtimeIssueThrottled(
+            'dio:${e.type}:$endpoint:$usePost:$statusCode',
+            'Realtime request issue: endpoint=$endpoint, method=${usePost ? 'POST' : 'GET'}, type=${e.type}, status=$statusCode',
+          );
+          return null;
+        }
       }
 
       final responseData = response.data as Map<String, dynamic>?;

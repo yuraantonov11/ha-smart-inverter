@@ -89,10 +89,11 @@ class DetailsTab extends StatelessWidget {
 
         // Translucent overlay while a setting change is in progress
         if (provider.isSettingChanging)
-          const Positioned.fill(
+          Positioned.fill(
             child: ColoredBox(
-              color: Color(0x44000000),
-              child: Center(child: CircularProgressIndicator()),
+              color:
+                  Theme.of(context).colorScheme.scrim.withValues(alpha: 0.28),
+              child: const Center(child: CircularProgressIndicator()),
             ),
           ),
       ],
@@ -140,6 +141,7 @@ class DetailsTab extends StatelessWidget {
   // ---------------------------------------------------------------------------
 
   Widget _buildConfigTile(BuildContext context, Map<String, dynamic> cfg) {
+    final theme = Theme.of(context);
     final key = cfg['key']?.toString() ?? '';
     final name =
         cfg['nameDisplay']?.toString() ?? cfg['name']?.toString() ?? key;
@@ -159,13 +161,16 @@ class DetailsTab extends StatelessWidget {
             color: Theme.of(context).colorScheme.primary,
             size: 22,
           ),
-          title: Text(name, style: const TextStyle(fontSize: 13)),
+          title: Text(
+            name,
+            style: theme.textTheme.bodyMedium?.copyWith(fontSize: 13),
+          ),
           subtitle: Text(
             displayText,
-            style: TextStyle(
+            style: theme.textTheme.titleSmall?.copyWith(
               fontWeight: FontWeight.w700,
               fontSize: 15,
-              color: Theme.of(context).colorScheme.secondary,
+              color: theme.colorScheme.secondary,
             ),
           ),
           trailing: provider.isSettingChanging
@@ -184,6 +189,7 @@ class DetailsTab extends StatelessWidget {
   }
 
   Widget _buildStateTile(BuildContext context, String key, dynamic fieldData) {
+    final theme = Theme.of(context);
     var name = key;
     var value = '—';
     var unit = '';
@@ -204,13 +210,16 @@ class DetailsTab extends StatelessWidget {
       child: AppCard(
         child: ListTile(
           dense: true,
-          title: Text(name, style: const TextStyle(fontSize: 13)),
+          title: Text(
+            name,
+            style: theme.textTheme.bodyMedium?.copyWith(fontSize: 13),
+          ),
           trailing: Text(
             (unit.isNotEmpty && unit != 'null') ? '$value $unit' : value,
-            style: TextStyle(
+            style: theme.textTheme.titleSmall?.copyWith(
               fontSize: 14,
               fontWeight: FontWeight.w700,
-              color: Theme.of(context).colorScheme.primary,
+              color: theme.colorScheme.primary,
             ),
           ),
         ),
@@ -263,7 +272,7 @@ class DetailsTab extends StatelessWidget {
                 ),
               if (presets != null)
                 DropdownButtonFormField<String>(
-                  value: selected,
+                  initialValue: selected,
                   items: presets,
                   onChanged: (val) {
                     if (val != null) setState(() => selected = val);
@@ -425,7 +434,6 @@ class DetailsTab extends StatelessWidget {
     return Icons.settings_rounded;
   }
 }
-
 // ---------------------------------------------------------------------------
 // Helper widget
 // ---------------------------------------------------------------------------
@@ -443,18 +451,18 @@ class _SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final expressive = context.expressive;
+    final theme = Theme.of(context);
     return Row(
       children: [
         Container(
           width: 36,
           height: 36,
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-            color:
-                Theme.of(context).colorScheme.primary.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(expressive.cornerSmall),
+            color: theme.colorScheme.primaryContainer.withValues(alpha: 0.58),
           ),
-          child: Icon(icon,
-              color: Theme.of(context).colorScheme.primary, size: 18),
+          child: Icon(icon, color: theme.colorScheme.primary, size: 18),
         ),
         const SizedBox(width: 10),
         Expanded(

@@ -18,6 +18,10 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> {
   int _selectedIndex = 0;
+  static final Tween<Offset> _switchSlideTween = Tween<Offset>(
+    begin: const Offset(0.016, 0),
+    end: Offset.zero,
+  );
 
   @override
   void initState() {
@@ -27,66 +31,262 @@ class _MainScreenState extends State<MainScreen> {
     });
   }
 
+  Widget _buildRawPage({
+    required int index,
+    required AppStateProvider provider,
+    required dynamic viewData,
+    required bool isInverterOffline,
+    required String statusMessage,
+    required bool isDataLoading,
+  }) {
+    switch (index) {
+      case 0:
+        return viewData != null
+            ? DashboardTab(provider: provider, data: viewData)
+            : _NoDataState(
+                isOffline: isInverterOffline,
+                statusMessage: statusMessage,
+                onRetry: provider.fetchData,
+                isLoading: isDataLoading,
+              );
+      case 1:
+        return AutomationTab(provider: provider);
+      case 2:
+        return viewData != null
+            ? DetailsTab(data: viewData, provider: provider)
+            : _NoDataState(
+                isOffline: isInverterOffline,
+                statusMessage: statusMessage,
+                onRetry: provider.fetchData,
+                isLoading: isDataLoading,
+              );
+      case 3:
+      default:
+        return SettingsTab(provider: provider);
+    }
+  }
+
+  Widget _buildFramedPage({
+    required int index,
+    required AppStateProvider provider,
+    required dynamic viewData,
+    required bool isInverterOffline,
+    required String statusMessage,
+    required bool isDataLoading,
+    required AppLocalizations l10n,
+  }) {
+    final child = _buildRawPage(
+      index: index,
+      provider: provider,
+      viewData: viewData,
+      isInverterOffline: isInverterOffline,
+      statusMessage: statusMessage,
+      isDataLoading: isDataLoading,
+    );
+
+    switch (index) {
+      case 0:
+        return AppScreenFrame(
+          icon: Icons.dashboard_rounded,
+          title: l10n.dashboard,
+          subtitle: l10n.energyOverview,
+          trailing: _PageStatusPill(
+            isOffline: isInverterOffline,
+            onlineLabel: l10n.connectionOnline,
+            offlineLabel: l10n.connectionOffline,
+          ),
+          child: child,
+        );
+      case 1:
+        return AppScreenFrame(
+          icon: Icons.smart_toy_rounded,
+          title: l10n.automation,
+          subtitle: l10n.hemsSubtitle,
+          child: child,
+        );
+      case 2:
+        return AppScreenFrame(
+          icon: Icons.list_alt_rounded,
+          title: l10n.data,
+          subtitle: l10n.realtimeReadings,
+          child: child,
+        );
+      case 3:
+      default:
+        return AppScreenFrame(
+          icon: Icons.settings_rounded,
+          title: l10n.settings,
+          subtitle: l10n.appSettings,
+          child: child,
+        );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final provider = context.watch<AppStateProvider>();
-    final data = provider.data;
-    final viewData = data ?? provider.cachedSnapshotData;
+    final provider = context.read<AppStateProvider>();
+    final data = context.select((AppStateProvider p) => p.data);
+    final cachedSnapshotData =
+        context.select((AppStateProvider p) => p.cachedSnapshotData);
+    final isInverterOffline =
+        context.select((AppStateProvider p) => p.isInverterOffline);
+    final statusMessage =
+        context.select((AppStateProvider p) => p.statusMessage);
+    final isDataLoading =
+        context.select((AppStateProvider p) => p.isDataLoading);
+    final lang = context.select((AppStateProvider p) => p.lang);
+    final viewData = data ?? cachedSnapshotData;
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final theme = Theme.of(context);
+    final motion = context.motion;
+    final expressive = context.expressive;
     final l10n = AppLocalizations.of(context)!;
 
-    final pages = <Widget>[
-      viewData != null
-          ? DashboardTab(provider: provider, data: viewData)
-          : _NoDataState(
-              isOffline: provider.isInverterOffline,
-              statusMessage: provider.statusMessage,
-              onRetry: provider.fetchData,
-              isLoading: provider.isDataLoading,
-            ),
-      AutomationTab(provider: provider),
-      viewData != null
-          ? DetailsTab(data: viewData, provider: provider)
-          : _NoDataState(
-              isOffline: provider.isInverterOffline,
-              statusMessage: provider.statusMessage,
-              onRetry: provider.fetchData,
-              isLoading: provider.isDataLoading,
-            ),
-      SettingsTab(provider: provider),
-    ];
+    String safeLabel(String localized, String fallback) {
+      final trimmed = localized.trim();
+      return trimmed.isEmpty ? fallback : trimmed;
+    }
 
     final destinations = [
-      (icon: Icons.dashboard_rounded, label: l10n.dashboard),
-      (icon: Icons.smart_toy_rounded, label: l10n.automation),
-      (icon: Icons.list_alt_rounded, label: l10n.data),
-      (icon: Icons.settings_rounded, label: l10n.settings),
+      (
+        icon: Icons.dashboard_rounded,
+        label: safeLabel(l10n.dashboard, 'Dashboard')
+      ),
+      (
+        icon: Icons.smart_toy_rounded,
+        label: safeLabel(l10n.automation, 'Automation')
+      ),
+      (icon: Icons.list_alt_rounded, label: safeLabel(l10n.data, 'Data')),
+      (
+        icon: Icons.settings_rounded,
+        label: safeLabel(l10n.settings, 'Settings')
+      ),
     ];
 
     return LayoutBuilder(
       builder: (context, constraints) {
         final useRail = constraints.maxWidth >= 980;
         final extendedRail = constraints.maxWidth >= 1280;
-        final compactRailWidth = 88.0;
-        final langCode = provider.lang.toUpperCase();
+        final compactRailWidth = 96.0;
+        final compactRailMinWidth = 72.0;
+        final safeIndex = _selectedIndex.clamp(0, destinations.length - 1);
+        final langCode = lang.toUpperCase();
+        final activePageLabel = destinations[safeIndex].label;
+
+        Widget buildPageSwitcher() {
+          return AnimatedSwitcher(
+            duration: motion.regular,
+            switchInCurve: motion.standardCurve,
+            switchOutCurve: motion.standardCurve,
+            layoutBuilder: (currentChild, previousChildren) {
+              // Paint only the active screen to guarantee no text overlap.
+              return currentChild ?? const SizedBox.shrink();
+            },
+            transitionBuilder: (child, animation) {
+              final currentKey = ValueKey(safeIndex);
+              final isIncoming = child.key == currentKey;
+
+              if (!isIncoming) {
+                return const SizedBox.shrink();
+              }
+
+              final opacity = animation.drive(
+                CurveTween(
+                  curve: const Interval(0.0, 1.0, curve: Curves.easeOutCubic),
+                ),
+              );
+              final slide = _switchSlideTween
+                  .chain(
+                    CurveTween(
+                      curve: const Interval(
+                        0.0,
+                        1.0,
+                        curve: Curves.easeOutCubic,
+                      ),
+                    ),
+                  )
+                  .animate(animation);
+
+              return FadeTransition(
+                opacity: opacity,
+                child: SlideTransition(
+                  position: slide,
+                  child: RepaintBoundary(child: child),
+                ),
+              );
+            },
+            child: KeyedSubtree(
+              key: ValueKey(safeIndex),
+              child: _buildFramedPage(
+                index: safeIndex,
+                provider: provider,
+                viewData: viewData,
+                isInverterOffline: isInverterOffline,
+                statusMessage: statusMessage,
+                isDataLoading: isDataLoading,
+                l10n: l10n,
+              ),
+            ),
+          );
+        }
 
         return Scaffold(
-          // Keep body extension for rail layout, but avoid overlap under mobile bottom bar.
           extendBody: useRail,
           appBar: AppBar(
-            title: Text(
-              l10n.appTitle,
-              style: Theme.of(context).textTheme.titleLarge,
+            titleSpacing: AppTheme.spacingS,
+            flexibleSpace: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    theme.colorScheme.primary.withValues(alpha: 0.08),
+                    theme.colorScheme.surface.withValues(alpha: 0.92),
+                    theme.colorScheme.tertiary.withValues(alpha: 0.07),
+                  ],
+                ),
+              ),
             ),
+            title: Row(
+              children: [
+                _RailLogoIcon(theme: theme),
+                const SizedBox(width: AppTheme.spacingS),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        l10n.appTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium,
+                      ),
+                      Text(
+                        activePageLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            scrolledUnderElevation: 0,
             actions: [
               if (!useRail)
-                TextButton.icon(
-                  onPressed: () => provider.setLanguage(
-                    provider.lang == 'en' ? 'uk' : 'en',
+                Padding(
+                  padding: const EdgeInsets.only(right: AppTheme.spacingXS),
+                  child: FilledButton.tonalIcon(
+                    onPressed: () => provider.setLanguage(
+                      lang == 'en' ? 'uk' : 'en',
+                    ),
+                    icon: const Icon(Icons.language_rounded, size: 18),
+                    label: Text(langCode),
                   ),
-                  icon: const Icon(Icons.language_rounded, size: 18),
-                  label: Text(langCode),
                 ),
               Tooltip(
                 message: isDark ? l10n.lightTheme : l10n.darkTheme,
@@ -98,210 +298,215 @@ class _MainScreenState extends State<MainScreen> {
               const SizedBox(width: AppTheme.spacingS),
             ],
           ),
-          body: useRail
-              ? Row(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.all(AppTheme.spacingL),
-                      child: AppGlassSurface(
-                        isStrong: true,
-                        borderRadius: 28,
-                        child: SizedBox(
-                          width: extendedRail ? 220 : compactRailWidth,
-                          child: Column(
-                            children: [
-                              Expanded(
-                                child: NavigationRail(
-                                  backgroundColor: Colors.transparent,
-                                  minWidth: 64,
-                                  selectedIndex: _selectedIndex,
-                                  onDestinationSelected: (index) {
-                                    setState(() => _selectedIndex = index);
-                                  },
-                                  extended: extendedRail,
-                                  labelType: extendedRail
-                                      ? null
-                                      : NavigationRailLabelType.none,
-                                  minExtendedWidth: 196,
-                                  groupAlignment: extendedRail ? -0.82 : -1,
-                                  useIndicator: true,
-                                  indicatorColor: theme.colorScheme.primary
-                                      .withValues(alpha: 0.16),
-                                  selectedIconTheme: IconThemeData(
-                                      color: theme.colorScheme.primary),
-                                  unselectedIconTheme: IconThemeData(
-                                    color: theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                  selectedLabelTextStyle:
-                                      theme.textTheme.titleSmall?.copyWith(
-                                    color: theme.colorScheme.primary,
-                                    fontWeight: FontWeight.w700,
-                                  ),
-                                  unselectedLabelTextStyle:
-                                      theme.textTheme.bodyMedium?.copyWith(
-                                    color: theme.colorScheme.onSurfaceVariant,
-                                  ),
-                                  leading: Padding(
-                                    padding: EdgeInsets.fromLTRB(
-                                      extendedRail
-                                          ? AppTheme.spacingM
-                                          : AppTheme.spacingS,
-                                      AppTheme.spacingL,
-                                      extendedRail
-                                          ? AppTheme.spacingM
-                                          : AppTheme.spacingS,
-                                      AppTheme.spacingM,
-                                    ),
-                                    child: extendedRail
-                                        ? Row(
-                                            mainAxisAlignment:
-                                                MainAxisAlignment.start,
-                                            children: [
-                                              _RailLogoIcon(theme: theme),
-                                              const SizedBox(
-                                                  width: AppTheme.spacingM),
-                                              Expanded(
-                                                child: Column(
-                                                  crossAxisAlignment:
-                                                      CrossAxisAlignment.start,
-                                                  mainAxisSize:
-                                                      MainAxisSize.min,
-                                                  children: [
-                                                    Text(
-                                                      l10n.appTitle,
-                                                      maxLines: 1,
-                                                      overflow:
-                                                          TextOverflow.ellipsis,
-                                                      style: theme
-                                                          .textTheme.titleSmall
-                                                          ?.copyWith(
-                                                        fontWeight:
-                                                            FontWeight.w700,
+          body: AppShellBackground(
+            child: useRail
+                ? Row(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(AppTheme.spacingL),
+                        child: AppGlassSurface(
+                          isStrong: true,
+                          borderRadius: expressive.cornerXL,
+                          child: SizedBox(
+                            width: extendedRail ? 220 : compactRailWidth,
+                            child: Column(
+                              children: [
+                                Expanded(
+                                  child: NavigationRail(
+                                    backgroundColor: Colors.transparent,
+                                    minWidth: compactRailMinWidth,
+                                    selectedIndex: safeIndex,
+                                    onDestinationSelected: (index) {
+                                      setState(() => _selectedIndex = index);
+                                    },
+                                    extended: extendedRail,
+                                    labelType: extendedRail
+                                        ? null
+                                        : NavigationRailLabelType.selected,
+                                    minExtendedWidth: 208,
+                                    groupAlignment:
+                                        extendedRail ? -0.82 : -0.95,
+                                    useIndicator: true,
+                                    indicatorColor: theme.colorScheme.primary
+                                        .withValues(
+                                            alpha: expressive
+                                                .navigationIndicatorOpacity),
+                                    leading: Padding(
+                                      padding: EdgeInsets.fromLTRB(
+                                        extendedRail
+                                            ? AppTheme.spacingM
+                                            : AppTheme.spacingS,
+                                        AppTheme.spacingL,
+                                        extendedRail
+                                            ? AppTheme.spacingM
+                                            : AppTheme.spacingS,
+                                        AppTheme.spacingM,
+                                      ),
+                                      child: extendedRail
+                                          ? Row(
+                                              mainAxisAlignment:
+                                                  MainAxisAlignment.start,
+                                              children: [
+                                                _RailLogoIcon(theme: theme),
+                                                const SizedBox(
+                                                    width: AppTheme.spacingM),
+                                                Expanded(
+                                                  child: Column(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .start,
+                                                    mainAxisSize:
+                                                        MainAxisSize.min,
+                                                    children: [
+                                                      Text(
+                                                        l10n.appTitle,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: theme.textTheme
+                                                            .titleSmall
+                                                            ?.copyWith(
+                                                          fontWeight:
+                                                              FontWeight.w700,
+                                                        ),
                                                       ),
-                                                    ),
-                                                    Text(
-                                                      'SMART',
-                                                      style: theme
-                                                          .textTheme.labelSmall,
-                                                    ),
-                                                  ],
+                                                      Text(
+                                                        activePageLabel,
+                                                        maxLines: 1,
+                                                        overflow: TextOverflow
+                                                            .ellipsis,
+                                                        style: theme.textTheme
+                                                            .labelSmall,
+                                                      ),
+                                                    ],
+                                                  ),
                                                 ),
-                                              ),
-                                            ],
-                                          )
-                                        : Center(
-                                            child: _RailLogoIcon(theme: theme),
+                                              ],
+                                            )
+                                          : Center(
+                                              child:
+                                                  _RailLogoIcon(theme: theme)),
+                                    ),
+                                    destinations: destinations
+                                        .map(
+                                          (d) => NavigationRailDestination(
+                                            icon: Icon(d.icon),
+                                            selectedIcon: Icon(d.icon),
+                                            label: Text(
+                                              d.label,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              softWrap: false,
+                                            ),
                                           ),
-                                  ),
-                                  destinations: destinations
-                                      .map(
-                                        (d) => NavigationRailDestination(
-                                          icon: Icon(d.icon),
-                                          selectedIcon: Icon(d.icon),
-                                          label: Text(d.label),
-                                        ),
-                                      )
-                                      .toList(),
-                                ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  AppTheme.spacingS,
-                                  AppTheme.spacingS,
-                                  AppTheme.spacingS,
-                                  AppTheme.spacingL,
-                                ),
-                                child: _RailLanguageButton(
-                                  label: l10n.language,
-                                  langCode: langCode,
-                                  extendedRail: extendedRail,
-                                  onTap: () => provider.setLanguage(
-                                    provider.lang == 'en' ? 'uk' : 'en',
+                                        )
+                                        .toList(),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                    const VerticalDivider(width: 1),
-                    Expanded(
-                      child: Stack(
-                        children: [
-                          Positioned.fill(
-                            child: IgnorePointer(
-                              child: DecoratedBox(
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                    colors: [
-                                      theme.colorScheme.primary
-                                          .withValues(alpha: 0.04),
-                                      Colors.transparent,
-                                      theme.colorScheme.secondary
-                                          .withValues(alpha: 0.03),
-                                    ],
+                                Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    AppTheme.spacingS,
+                                    AppTheme.spacingS,
+                                    AppTheme.spacingS,
+                                    AppTheme.spacingL,
+                                  ),
+                                  child: _RailLanguageButton(
+                                    label: l10n.language,
+                                    langCode: langCode,
+                                    extendedRail: extendedRail,
+                                    onTap: () => provider.setLanguage(
+                                      lang == 'en' ? 'uk' : 'en',
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ),
-                          ),
-                          AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 220),
-                            child: KeyedSubtree(
-                              key: ValueKey(_selectedIndex),
-                              child: pages[_selectedIndex],
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                )
-              : Stack(
-                  children: [
-                    Positioned.fill(
-                      child: IgnorePointer(
-                        child: DecoratedBox(
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                              colors: [
-                                theme.colorScheme.primary
-                                    .withValues(alpha: 0.04),
-                                Colors.transparent,
-                                theme.colorScheme.secondary
-                                    .withValues(alpha: 0.03),
                               ],
                             ),
                           ),
                         ),
                       ),
-                    ),
-                    pages[_selectedIndex],
-                  ],
-                ),
+                      const VerticalDivider(width: 1),
+                      Expanded(child: buildPageSwitcher()),
+                    ],
+                  )
+                : buildPageSwitcher(),
+          ),
           bottomNavigationBar: useRail
               ? null
-              : NavigationBar(
-                  selectedIndex: _selectedIndex,
-                  onDestinationSelected: (index) {
-                    setState(() => _selectedIndex = index);
-                  },
-                  destinations: destinations
-                      .map(
-                        (d) => NavigationDestination(
-                          icon: Icon(d.icon),
-                          label: d.label,
-                        ),
-                      )
-                      .toList(),
+              : Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppTheme.spacingM,
+                    0,
+                    AppTheme.spacingM,
+                    AppTheme.spacingM,
+                  ),
+                  child: AppGlassSurface(
+                    isStrong: true,
+                    borderRadius: expressive.cornerXL,
+                    child: NavigationBar(
+                      selectedIndex: safeIndex,
+                      height: 70,
+                      onDestinationSelected: (index) {
+                        setState(() => _selectedIndex = index);
+                      },
+                      labelBehavior:
+                          NavigationDestinationLabelBehavior.onlyShowSelected,
+                      destinations: destinations
+                          .map(
+                            (d) => NavigationDestination(
+                              icon: Icon(d.icon),
+                              label: d.label,
+                            ),
+                          )
+                          .toList(),
+                    ),
+                  ),
                 ),
         );
       },
+    );
+  }
+}
+
+class _PageStatusPill extends StatelessWidget {
+  final bool isOffline;
+  final String onlineLabel;
+  final String offlineLabel;
+
+  const _PageStatusPill({
+    required this.isOffline,
+    required this.onlineLabel,
+    required this.offlineLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color =
+        isOffline ? Theme.of(context).colorScheme.error : AppTheme.batteryColor;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            isOffline ? Icons.cloud_off_rounded : Icons.cloud_done_rounded,
+            size: 14,
+            color: color,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            isOffline ? offlineLabel : onlineLabel,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -14,6 +14,7 @@ class AutomationTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final expressive = context.expressive;
     final modes = [
       (
         title: l10n.modeAdaptive,
@@ -50,7 +51,7 @@ class AutomationTab extends StatelessWidget {
           icon: Icons.tune_rounded,
         ),
         AppCard(
-          borderRadius: AppTheme.radiusXL,
+          borderRadius: expressive.cornerXL,
           child: Row(
             children: [
               Container(
@@ -286,6 +287,8 @@ class _SmartModeCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final motion = context.motion;
+    final expressive = context.expressive;
     final isSelected = value == groupValue;
 
     return AppCard(
@@ -294,7 +297,7 @@ class _SmartModeCard extends StatelessWidget {
           ? color.withValues(
               alpha: theme.brightness == Brightness.dark ? 0.16 : 0.10)
           : theme.cardColor,
-      borderRadius: AppTheme.radiusXL,
+      borderRadius: expressive.cornerXL,
       padding: const EdgeInsets.all(AppTheme.spacingL),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
@@ -303,7 +306,12 @@ class _SmartModeCard extends StatelessWidget {
             padding: const EdgeInsets.all(AppTheme.spacingM),
             decoration: BoxDecoration(
               color: isSelected ? color : color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(AppTheme.radiusLarge),
+              borderRadius: BorderRadius.circular(expressive.cornerLarge),
+              border: Border.all(
+                color: isSelected
+                    ? color.withValues(alpha: 0.5)
+                    : theme.colorScheme.outlineVariant.withValues(alpha: 0.45),
+              ),
             ),
             child: Icon(
               icon,
@@ -331,7 +339,8 @@ class _SmartModeCard extends StatelessWidget {
                       ),
                     ),
                     AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
+                      duration: motion.quick,
+                      curve: motion.standardCurve,
                       padding: const EdgeInsets.all(6),
                       decoration: BoxDecoration(
                         color: isSelected
@@ -382,7 +391,8 @@ class _SmartModeCard extends StatelessWidget {
           ),
           const SizedBox(width: AppTheme.spacingS),
           AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
+            duration: motion.quick,
+            curve: motion.standardCurve,
             width: 26,
             height: 26,
             decoration: BoxDecoration(

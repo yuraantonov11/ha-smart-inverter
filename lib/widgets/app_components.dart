@@ -1,8 +1,184 @@
 import 'dart:ui';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import '../l10n/app_localizations.dart';
 import '../theme/app_theme.dart';
+
+class AppShellBackground extends StatelessWidget {
+  final Widget child;
+
+  const AppShellBackground({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final expressive = context.expressive;
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  theme.colorScheme.primary
+                      .withValues(alpha: isDark ? 0.2 : 0.1),
+                  theme.scaffoldBackgroundColor,
+                  theme.colorScheme.tertiary
+                      .withValues(alpha: isDark ? 0.16 : 0.08),
+                ],
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          top: -130,
+          left: -90,
+          child: IgnorePointer(
+            child: Container(
+              width: 330,
+              height: 330,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppTheme.pvGlowColor.withValues(alpha: isDark ? 0.2 : 0.14),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          right: -140,
+          bottom: -120,
+          child: IgnorePointer(
+            child: Container(
+              width: 360,
+              height: 360,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppTheme.gridGlowColor
+                        .withValues(alpha: isDark ? 0.22 : 0.12),
+                    Colors.transparent,
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        Positioned.fill(
+          child: IgnorePointer(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface
+                    .withValues(alpha: expressive.shellBackdropOpacity * 0.08),
+              ),
+            ),
+          ),
+        ),
+        child,
+      ],
+    );
+  }
+}
+
+class AppScreenFrame extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final Widget child;
+  final Widget? trailing;
+
+  const AppScreenFrame({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.child,
+    this.trailing,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppTheme.spacingL,
+        AppTheme.spacingM,
+        AppTheme.spacingL,
+        AppTheme.spacingL,
+      ),
+      child: Column(
+        children: [
+          AppGlassSurface(
+            isStrong: true,
+            borderRadius: expressive.cornerXL,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: AppTheme.spacingL,
+                vertical: AppTheme.spacingM,
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          theme.colorScheme.primaryContainer
+                              .withValues(alpha: 0.78),
+                          theme.colorScheme.secondaryContainer
+                              .withValues(alpha: 0.52),
+                        ],
+                      ),
+                      borderRadius:
+                          BorderRadius.circular(expressive.cornerMedium),
+                    ),
+                    child: Icon(icon, color: theme.colorScheme.primary),
+                  ),
+                  const SizedBox(width: AppTheme.spacingM),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title, style: theme.textTheme.titleLarge),
+                        Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (trailing != null) trailing!,
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: AppTheme.spacingL),
+          Expanded(child: child),
+        ],
+      ),
+    );
+  }
+}
 
 // ======================== КАРТОЧКИ ========================
 
@@ -71,27 +247,38 @@ class AppGlassSurface extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final motion = context.motion;
+    final expressive = context.expressive;
     final isDark = theme.brightness == Brightness.dark;
     final isCompact = MediaQuery.sizeOf(context).shortestSide < 600;
-    final sigma = isCompact ? (isStrong ? 8.0 : 4.0) : (isStrong ? 18.0 : 10.0);
+    final allowBackdrop =
+        enableBlur && (kIsWeb || !(Platform.isAndroid || Platform.isIOS));
+    final sigma = isCompact ? (isStrong ? 5.0 : 2.5) : (isStrong ? 12.0 : 6.0);
     final lightTop = (backgroundColor ?? Colors.white).withValues(
-      alpha: isStrong ? 0.9 : 0.72,
+      alpha: isStrong ? 0.95 : 0.84,
     );
     final lightBottom = theme.colorScheme.surface.withValues(
-      alpha: isStrong ? 0.86 : 0.68,
+      alpha: isStrong ? 0.88 : 0.76,
     );
 
-    final decoratedChild = Container(
+    final decoratedChild = AnimatedContainer(
+      duration: motion.regular,
+      curve: motion.standardCurve,
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
             isDark
-                ? (backgroundColor ?? theme.cardColor)
-                    .withValues(alpha: isStrong ? 0.84 : 0.74)
+                ? (backgroundColor ?? theme.colorScheme.surfaceContainerHighest)
+                    .withValues(
+                        alpha: isStrong
+                            ? expressive.shellBackdropOpacity + 0.08
+                            : expressive.shellBackdropOpacity - 0.02)
                 : lightTop,
             isDark
-                ? theme.colorScheme.surface
-                    .withValues(alpha: isStrong ? 0.72 : 0.58)
+                ? theme.colorScheme.surfaceContainer.withValues(
+                    alpha: isStrong
+                        ? expressive.shellBackdropOpacity
+                        : expressive.shellBackdropOpacity - 0.1)
                 : lightBottom,
           ],
           begin: Alignment.topLeft,
@@ -100,18 +287,21 @@ class AppGlassSurface extends StatelessWidget {
         borderRadius: BorderRadius.circular(borderRadius),
         border: Border.all(
           color: isDark
-              ? Colors.white.withValues(alpha: isStrong ? 0.18 : 0.14)
-              : theme.dividerColor.withValues(alpha: isStrong ? 0.72 : 0.6),
+              ? Colors.white.withValues(alpha: isStrong ? 0.18 : 0.12)
+              : theme.colorScheme.outlineVariant
+                  .withValues(alpha: expressive.cardBorderOpacity),
           width: 1,
         ),
         boxShadow: [
           BoxShadow(
-            color: (isDark ? Colors.black : Colors.blueGrey).withValues(
-                alpha: isDark
-                    ? (isStrong ? 0.36 : 0.3)
-                    : (isStrong ? 0.14 : 0.08)),
-            blurRadius: isStrong ? 30 : 20,
-            offset: Offset(0, isStrong ? 10 : 6),
+            color:
+                (isDark ? Colors.black : theme.colorScheme.primary).withValues(
+              alpha: isDark
+                  ? (isStrong ? 0.28 : 0.22)
+                  : (isStrong ? expressive.softShadowOpacity : 0.08),
+            ),
+            blurRadius: isStrong ? 30 : 18,
+            offset: Offset(0, isStrong ? 9 : 5),
           ),
         ],
       ),
@@ -120,7 +310,7 @@ class AppGlassSurface extends StatelessWidget {
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(borderRadius),
-      child: enableBlur
+      child: allowBackdrop
           ? BackdropFilter(
               filter: ImageFilter.blur(
                 sigmaX: sigma,
@@ -172,9 +362,7 @@ class AppStatusBanner extends StatelessWidget {
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(
-            vertical: AppTheme.spacingS,
-            horizontal: AppTheme.spacingM,
-          ),
+              vertical: 10, horizontal: AppTheme.spacingM),
           child: Row(
             children: [
               Container(
@@ -259,14 +447,15 @@ class AppSectionTitle extends StatelessWidget {
             children: [
               if (icon != null) ...[
                 Container(
-                  width: 30,
-                  height: 30,
+                  width: 34,
+                  height: 34,
                   decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
+                    borderRadius:
+                        BorderRadius.circular(context.expressive.cornerSmall),
                     color: Theme.of(context)
                         .colorScheme
-                        .primary
-                        .withValues(alpha: 0.12),
+                        .primaryContainer
+                        .withValues(alpha: 0.5),
                   ),
                   child: Icon(
                     icon,
@@ -324,15 +513,18 @@ class AppStatCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
+          AnimatedContainer(
+            duration: context.motion.regular,
+            curve: context.motion.standardCurve,
             padding: const EdgeInsets.all(AppTheme.spacingM),
             decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
+              color: color.withValues(alpha: 0.16),
+              borderRadius:
+                  BorderRadius.circular(context.expressive.cornerMedium),
               border: Border.all(color: color.withValues(alpha: 0.35)),
               boxShadow: [
                 BoxShadow(
-                  color: color.withValues(alpha: 0.18),
+                  color: color.withValues(alpha: 0.14),
                   blurRadius: 16,
                 ),
               ],
@@ -561,7 +753,8 @@ class AppLegendItem extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
+              duration: context.motion.quick,
+              curve: context.motion.standardCurve,
               width: size,
               height: size,
               decoration: BoxDecoration(

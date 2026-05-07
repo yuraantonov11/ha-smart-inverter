@@ -70,19 +70,12 @@ class SettingsTab extends StatelessWidget {
   }
 
   Widget _buildSectionTitle(String title) {
-    return Builder(builder: (context) {
-      return Padding(
-        padding: const EdgeInsets.only(bottom: 12, left: 4),
-        child: Text(
-          title,
-          style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurface,
-                fontSize: 16,
-                fontWeight: FontWeight.w700,
-              ),
-        ),
-      );
-    });
+    return Builder(
+      builder: (context) => AppSectionTitle(
+        title: title,
+        icon: Icons.tune_rounded,
+      ),
+    );
   }
 
   Widget _buildSettingsControls(
@@ -265,17 +258,12 @@ class SettingsTab extends StatelessWidget {
     BuildContext context, {
     required Widget child,
   }) {
-    final theme = Theme.of(context);
-    return Material(
-      color: theme.cardColor.withValues(alpha: 0.58),
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: theme.dividerColor.withValues(alpha: 0.55),
-          ),
-        ),
+    final expressive = context.expressive;
+    return AppGlassSurface(
+      borderRadius: expressive.cornerMedium,
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(expressive.cornerMedium),
         child: child,
       ),
     );
@@ -728,24 +716,25 @@ class SettingsTab extends StatelessWidget {
 
   void _showEditProfileDialog(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final expressive = context.expressive;
     final controller = TextEditingController(text: provider.userName);
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(expressive.cornerLarge),
+        ),
         title: Text(l10n.editProfile),
         content: TextField(
           controller: controller,
-          decoration: InputDecoration(
-            labelText: l10n.name,
-            border: const OutlineInputBorder(),
-          ),
+          decoration: InputDecoration(labelText: l10n.name),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
             child: Text(l10n.cancel),
           ),
-          ElevatedButton(
+          FilledButton(
             onPressed: () {
               final name = controller.text.trim();
               if (name.isEmpty) {
@@ -779,7 +768,7 @@ class SettingsTab extends StatelessWidget {
             onPressed: () => Navigator.pop(context, false),
             child: Text(l10n.cancel),
           ),
-          ElevatedButton(
+          FilledButton(
             onPressed: () => Navigator.pop(context, true),
             child: Text(l10n.logout),
           ),
@@ -1370,6 +1359,7 @@ class HardwareSettingsSection extends StatelessWidget {
 
   void _showEditDialog(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final expressive = context.expressive;
     final batteryCtrl = TextEditingController(
         text: provider.batteryCapacityAh.toStringAsFixed(0));
     final pvCtrl = TextEditingController(
@@ -1405,21 +1395,22 @@ class HardwareSettingsSection extends StatelessWidget {
         _matchPreset(provider.siteLatitude, provider.siteLongitude);
     var selectedStrategy = provider.hemsStrategy;
 
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-
     showDialog(
       context: context,
       builder: (context) => StatefulBuilder(
         builder: (context, setStateDialog) => AlertDialog(
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(expressive.cornerXL),
+          ),
           title: Row(
             children: [
               Icon(Icons.solar_power_rounded,
                   color: Theme.of(context).colorScheme.primary),
               const SizedBox(width: 12),
-              Text(l10n.stationParameters,
-                  style: const TextStyle(fontSize: 20)),
+              Text(
+                l10n.stationParameters,
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
             ],
           ),
           content: SingleChildScrollView(
@@ -1513,7 +1504,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 const SizedBox(height: 16),
                 // HEMS strategy selector
                 DropdownButtonFormField<HemsOptimizationStrategy>(
-                  value: selectedStrategy,
+                  initialValue: selectedStrategy,
                   decoration: InputDecoration(
                     labelText: l10n.hemsStrategyLabel,
                     border: OutlineInputBorder(
@@ -1533,7 +1524,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedPreset.id,
+                  initialValue: selectedPreset.id,
                   decoration: InputDecoration(
                     labelText: l10n.locationPreset,
                     border: OutlineInputBorder(
@@ -1686,17 +1677,9 @@ class HardwareSettingsSection extends StatelessWidget {
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(context),
-              child: Text(l10n.cancel,
-                  style: TextStyle(
-                      color: isDark ? Colors.white70 : Colors.black54)),
+              child: Text(l10n.cancel),
             ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Theme.of(context).colorScheme.primary,
-                foregroundColor: Theme.of(context).colorScheme.onPrimary,
-                shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
-              ),
+            FilledButton(
               onPressed: () {
                 final bat = double.tryParse(batteryCtrl.text) ??
                     provider.batteryCapacityAh;

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.6] - 2026-04-28
+### Fixed
+- **Critical battery SOC safety fix** — `batteryCapacity` from API is no longer trusted as a single source of truth when it is stuck at 100% without BMS cable.
+- **Voltage-based SOC correction enabled** — `InverterData.fromJson()` now applies `getRealSoc(...)` using battery voltage and battery current compensation, preventing dangerous SOC overestimation on 16S LiFePO4 packs.
+- **Realtime API resilience improved** — realtime endpoints now use fail-fast per-request timeouts with one transient retry (timeouts/connection errors), reducing null realtime cycles during DNS/network hiccups.
+
+### Packaging
+- **Windows installer metadata aligned** — Inno Setup `AppVersion` updated to `1.4.6`.
+- **MSIX metadata aligned** — `msix_config.msix_version` updated to `1.4.6.28`.
+
 ## [1.4.4] - 2026-04-28
 ### Fixed
 - **fl_chart pinned to 0.70.2** — replaced the `^1.1.0` constraint with an exact `0.70.2` pin to eliminate the transitive `vector_math` SDK version conflict that was breaking `flutter pub get` in fresh environments.

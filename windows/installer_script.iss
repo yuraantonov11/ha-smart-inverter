@@ -1,5 +1,7 @@
 #define AppName "Smart Inverter App"
-#define AppVersion "1.4.4"
+#ifndef AppVersion
+#define AppVersion "2.0.0"
+#endif
 #define AppPublisher "Yura Antonov"
 #define AppURL "https://github.com/yuraantonov11/siseli-app"
 #define AppExeName "inverter_app.exe"

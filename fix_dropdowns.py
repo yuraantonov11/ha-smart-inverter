@@ -4,7 +4,7 @@ import sys
 
 path = r'lib/screens/settings_tab.dart'
 
-with open(path, 'rb') as f:
+with open(path, 'r') as f:
     data = f.read()
 
 # Detect line endings

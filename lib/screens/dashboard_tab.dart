@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:fl_chart/fl_chart.dart';
 
 import '../l10n/app_localizations.dart';
@@ -27,73 +28,74 @@ class DashboardTab extends StatelessWidget {
     final lastUpdatedLabel = lastUpdatedAt == null
         ? null
         : '${lastUpdatedAt.hour.toString().padLeft(2, '0')}:${lastUpdatedAt.minute.toString().padLeft(2, '0')}';
+    final sections = <Widget>[
+      if (statusMessage.isNotEmpty)
+        AppStatusBanner(
+          message: statusMessage,
+          icon: Icons.info_outline,
+          meta: lastUpdatedLabel == null
+              ? null
+              : '${l10n.lastRealtimeUpdate}: $lastUpdatedLabel',
+        ),
+      RepaintBoundary(child: _StatsSection(provider: provider, data: data)),
+      LayoutBuilder(
+        builder: (context, constraints) {
+          final wide = constraints.maxWidth >= 1180;
+          if (!wide) {
+            return Column(
+              children: [
+                RepaintBoundary(
+                  child: _EnergyChartSection(provider: provider),
+                ),
+                const SizedBox(height: AppTheme.spacingL),
+                RepaintBoundary(
+                  child: _SystemCapacitySection(
+                    provider: provider,
+                    data: data,
+                  ),
+                ),
+              ],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 6,
+                child: RepaintBoundary(
+                  child: _EnergyChartSection(provider: provider),
+                ),
+              ),
+              const SizedBox(width: AppTheme.spacingL),
+              Expanded(
+                flex: 4,
+                child: RepaintBoundary(
+                  child: _SystemCapacitySection(
+                    provider: provider,
+                    data: data,
+                  ),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+      RepaintBoundary(child: _MonthEconomicsBreakdown(provider: provider)),
+    ];
 
     return RefreshIndicator(
       color: Theme.of(context).colorScheme.primary,
       onRefresh: provider.fetchData,
-      child: ListView(
+      child: ListView.separated(
+        scrollCacheExtent: const ScrollCacheExtent.pixels(1200),
+        physics: const AlwaysScrollableScrollPhysics(
+          parent: ClampingScrollPhysics(),
+        ),
         padding: const EdgeInsets.all(AppTheme.spacingL),
-        children: [
-          if (statusMessage.isNotEmpty) ...[
-            AppStatusBanner(
-              message: statusMessage,
-              icon: Icons.info_outline,
-              meta: lastUpdatedLabel == null
-                  ? null
-                  : '${l10n.lastRealtimeUpdate}: $lastUpdatedLabel',
-            ),
-            const SizedBox(height: AppTheme.spacingL),
-          ],
-
-          // Energy Flow Diagram
-          AppGlassSurface(
-            isStrong: true,
-            borderRadius: 26,
-            child: ExcludeSemantics(
-              child: EnergyFlowDiagram(data: data),
-            ),
-          ),
-
-          const SizedBox(height: AppTheme.spacingL),
-
-          // Stats Row
-          _StatsSection(provider: provider),
-
-          const SizedBox(height: AppTheme.spacingL),
-
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth >= 1180;
-              if (!wide) {
-                return Column(
-                  children: [
-                    _SystemCapacitySection(provider: provider, data: data),
-                    const SizedBox(height: AppTheme.spacingL),
-                    _EnergyChartSection(provider: provider),
-                  ],
-                );
-              }
-
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    flex: 4,
-                    child:
-                        _SystemCapacitySection(provider: provider, data: data),
-                  ),
-                  const SizedBox(width: AppTheme.spacingL),
-                  Expanded(
-                    flex: 6,
-                    child: _EnergyChartSection(provider: provider),
-                  ),
-                ],
-              );
-            },
-          ),
-
-          const SizedBox(height: AppTheme.spacingL),
-        ],
+        itemBuilder: (context, index) => sections[index],
+        separatorBuilder: (_, __) => const SizedBox(height: AppTheme.spacingL),
+        itemCount: sections.length,
       ),
     );
   }
@@ -103,12 +105,15 @@ class DashboardTab extends StatelessWidget {
 
 class _StatsSection extends StatelessWidget {
   final AppStateProvider provider;
+  final InverterData data;
 
-  const _StatsSection({required this.provider});
+  const _StatsSection({required this.provider, required this.data});
 
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
     final daily = provider.service.dailyEnergy.toStringAsFixed(1);
     final total = provider.service.totalEnergy.toStringAsFixed(0);
     final co2 = provider.service.co2Reduction.toStringAsFixed(1);
@@ -127,124 +132,466 @@ class _StatsSection extends StatelessWidget {
     final savedTooltip = provider.monthEconomicsUsesTelemetryTou
         ? l10n.tooltipMoneySavedMonthTelemetry(batteryEff)
         : l10n.tooltipMoneySavedMonthEstimated(nightShare, batteryEff);
+    final sourceValue = provider.monthEconomicsUsesTelemetryTou
+        ? l10n.calculationSourceTelemetry
+        : l10n.calculationSourceFallback;
     final paymentPrefix =
         provider.monthEconomicsUsesEstimatedFallback ? '≈' : '';
     const savingsPrefix = '≈';
     const projectionPrefix = '≈';
-    final cards = [
-      AppStatCard(
-        label: l10n.today,
-        value: daily,
-        unit: 'kWh',
-        icon: Icons.today_rounded,
-        color: AppTheme.gridColor,
-        tooltip: l10n.tooltipTodayEnergy,
-      ),
-      AppStatCard(
-        label: l10n.total,
-        value: total,
-        unit: 'kWh',
-        icon: Icons.assessment_rounded,
-        color: AppTheme.pvColor,
-        tooltip: l10n.tooltipTotalEnergy,
-      ),
-      AppStatCard(
-        label: 'CO2',
-        value: co2,
-        unit: 'kg',
-        icon: Icons.eco_rounded,
-        color: AppTheme.batteryColor,
-        tooltip: l10n.tooltipCo2,
-      ),
-      AppStatCard(
-        label: l10n.moneySavedMonth,
-        value: savedMoney == null || savedMoney == 0.0
-            ? '0.0'
-            : '$savingsPrefix${savedMoney.toStringAsFixed(1)}',
-        unit: l10n.currencyUah,
-        icon: Icons.savings_rounded,
-        color: AppTheme.batteryColor,
-        tooltip: savedTooltip,
-      ),
-      AppStatCard(
-        label: l10n.paymentThisMonth,
-        value: monthToPay == null || monthToPay == 0.0
-            ? '0.0'
-            : '$paymentPrefix${monthToPay.toStringAsFixed(1)}',
-        unit: l10n.currencyUah,
-        icon: Icons.receipt_long_rounded,
-        color: AppTheme.pvColor,
-        tooltip: paymentTooltip,
-      ),
-      AppStatCard(
-        label: l10n.projectedSavedMonth,
-        value: projectedSavedMoney == null || projectedSavedMoney == 0.0
-            ? '0.0'
-            : '$projectionPrefix${projectedSavedMoney.toStringAsFixed(1)}',
-        unit: l10n.currencyUah,
-        icon: Icons.trending_up_rounded,
-        color: AppTheme.batteryColor,
-        tooltip: l10n.tooltipProjectedSavedMonth,
-      ),
-      AppStatCard(
-        label: l10n.projectedPaymentMonth,
-        value: projectedMonthToPay == null || projectedMonthToPay == 0.0
-            ? '0.0'
-            : '$projectionPrefix${projectedMonthToPay.toStringAsFixed(1)}',
-        unit: l10n.currencyUah,
-        icon: Icons.calendar_month_rounded,
-        color: AppTheme.pvColor,
-        tooltip: l10n.tooltipProjectedPaymentMonth,
-      ),
-    ];
-
-    return Column(
-      children: [
-        AppSectionTitle(
-          title: l10n.energyOverview,
-          icon: Icons.trending_up_rounded,
-        ),
-        LayoutBuilder(
+    return AppCard(
+      borderRadius: expressive.cornerXL,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.all(AppTheme.spacingL),
+        child: LayoutBuilder(
           builder: (context, constraints) {
-            final width = constraints.maxWidth;
-            if (width < 640) {
-              return SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: Row(
+            final compact = constraints.maxWidth < 1080;
+            final featuredMetrics = [
+              _HeroMetricCard(
+                label: l10n.today,
+                value: daily,
+                unit: 'kWh',
+                icon: Icons.today_rounded,
+                color: AppTheme.pvColor,
+                tooltip: l10n.tooltipTodayEnergy,
+              ),
+              _HeroMetricCard(
+                label: l10n.moneySavedMonth,
+                value: savedMoney == null || savedMoney == 0.0
+                    ? '0.0'
+                    : '$savingsPrefix${savedMoney.toStringAsFixed(1)}',
+                unit: l10n.currencyUah,
+                icon: Icons.savings_rounded,
+                color: AppTheme.batteryColor,
+                tooltip: savedTooltip,
+              ),
+              _HeroMetricCard(
+                label: l10n.paymentThisMonth,
+                value: monthToPay == null || monthToPay == 0.0
+                    ? '0.0'
+                    : '$paymentPrefix${monthToPay.toStringAsFixed(1)}',
+                unit: l10n.currencyUah,
+                icon: Icons.receipt_long_rounded,
+                color: AppTheme.gridColor,
+                tooltip: paymentTooltip,
+              ),
+            ];
+
+            final supportingMetrics = [
+              _SupportingMetricCard(
+                label: l10n.total,
+                value: total,
+                unit: 'kWh',
+                icon: Icons.assessment_rounded,
+                color: AppTheme.pvColor,
+                tooltip: l10n.tooltipTotalEnergy,
+              ),
+              _SupportingMetricCard(
+                label: 'CO2',
+                value: co2,
+                unit: 'kg',
+                icon: Icons.eco_rounded,
+                color: AppTheme.batteryColor,
+                tooltip: l10n.tooltipCo2,
+              ),
+              _SupportingMetricCard(
+                label: l10n.projectedSavedMonth,
+                value: projectedSavedMoney == null || projectedSavedMoney == 0.0
+                    ? '0.0'
+                    : '$projectionPrefix${projectedSavedMoney.toStringAsFixed(1)}',
+                unit: l10n.currencyUah,
+                icon: Icons.trending_up_rounded,
+                color: AppTheme.batteryColor,
+                tooltip: l10n.tooltipProjectedSavedMonth,
+              ),
+              _SupportingMetricCard(
+                label: l10n.projectedPaymentMonth,
+                value: projectedMonthToPay == null || projectedMonthToPay == 0.0
+                    ? '0.0'
+                    : '$projectionPrefix${projectedMonthToPay.toStringAsFixed(1)}',
+                unit: l10n.currencyUah,
+                icon: Icons.calendar_month_rounded,
+                color: AppTheme.gridColor,
+                tooltip: l10n.tooltipProjectedPaymentMonth,
+              ),
+            ];
+
+            final summary = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
                   children: [
-                    for (var i = 0; i < cards.length; i++) ...[
-                      SizedBox(width: 210, child: cards[i]),
-                      if (i != cards.length - 1)
-                        const SizedBox(width: AppTheme.spacingM),
-                    ],
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        borderRadius:
+                            BorderRadius.circular(expressive.cornerMedium),
+                      ),
+                      child: Icon(
+                        Icons.dashboard_customize_rounded,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                    const SizedBox(width: AppTheme.spacingM),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            l10n.energyOverview,
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: AppTheme.spacingXS),
+                          Text(
+                            '${l10n.calculationSourceLabel}: $sourceValue',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
+                const SizedBox(height: AppTheme.spacingM),
+                Wrap(
+                  spacing: AppTheme.spacingS,
+                  runSpacing: AppTheme.spacingS,
+                  children: [
+                    _DashboardPill(
+                      icon: provider.isInverterOffline
+                          ? Icons.cloud_off_rounded
+                          : Icons.cloud_done_rounded,
+                      label: provider.isInverterOffline
+                          ? l10n.connectionOffline
+                          : l10n.connectionOnline,
+                      color: provider.isInverterOffline
+                          ? theme.colorScheme.error
+                          : AppTheme.batteryColor,
+                    ),
+                    _DashboardPill(
+                      icon: Icons.tune_rounded,
+                      label: sourceValue,
+                      color: theme.colorScheme.primary,
+                    ),
+                    _DashboardPill(
+                      icon: Icons.bolt_rounded,
+                      label:
+                          '${Formatters.formatPower(data.loadPower)} / ${Formatters.formatPower(provider.inverterMaxPowerW)}',
+                      color: AppTheme.loadColor,
+                    ),
+                  ],
+                ),
+                const SizedBox(height: AppTheme.spacingL),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final metricCompact = constraints.maxWidth < 760;
+                    if (metricCompact) {
+                      return Column(
+                        children: [
+                          for (var i = 0; i < featuredMetrics.length; i++) ...[
+                            featuredMetrics[i],
+                            if (i != featuredMetrics.length - 1)
+                              const SizedBox(height: AppTheme.spacingM),
+                          ],
+                        ],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        for (var i = 0; i < featuredMetrics.length; i++) ...[
+                          Expanded(child: featuredMetrics[i]),
+                          if (i != featuredMetrics.length - 1)
+                            const SizedBox(width: AppTheme.spacingM),
+                        ],
+                      ],
+                    );
+                  },
+                ),
+                const SizedBox(height: AppTheme.spacingM),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final width = constraints.maxWidth;
+                    final columns = width >= 900
+                        ? 4
+                        : width >= 540
+                            ? 2
+                            : 1;
+                    final cardWidth =
+                        (width - (AppTheme.spacingM * (columns - 1))) / columns;
+                    return Wrap(
+                      spacing: AppTheme.spacingM,
+                      runSpacing: AppTheme.spacingM,
+                      children: supportingMetrics
+                          .map(
+                            (metric) => SizedBox(
+                              width: cardWidth,
+                              child: metric,
+                            ),
+                          )
+                          .toList(),
+                    );
+                  },
+                ),
+              ],
+            );
+
+            final flowPanel = AppCard(
+              borderRadius: expressive.cornerLarge,
+              padding: const EdgeInsets.all(AppTheme.spacingM),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.account_tree_rounded,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const SizedBox(width: AppTheme.spacingS),
+                      Expanded(
+                        child: Text(
+                          l10n.equipmentStatus,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: AppTheme.spacingS),
+                  Text(
+                    provider.lastSuccessfulRealtimeAt == null
+                        ? l10n.lastRealtimeUpdate
+                        : '${l10n.lastRealtimeUpdate}: ${provider.lastSuccessfulRealtimeAt!.hour.toString().padLeft(2, '0')}:${provider.lastSuccessfulRealtimeAt!.minute.toString().padLeft(2, '0')}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: AppTheme.spacingM),
+                  RepaintBoundary(
+                    child:
+                        ExcludeSemantics(child: EnergyFlowDiagram(data: data)),
+                  ),
+                ],
+              ),
+            );
+
+            if (compact) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  summary,
+                  const SizedBox(height: AppTheme.spacingL),
+                  flowPanel
+                ],
               );
             }
-            final columns = width >= 1500
-                ? 4
-                : width >= 1080
-                    ? 3
-                    : 2;
-            final cardWidth =
-                (width - (AppTheme.spacingL * (columns - 1))) / columns;
 
-            return Wrap(
-              spacing: AppTheme.spacingL,
-              runSpacing: AppTheme.spacingL,
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                for (final card in cards)
-                  SizedBox(
-                    width: cardWidth,
-                    child: card,
-                  ),
+                Expanded(flex: 6, child: summary),
+                const SizedBox(width: AppTheme.spacingL),
+                Expanded(flex: 5, child: flowPanel),
               ],
             );
           },
         ),
-        const SizedBox(height: AppTheme.spacingL),
-        _MonthEconomicsBreakdown(provider: provider),
-      ],
+      ),
+    );
+  }
+}
+
+class _HeroMetricCard extends StatelessWidget {
+  final String label;
+  final String value;
+  final String unit;
+  final IconData icon;
+  final Color color;
+  final String? tooltip;
+
+  const _HeroMetricCard({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.icon,
+    required this.color,
+    this.tooltip,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
+    final card = AppCard(
+      borderRadius: expressive.cornerLarge,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerLow,
+      padding: const EdgeInsets.all(AppTheme.spacingL),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.1),
+              borderRadius: BorderRadius.circular(expressive.cornerMedium),
+            ),
+            child: Icon(icon, color: color),
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          Text(
+            label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: AppTheme.spacingXS),
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.end,
+            spacing: AppTheme.spacingXS,
+            children: [
+              Text(
+                value,
+                style: theme.textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  height: 1,
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(bottom: AppTheme.spacingXS),
+                child: Text(
+                  unit,
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    return tooltip == null ? card : Tooltip(message: tooltip!, child: card);
+  }
+}
+
+class _SupportingMetricCard extends StatelessWidget {
+  final String label;
+  final String value;
+  final String unit;
+  final IconData icon;
+  final Color color;
+  final String? tooltip;
+
+  const _SupportingMetricCard({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.icon,
+    required this.color,
+    this.tooltip,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
+    final card = AppCard(
+      borderRadius: expressive.cornerMedium,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerLow,
+      padding: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(AppTheme.spacingM),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(expressive.cornerSmall),
+              ),
+              child: Icon(icon, size: 18, color: color),
+            ),
+            const SizedBox(width: AppTheme.spacingM),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: AppTheme.spacingXS),
+                  Text(
+                    '$value $unit',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    return tooltip == null ? card : Tooltip(message: tooltip!, child: card);
+  }
+}
+
+class _DashboardPill extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  const _DashboardPill({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppCard(
+      borderRadius: 999,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerHigh,
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTheme.spacingM,
+        vertical: AppTheme.spacingS,
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: AppTheme.spacingS),
+          Text(
+            label,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -256,6 +603,8 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
     final l10n = AppLocalizations.of(context)!;
     final load = provider.monthLoadKwh;
     final grid = provider.monthGridKwh;
@@ -294,14 +643,25 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
     String fmt(double? v) => v == null ? '--' : v.toStringAsFixed(1);
 
     return AppCard(
+      borderRadius: expressive.cornerLarge,
       padding: const EdgeInsets.all(AppTheme.spacingL),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Icon(Icons.pie_chart_rounded,
-                  color: Theme.of(context).colorScheme.primary),
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(expressive.cornerSmall),
+                ),
+                child: Icon(
+                  Icons.pie_chart_rounded,
+                  color: theme.colorScheme.primary,
+                ),
+              ),
               const SizedBox(width: AppTheme.spacingS),
               Expanded(
                 child: Column(
@@ -309,13 +669,15 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
                   children: [
                     Text(
                       l10n.monthlyEnergyBreakdown,
-                      style: Theme.of(context).textTheme.titleMedium,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                     Text(
                       '${DateTime.now().month.toString().padLeft(2, '0')}.${DateTime.now().year}',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: Theme.of(context).hintColor,
-                          ),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
@@ -324,19 +686,22 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
                 message: l10n.tooltipMonthProgress,
                 child: Text(
                   '${provider.monthProgressPercent}%',
-                  style: Theme.of(context).textTheme.labelMedium,
+                  style: theme.textTheme.labelMedium,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 4),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
+          const SizedBox(height: AppTheme.spacingXS),
+          Tooltip(
+            message:
+                '${l10n.monthLoadEnergy} = ${l10n.monthGridImport} + ${l10n.monthSelfConsumed}',
             child: Text(
               '${l10n.monthLoadEnergy} = ${l10n.monthGridImport} + ${l10n.monthSelfConsumed}',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).hintColor,
-                  ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
             ),
           ),
           const SizedBox(height: AppTheme.spacingS),
@@ -452,7 +817,8 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
           }),
           if (dailyEconomics.isNotEmpty) ...[
             const SizedBox(height: AppTheme.spacingM),
-            _MonthEconomicsMiniChart(data: dailyEconomics),
+            RepaintBoundary(
+                child: _MonthEconomicsMiniChart(data: dailyEconomics)),
           ],
         ],
       ),
@@ -468,6 +834,7 @@ class _MonthEconomicsMiniChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
     final bars = data
         .map(
           (d) => BarChartGroupData(
@@ -499,15 +866,15 @@ class _MonthEconomicsMiniChart extends StatelessWidget {
           barTouchData: BarTouchData(
             enabled: true,
             touchTooltipData: BarTouchTooltipData(
-              getTooltipColor: (_) => Theme.of(context).cardColor,
+              getTooltipColor: (_) => theme.colorScheme.surfaceContainerHighest,
               getTooltipItem: (group, groupIndex, rod, rodIndex) {
                 final label =
                     rodIndex == 0 ? l10n.monthGridCost : l10n.monthSavedCost;
                 final amount = rod.toY.isFinite ? rod.toY : 0.0;
                 return BarTooltipItem(
                   '${group.x}\n$label: ${amount.toStringAsFixed(0)} ${l10n.currencyUah}',
-                  TextStyle(
-                    color: rod.color,
+                  (theme.textTheme.labelMedium ?? const TextStyle()).copyWith(
+                    color: rod.color ?? theme.colorScheme.primary,
                     fontWeight: FontWeight.w700,
                   ),
                 );
@@ -556,29 +923,43 @@ class _BreakdownItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final card = Container(
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
+    final card = AppCard(
+      borderRadius: expressive.cornerMedium,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerHigh,
       padding: const EdgeInsets.symmetric(
         horizontal: AppTheme.spacingM,
         vertical: AppTheme.spacingS,
       ),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-        border: Border.all(color: color.withValues(alpha: 0.35)),
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelSmall,
+          Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
+              const SizedBox(width: AppTheme.spacingS),
+              Expanded(
+                child: Text(
+                  label,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 2),
+          const SizedBox(height: AppTheme.spacingXS),
           Text(
             value,
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w700,
-                ),
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
+            ),
           ),
         ],
       ),
@@ -602,6 +983,8 @@ class _SystemCapacitySection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
     final loadPercent = provider.inverterMaxPowerW > 0
         ? (data.loadPower / provider.inverterMaxPowerW).clamp(0.0, 1.0)
         : 0.0;
@@ -613,76 +996,92 @@ class _SystemCapacitySection extends StatelessWidget {
       return const Color(0xFF10B981);
     }
 
-    return AppGlassSurface(
-      isStrong: true,
+    return AppCard(
+      borderRadius: expressive.cornerLarge,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerLow,
       child: Padding(
         padding: const EdgeInsets.all(AppTheme.spacingL),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            LayoutBuilder(
-              builder: (context, constraints) {
-                final compact = constraints.maxWidth < 640;
-                if (compact) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        l10n.equipmentStatus,
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const SizedBox(height: AppTheme.spacingS),
-                      _ConnectionBadge(
-                        isOffline: isOffline,
-                        onlineLabel: l10n.connectionOnline,
-                        offlineLabel: l10n.connectionOffline,
-                        lastUpdatedPrefix: l10n.lastRealtimeUpdate,
-                        lastUpdatedAt: provider.lastSuccessfulRealtimeAt,
-                      ),
-                    ],
-                  );
-                }
-                return Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      child: Text(
-                        l10n.equipmentStatus,
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                    ),
-                    const SizedBox(width: AppTheme.spacingS),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 220),
-                      child: _ConnectionBadge(
-                        isOffline: isOffline,
-                        onlineLabel: l10n.connectionOnline,
-                        offlineLabel: l10n.connectionOffline,
-                        lastUpdatedPrefix: l10n.lastRealtimeUpdate,
-                        lastUpdatedAt: provider.lastSuccessfulRealtimeAt,
-                      ),
-                    ),
-                  ],
-                );
-              },
+            AppSectionTitle(
+              title: l10n.equipmentStatus,
+              subtitle:
+                  isOffline ? l10n.connectionOffline : l10n.connectionOnline,
+              icon: Icons.memory_rounded,
+            ),
+            const SizedBox(height: AppTheme.spacingXS),
+            _ConnectionBadge(
+              isOffline: isOffline,
+              onlineLabel: l10n.connectionOnline,
+              offlineLabel: l10n.connectionOffline,
+              lastUpdatedPrefix: l10n.lastRealtimeUpdate,
+              lastUpdatedAt: provider.lastSuccessfulRealtimeAt,
             ),
             const SizedBox(height: AppTheme.spacingL),
-            AppProgressBar(
-              label: l10n.inverterLoad,
-              value: data.loadPower,
-              maxValue: provider.inverterMaxPowerW,
-              color: getLoadColor(loadPercent),
-              suffix: 'W',
-              tooltip: l10n.tooltipInverterLoad,
+            AppCard(
+              borderRadius: expressive.cornerMedium,
+              enableBlur: false,
+              backgroundColor: theme.colorScheme.surfaceContainerHigh,
+              padding: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(AppTheme.spacingM),
+                child: AppProgressBar(
+                  label: l10n.inverterLoad,
+                  value: data.loadPower,
+                  maxValue: provider.inverterMaxPowerW,
+                  color: getLoadColor(loadPercent),
+                  suffix: 'W',
+                  tooltip: l10n.tooltipInverterLoad,
+                ),
+              ),
             ),
-            const SizedBox(height: AppTheme.spacingL),
-            AppProgressBar(
-              label: l10n.pvGeneration,
-              value: data.pvPower,
-              maxValue: provider.pvTotalCapacityW,
-              color: const Color(0xFFF59E0B),
-              suffix: 'W',
-              tooltip: l10n.tooltipPvGeneration,
+            const SizedBox(height: AppTheme.spacingM),
+            AppCard(
+              borderRadius: expressive.cornerMedium,
+              enableBlur: false,
+              backgroundColor: theme.colorScheme.surfaceContainerHigh,
+              padding: EdgeInsets.zero,
+              child: Padding(
+                padding: const EdgeInsets.all(AppTheme.spacingM),
+                child: AppProgressBar(
+                  label: l10n.pvGeneration,
+                  value: data.pvPower,
+                  maxValue: provider.pvTotalCapacityW,
+                  color: AppTheme.pvColor,
+                  suffix: 'W',
+                  tooltip: l10n.tooltipPvGeneration,
+                ),
+              ),
+            ),
+            const SizedBox(height: AppTheme.spacingM),
+            AppCard(
+              borderRadius: expressive.cornerMedium,
+              enableBlur: false,
+              backgroundColor: theme.colorScheme.surfaceContainerHigh,
+              padding: const EdgeInsets.all(AppTheme.spacingM),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.battery_6_bar_rounded,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: AppTheme.spacingS),
+                  Expanded(
+                    child: Text(
+                      '${AppLocalizations.of(context)!.battery}: ${data.batterySoc.toStringAsFixed(0)}%',
+                      style: theme.textTheme.titleMedium,
+                    ),
+                  ),
+                  Text(
+                    Formatters.formatPower(data.batteryPower.abs()),
+                    style: theme.textTheme.labelLarge?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -708,6 +1107,7 @@ class _ConnectionBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final color = isOffline ? const Color(0xFFEF4444) : const Color(0xFF10B981);
     final text = isOffline ? offlineLabel : onlineLabel;
     final icon = isOffline ? Icons.cloud_off_rounded : Icons.cloud_done_rounded;
@@ -719,42 +1119,41 @@ class _ConnectionBadge extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.14),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: color.withValues(alpha: 0.35)),
+        AppCard(
+          borderRadius: 999,
+          enableBlur: false,
+          backgroundColor: color.withValues(alpha: 0.14),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppTheme.spacingS,
+            vertical: AppTheme.spacingXS,
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
               Icon(icon, size: 14, color: color),
-              const SizedBox(width: 6),
+              const SizedBox(width: AppTheme.spacingS),
               ConstrainedBox(
                 constraints: const BoxConstraints(maxWidth: 150),
                 child: Text(
                   text,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                        color: color,
-                        fontWeight: FontWeight.w700,
-                      ),
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.onSurface,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: AppTheme.spacingXS),
         Text(
           '$lastUpdatedPrefix: $timeLabel',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: Theme.of(context)
-              .textTheme
-              .labelSmall
-              ?.copyWith(color: Theme.of(context).hintColor),
+          style: theme.textTheme.labelSmall
+              ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
         ),
       ],
     );
@@ -773,6 +1172,8 @@ class _EnergyChartSection extends StatefulWidget {
 }
 
 class _EnergyChartSectionState extends State<_EnergyChartSection> {
+  static const Color _forecastSeriesColor = Color(0xFF38BDF8);
+
   int _selectedRange = 0;
   DateTime _currentDate = DateTime.now();
   bool _showProduction = true;
@@ -1051,55 +1452,92 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
 
-    return AppGlassSurface(
-      isStrong: true,
+    return AppCard(
+      borderRadius: expressive.cornerLarge,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerLow,
       child: Padding(
         padding: const EdgeInsets.all(AppTheme.spacingL),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            AppSectionTitle(
+              title: l10n.energyOverview,
+              subtitle: getDateText(),
+              icon: Icons.insights_rounded,
+            ),
+            const SizedBox(height: AppTheme.spacingM),
             LayoutBuilder(
               builder: (context, constraints) {
                 final isCompact = constraints.maxWidth < 760;
-                final controls = Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    if (_lastChartRefreshedAt != null)
-                      _ChartRefreshBadge(
-                        refreshedAt: _lastChartRefreshedAt!,
-                        isRefreshing: _isBackgroundRefreshing,
-                      ),
-                    buildTimeSelector(l10n),
-                  ],
+                final selector = AppCard(
+                  borderRadius: expressive.cornerMedium,
+                  enableBlur: false,
+                  backgroundColor: theme.colorScheme.surfaceContainerHigh,
+                  padding: EdgeInsets.zero,
+                  child: Padding(
+                    padding: const EdgeInsets.all(AppTheme.spacingXS),
+                    child: buildTimeSelector(l10n),
+                  ),
                 );
-
+                final refresh = AppCard(
+                  borderRadius: expressive.cornerMedium,
+                  enableBlur: false,
+                  backgroundColor: theme.colorScheme.surfaceContainerHigh,
+                  padding: EdgeInsets.zero,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: AppTheme.spacingM,
+                      vertical: AppTheme.spacingS,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (_lastChartRefreshedAt != null)
+                          _ChartRefreshBadge(
+                            refreshedAt: _lastChartRefreshedAt!,
+                            isRefreshing: _isBackgroundRefreshing,
+                          ),
+                        if (_lastChartRefreshedAt != null)
+                          const SizedBox(width: AppTheme.spacingS),
+                        IconButton.filledTonal(
+                          onPressed: _isBackgroundRefreshing
+                              ? null
+                              : () => _fetchChartData(background: true),
+                          tooltip: l10n.refreshChart,
+                          icon: _isBackgroundRefreshing
+                              ? SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: theme.colorScheme.primary,
+                                  ),
+                                )
+                              : const Icon(Icons.refresh_rounded, size: 18),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
                 if (isCompact) {
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(l10n.energyOverview,
-                          style: Theme.of(context).textTheme.titleLarge),
+                      selector,
                       const SizedBox(height: AppTheme.spacingS),
-                      controls,
+                      refresh
                     ],
                   );
                 }
-
                 return Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Text(
-                        l10n.energyOverview,
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                    ),
-                    const SizedBox(width: AppTheme.spacingS),
-                    controls,
+                    Expanded(child: selector),
+                    const SizedBox(width: AppTheme.spacingM),
+                    refresh,
                   ],
                 );
               },
@@ -1113,13 +1551,27 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
               buildBatterySignHint(context),
             ],
             const SizedBox(height: AppTheme.spacingL),
-            SizedBox(
-              height: 300,
-              child: ExcludeSemantics(
-                child: RepaintBoundary(
-                  child: _isLoading
-                      ? const Center(child: CircularProgressIndicator())
-                      : buildChart(context),
+            AppCard(
+              borderRadius: expressive.cornerLarge,
+              enableBlur: false,
+              backgroundColor: theme.colorScheme.surface,
+              padding: EdgeInsets.zero,
+              child: SizedBox(
+                height: 320,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    AppTheme.spacingS,
+                    AppTheme.spacingM,
+                    AppTheme.spacingM,
+                    AppTheme.spacingS,
+                  ),
+                  child: ExcludeSemantics(
+                    child: RepaintBoundary(
+                      child: _isLoading
+                          ? const Center(child: CircularProgressIndicator())
+                          : buildChart(context),
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -1132,6 +1584,8 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
   }
 
   Widget buildMultiDayForecast(BuildContext context, AppLocalizations l10n) {
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
     if (_isDailyForecastLoading && _multiDayForecast.isEmpty) {
       return const Center(child: CircularProgressIndicator(strokeWidth: 2));
     }
@@ -1148,8 +1602,11 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(l10n.forecastNextDays,
-            style: Theme.of(context).textTheme.titleMedium),
+        AppSectionTitle(
+          title: l10n.forecastNextDays,
+          subtitle: l10n.forecastPeak,
+          icon: Icons.wb_sunny_rounded,
+        ),
         const SizedBox(height: AppTheme.spacingM),
         LayoutBuilder(
           builder: (context, constraints) {
@@ -1171,52 +1628,51 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
               children: previewDays
                   .map((day) => SizedBox(
                         width: cardWidth,
-                        child: Container(
+                        child: AppCard(
+                          borderRadius: expressive.cornerMedium,
                           padding: const EdgeInsets.all(AppTheme.spacingM),
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: [
-                                Theme.of(context)
-                                    .cardColor
-                                    .withValues(alpha: 0.88),
-                                Theme.of(context)
-                                    .colorScheme
-                                    .surface
-                                    .withValues(alpha: 0.66),
-                              ],
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
-                            borderRadius:
-                                BorderRadius.circular(AppTheme.radiusMedium),
-                            border: Border.all(
-                              color: Theme.of(context)
-                                  .dividerColor
-                                  .withValues(alpha: 0.7),
-                            ),
-                            boxShadow: [
-                              BoxShadow(
-                                color: Colors.black.withValues(alpha: 0.08),
-                                blurRadius: 16,
-                                offset: const Offset(0, 8),
-                              ),
-                            ],
-                          ),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(
-                                dayLabel(day.date, l10n),
-                                style: Theme.of(context).textTheme.titleSmall,
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 34,
+                                    height: 34,
+                                    decoration: BoxDecoration(
+                                      color: theme
+                                          .colorScheme.surfaceContainerHighest,
+                                      borderRadius: BorderRadius.circular(
+                                        expressive.cornerSmall,
+                                      ),
+                                    ),
+                                    child: Icon(
+                                      Icons.wb_sunny_rounded,
+                                      size: 18,
+                                      color: theme.colorScheme.tertiary,
+                                    ),
+                                  ),
+                                  const SizedBox(width: AppTheme.spacingS),
+                                  Expanded(
+                                    child: Text(
+                                      dayLabel(day.date, l10n),
+                                      style: theme.textTheme.titleSmall,
+                                    ),
+                                  ),
+                                ],
                               ),
                               const SizedBox(height: AppTheme.spacingS),
                               Text(
-                                '${l10n.production}: ${Formatters.formatEnergy(day.energyWh)}',
-                                style: Theme.of(context).textTheme.bodySmall,
+                                Formatters.formatEnergy(day.energyWh),
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  fontWeight: FontWeight.w700,
+                                  height: 1,
+                                ),
                               ),
+                              const SizedBox(height: AppTheme.spacingXS),
                               Text(
-                                '${l10n.forecastPeak}: ${Formatters.formatPower(day.peakPowerW)}',
-                                style: Theme.of(context).textTheme.bodySmall,
+                                '${l10n.production} · ${l10n.forecastPeak}: ${Formatters.formatPower(day.peakPowerW)}',
+                                style: theme.textTheme.bodySmall,
                               ),
                             ],
                           ),
@@ -1263,58 +1719,49 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
   }
 
   Widget buildTimeSelector(AppLocalizations l10n) {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [
-              Theme.of(context).cardColor.withValues(alpha: 0.8),
-              Theme.of(context).colorScheme.surface.withValues(alpha: 0.58),
-            ],
+    final expressive = context.expressive;
+    return SegmentedButton<int>(
+      showSelectedIcon: false,
+      style: ButtonStyle(
+        visualDensity: VisualDensity.compact,
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+        shape: WidgetStatePropertyAll(
+          RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(expressive.cornerMedium),
           ),
-          borderRadius: BorderRadius.circular(AppTheme.radiusMedium),
-          border: Border.all(
-            color: Theme.of(context).dividerColor.withValues(alpha: 0.7),
-          ),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _TimeButton(
-              label: l10n.day,
-              isActive: _selectedRange == 0,
-              onTap: () {
-                setState(() => _selectedRange = 0);
-                _startRangeLoadingState();
-                _scheduleFetchChartData();
-              },
-            ),
-            _TimeButton(
-              label: l10n.week,
-              isActive: _selectedRange == 1,
-              onTap: () {
-                setState(() => _selectedRange = 1);
-                _startRangeLoadingState();
-                _scheduleFetchChartData();
-              },
-            ),
-            _TimeButton(
-              label: l10n.month,
-              isActive: _selectedRange == 2,
-              onTap: () {
-                setState(() => _selectedRange = 2);
-                _startRangeLoadingState();
-                _scheduleFetchChartData();
-              },
-            ),
-          ],
         ),
       ),
+      segments: [
+        ButtonSegment<int>(
+          value: 0,
+          icon: const Icon(Icons.today_rounded, size: 16),
+          label: Text(l10n.day),
+        ),
+        ButtonSegment<int>(
+          value: 1,
+          icon: const Icon(Icons.view_week_rounded, size: 16),
+          label: Text(l10n.week),
+        ),
+        ButtonSegment<int>(
+          value: 2,
+          icon: const Icon(Icons.calendar_month_rounded, size: 16),
+          label: Text(l10n.month),
+        ),
+      ],
+      selected: {_selectedRange},
+      onSelectionChanged: (selected) {
+        final next = selected.first;
+        if (next == _selectedRange) return;
+        setState(() => _selectedRange = next);
+        _startRangeLoadingState();
+        _scheduleFetchChartData();
+      },
     );
   }
 
   Widget buildDateNavigator() {
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final forecastLimit = today.add(const Duration(days: 16));
@@ -1331,83 +1778,83 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
             ? currentWeek.isBefore(maxWeek)
             : currentMonth.isBefore(maxMonth);
 
-    return Wrap(
-      alignment: WrapAlignment.center,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 4,
-      runSpacing: 6,
-      children: [
-        IconButton(
-          icon: const Icon(Icons.chevron_left),
-          onPressed: () => changeDate(-1),
+    return AppCard(
+      borderRadius: expressive.cornerMedium,
+      enableBlur: false,
+      backgroundColor: theme.colorScheme.surfaceContainerHigh,
+      padding: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(
+          horizontal: AppTheme.spacingS,
+          vertical: AppTheme.spacingXS,
         ),
-        ConstrainedBox(
-          constraints: const BoxConstraints(minWidth: 140, maxWidth: 260),
-          child: Text(
-            getDateText(),
-            style: Theme.of(context).textTheme.titleMedium,
-            textAlign: TextAlign.center,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-          ),
+        child: Wrap(
+          alignment: WrapAlignment.center,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: AppTheme.spacingS,
+          runSpacing: AppTheme.spacingS,
+          children: [
+            IconButton.filledTonal(
+              icon: const Icon(Icons.chevron_left),
+              onPressed: () => changeDate(-1),
+            ),
+            ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 160, maxWidth: 280),
+              child: Text(
+                getDateText(),
+                style: theme.textTheme.titleMedium,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+            IconButton.filledTonal(
+              icon: const Icon(Icons.chevron_right),
+              onPressed: canGoForward ? () => changeDate(1) : null,
+            ),
+          ],
         ),
-        IconButton(
-          icon: const Icon(Icons.chevron_right),
-          onPressed: canGoForward ? () => changeDate(1) : null,
-        ),
-        IconButton(
-          icon: _isBackgroundRefreshing
-              ? SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
-                )
-              : Icon(Icons.refresh_rounded,
-                  size: 18, color: Theme.of(context).colorScheme.primary),
-          tooltip: AppLocalizations.of(context)!.refreshChart,
-          onPressed: _isBackgroundRefreshing
-              ? null
-              : () => _fetchChartData(background: true),
-        ),
-      ],
+      ),
     );
   }
 
   Widget buildLegend(AppLocalizations l10n) {
     return Wrap(
-      spacing: AppTheme.spacingL,
-      runSpacing: AppTheme.spacingM,
+      spacing: AppTheme.spacingM,
+      runSpacing: AppTheme.spacingS,
       children: [
-        AppLegendItem(
+        _buildLegendChip(
           label: l10n.production,
-          color: const Color(0xFFF59E0B),
+          color: AppTheme.pvColor,
+          icon: Icons.wb_sunny_rounded,
           isActive: _showProduction,
           onTap: () => setState(() => _showProduction = !_showProduction),
         ),
-        AppLegendItem(
+        _buildLegendChip(
           label: l10n.consumption,
-          color: const Color(0xFF8B5CF6),
+          color: AppTheme.loadColor,
+          icon: Icons.home_rounded,
           isActive: _showConsumption,
           onTap: () => setState(() => _showConsumption = !_showConsumption),
         ),
-        AppLegendItem(
+        _buildLegendChip(
           label: l10n.battery,
-          color: const Color(0xFF10B981),
+          color: AppTheme.batteryColor,
+          icon: Icons.battery_charging_full_rounded,
           isActive: _showBattery,
           onTap: () => setState(() => _showBattery = !_showBattery),
         ),
-        AppLegendItem(
+        _buildLegendChip(
           label: l10n.grid,
-          color: const Color(0xFF06B6D4),
+          color: AppTheme.gridColor,
+          icon: Icons.electrical_services_rounded,
           isActive: _showGrid,
           onTap: () => setState(() => _showGrid = !_showGrid),
         ),
-        AppLegendItem(
+        _buildLegendChip(
           label: l10n.forecast,
-          color: const Color(0xFF38BDF8),
+          color: _forecastSeriesColor,
+          icon: Icons.cloud_queue_rounded,
           isActive: _showForecast && _forecastData.isNotEmpty,
           onTap: _forecastData.isNotEmpty
               ? () => setState(() => _showForecast = !_showForecast)
@@ -1417,33 +1864,71 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     );
   }
 
-  Widget buildBatterySignHint(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(
-        horizontal: AppTheme.spacingM,
-        vertical: AppTheme.spacingS,
+  Widget _buildLegendChip({
+    required String label,
+    required Color color,
+    required IconData icon,
+    required bool isActive,
+    required VoidCallback? onTap,
+  }) {
+    final theme = Theme.of(context);
+    return FilterChip(
+      selected: isActive,
+      onSelected: onTap == null ? null : (_) => onTap(),
+      visualDensity: VisualDensity.compact,
+      avatar: Icon(
+        icon,
+        size: 16,
+        color: isActive ? color : color.withValues(alpha: 0.54),
       ),
-      decoration: BoxDecoration(
-        color: Theme.of(context).cardColor.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(AppTheme.radiusSmall),
-        border: Border.all(
-            color: Theme.of(context).dividerColor.withValues(alpha: 0.7)),
+      label: Text(label),
+      labelStyle: theme.textTheme.labelMedium?.copyWith(
+        color: isActive
+            ? theme.colorScheme.onSurface
+            : theme.colorScheme.onSurfaceVariant,
       ),
-      child: Row(
-        children: [
-          const Icon(Icons.battery_charging_full_rounded,
-              size: 16, color: Color(0xFF10B981)),
-          const SizedBox(width: AppTheme.spacingS),
-          Expanded(
-            child: Text(
-              AppLocalizations.of(context)!.batterySignHint,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-        ],
+      backgroundColor: theme.colorScheme.surfaceContainerLow,
+      selectedColor: theme.colorScheme.secondaryContainer,
+      side: BorderSide(
+        color: isActive
+            ? theme.colorScheme.secondary
+            : theme.colorScheme.outlineVariant,
       ),
+      showCheckmark: false,
+      elevation: 0,
+      pressElevation: 0,
     );
+  }
+
+  Widget buildBatterySignHint(BuildContext context) {
+    final theme = Theme.of(context);
+    return AppCard(
+        borderRadius: context.expressive.cornerMedium,
+        enableBlur: false,
+        backgroundColor: theme.colorScheme.surfaceContainerHigh,
+        padding: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppTheme.spacingM,
+            vertical: AppTheme.spacingS,
+          ),
+          child: Row(
+            children: [
+              Icon(
+                Icons.battery_charging_full_rounded,
+                size: 16,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: AppTheme.spacingS),
+              Expanded(
+                child: Text(
+                  AppLocalizations.of(context)!.batterySignHint,
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+            ],
+          ),
+        ));
   }
 
   Widget buildChart(BuildContext context) {
@@ -1451,14 +1936,15 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     final maxX = getMaxX();
     final futureStartX = futureStartX0();
 
-    final minY = getMinY();
-    final maxY = getMaxY();
+    final visibleSpots = getVisibleSpots();
+    final minY = getMinY(visibleSpots);
+    final maxY = getMaxY(visibleSpots);
     final renderSignature =
-        '$_selectedRange|${minX.toStringAsFixed(2)}|${maxX.toStringAsFixed(2)}|${minY.toStringAsFixed(1)}|${maxY.toStringAsFixed(1)}|${getVisibleSpots().length}';
+        '$_selectedRange|${minX.toStringAsFixed(2)}|${maxX.toStringAsFixed(2)}|${minY.toStringAsFixed(1)}|${maxY.toStringAsFixed(1)}|${visibleSpots.length}';
     if (_lastRenderLogSignature != renderSignature) {
       _lastRenderLogSignature = renderSignature;
       LogService.log(
-          '🖼️ chart.ui render: range=$_selectedRange, x=${minX.toStringAsFixed(2)}..${maxX.toStringAsFixed(2)}, y=${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}, visible=${getVisibleSpots().length}');
+          '🖼️ chart.ui render: range=$_selectedRange, x=${minX.toStringAsFixed(2)}..${maxX.toStringAsFixed(2)}, y=${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}, visible=${visibleSpots.length}');
     }
 
     if (_selectedRange != 0) {
@@ -1470,28 +1956,28 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     if (_showProduction && _productionData.isNotEmpty) {
       lines.add(buildLineData(
         _productionData,
-        const Color(0xFFF59E0B),
+        AppTheme.pvColor,
         isCurved: _selectedRange == 0,
       ));
     }
     if (_showConsumption && _consumptionData.isNotEmpty) {
       lines.add(buildLineData(
         _consumptionData,
-        const Color(0xFF8B5CF6),
+        AppTheme.loadColor,
         isCurved: _selectedRange == 0,
       ));
     }
     if (_showBattery && _batteryData.isNotEmpty) {
       lines.add(buildLineData(
         _batteryData,
-        const Color(0xFF10B981),
+        AppTheme.batteryColor,
         isCurved: _selectedRange == 0,
       ));
     }
     if (_showGrid && _gridData.isNotEmpty) {
       lines.add(buildLineData(
         _gridData,
-        const Color(0xFF06B6D4),
+        AppTheme.gridColor,
         isCurved: _selectedRange == 0,
       ));
     }
@@ -1503,7 +1989,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         curveSmoothness: 0.18,
         preventCurveOverShooting: true,
         preventCurveOvershootingThreshold: 8,
-        color: const Color(0xFF38BDF8).withValues(alpha: 0.8),
+        color: _forecastSeriesColor.withValues(alpha: 0.8),
         barWidth: 2,
         dotData: const FlDotData(show: false),
         dashArray: [5, 5],
@@ -1527,7 +2013,8 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         maxY: maxY,
         lineTouchData: LineTouchData(
           touchTooltipData: LineTouchTooltipData(
-            getTooltipColor: (spot) => Theme.of(context).cardColor,
+            getTooltipColor: (spot) =>
+                Theme.of(context).colorScheme.surfaceContainerHighest,
             getTooltipItems: (spots) => spots
                 .map((spot) => LineTooltipItem(
                       _selectedRange == 0
@@ -1734,7 +2221,8 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
         barTouchData: BarTouchData(
           enabled: true,
           touchTooltipData: BarTouchTooltipData(
-            getTooltipColor: (_) => Theme.of(context).cardColor,
+            getTooltipColor: (_) =>
+                Theme.of(context).colorScheme.surfaceContainerHighest,
             getTooltipItem: (group, groupIndex, rod, rodIndex) {
               final name = series[rodIndex].name;
               return BarTooltipItem(
@@ -1765,35 +2253,35 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     if (_showProduction && _productionData.isNotEmpty) {
       result.add(_BarSeriesConfig(
         name: l10n.production,
-        color: const Color(0xFFF59E0B),
+        color: AppTheme.pvColor,
         points: toMap(_productionData),
       ));
     }
     if (_showConsumption && _consumptionData.isNotEmpty) {
       result.add(_BarSeriesConfig(
         name: l10n.consumption,
-        color: const Color(0xFF8B5CF6),
+        color: AppTheme.loadColor,
         points: toMap(_consumptionData),
       ));
     }
     if (_showBattery && _batteryData.isNotEmpty) {
       result.add(_BarSeriesConfig(
         name: l10n.battery,
-        color: const Color(0xFF10B981),
+        color: AppTheme.batteryColor,
         points: toMap(_batteryData),
       ));
     }
     if (_showGrid && _gridData.isNotEmpty) {
       result.add(_BarSeriesConfig(
         name: l10n.grid,
-        color: const Color(0xFF06B6D4),
+        color: AppTheme.gridColor,
         points: toMap(_gridData),
       ));
     }
     if (_showForecast && _forecastData.isNotEmpty && _selectedRange != 0) {
       result.add(_BarSeriesConfig(
         name: l10n.forecast,
-        color: const Color(0xFF38BDF8).withValues(alpha: 0.75),
+        color: _forecastSeriesColor.withValues(alpha: 0.75),
         points: toMap(_forecastData),
       ));
     }
@@ -1815,12 +2303,6 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
       preventCurveOverShooting: true,
       preventCurveOvershootingThreshold: 8,
       color: color,
-      gradient: LinearGradient(
-        colors: [
-          color.withValues(alpha: 0.72),
-          color,
-        ],
-      ),
       barWidth: 3,
       dotData: const FlDotData(show: false),
       belowBarData: BarAreaData(
@@ -1829,16 +2311,16 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [
-            color.withValues(alpha: 0.24),
-            color.withValues(alpha: 0.02),
+            color.withValues(alpha: 0.08),
+            color.withValues(alpha: 0.0),
           ],
         ),
       ),
     );
   }
 
-  double getMaxY() {
-    var spots = getVisibleSpots();
+  double getMaxY([List<FlSpot>? spots]) {
+    spots ??= getVisibleSpots();
     if (spots.isEmpty) return 10.0;
     var max = spots.map((e) => e.y).reduce((a, b) => a > b ? a : b);
     return max == 0 ? 10.0 : max * 1.15;
@@ -1893,9 +2375,10 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     return '$day.$month';
   }
 
-  double getMinY() {
+  double getMinY([List<FlSpot>? spots]) {
+    spots ??= getVisibleSpots();
     var minVal = 0.0;
-    for (var spot in getVisibleSpots()) {
+    for (var spot in spots) {
       if (spot.y < minVal) minVal = spot.y;
     }
     return minVal >= 0 ? 0 : minVal * 1.2;
@@ -1955,56 +2438,6 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
 
     LogService.log(
         '📈 $prefix | range=$_selectedRange pv[q=${quality(_productionData)}](${fmt(_productionData)}) load[q=${quality(_consumptionData)}](${fmt(_consumptionData)}) battery[q=${quality(_batteryData)}](${fmt(_batteryData)}) grid[q=${quality(_gridData)}](${fmt(_gridData)}) forecast[q=${quality(_forecastData)}](${fmt(_forecastData)})');
-  }
-}
-
-class _TimeButton extends StatelessWidget {
-  final String label;
-  final bool isActive;
-  final VoidCallback onTap;
-
-  const _TimeButton({
-    required this.label,
-    required this.isActive,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppTheme.spacingL,
-            vertical: AppTheme.spacingS,
-          ),
-          decoration: BoxDecoration(
-            color: isActive
-                ? Theme.of(context).colorScheme.primary.withValues(alpha: 0.1)
-                : Colors.transparent,
-            border: Border(
-              bottom: BorderSide(
-                color: isActive
-                    ? Theme.of(context).colorScheme.primary
-                    : Colors.transparent,
-                width: 2,
-              ),
-            ),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontWeight: isActive ? FontWeight.w600 : FontWeight.w500,
-              color: isActive
-                  ? Theme.of(context).colorScheme.primary
-                  : Theme.of(context).textTheme.bodyMedium?.color,
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }
 
@@ -2074,7 +2507,7 @@ class _ChartRefreshBadgeState extends State<_ChartRefreshBadge> {
             size: 12,
             color: color,
           ),
-        const SizedBox(width: 4),
+        const SizedBox(width: AppTheme.spacingXS),
         Text(
           label(),
           style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color),

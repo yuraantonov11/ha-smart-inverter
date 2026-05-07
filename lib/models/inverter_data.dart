@@ -32,25 +32,68 @@ class InverterData {
     required this.rawFields,
   });
 
+  /// Розраховує реальний SOC для 16S LiFePO4 (48V nominal) батареї за напругою.
+  /// Без BMS-кабелю інвертор часто рапортує статичний 100%, тому корекція
+  /// за напругою — головне джерело правди. Параметр [batteryCurrent] —
+  /// струм у А (>0 заряд, <0 розряд) використовується для компенсації
+  /// просадки/підняття напруги під навантаженням (внутрішній опір ≈ 8 мОм/cell).
   static double getRealSoc(
-      double reportedSoc, double voltage, double loadPower) {
-    // Якщо інвертор має BMS-кабель, reportedSoc точний, повертаємо його.
-    // Якщо ні, обчислюємо приблизно за напругою 16S:
-    if (voltage <= 0) return reportedSoc;
+    double reportedSoc,
+    double voltage, {
+    double batteryCurrent = 0.0,
+  }) {
+    // Якщо напруга невалідна — лишаємо як є.
+    if (voltage <= 10.0) return reportedSoc.clamp(0.0, 100.0);
 
-    // Компенсуємо просадку напруги під навантаженням (приблизно 0.5V на кожні 2kW)
-    var compensatedVoltage = voltage + (loadPower / 2000.0) * 0.5;
+    // Компенсація IR-drop: ~0.128 В на кожні 10 А (16 cells * 8 mΩ).
+    // При розряді (current<0) додаємо назад просадку, при заряді — віднімаємо.
+    final compensatedVoltage = voltage - batteryCurrent * 0.0128;
 
-    if (compensatedVoltage >= 53.5) return 100.0;
-    if (compensatedVoltage >= 53.0) return 90.0;
-    if (compensatedVoltage >= 52.8) return 80.0;
-    if (compensatedVoltage >= 52.5) return 60.0;
-    if (compensatedVoltage >= 52.0) return 40.0;
-    if (compensatedVoltage >= 51.2) return 20.0;
-    if (compensatedVoltage >= 49.0) return 10.0;
-    if (compensatedVoltage < 48.0) return 0.0;
+    // Open-circuit voltage таблиця для 16S LiFePO4 (3.0..3.45 В/cell).
+    // Точки калібровані під типовий профіль розряду LFP.
+    double socFromVoltage;
+    if (compensatedVoltage >= 54.4) {
+      socFromVoltage = 100.0; // 3.40 V/cell — повний
+    } else if (compensatedVoltage >= 53.6) {
+      socFromVoltage = 95.0; // 3.35
+    } else if (compensatedVoltage >= 53.2) {
+      socFromVoltage = 90.0; // 3.325
+    } else if (compensatedVoltage >= 52.8) {
+      socFromVoltage = 80.0; // 3.30
+    } else if (compensatedVoltage >= 52.5) {
+      socFromVoltage = 70.0;
+    } else if (compensatedVoltage >= 52.2) {
+      socFromVoltage = 60.0;
+    } else if (compensatedVoltage >= 52.0) {
+      socFromVoltage = 50.0; // плато LFP
+    } else if (compensatedVoltage >= 51.7) {
+      socFromVoltage = 40.0;
+    } else if (compensatedVoltage >= 51.4) {
+      socFromVoltage = 30.0;
+    } else if (compensatedVoltage >= 51.0) {
+      socFromVoltage = 20.0;
+    } else if (compensatedVoltage >= 50.4) {
+      socFromVoltage = 15.0;
+    } else if (compensatedVoltage >= 49.6) {
+      socFromVoltage = 10.0;
+    } else if (compensatedVoltage >= 48.8) {
+      socFromVoltage = 5.0;
+    } else if (compensatedVoltage >= 48.0) {
+      socFromVoltage = 2.0;
+    } else {
+      socFromVoltage = 0.0; // <48V (3.0 V/cell) — глибокий розряд
+    }
 
-    return reportedSoc;
+    // Якщо інвертор репортує валідне значення (не очевидно "застрягле" на 100/0)
+    // і воно близьке до напруги — довіряємо BMS. Інакше — беремо мінімум,
+    // щоб уникнути небезпечного завищення.
+    final reported = reportedSoc.clamp(0.0, 100.0);
+    final delta = (reported - socFromVoltage).abs();
+
+    // Якщо BMS показує 100% але напруга < 53.2В — це баг, беремо за напругою.
+    // Якщо узгоджено в межах ±10% — довіряємо репорту (BMS точніший на плато).
+    if (delta <= 10.0) return reported;
+    return socFromVoltage;
   }
 
   static double _parseDouble(dynamic fieldObject, {bool isKw = false}) {
@@ -87,7 +130,7 @@ class InverterData {
     // Усі потужності зводимо до Ват (W)
     var pv = _parseDouble(fields['pvInputPower'] ?? fields['generationPower']);
     var load = _parseDouble(fields['acOutputActivePower'], isKw: true);
-    var soc = _parseDouble(fields['batteryCapacity']);
+    var reportedSoc = _parseDouble(fields['batteryCapacity']);
     var gridVolt = _parseDouble(fields['acInputVoltage']);
     var loadPct = _parseDouble(fields['loadPercentage']);
     var batVolt = _parseDouble(fields['batteryVoltage']);
@@ -99,6 +142,16 @@ class InverterData {
     var batPower = (batCharge > 0)
         ? batCharge * batVolt
         : (batDischarge > 0 ? -batDischarge * batVolt : 0.0);
+
+    // КРИТИЧНО: API часто рапортує batteryCapacity=100% коли немає BMS-кабелю,
+    // навіть якщо акумулятор фактично розряджений. Завжди валідуємо за напругою.
+    final batteryCurrent =
+        batCharge > 0 ? batCharge : (batDischarge > 0 ? -batDischarge : 0.0);
+    var soc = getRealSoc(
+      reportedSoc,
+      batVolt,
+      batteryCurrent: batteryCurrent,
+    );
 
     // Логіка визначення потоку з мережі (Grid Power)
     var workingState = _parseString(fields['workingStates']);

@@ -1,11 +1,16 @@
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../l10n/app_localizations.dart';
 import '../models/inverter_data.dart';
 import '../theme/app_theme.dart';
+
+/// True when running on a mobile platform where BackdropFilter is too costly.
+bool get _isMobilePlatform => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
 class EnergyFlowDiagram extends StatefulWidget {
   final InverterData data;
@@ -56,6 +61,9 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
     }
     final animation = _controller;
 
+    // On mobile platforms disable heavy blur effects to keep rendering smooth.
+    final enableBlur = !_isMobilePlatform;
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(26),
       child: Stack(
@@ -74,17 +82,19 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(26),
-              boxShadow: [
-                BoxShadow(
-                  color: (isDark ? Colors.black : Colors.blueGrey)
-                      .withValues(alpha: isDark ? 0.35 : 0.1),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
-                ),
-              ],
+              boxShadow: enableBlur
+                  ? [
+                      BoxShadow(
+                        color: (isDark ? Colors.black : Colors.blueGrey)
+                            .withValues(alpha: isDark ? 0.35 : 0.1),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
+                      ),
+                    ]
+                  : null,
             ),
           ),
-          if (!compact)
+          if (enableBlur && !compact)
             Positioned.fill(
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
@@ -102,6 +112,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                   batterySoc,
                   gridPower.abs(),
                   compact: compact,
+                  enableBlur: enableBlur,
                 ),
                 builder: (context, child) {
                   return CustomPaint(
@@ -115,7 +126,8 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
                       isBatCharging: isBatCharging,
                       isBatDischarging: isBatDischarging,
                       isDark: isDark,
-                      reduceEffects: compact,
+                      // Reduce extra blur strokes on mobile but keep particles.
+                      reduceEffects: !enableBlur,
                     ),
                     child: child,
                   );
@@ -130,7 +142,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
 
   Widget _buildNodes(BuildContext context, double pvPower, double loadPower,
       int batterySoc, double gridPower,
-      {required bool compact}) {
+      {required bool compact, required bool enableBlur}) {
     final l10n = AppLocalizations.of(context)!;
     return Padding(
       padding: const EdgeInsets.all(20),
@@ -144,6 +156,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               title: l10n.solar,
               value: '${pvPower.toStringAsFixed(0)} W',
               compact: compact,
+              enableBlur: enableBlur,
             ),
           ),
           Align(
@@ -154,6 +167,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               title: l10n.grid,
               value: '${gridPower.toStringAsFixed(0)} W',
               compact: compact,
+              enableBlur: enableBlur,
             ),
           ),
           Align(
@@ -164,6 +178,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               title: l10n.battery,
               value: '$batterySoc%',
               compact: compact,
+              enableBlur: enableBlur,
             ),
           ),
           Align(
@@ -174,6 +189,7 @@ class _EnergyFlowDiagramState extends State<EnergyFlowDiagram>
               title: l10n.load,
               value: '${loadPower.toStringAsFixed(0)} W',
               compact: compact,
+              enableBlur: enableBlur,
             ),
           ),
           Align(
@@ -240,6 +256,7 @@ class _NodeWidget extends StatelessWidget {
   final String title;
   final String value;
   final bool compact;
+  final bool enableBlur;
 
   const _NodeWidget({
     required this.icon,
@@ -247,72 +264,79 @@ class _NodeWidget extends StatelessWidget {
     required this.title,
     required this.value,
     required this.compact,
+    required this.enableBlur,
   });
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
 
+    final inner = Container(
+      width: compact ? 94 : 108,
+      height: compact ? 84 : 96,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            color.withValues(alpha: isDark ? 0.22 : 0.22),
+            Theme.of(context).cardColor.withValues(alpha: isDark ? 0.44 : 0.94),
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: color.withValues(alpha: isDark ? 0.5 : 0.62),
+          width: 1.1,
+        ),
+        boxShadow: enableBlur
+            ? [
+                BoxShadow(
+                  color: color.withValues(alpha: isDark ? 0.22 : 0.16),
+                  blurRadius: isDark ? 20 : 14,
+                  spreadRadius: -1,
+                ),
+              ]
+            : null,
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, color: color, size: 24),
+          SizedBox(height: compact ? 3 : 5),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontSize: compact ? 10 : 11,
+                  color: Theme.of(context)
+                      .textTheme
+                      .bodySmall
+                      ?.color
+                      ?.withValues(alpha: 0.95),
+                ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: compact ? 12 : 13,
+              fontWeight: FontWeight.w700,
+              color: isDark ? color : color.withValues(alpha: 0.9),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (!enableBlur) {
+      return ClipRRect(borderRadius: BorderRadius.circular(18), child: inner);
+    }
+
     return ClipRRect(
       borderRadius: BorderRadius.circular(18),
       child: BackdropFilter(
         filter: ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-        child: Container(
-          width: compact ? 94 : 108,
-          height: compact ? 84 : 96,
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                color.withValues(alpha: isDark ? 0.22 : 0.22),
-                Theme.of(context)
-                    .cardColor
-                    .withValues(alpha: isDark ? 0.44 : 0.94),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: color.withValues(alpha: isDark ? 0.5 : 0.62),
-              width: 1.1,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: color.withValues(alpha: isDark ? 0.22 : 0.16),
-                blurRadius: isDark ? 20 : 14,
-                spreadRadius: -1,
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: color, size: 24),
-              SizedBox(height: compact ? 3 : 5),
-              Text(
-                title,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      fontSize: compact ? 10 : 11,
-                      color: Theme.of(context)
-                          .textTheme
-                          .bodySmall
-                          ?.color
-                          ?.withValues(alpha: 0.95),
-                    ),
-              ),
-              const SizedBox(height: 2),
-              Text(
-                value,
-                style: TextStyle(
-                  fontSize: compact ? 12 : 13,
-                  fontWeight: FontWeight.w700,
-                  color: isDark ? color : color.withValues(alpha: 0.9),
-                ),
-              ),
-            ],
-          ),
-        ),
+        child: inner,
       ),
     );
   }
@@ -446,9 +470,8 @@ class _FlowPainter extends CustomPainter {
           : MaskFilter.blur(BlurStyle.normal, isDark ? 6 : 3);
 
     canvas.drawPath(segment, glow);
-    if (!reduceEffects) {
-      _drawParticles(canvas, metric, color, intensity);
-    }
+    // Always draw particles; on mobile reduceEffects only limits blur/stroke.
+    _drawParticles(canvas, metric, color, intensity);
   }
 
   void _drawParticles(
