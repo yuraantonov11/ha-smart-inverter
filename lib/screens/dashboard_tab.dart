@@ -87,7 +87,8 @@ class DashboardTab extends StatelessWidget {
       color: Theme.of(context).colorScheme.primary,
       onRefresh: provider.fetchData,
       child: ListView.separated(
-        scrollCacheExtent: ScrollCacheExtent.pixels(1200), physics: const AlwaysScrollableScrollPhysics(
+        cacheExtent: 1200,
+        physics: const AlwaysScrollableScrollPhysics(
           parent: ClampingScrollPhysics(),
         ),
         padding: const EdgeInsets.all(AppTheme.spacingL),
