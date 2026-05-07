@@ -204,9 +204,7 @@ class UpdateService {
     try {
       LogService.log(
           '⬇️ update.download start: file=$fileName, url=$downloadUrl');
-      final tempDir = await getTemporaryDirectory();
-      final sep = Platform.isWindows ? '\\' : '/';
-      final filePath = '${tempDir.path}$sep$fileName';
+      final filePath = await _resolveDownloadPath(fileName);
       final request = http.Request('GET', Uri.parse(downloadUrl));
       request.headers.addAll(_headers);
       final response = await _client.send(request).timeout(
@@ -254,6 +252,33 @@ class UpdateService {
       LogService.log('❌ update.download exception', error: e);
       return null;
     }
+  }
+
+  static Future<String> _resolveDownloadPath(String fileName) async {
+    if (Platform.isAndroid) {
+      try {
+        final downloads = await getDownloadsDirectory();
+        if (downloads != null) {
+          await downloads.create(recursive: true);
+          return '${downloads.path}${Platform.pathSeparator}$fileName';
+        }
+      } catch (_) {
+        // Fallback below.
+      }
+
+      try {
+        final externalDir = await getExternalStorageDirectory();
+        if (externalDir != null) {
+          await externalDir.create(recursive: true);
+          return '${externalDir.path}${Platform.pathSeparator}$fileName';
+        }
+      } catch (_) {
+        // Fallback below.
+      }
+    }
+
+    final tempDir = await getTemporaryDirectory();
+    return '${tempDir.path}${Platform.pathSeparator}$fileName';
   }
 
   static Future<bool> installUpdate(String path) async {

@@ -107,7 +107,10 @@ class SettingsTab extends StatelessWidget {
                     value: provider.lang,
                     items: const [
                       DropdownMenuItem(value: 'en', child: Text('English')),
-                      DropdownMenuItem(value: 'uk', child: Text('ÃÂ£ÃÂºÃ‘â‚¬ÃÂ°Ã‘â€”ÃÂ½Ã‘ÂÃ‘Å’ÃÂºÃÂ°')),
+                      DropdownMenuItem(
+                          value: 'uk',
+                          child: Text(
+                              'ÃÂ£ÃÂºÃ‘â‚¬ÃÂ°Ã‘â€”ÃÂ½Ã‘ÂÃ‘Å’ÃÂºÃÂ°')),
                     ],
                     onChanged: (val) {
                       if (val != null) provider.setLanguage(val);
@@ -922,8 +925,21 @@ class SettingsTab extends StatelessWidget {
         }
       } else {
         LogService.log('Ã¢ÂÅ’ update.ui install failed for path=$path');
+        final failMessage = Platform.isAndroid
+            ? '${l10n.updatesDialogInstallFailed}\nAPK: $path'
+            : l10n.updatesDialogInstallFailed;
         scaffoldMessenger.showSnackBar(
-          SnackBar(content: Text(l10n.updatesDialogInstallFailed)),
+          SnackBar(
+            content: Text(failMessage),
+            action: Platform.isAndroid
+                ? SnackBarAction(
+                    label: l10n.updatesDialogInstall,
+                    onPressed: () {
+                      unawaited(UpdateService.installUpdate(path));
+                    },
+                  )
+                : null,
+          ),
         );
       }
     } else {
@@ -1014,7 +1030,8 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
         _errorMessage =
             AppLocalizations.of(context)!.updatesDialogDownloadFailed;
       });
-      LogService.log('Ã¢Å¡Â Ã¯Â¸Â update.dialog download finished with null path',
+      LogService.log(
+          'Ã¢Å¡Â Ã¯Â¸Â update.dialog download finished with null path',
           level: LogLevel.warn);
     } catch (e) {
       if (!mounted) return;
@@ -1504,7 +1521,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 const SizedBox(height: 16),
                 // HEMS strategy selector
                 DropdownButtonFormField<HemsOptimizationStrategy>(
-                  value: selectedStrategy,
+                  initialValue: selectedStrategy,
                   decoration: InputDecoration(
                     labelText: l10n.hemsStrategyLabel,
                     border: OutlineInputBorder(
@@ -1524,7 +1541,7 @@ class HardwareSettingsSection extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: selectedPreset.id,
+                  initialValue: selectedPreset.id,
                   decoration: InputDecoration(
                     labelText: l10n.locationPreset,
                     border: OutlineInputBorder(
@@ -2010,5 +2027,4 @@ class _GeoPreset {
     this.timeZone,
   );
 }
-
 
