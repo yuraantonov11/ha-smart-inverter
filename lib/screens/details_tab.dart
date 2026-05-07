@@ -272,7 +272,7 @@ class DetailsTab extends StatelessWidget {
                 ),
               if (presets != null)
                 DropdownButtonFormField<String>(
-                  initialValue: selected,
+                  value: selected,
                   items: presets,
                   onChanged: (val) {
                     if (val != null) setState(() => selected = val);
