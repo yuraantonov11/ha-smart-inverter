@@ -1,7 +1,7 @@
 name: inverter_app
 description: A modern desktop application for monitoring and controlling PowMr / SmartESS solar inverters.
 publish_to: 'none'
-version: 2.0.0+30
+version: 2.0.0+31
 
 # Repository and homepage
 repository: https://github.com/yuraantonov11/siseli-app
@@ -55,7 +55,7 @@ msix_config:
   display_name: Smart Inverter App
   publisher_display_name: Yura Antonov
   identity_name: YuraAntonov.SmartInverterApp
-  msix_version: 2.0.0.30
+  msix_version: 2.0.0.31
   logo_path: assets/app_icon.png
   capabilities: internetClient, privateNetworkClientServer
   install_certificate: false
