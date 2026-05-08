@@ -18,15 +18,15 @@ This document is the single source of truth for building and publishing releases
 - `README.md`
 
 ## Current Release Model
-- App version: `X.Y.Z+N` in `pubspec.yaml` (`version:`)
+- App version: `X.Y.Z` in `pubspec.yaml` (`version:`)
 - MSIX version: `X.Y.Z.N` in `pubspec.yaml` (`msix_version:`)
-- Git tag format: `vX.Y.Z+N`
+- Git tag format: `vX.Y.Z`
 - Windows installer script version: `#define AppVersion "X.Y.Z"` in `windows/installer_script.iss`
 
 ## Versioning Policy (Mandatory)
-- Single source of truth: `pubspec.yaml` (`version: X.Y.Z+N`).
-- Tag must match exactly: `vX.Y.Z+N` == `pubspec.yaml` version without `v`.
-- `N` is Android `versionCode` and must increase on every Android release.
+- Single source of truth: `pubspec.yaml` (`version: X.Y.Z`).
+- Tag must match exactly: `vX.Y.Z` == `pubspec.yaml` version without `v`.
+- Android `versionCode` is derived in CI from SemVer (`major*10000 + minor*100 + patch`) and always increases with new versions.
 - Do not rely on `android/local.properties` for release versioning in CI (it is local-only and not tracked).
 - `X.Y.Z` changes by SemVer intent:
   - patch (`Z`) for hotfixes,
@@ -44,7 +44,7 @@ Do not create/push a release tag until tests and release builds pass.
 Canonical command for official releases:
 
 ```powershell
-.\scripts\release.ps1 -Version 2.0.0 -Build 37 -Push -SkipInno
+.\scripts\release.ps1 -Version 2.0.2 -Push -SkipInno
 ```
 
 ---
@@ -74,12 +74,12 @@ flutter doctor -v
 Use the helper script to bump metadata consistently.
 
 ```powershell
-.\scripts\prepare_release.ps1 -Version 2.0.0 -Build 37
+.\scripts\prepare_release.ps1 -Version 2.0.2
 ```
 
 What this updates:
-- `pubspec.yaml` -> `version: 2.0.0+37`
-- `pubspec.yaml` -> `msix_version: 2.0.0.37`
+- `pubspec.yaml` -> `version: 2.0.2`
+- `pubspec.yaml` -> `msix_version: 2.0.2.0`
 - `windows/installer_script.iss` -> `AppVersion "2.0.0"`
 - creates `release_notes_2.0.0.md` if missing
 
@@ -112,7 +112,7 @@ You can run the same validation/build sequence with the orchestration script:
 Official flow (with commit/tag and optional push) is handled by:
 
 ```powershell
-.\scripts\release.ps1 -Version 2.0.0 -Build 37
+.\scripts\release.ps1 -Version 2.0.2
 ```
 
 Common flags:
@@ -159,16 +159,16 @@ After successful tests and builds (manual way):
 
 ```powershell
 git add pubspec.yaml windows/installer_script.iss release_notes_2.0.0.md
-git commit -m "release: bump to 2.0.0+37"
-git tag -a v2.0.0+37 -m "Release v2.0.0+37"
+git commit -m "release: bump to 2.0.2"
+git tag -a v2.0.2 -m "Release v2.0.2"
 git push origin main
-git push origin v2.0.0+37
+git push origin v2.0.2
 ```
 
 Recommended way (enforced order):
 
 ```powershell
-.\scripts\release.ps1 -Version 2.0.0 -Build 37 -Push -SkipInno
+.\scripts\release.ps1 -Version 2.0.2 -Push -SkipInno
 ```
 
 ---
@@ -188,14 +188,14 @@ Attach release artifacts to GitHub Release:
 
 Use when a tagged release is broken.
 
-1. Keep same semver (`X.Y.Z`), bump build number (`+N+1`).
+1. Bump semver (`X.Y.Z`) minimally for the hotfix (usually patch).
 2. Apply minimal targeted fix.
 3. Repeat validation and build steps.
-4. Create new tag `vX.Y.Z+N+1`.
+4. Create new tag `vX.Y.Z`.
 
 Example:
-- broken: `v2.0.0+37`
-- hotfix: `v2.0.0+38`
+- broken: `v2.0.1`
+- hotfix: `v2.0.2`
 
 ---
 
@@ -226,14 +226,14 @@ Workflow file:
 - `.github/workflows/release.yml`
 
 Trigger:
-- Push tag in format `vX.Y.Z+N`
+- Push tag in format `vX.Y.Z`
 
 ```powershell
 git add pubspec.yaml windows/installer_script.iss release_notes_2.0.1.md
-git commit -m "release: bump to 2.0.1+40"
-git tag -a v2.0.1+40 -m "Release v2.0.1+40"
+git commit -m "release: bump to 2.0.2"
+git tag -a v2.0.2 -m "Release v2.0.2"
 git push origin main
-git push origin v2.0.1+40
+git push origin v2.0.2
 ```
 
 What GitHub does after tag push:
@@ -248,7 +248,7 @@ Required GitHub secrets for Android signing:
 - `ANDROID_KEY_PASSWORD`
 
 OTA check expectations in app Settings:
-1. `releases/latest` returns the new tag (for example `v2.0.1+40`).
+1. `releases/latest` returns the new tag (for example `v2.0.2`).
 2. Release is not draft and not prerelease.
 3. Release contains at least one `.apk` asset.
 4. Installed app build number is lower than release build number.
