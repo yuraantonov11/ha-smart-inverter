@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'log_service.dart';
 
 class UpdateInfo {
@@ -15,6 +16,7 @@ class UpdateInfo {
   final DateTime? publishedAt;
   final String? assetName;
   final String? downloadUrl;
+  final int? assetSize;
 
   const UpdateInfo({
     required this.hasUpdate,
@@ -25,6 +27,7 @@ class UpdateInfo {
     this.publishedAt,
     this.assetName,
     this.downloadUrl,
+    this.assetSize,
   });
 }
 
@@ -103,6 +106,7 @@ class UpdateService {
         publishedAt: DateTime.tryParse(data['published_at']?.toString() ?? ''),
         assetName: asset?['name']?.toString(),
         downloadUrl: asset?['browser_download_url']?.toString(),
+        assetSize: _parseAssetSize(asset?['size']),
       );
     } catch (e) {
       LogService.log('❌ update.check exception', error: e);
@@ -181,6 +185,17 @@ class UpdateService {
     return supported.first;
   }
 
+  static int? _parseAssetSize(dynamic value) {
+    if (value is int && value > 0) return value;
+    if (value is String) {
+      final parsed = int.tryParse(value);
+      if (parsed != null && parsed > 0) return parsed;
+    }
+    return null;
+  }
+
+  static const int _maxDownloadAttempts = 2;
+
   static Future<String?> downloadUpdate(
       [void Function(double progress)? onProgress]) async {
     final info = await fetchUpdateInfo();
@@ -192,6 +207,7 @@ class UpdateService {
     return downloadUpdateAsset(
       downloadUrl: info.downloadUrl!,
       fileName: info.assetName!,
+      expectedBytes: info.assetSize,
       onProgress: onProgress,
     );
   }
@@ -199,59 +215,134 @@ class UpdateService {
   static Future<String?> downloadUpdateAsset({
     required String downloadUrl,
     required String fileName,
+    int? expectedBytes,
     void Function(double progress)? onProgress,
   }) async {
-    try {
-      LogService.log(
-          '⬇️ update.download start: file=$fileName, url=$downloadUrl');
-      final filePath = await _resolveDownloadPath(fileName);
-      final request = http.Request('GET', Uri.parse(downloadUrl));
-      request.headers.addAll(_headers);
-      final response = await _client.send(request).timeout(
-            const Duration(minutes: 3),
-          );
+    final filePath = await _resolveDownloadPath(fileName);
+    final file = File(filePath);
 
-      if (response.statusCode != 200) {
+    if (await _canReuseDownloadedFile(
+      file: file,
+      fileName: fileName,
+      expectedBytes: expectedBytes,
+    )) {
+      onProgress?.call(1.0);
+      return filePath;
+    }
+
+    for (var attempt = 1; attempt <= _maxDownloadAttempts; attempt++) {
+      IOSink? sink;
+      try {
         LogService.log(
-            '⚠️ update.download failed: status=${response.statusCode}, file=$fileName');
-        return null;
-      }
+            '⬇️ update.download start: attempt=$attempt/$_maxDownloadAttempts, file=$fileName, url=$downloadUrl, path=$filePath');
 
-      final totalBytes = response.contentLength ?? 0;
-      var received = 0;
-      var nextProgressLog = 0.25;
-      final file = File(filePath);
-      final sink = file.openWrite();
+        if (await file.exists()) {
+          await file.delete();
+        }
 
-      await for (final chunk in response.stream) {
-        received += chunk.length;
-        sink.add(chunk);
-        if (totalBytes > 0 && onProgress != null) {
-          final progress = (received / totalBytes).clamp(0.0, 1.0);
-          onProgress(progress);
-          if (progress >= nextProgressLog) {
-            LogService.log(
-                '⬇️ update.download progress: file=$fileName ${(progress * 100).toStringAsFixed(0)}% ($received/$totalBytes)');
-            nextProgressLog += 0.25;
+        final request = http.Request('GET', Uri.parse(downloadUrl));
+        request.headers.addAll(_headers);
+        final response = await _client.send(request).timeout(
+              const Duration(minutes: 3),
+            );
+
+        if (response.statusCode != 200) {
+          LogService.log(
+              '⚠️ update.download failed: status=${response.statusCode}, file=$fileName, attempt=$attempt');
+          if (attempt == _maxDownloadAttempts) return null;
+          continue;
+        }
+
+        final totalBytes = response.contentLength ?? 0;
+        var received = 0;
+        var nextProgressLog = 0.25;
+        sink = file.openWrite();
+
+        await for (final chunk in response.stream) {
+          received += chunk.length;
+          sink.add(chunk);
+          if (totalBytes > 0 && onProgress != null) {
+            final progress = (received / totalBytes).clamp(0.0, 1.0);
+            onProgress(progress);
+            if (progress >= nextProgressLog) {
+              LogService.log(
+                  '⬇️ update.download progress: file=$fileName ${(progress * 100).toStringAsFixed(0)}% ($received/$totalBytes), attempt=$attempt');
+              nextProgressLog += 0.25;
+            }
           }
         }
-      }
-      await sink.flush();
-      await sink.close();
 
-      if (!await file.exists() || await file.length() == 0) {
-        LogService.log('⚠️ update.download failed: empty file for $fileName');
-        return null;
-      }
+        await sink.flush();
+        await sink.close();
+        sink = null;
 
-      onProgress?.call(1.0);
-      LogService.log(
-          '✅ update.download complete: path=$filePath, bytes=${await file.length()}');
-      return filePath;
-    } catch (e) {
-      LogService.log('❌ update.download exception', error: e);
-      return null;
+        if (!await file.exists() || await file.length() == 0) {
+          LogService.log(
+              '⚠️ update.download failed: empty file for $fileName, attempt=$attempt');
+          if (attempt == _maxDownloadAttempts) return null;
+          continue;
+        }
+
+        onProgress?.call(1.0);
+        LogService.log(
+            '✅ update.download complete: path=$filePath, bytes=${await file.length()}');
+        return filePath;
+      } catch (e) {
+        LogService.log('❌ update.download exception attempt=$attempt',
+            error: e);
+        if (attempt == _maxDownloadAttempts) {
+          return null;
+        }
+      } finally {
+        try {
+          await sink?.flush();
+          await sink?.close();
+        } catch (_) {
+          // Ignore cleanup issues on retry path.
+        }
+      }
     }
+
+    return null;
+  }
+
+  static Future<bool> _canReuseDownloadedFile({
+    required File file,
+    required String fileName,
+    required int? expectedBytes,
+  }) async {
+    if (!await file.exists()) return false;
+
+    final existingBytes = await file.length();
+    if (existingBytes <= 0) {
+      try {
+        await file.delete();
+      } catch (_) {
+        // Ignore cleanup failure and continue with fresh download.
+      }
+      return false;
+    }
+
+    if (expectedBytes != null && expectedBytes > 0) {
+      if (existingBytes == expectedBytes) {
+        LogService.log(
+            'ℹ️ update.download reuse existing file: file=$fileName, bytes=$existingBytes');
+        return true;
+      }
+
+      LogService.log(
+          '⚠️ update.download existing file size mismatch: file=$fileName, local=$existingBytes, expected=$expectedBytes; redownloading');
+      try {
+        await file.delete();
+      } catch (_) {
+        // Best-effort cleanup before redownload.
+      }
+      return false;
+    }
+
+    LogService.log(
+        'ℹ️ update.download reuse existing file without expected size: file=$fileName, bytes=$existingBytes');
+    return true;
   }
 
   static Future<String> _resolveDownloadPath(String fileName) async {
@@ -278,32 +369,21 @@ class UpdateService {
         // Fallback below.
       }
 
-      try {
-        final appDir = await getApplicationDocumentsDirectory();
-        final updatesDir =
-            Directory('${appDir.path}${Platform.pathSeparator}updates');
-        await updatesDir.create(recursive: true);
-        return '${updatesDir.path}${Platform.pathSeparator}$fileName';
-      } catch (_) {
-        // Fallback below.
-      }
-
-      try {
-        final externalDir = await getExternalStorageDirectory();
-        if (externalDir != null) {
-          await externalDir.create(recursive: true);
-          return '${externalDir.path}${Platform.pathSeparator}$fileName';
-        }
-      } catch (_) {
-        // Fallback below.
-      }
+      // Avoid external storage fallback on Android. APK installs are more
+      // reliable when we stay in app-internal directories and hand off via
+      // FileProvider/open_file.
+      final appDir = await getApplicationDocumentsDirectory();
+      final updatesDir =
+          Directory('${appDir.path}${Platform.pathSeparator}updates');
+      await updatesDir.create(recursive: true);
+      return '${updatesDir.path}${Platform.pathSeparator}$fileName';
     }
 
     final tempDir = await getTemporaryDirectory();
     return '${tempDir.path}${Platform.pathSeparator}$fileName';
   }
 
-  static Future<bool> installUpdate(String path) async {
+  static Future<bool> installUpdate(String path, {String? fallbackUrl}) async {
     try {
       LogService.log('🚀 update.install start: path=$path');
 
@@ -320,10 +400,29 @@ class UpdateService {
           type: 'application/vnd.android.package-archive',
         );
         final ok = result.type == ResultType.done;
-        LogService.log(ok
-            ? '✅ update.install Android APK opened: $path'
-            : '⚠️ update.install Android failed: ${result.message}');
-        return ok;
+        if (ok) {
+          LogService.log('✅ update.install Android APK opened: $path');
+          return true;
+        }
+
+        LogService.log('⚠️ update.install Android failed: ${result.message}');
+
+        if (fallbackUrl != null && fallbackUrl.isNotEmpty) {
+          final uri = Uri.tryParse(fallbackUrl);
+          if (uri != null) {
+            final launched = await launchUrl(
+              uri,
+              mode: LaunchMode.externalApplication,
+            );
+            if (launched) {
+              LogService.log(
+                  'ℹ️ update.install fallback opened external URL: $fallbackUrl');
+              return true;
+            }
+          }
+        }
+
+        return false;
       }
 
       final lower = path.toLowerCase();

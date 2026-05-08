@@ -911,7 +911,10 @@ class SettingsTab extends StatelessWidget {
 
       LogService.log(
           'update.ui install confirmed: version=${info.latestVersion}, path=$path');
-      final success = await UpdateService.installUpdate(path);
+      final success = await UpdateService.installUpdate(
+        path,
+        fallbackUrl: info.downloadUrl,
+      );
       if (success) {
         if (Platform.isAndroid) {
           // Android: system installer dialog overlays the app - stay open.
@@ -937,7 +940,12 @@ class SettingsTab extends StatelessWidget {
                 ? SnackBarAction(
                     label: l10n.updatesDialogInstall,
                     onPressed: () {
-                      unawaited(UpdateService.installUpdate(path));
+                      unawaited(
+                        UpdateService.installUpdate(
+                          path,
+                          fallbackUrl: info.downloadUrl,
+                        ),
+                      );
                     },
                   )
                 : null,
@@ -1010,6 +1018,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
       final path = await UpdateService.downloadUpdateAsset(
         downloadUrl: widget.info.downloadUrl!,
         fileName: widget.info.assetName!,
+        expectedBytes: widget.info.assetSize,
         onProgress: (value) {
           if (!mounted) return;
           setState(() {
