@@ -23,6 +23,21 @@ This document is the single source of truth for building and publishing releases
 - Git tag format: `vX.Y.Z+N`
 - Windows installer script version: `#define AppVersion "X.Y.Z"` in `windows/installer_script.iss`
 
+## Versioning Policy (Mandatory)
+- Single source of truth: `pubspec.yaml` (`version: X.Y.Z+N`).
+- Tag must match exactly: `vX.Y.Z+N` == `pubspec.yaml` version without `v`.
+- `N` is Android `versionCode` and must increase on every Android release.
+- Do not rely on `android/local.properties` for release versioning in CI (it is local-only and not tracked).
+- `X.Y.Z` changes by SemVer intent:
+  - patch (`Z`) for hotfixes,
+  - minor (`Y`) for backward-compatible features,
+  - major (`X`) for breaking changes.
+
+## Android Signing Policy (Mandatory)
+- All release APK/AAB artifacts must be signed with the same release keystore.
+- CI must use GitHub secrets and fail if signing secrets are missing.
+- Never publish tag builds signed with debug key (causes `INSTALL_FAILED_UPDATE_INCOMPATIBLE`).
+
 ## Important Rule
 Do not create/push a release tag until tests and release builds pass.
 
@@ -225,6 +240,12 @@ What GitHub does after tag push:
 1. Builds Windows artifacts (`.exe`, `.msix`, portable `.zip`).
 2. Builds Android artifacts (`.apk`, `.aab`).
 3. Creates/updates GitHub Release for that tag and uploads assets.
+
+Required GitHub secrets for Android signing:
+- `ANDROID_KEYSTORE_BASE64` - base64 of `upload-keystore.jks`
+- `ANDROID_KEYSTORE_PASSWORD`
+- `ANDROID_KEY_ALIAS`
+- `ANDROID_KEY_PASSWORD`
 
 OTA check expectations in app Settings:
 1. `releases/latest` returns the new tag (for example `v2.0.1+40`).

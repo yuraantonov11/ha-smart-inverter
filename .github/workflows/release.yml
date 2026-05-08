@@ -100,6 +100,53 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Validate release version policy
+        run: |
+          PUBSPEC_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
+          if [[ -z "$PUBSPEC_VERSION" ]]; then
+            echo "pubspec version not found"
+            exit 1
+          fi
+
+          if [[ "$PUBSPEC_VERSION" != *+* ]]; then
+            echo "pubspec version must be X.Y.Z+N, got: $PUBSPEC_VERSION"
+            exit 1
+          fi
+
+          BUILD_CODE="${PUBSPEC_VERSION##*+}"
+          if ! [[ "$BUILD_CODE" =~ ^[0-9]+$ ]]; then
+            echo "build code must be numeric, got: $BUILD_CODE"
+            exit 1
+          fi
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [[ "$TAG_VERSION" != "$PUBSPEC_VERSION" ]]; then
+              echo "tag version ($TAG_VERSION) must equal pubspec version ($PUBSPEC_VERSION)"
+              exit 1
+            fi
+          fi
+
+      - name: Configure Android release signing
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" ]]; then
+            echo "Missing Android signing secrets. Release APK would be signed with debug key and break updates."
+            exit 1
+          fi
+
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+          cat > android/key.properties <<EOF
+          storePassword=$ANDROID_KEYSTORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+
       - name: Build Android APK
         run: flutter build apk --release
 
@@ -108,8 +155,9 @@ jobs:
 
       - name: Package Android artifacts
         run: |
+          PUBSPEC_VERSION=$(grep '^version:' pubspec.yaml | awk '{print $2}')
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            RAW_VERSION="${GITHUB_REF_NAME#v}"
+            RAW_VERSION="$PUBSPEC_VERSION"
             RELEASE_VERSION="${RAW_VERSION%%+*}"
           else
             RAW_VERSION="dev-${GITHUB_RUN_NUMBER}"
