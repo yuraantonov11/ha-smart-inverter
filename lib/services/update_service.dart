@@ -257,11 +257,33 @@ class UpdateService {
   static Future<String> _resolveDownloadPath(String fileName) async {
     if (Platform.isAndroid) {
       try {
-        final downloads = await getDownloadsDirectory();
-        if (downloads != null) {
-          await downloads.create(recursive: true);
-          return '${downloads.path}${Platform.pathSeparator}$fileName';
-        }
+        // Keep APK in app-internal cache to avoid scoped-storage access issues
+        // when Android Package Installer opens files from /Android/data paths.
+        final tempDir = await getTemporaryDirectory();
+        final updatesDir =
+            Directory('${tempDir.path}${Platform.pathSeparator}updates');
+        await updatesDir.create(recursive: true);
+        return '${updatesDir.path}${Platform.pathSeparator}$fileName';
+      } catch (_) {
+        // Fallback below.
+      }
+
+      try {
+        final appDir = await getApplicationSupportDirectory();
+        final updatesDir =
+            Directory('${appDir.path}${Platform.pathSeparator}updates');
+        await updatesDir.create(recursive: true);
+        return '${updatesDir.path}${Platform.pathSeparator}$fileName';
+      } catch (_) {
+        // Fallback below.
+      }
+
+      try {
+        final appDir = await getApplicationDocumentsDirectory();
+        final updatesDir =
+            Directory('${appDir.path}${Platform.pathSeparator}updates');
+        await updatesDir.create(recursive: true);
+        return '${updatesDir.path}${Platform.pathSeparator}$fileName';
       } catch (_) {
         // Fallback below.
       }
@@ -293,7 +315,10 @@ class UpdateService {
 
       // Android: open APK via system package installer
       if (Platform.isAndroid) {
-        final result = await OpenFile.open(path);
+        final result = await OpenFile.open(
+          path,
+          type: 'application/vnd.android.package-archive',
+        );
         final ok = result.type == ResultType.done;
         LogService.log(ok
             ? '✅ update.install Android APK opened: $path'
