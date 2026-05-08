@@ -32,10 +32,16 @@ class DetailsTab extends StatelessWidget {
       ..remove('fullConfigs');
     final stateKeys = realtimeFields.keys.toList()..sort();
 
+    final isCompact = MediaQuery.sizeOf(context).width < 600;
     return Stack(
       children: [
         ListView(
-          padding: const EdgeInsets.all(AppTheme.spacingL),
+          padding: EdgeInsets.fromLTRB(
+            isCompact ? AppTheme.spacingM : AppTheme.spacingL,
+            isCompact ? AppTheme.spacingS : AppTheme.spacingL,
+            isCompact ? AppTheme.spacingM : AppTheme.spacingL,
+            AppTheme.spacingL,
+          ),
           children: [
             // Settings header
             _SectionHeader(

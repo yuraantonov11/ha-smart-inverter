@@ -111,13 +111,14 @@ class AppScreenFrame extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final expressive = context.expressive;
+    final isCompact = MediaQuery.sizeOf(context).width < 600;
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppTheme.spacingL,
-        AppTheme.spacingM,
-        AppTheme.spacingL,
-        AppTheme.spacingL,
+      padding: EdgeInsets.fromLTRB(
+        isCompact ? AppTheme.spacingM : AppTheme.spacingL,
+        isCompact ? AppTheme.spacingS : AppTheme.spacingM,
+        isCompact ? AppTheme.spacingM : AppTheme.spacingL,
+        isCompact ? AppTheme.spacingM : AppTheme.spacingL,
       ),
       child: Column(
         children: [
@@ -125,9 +126,9 @@ class AppScreenFrame extends StatelessWidget {
             isStrong: true,
             borderRadius: expressive.cornerXL,
             child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: AppTheme.spacingL,
-                vertical: AppTheme.spacingM,
+              padding: EdgeInsets.symmetric(
+                horizontal: isCompact ? AppTheme.spacingM : AppTheme.spacingL,
+                vertical: isCompact ? AppTheme.spacingS : AppTheme.spacingM,
               ),
               child: Row(
                 children: [

@@ -27,8 +27,14 @@ class SettingsTab extends StatelessWidget {
     final supportsInAppUpdater = Platform.isWindows || Platform.isAndroid;
     final updateBanner = _buildUpdateBanner(context, l10n);
 
+    final isCompact = MediaQuery.sizeOf(context).width < 600;
     return ListView(
-      padding: const EdgeInsets.all(20),
+      padding: EdgeInsets.fromLTRB(
+        isCompact ? 12 : 20,
+        isCompact ? 8 : 20,
+        isCompact ? 12 : 20,
+        20,
+      ),
       children: [
         _buildSectionTitle(l10n.account),
         _buildAccountCard(context, l10n),

@@ -217,15 +217,27 @@ class _MainScreenState extends State<MainScreen> {
             },
             child: KeyedSubtree(
               key: ValueKey(safeIndex),
-              child: _buildFramedPage(
-                index: safeIndex,
-                provider: provider,
-                viewData: viewData,
-                isInverterOffline: isInverterOffline,
-                statusMessage: statusMessage,
-                isDataLoading: isDataLoading,
-                l10n: l10n,
-              ),
+              // On mobile/compact layout, skip AppScreenFrame to avoid
+              // double header bar and extra horizontal padding. The AppBar
+              // already shows the section label and status pill.
+              child: useRail
+                  ? _buildFramedPage(
+                      index: safeIndex,
+                      provider: provider,
+                      viewData: viewData,
+                      isInverterOffline: isInverterOffline,
+                      statusMessage: statusMessage,
+                      isDataLoading: isDataLoading,
+                      l10n: l10n,
+                    )
+                  : _buildRawPage(
+                      index: safeIndex,
+                      provider: provider,
+                      viewData: viewData,
+                      isInverterOffline: isInverterOffline,
+                      statusMessage: statusMessage,
+                      isDataLoading: isDataLoading,
+                    ),
             ),
           );
         }
@@ -277,15 +289,25 @@ class _MainScreenState extends State<MainScreen> {
             ),
             scrolledUnderElevation: 0,
             actions: [
-              if (!useRail)
+              // Dashboard online/offline pill — only in compact (mobile) mode
+              if (!useRail && safeIndex == 0)
                 Padding(
                   padding: const EdgeInsets.only(right: AppTheme.spacingXS),
-                  child: FilledButton.tonalIcon(
+                  child: _PageStatusPill(
+                    isOffline: isInverterOffline,
+                    onlineLabel: l10n.connectionOnline,
+                    offlineLabel: l10n.connectionOffline,
+                  ),
+                ),
+              // Language toggle: icon-only on mobile, labelled on tablet rail
+              if (!useRail)
+                Tooltip(
+                  message: l10n.language,
+                  child: IconButton(
                     onPressed: () => provider.setLanguage(
                       lang == 'en' ? 'uk' : 'en',
                     ),
-                    icon: const Icon(Icons.language_rounded, size: 18),
-                    label: Text(langCode),
+                    icon: const Icon(Icons.language_rounded, size: 20),
                   ),
                 ),
               Tooltip(
@@ -295,7 +317,7 @@ class _MainScreenState extends State<MainScreen> {
                   onPressed: provider.toggleTheme,
                 ),
               ),
-              const SizedBox(width: AppTheme.spacingS),
+              const SizedBox(width: AppTheme.spacingXS),
             ],
           ),
           body: AppShellBackground(
@@ -432,19 +454,19 @@ class _MainScreenState extends State<MainScreen> {
           ),
           bottomNavigationBar: useRail
               ? null
-              : Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    AppTheme.spacingM,
+              : SafeArea(
+                  minimum: const EdgeInsets.fromLTRB(
+                    AppTheme.spacingS,
                     0,
-                    AppTheme.spacingM,
-                    AppTheme.spacingM,
+                    AppTheme.spacingS,
+                    AppTheme.spacingS,
                   ),
                   child: AppGlassSurface(
                     isStrong: true,
                     borderRadius: expressive.cornerXL,
                     child: NavigationBar(
                       selectedIndex: safeIndex,
-                      height: 70,
+                      height: 64,
                       onDestinationSelected: (index) {
                         setState(() => _selectedIndex = index);
                       },

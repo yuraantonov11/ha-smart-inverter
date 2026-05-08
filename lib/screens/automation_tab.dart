@@ -42,8 +42,14 @@ class AutomationTab extends StatelessWidget {
       ),
     ];
 
+    final isCompact = MediaQuery.sizeOf(context).width < 600;
     return ListView(
-      padding: const EdgeInsets.all(AppTheme.spacingXL),
+      padding: EdgeInsets.fromLTRB(
+        isCompact ? AppTheme.spacingM : AppTheme.spacingXL,
+        isCompact ? AppTheme.spacingS : AppTheme.spacingXL,
+        isCompact ? AppTheme.spacingM : AppTheme.spacingXL,
+        AppTheme.spacingXL,
+      ),
       children: [
         AppSectionTitle(
           title: l10n.hemsTitle,

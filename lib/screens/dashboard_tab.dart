@@ -83,15 +83,20 @@ class DashboardTab extends StatelessWidget {
       RepaintBoundary(child: _MonthEconomicsBreakdown(provider: provider)),
     ];
 
+    final isCompact = MediaQuery.sizeOf(context).width < 600;
     return RefreshIndicator(
       color: Theme.of(context).colorScheme.primary,
       onRefresh: provider.fetchData,
       child: ListView.separated(
-        cacheExtent: 1200,
         physics: const AlwaysScrollableScrollPhysics(
           parent: ClampingScrollPhysics(),
         ),
-        padding: const EdgeInsets.all(AppTheme.spacingL),
+        padding: EdgeInsets.fromLTRB(
+          isCompact ? AppTheme.spacingM : AppTheme.spacingL,
+          isCompact ? AppTheme.spacingS : AppTheme.spacingL,
+          isCompact ? AppTheme.spacingM : AppTheme.spacingL,
+          AppTheme.spacingL,
+        ),
         itemBuilder: (context, index) => sections[index],
         separatorBuilder: (_, __) => const SizedBox(height: AppTheme.spacingL),
         itemCount: sections.length,
