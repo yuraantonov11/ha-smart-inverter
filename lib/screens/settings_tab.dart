@@ -30,13 +30,12 @@ class SettingsTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
-        // Ãâ€˜ÃÂ»ÃÂ¾ÃÂº ÃÂÃÂºÃÂ°Ã‘Æ’ÃÂ½Ã‘â€šÃÂ°
         _buildSectionTitle(l10n.account),
         _buildAccountCard(context, l10n),
 
         const SizedBox(height: 24),
 
-        // Ãâ€˜ÃÂ»ÃÂ¾ÃÂº ÃÂÃÂ°ÃÂ»ÃÂ°Ã‘Ë†Ã‘â€šÃ‘Æ’ÃÂ²ÃÂ°ÃÂ½Ã‘Å’ Ãâ€ÃÂ¾ÃÂ´ÃÂ°Ã‘â€šÃÂºÃÂ°
+        // Блок налаштувань застосунку
         _buildSectionTitle(l10n.appSettings),
         if (supportsInAppUpdater && updateBanner != null) ...[
           updateBanner,
@@ -46,7 +45,7 @@ class SettingsTab extends StatelessWidget {
         HardwareSettingsSection(
           provider: provider,
           enableBlur: enableGlassBlur,
-        ), // <--- Ãâ€ÃÂ¾ÃÂ´ÃÂ°Ã‘â€ÃÂ¼ÃÂ¾ Ã‘ÂÃ‘Å½ÃÂ´ÃÂ¸
+        ), // <--- Подамо сюди
         const SizedBox(height: 16),
         AppGlassSurface(
           isStrong: true,
@@ -107,10 +106,7 @@ class SettingsTab extends StatelessWidget {
                     value: provider.lang,
                     items: const [
                       DropdownMenuItem(value: 'en', child: Text('English')),
-                      DropdownMenuItem(
-                          value: 'uk',
-                          child: Text(
-                              'ÃÂ£ÃÂºÃ‘â‚¬ÃÂ°Ã‘â€”ÃÂ½Ã‘ÂÃ‘Å’ÃÂºÃÂ°')),
+                      DropdownMenuItem(value: 'uk', child: Text('Українська')),
                     ],
                     onChanged: (val) {
                       if (val != null) provider.setLanguage(val);
@@ -872,7 +868,7 @@ class SettingsTab extends StatelessWidget {
     }
 
     LogService.log(
-        'Ã¢Â¬â€¡Ã¯Â¸Â update.ui starting download dialog: version=${info.latestVersion}, asset=${info.assetName}');
+        '📲 update.ui starting download dialog: version=${info.latestVersion}, asset=${info.assetName}');
 
     final path = await showDialog<String?>(
       context: context,
@@ -883,7 +879,7 @@ class SettingsTab extends StatelessWidget {
     if (!context.mounted) return;
 
     if (path != null) {
-      LogService.log('Ã¢Å“â€¦ update.ui download dialog completed: path=$path');
+      LogService.log('✅ update.ui download dialog completed: path=$path');
       final shouldInstall = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
@@ -903,28 +899,28 @@ class SettingsTab extends StatelessWidget {
       );
 
       if (!context.mounted || shouldInstall != true) {
-        LogService.log('Ã¢ÂÂ¸Ã¯Â¸Â update.ui install canceled by user');
+        LogService.log('update.ui install canceled by user');
         return;
       }
 
       LogService.log(
-          'Ã°Å¸Å¡â‚¬ update.ui install confirmed: version=${info.latestVersion}, path=$path');
+          'update.ui install confirmed: version=${info.latestVersion}, path=$path');
       final success = await UpdateService.installUpdate(path);
       if (success) {
         if (Platform.isAndroid) {
-          // Android: system installer dialog overlays the app Ã¢â‚¬â€ stay open.
+          // Android: system installer dialog overlays the app - stay open.
           LogService.log(
-              'Ã°Å¸â€œÂ¦ update.ui Android installer launched, returning to app');
+              'update.ui Android installer launched, returning to app');
           scaffoldMessenger.showSnackBar(
             SnackBar(content: Text(l10n.updatesDialogInstall)),
           );
         } else {
           LogService.log(
-              'Ã°Å¸Å¡Âª update.ui installer started successfully, exiting app');
+              'update.ui installer started successfully, exiting app');
           exit(0);
         }
       } else {
-        LogService.log('Ã¢ÂÅ’ update.ui install failed for path=$path');
+        LogService.log('update.ui install failed for path=$path');
         final failMessage = Platform.isAndroid
             ? '${l10n.updatesDialogInstallFailed}\nAPK: $path'
             : l10n.updatesDialogInstallFailed;
@@ -944,7 +940,7 @@ class SettingsTab extends StatelessWidget {
       }
     } else {
       LogService.log(
-          'Ã¢Å¡Â Ã¯Â¸Â update.ui download dialog finished without file path: version=${info.latestVersion}',
+          'update.ui download dialog finished without file path: version=${info.latestVersion}',
           level: LogLevel.warn);
       scaffoldMessenger.showSnackBar(
         SnackBar(content: Text(l10n.updatesDialogDownloadFailed)),
@@ -977,7 +973,7 @@ class SettingsTab extends StatelessWidget {
   String _withLastChecked(String base, AppLocalizations l10n) {
     final checkedAt = provider.lastUpdateCheckAt;
     if (checkedAt == null) return base;
-    return '$base Ã¢â‚¬Â¢ ${l10n.updatesLastChecked(UpdateService.formatPublishedAt(checkedAt))}';
+    return '$base • ${l10n.updatesLastChecked(UpdateService.formatPublishedAt(checkedAt))}';
   }
 }
 
@@ -1003,7 +999,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
 
   Future<void> _startDownload() async {
     LogService.log(
-        'Ã¢Â¬â€¡Ã¯Â¸Â update.dialog download started: url=${widget.info.downloadUrl}, file=${widget.info.assetName}');
+        '📲 update.dialog download started: url=${widget.info.downloadUrl}, file=${widget.info.assetName}');
     try {
       final path = await UpdateService.downloadUpdateAsset(
         downloadUrl: widget.info.downloadUrl!,
@@ -1020,7 +1016,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
 
       if (path != null) {
         _isDone = true;
-        LogService.log('Ã¢Å“â€¦ update.dialog download finished: path=$path');
+        LogService.log('✅ update.dialog download finished: path=$path');
         Navigator.of(context).pop(path);
         return;
       }
@@ -1030,8 +1026,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
         _errorMessage =
             AppLocalizations.of(context)!.updatesDialogDownloadFailed;
       });
-      LogService.log(
-          'Ã¢Å¡Â Ã¯Â¸Â update.dialog download finished with null path',
+      LogService.log('update.dialog download finished with null path',
           level: LogLevel.warn);
     } catch (e) {
       if (!mounted) return;
@@ -1040,7 +1035,7 @@ class _UpdateDownloadDialogState extends State<_UpdateDownloadDialog> {
         _errorMessage =
             '${AppLocalizations.of(context)!.updatesDialogDownloadFailed} ($e)';
       });
-      LogService.log('Ã¢ÂÅ’ update.dialog exception during download',
+      LogService.log('update.dialog exception during download',
           error: e, level: LogLevel.error);
     }
   }
@@ -2027,4 +2022,3 @@ class _GeoPreset {
     this.timeZone,
   );
 }
-

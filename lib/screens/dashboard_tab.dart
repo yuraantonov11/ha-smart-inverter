@@ -135,9 +135,9 @@ class _StatsSection extends StatelessWidget {
         ? l10n.calculationSourceTelemetry
         : l10n.calculationSourceFallback;
     final paymentPrefix =
-        provider.monthEconomicsUsesEstimatedFallback ? 'Ã¢â€°Ë†' : '';
-    const savingsPrefix = 'Ã¢â€°Ë†';
-    const projectionPrefix = 'Ã¢â€°Ë†';
+        provider.monthEconomicsUsesEstimatedFallback ? '~' : '';
+    const savingsPrefix = '~';
+    const projectionPrefix = '~';
     return AppCard(
       borderRadius: expressive.cornerXL,
       enableBlur: false,
@@ -626,8 +626,8 @@ class _MonthEconomicsBreakdown extends StatelessWidget {
         ? l10n.calculationAccuracyHigh
         : l10n.calculationAccuracyEstimated;
     final paymentPrefix =
-        provider.monthEconomicsUsesEstimatedFallback ? 'Ã¢â€°Ë†' : '';
-    const savingsPrefix = 'Ã¢â€°Ë†';
+        provider.monthEconomicsUsesEstimatedFallback ? '~' : '';
+    const savingsPrefix = '~';
     final effectiveTariffTooltip = provider.monthEconomicsUsesTelemetryTou
         ? l10n.tooltipEffectiveTariffTelemetry(
             provider.tariffDayStartHour.toString().padLeft(2, '0'),
@@ -1248,13 +1248,13 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
       _forecastData = [];
     });
     LogService.log(
-        'Ã°Å¸Â§Â¹ chart.ui reset before fetch: range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}');
+        '[chart] reset before fetch: range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}');
   }
 
   Future<void> _fetchChartData({bool background = false}) async {
     final requestId = ++_chartRequestSeq;
     LogService.log(
-        'Ã°Å¸â€œÅ  chart.ui fetch start: requestId=$requestId, range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}, bg=$background');
+        '[chart] fetch start: requestId=$requestId, range=$_selectedRange, date=${_currentDate.toIso8601String().substring(0, 10)}, bg=$background');
     if (!background) {
       if (mounted && !_isLoading) setState(() => _isLoading = true);
     } else {
@@ -1284,7 +1284,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
 
     if (!mounted || requestId != _chartRequestSeq) {
       LogService.log(
-          'Ã¢ÂÂ­Ã¯Â¸Â chart.ui stale response ignored: requestId=$requestId, active=$_chartRequestSeq');
+          '[chart] stale response ignored: requestId=$requestId, active=$_chartRequestSeq');
       return;
     }
 
@@ -1670,7 +1670,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
                               ),
                               const SizedBox(height: AppTheme.spacingXS),
                               Text(
-                                '${l10n.production} Ã‚Â· ${l10n.forecastPeak}: ${Formatters.formatPower(day.peakPowerW)}',
+                                '${l10n.production} · ${l10n.forecastPeak}: ${Formatters.formatPower(day.peakPowerW)}',
                                 style: theme.textTheme.bodySmall,
                               ),
                             ],
@@ -1943,7 +1943,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     if (_lastRenderLogSignature != renderSignature) {
       _lastRenderLogSignature = renderSignature;
       LogService.log(
-          'Ã°Å¸â€“Â¼Ã¯Â¸Â chart.ui render: range=$_selectedRange, x=${minX.toStringAsFixed(2)}..${maxX.toStringAsFixed(2)}, y=${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}, visible=${visibleSpots.length}');
+          '[chart] render: range=$_selectedRange, x=${minX.toStringAsFixed(2)}..${maxX.toStringAsFixed(2)}, y=${minY.toStringAsFixed(1)}..${maxY.toStringAsFixed(1)}, visible=${visibleSpots.length}');
     }
 
     if (_selectedRange != 0) {
@@ -2436,7 +2436,7 @@ class _EnergyChartSectionState extends State<_EnergyChartSection> {
     }
 
     LogService.log(
-        'Ã°Å¸â€œË† $prefix | range=$_selectedRange pv[q=${quality(_productionData)}](${fmt(_productionData)}) load[q=${quality(_consumptionData)}](${fmt(_consumptionData)}) battery[q=${quality(_batteryData)}](${fmt(_batteryData)}) grid[q=${quality(_gridData)}](${fmt(_gridData)}) forecast[q=${quality(_forecastData)}](${fmt(_forecastData)})');
+        '[chart] $prefix | range=$_selectedRange pv[q=${quality(_productionData)}](${fmt(_productionData)}) load[q=${quality(_consumptionData)}](${fmt(_consumptionData)}) battery[q=${quality(_batteryData)}](${fmt(_batteryData)}) grid[q=${quality(_gridData)}](${fmt(_gridData)}) forecast[q=${quality(_forecastData)}](${fmt(_forecastData)})');
   }
 }
 
@@ -2459,7 +2459,7 @@ class _ChartRefreshBadgeState extends State<_ChartRefreshBadge> {
   @override
   void initState() {
     super.initState();
-    // Tick every 30 s to keep "X Ã‘â€¦ÃÂ² Ã‘â€šÃÂ¾ÃÂ¼Ã‘Æ’" label fresh
+    // Tick every 30s to keep the "minutes ago" label fresh.
     ticker = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
     });
@@ -2473,7 +2473,7 @@ class _ChartRefreshBadgeState extends State<_ChartRefreshBadge> {
 
   String label() {
     final l10n = AppLocalizations.of(context)!;
-    if (widget.isRefreshing) return 'Ã¢â‚¬Â¦';
+    if (widget.isRefreshing) return '...';
     final diff = DateTime.now().difference(widget.refreshedAt);
     if (diff.inSeconds < 60) return l10n.lessThanMinute;
     if (diff.inMinutes < 60) return l10n.minutesAgo(diff.inMinutes.toString());
@@ -2527,4 +2527,3 @@ class _BarSeriesConfig {
     required this.points,
   });
 }
-

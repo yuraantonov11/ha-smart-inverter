@@ -8,7 +8,9 @@ This document is the single source of truth for building and publishing releases
 - Version source: `pubspec.yaml`
 
 ## Source Files
+- `scripts/release.ps1`
 - `scripts/prepare_release.ps1`
+- `scripts/build_release.ps1`
 - `pubspec.yaml`
 - `windows/installer_script.iss`
 - `android/app/build.gradle.kts`
@@ -23,6 +25,12 @@ This document is the single source of truth for building and publishing releases
 
 ## Important Rule
 Do not create/push a release tag until tests and release builds pass.
+
+Canonical command for official releases:
+
+```powershell
+.\scripts\release.ps1 -Version 2.0.0 -Build 37 -Push -SkipInno
+```
 
 ---
 
@@ -67,6 +75,8 @@ Optional flags in one run:
 
 Recommended: do not use `-Tag`/`-Push` before build validation.
 
+For official releases, prefer `scripts/release.ps1` instead of manually chaining scripts.
+
 ---
 
 ## 3) Validate Before Tag
@@ -77,6 +87,23 @@ flutter test
 ```
 
 If tests fail, fix first and rerun.
+
+You can run the same validation/build sequence with the orchestration script:
+
+```powershell
+.\scripts\build_release.ps1
+```
+
+Official flow (with commit/tag and optional push) is handled by:
+
+```powershell
+.\scripts\release.ps1 -Version 2.0.0 -Build 37
+```
+
+Common flags:
+- `-SkipInno` when Inno Setup is not installed
+- `-SkipWindows` for Android-only release checks
+- `-SkipAndroid` for Windows-only release checks
 
 ---
 
@@ -103,11 +130,17 @@ Inno Setup EXE (if `ISCC` is installed and available in PATH):
 ISCC .\windows\installer_script.iss
 ```
 
+Equivalent one-shot command:
+
+```powershell
+.\scripts\build_release.ps1
+```
+
 ---
 
 ## 5) Create Commit, Tag, Push
 
-After successful tests and builds:
+After successful tests and builds (manual way):
 
 ```powershell
 git add pubspec.yaml windows/installer_script.iss release_notes_2.0.0.md
@@ -115,6 +148,12 @@ git commit -m "release: bump to 2.0.0+37"
 git tag -a v2.0.0+37 -m "Release v2.0.0+37"
 git push origin main
 git push origin v2.0.0+37
+```
+
+Recommended way (enforced order):
+
+```powershell
+.\scripts\release.ps1 -Version 2.0.0 -Build 37 -Push -SkipInno
 ```
 
 ---
@@ -164,8 +203,33 @@ adb logcat | Select-String -Pattern "INSTALL_FAILED|PackageManager"
 
 ---
 
-## 9) Notes About CI
+## 9) GitHub Actions Release Flow (Recommended)
 
-As of now, no CI workflow file is documented in this repository for automatic multi-platform release builds.
-If external CI exists in hosting settings, keep this document aligned with that pipeline behavior.
+Use tag-based CI so GitHub builds and publishes installers automatically.
+
+Workflow file:
+- `.github/workflows/release.yml`
+
+Trigger:
+- Push tag in format `vX.Y.Z+N`
+
+```powershell
+git add pubspec.yaml windows/installer_script.iss release_notes_2.0.1.md
+git commit -m "release: bump to 2.0.1+40"
+git tag -a v2.0.1+40 -m "Release v2.0.1+40"
+git push origin main
+git push origin v2.0.1+40
+```
+
+What GitHub does after tag push:
+1. Builds Windows artifacts (`.exe`, `.msix`, portable `.zip`).
+2. Builds Android artifacts (`.apk`, `.aab`).
+3. Creates/updates GitHub Release for that tag and uploads assets.
+
+OTA check expectations in app Settings:
+1. `releases/latest` returns the new tag (for example `v2.0.1+40`).
+2. Release is not draft and not prerelease.
+3. Release contains at least one `.apk` asset.
+4. Installed app build number is lower than release build number.
+
 

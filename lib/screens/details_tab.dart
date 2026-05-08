@@ -27,7 +27,7 @@ class DetailsTab extends StatelessWidget {
       return orderB.compareTo(orderA);
     });
 
-    // Realtime fields Ã¢â‚¬â€ everything except the 'fullConfigs' sub-map
+    // Realtime fields - everything except the 'fullConfigs' sub-map.
     final realtimeFields = Map<String, dynamic>.from(data.rawFields)
       ..remove('fullConfigs');
     final stateKeys = realtimeFields.keys.toList()..sort();
@@ -37,7 +37,7 @@ class DetailsTab extends StatelessWidget {
         ListView(
           padding: const EdgeInsets.all(AppTheme.spacingL),
           children: [
-            // Ã¢â€â‚¬Ã¢â€â‚¬ Settings header Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+            // Settings header
             _SectionHeader(
               icon: Icons.tune_rounded,
               title: l10n.inverterSettings,
@@ -75,7 +75,7 @@ class DetailsTab extends StatelessWidget {
 
             const SizedBox(height: 20),
 
-            // Ã¢â€â‚¬Ã¢â€â‚¬ Realtime readings header Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
+            // Realtime readings header
             _SectionHeader(
               icon: Icons.monitor_heart_rounded,
               title: l10n.realtimeReadings,
@@ -145,9 +145,7 @@ class DetailsTab extends StatelessWidget {
     final key = cfg['key']?.toString() ?? '';
     final name =
         cfg['nameDisplay']?.toString() ?? cfg['name']?.toString() ?? key;
-    final valueDisplay = cfg['valueDisplay']?.toString() ??
-        cfg['value']?.toString() ??
-        'Ã¢â‚¬â€';
+    final valueDisplay = '-';
     final unit = cfg['unit']?.toString() ?? '';
     final displayText = (unit.isNotEmpty && unit != 'null')
         ? '$valueDisplay $unit'
@@ -192,7 +190,7 @@ class DetailsTab extends StatelessWidget {
   Widget _buildStateTile(BuildContext context, String key, dynamic fieldData) {
     final theme = Theme.of(context);
     var name = key;
-    var value = 'Ã¢â‚¬â€';
+    var value = '-';
     var unit = '';
     if (fieldData is Map) {
       name = fieldData['nameDisplay']?.toString() ??
@@ -200,7 +198,7 @@ class DetailsTab extends StatelessWidget {
           key;
       value = fieldData['valueDisplay']?.toString() ??
           fieldData['value']?.toString() ??
-          'Ã¢â‚¬â€';
+          '-';
       unit = fieldData['unit']?.toString() ?? '';
     } else if (fieldData != null) {
       value = fieldData.toString();
@@ -480,4 +478,3 @@ class _SectionHeader extends StatelessWidget {
     );
   }
 }
-

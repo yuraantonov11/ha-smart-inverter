@@ -2,8 +2,6 @@ name: Build and Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -114,10 +112,11 @@ jobs:
             RAW_VERSION="${GITHUB_REF_NAME#v}"
             RELEASE_VERSION="${RAW_VERSION%%+*}"
           else
+            RAW_VERSION="dev-${GITHUB_RUN_NUMBER}"
             RELEASE_VERSION="dev-${GITHUB_RUN_NUMBER}"
           fi
           mkdir -p artifacts
-          cp build/app/outputs/flutter-apk/app-release.apk "artifacts/smart_inverter_android_v${RELEASE_VERSION}.apk"
+          cp build/app/outputs/flutter-apk/app-release.apk "artifacts/smart_inverter_android_v${RAW_VERSION}.apk"
           cp build/app/outputs/bundle/release/app-release.aab "artifacts/smart_inverter_android_v${RELEASE_VERSION}.aab"
 
       - name: Upload Android artifacts
