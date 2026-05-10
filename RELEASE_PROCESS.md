@@ -218,15 +218,16 @@ adb logcat | Select-String -Pattern "INSTALL_FAILED|PackageManager"
 
 ---
 
-## 9) GitHub Actions Release Flow (Recommended)
+## 9) GitHub Actions CI + Release Flow (Recommended)
 
-Use tag-based CI so GitHub builds and publishes installers automatically.
+Use automatic CI on commits and full publish flow on tags.
 
 Workflow file:
 - `.github/workflows/release.yml`
 
 Trigger:
-- Push tag in format `vX.Y.Z`
+- Push to `main` -> builds artifacts for CI validation (no Android release signing required)
+- Push tag in format `vX.Y.Z` -> builds signed release artifacts and publishes GitHub Release
 
 ```powershell
 git add pubspec.yaml windows/installer_script.iss release_notes_2.0.1.md

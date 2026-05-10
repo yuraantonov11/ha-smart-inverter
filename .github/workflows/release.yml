@@ -2,6 +2,8 @@ name: Build and Release
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -132,6 +134,7 @@ jobs:
           echo "Computed Android build: name=$PUBSPEC_VERSION code=$BUILD_CODE"
 
       - name: Configure Android release signing
+        if: startsWith(github.ref, 'refs/tags/')
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -151,25 +154,32 @@ jobs:
           storeFile=upload-keystore.jks
           EOF
 
-      - name: Build Android APK
+      - name: Build Android APK (release)
+        if: startsWith(github.ref, 'refs/tags/')
         run: flutter build apk --release --build-name "$ANDROID_BUILD_NAME" --build-number "$ANDROID_BUILD_CODE"
 
+      - name: Build Android APK (debug for CI)
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: flutter build apk --debug --build-name "$ANDROID_BUILD_NAME" --build-number "$ANDROID_BUILD_CODE"
+
       - name: Build Android AAB
+        if: startsWith(github.ref, 'refs/tags/')
         run: flutter build appbundle --release --build-name "$ANDROID_BUILD_NAME" --build-number "$ANDROID_BUILD_CODE"
 
       - name: Package Android artifacts
         run: |
           PUBSPEC_VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r' | xargs)
+          mkdir -p artifacts
+
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             RAW_VERSION="$PUBSPEC_VERSION"
             RELEASE_VERSION="$RAW_VERSION"
+            cp build/app/outputs/flutter-apk/app-release.apk "artifacts/smart_inverter_android_v${RAW_VERSION}.apk"
+            cp build/app/outputs/bundle/release/app-release.aab "artifacts/smart_inverter_android_v${RELEASE_VERSION}.aab"
           else
-            RAW_VERSION="dev-${GITHUB_RUN_NUMBER}"
-            RELEASE_VERSION="dev-${GITHUB_RUN_NUMBER}"
+            RAW_VERSION="ci-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+            cp build/app/outputs/flutter-apk/app-debug.apk "artifacts/smart_inverter_android_${RAW_VERSION}.apk"
           fi
-          mkdir -p artifacts
-          cp build/app/outputs/flutter-apk/app-release.apk "artifacts/smart_inverter_android_v${RAW_VERSION}.apk"
-          cp build/app/outputs/bundle/release/app-release.aab "artifacts/smart_inverter_android_v${RELEASE_VERSION}.aab"
 
       - name: Upload Android artifacts
         uses: actions/upload-artifact@v4
