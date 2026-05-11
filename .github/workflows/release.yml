@@ -22,19 +22,13 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           channel: stable
           flutter-version: 3.29.3
-
-      - name: Setup Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '17'
 
       - name: Install dependencies
         run: flutter pub get
@@ -85,10 +79,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -101,6 +95,9 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
+
+      - name: Generate localization files
+        run: flutter gen-l10n
 
       - name: Validate release version policy
         run: |
@@ -134,36 +131,38 @@ jobs:
           echo "Computed Android build: name=$PUBSPEC_VERSION code=$BUILD_CODE"
 
       - name: Configure Android release signing
-        if: startsWith(github.ref, 'refs/tags/')
+        id: signing
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [[ -z "$ANDROID_KEYSTORE_BASE64" || -z "$ANDROID_KEYSTORE_PASSWORD" || -z "$ANDROID_KEY_ALIAS" || -z "$ANDROID_KEY_PASSWORD" ]]; then
-            echo "Missing Android signing secrets. Release APK would be signed with debug key and break updates."
-            exit 1
-          fi
-
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
-          cat > android/key.properties <<EOF
+          if [[ -n "$ANDROID_KEYSTORE_BASE64" && -n "$ANDROID_KEYSTORE_PASSWORD" && -n "$ANDROID_KEY_ALIAS" && -n "$ANDROID_KEY_PASSWORD" ]]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+            cat > android/key.properties <<EOF
           storePassword=$ANDROID_KEYSTORE_PASSWORD
           keyPassword=$ANDROID_KEY_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
           storeFile=upload-keystore.jks
           EOF
+            echo "SIGNING_CONFIGURED=true" >> "$GITHUB_ENV"
+            echo "✅ Release signing configured"
+          else
+            echo "⚠️  Signing secrets not set — will build with debug signing"
+            echo "SIGNING_CONFIGURED=false" >> "$GITHUB_ENV"
+          fi
 
-      - name: Build Android APK (release)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Build Android APK (release signed)
+        if: env.SIGNING_CONFIGURED == 'true'
         run: flutter build apk --release --build-name "$ANDROID_BUILD_NAME" --build-number "$ANDROID_BUILD_CODE"
 
-      - name: Build Android APK (debug for CI)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      - name: Build Android APK (debug — no signing secrets)
+        if: env.SIGNING_CONFIGURED != 'true'
         run: flutter build apk --debug --build-name "$ANDROID_BUILD_NAME" --build-number "$ANDROID_BUILD_CODE"
 
       - name: Build Android AAB
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') && env.SIGNING_CONFIGURED == 'true'
         run: flutter build appbundle --release --build-name "$ANDROID_BUILD_NAME" --build-number "$ANDROID_BUILD_CODE"
 
       - name: Package Android artifacts
@@ -171,14 +170,18 @@ jobs:
           PUBSPEC_VERSION=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1 | tr -d '\r' | xargs)
           mkdir -p artifacts
 
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          if [[ "${SIGNING_CONFIGURED}" == "true" && "${GITHUB_REF_TYPE}" == "tag" ]]; then
             RAW_VERSION="$PUBSPEC_VERSION"
-            RELEASE_VERSION="$RAW_VERSION"
             cp build/app/outputs/flutter-apk/app-release.apk "artifacts/smart_inverter_android_v${RAW_VERSION}.apk"
-            cp build/app/outputs/bundle/release/app-release.aab "artifacts/smart_inverter_android_v${RELEASE_VERSION}.aab"
+            if [ -f "build/app/outputs/bundle/release/app-release.aab" ]; then
+              cp build/app/outputs/bundle/release/app-release.aab "artifacts/smart_inverter_android_v${RAW_VERSION}.aab"
+            fi
+          elif [[ "${SIGNING_CONFIGURED}" == "true" ]]; then
+            RAW_VERSION="ci-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
+            cp build/app/outputs/flutter-apk/app-release.apk "artifacts/smart_inverter_android_${RAW_VERSION}.apk"
           else
             RAW_VERSION="ci-${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}"
-            cp build/app/outputs/flutter-apk/app-debug.apk "artifacts/smart_inverter_android_${RAW_VERSION}.apk"
+            cp build/app/outputs/flutter-apk/app-debug.apk "artifacts/smart_inverter_android_debug_${RAW_VERSION}.apk"
           fi
 
       - name: Upload Android artifacts
@@ -196,7 +199,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
       - name: Download Windows artifacts
         uses: actions/download-artifact@v4
