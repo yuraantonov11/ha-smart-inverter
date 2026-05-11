@@ -121,6 +121,28 @@ Generated files:
 - `build/app/outputs/bundle/release/app-release.aab`
 - `build/app/outputs/flutter-apk/app-release.apk`
 
+## Release Process 📦
+Canonical release runbook:
+- `RELEASE_PROCESS.md`
+
+Set Android signing secrets for GitHub Actions tag releases:
+
+```powershell
+.\scripts\setup_github_android_signing.ps1 -KeystorePath .\android\upload-keystore.jks -StorePassword "<store-password>" -KeyAlias "upload" -KeyPassword "<key-password>" -Repo yuraantonov11/siseli-app
+```
+
+Official release command (prepare -> build -> commit -> tag -> push):
+
+```powershell
+.\scripts\release.ps1 -Version 2.0.4 -Push -SkipInno
+```
+
+Quick command for validation/build only:
+
+```powershell
+.\scripts\build_release.ps1 -SkipInno
+```
+
 ## License 📄
 This project is licensed under the MIT License.
 

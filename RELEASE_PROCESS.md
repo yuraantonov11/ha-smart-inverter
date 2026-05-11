@@ -248,6 +248,12 @@ Required GitHub secrets for Android signing:
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
+Quick setup (PowerShell helper):
+
+```powershell
+.\scripts\setup_github_android_signing.ps1 -KeystorePath .\android\upload-keystore.jks -StorePassword "<store-password>" -KeyAlias "upload" -KeyPassword "<key-password>" -Repo yuraantonov11/siseli-app
+```
+
 OTA check expectations in app Settings:
 1. `releases/latest` returns the new tag (for example `v2.0.2`).
 2. Release is not draft and not prerelease.
