@@ -46,6 +46,7 @@
   "appSettings": "Налаштування застосунку",
   "editProfile": "Редагувати профіль",
   "cancel": "Скасувати",
+  "confirm": "Підтвердити",
   "save": "Зберегти",
   "userNameDefault": "Користувач",
   "userId": "ID: {id}",
@@ -83,9 +84,14 @@
   "sessionId": "ID сесії",
   "accountProfileHint": "Дані профілю використовуються для відображення акаунта та доступу до хмари інвертора.",
   "logoutConfirmMessage": "Ви впевнені, що хочете вийти на цьому пристрої?",
+  "dangerZone": "Небезпечна зона",
   "nameCannotBeEmpty": "Ім'я не може бути порожнім",
   "copy": "Копіювати",
   "copiedToClipboard": "Скопійовано в буфер обміну",
+  "diagnosticsSnapshot": "Знімок діагностики",
+  "diagnosticsSnapshotHint": "Скопіюйте компактний звіт для діагностики або підтримки.",
+  "copyDiagnosticsSnapshot": "Копіювати знімок",
+  "diagnosticsSnapshotCopied": "Знімок діагностики скопійовано в буфер обміну",
   "updatesTitle": "Оновлення",
   "updatesCheckingBackground": "Перевірка оновлень у фоні...",
   "updatesChecking": "Перевірка оновлень...",
@@ -234,6 +240,45 @@
   "stationParameters": "Параметри станції",
   "stationParametersHint": "Ці дані потрібні інтелектуальному алгоритму для точного розрахунку енергії та прогнозу погоди.",
   "batteryCapacityLabel": "Ємність АКБ",
+  "inputBreakerLabel": "Ввідний автомат",
+  "gridVoltageLabel": "Напруга мережі",
+  "houseLoadReserveLabel": "Резерв навантаження будинку",
+  "autoReserveLoadTitle": "Авто-резерв будинку",
+  "autoReserveLoadEnabledSubtitle": "Резерв оновлюється автоматично за live та історичним навантаженням",
+  "autoReserveLoadDisabledSubtitle": "Резерв фіксується вручну",
+  "reserveModeAuto": "Режим: AUTO",
+  "reserveModeManual": "Режим: MANUAL",
+  "reserveModeAutoHint": "AUTO: резерв оновлюється за live-навантаженням і погодинним профілем зі згладжуванням та запасом безпеки.",
+  "reserveModeManualHint": "MANUAL: резерв фіксований і дорівнює значенню, яке ви задали вручну.",
+  "houseLoadReserveHint": "Резерв потужності для додаткових приладів, щоб під час заряду не вибивав автомат.",
+  "autoEstimateReserveLoad": "Автооцінка резерву будинку",
+  "chargePowerEstimateTitle": "Оцінка безпечної швидкості заряду",
+  "chargePowerSafeLimitLabel": "Ліміт потужності заряду АКБ",
+  "chargeCurrentSafeLimitLabel": "Ліміт струму заряду АКБ",
+  "chargeCurrentConservativeLabel": "Консервативний струм заряду",
+  "chargeInputCurrentEstimateLabel": "Оцінка струму по вводу AC",
+  "chargeBreakerRiskSafe": "Ризик автомата: низький",
+  "chargeBreakerRiskElevated": "Ризик автомата: підвищений",
+  "chargeBreakerRiskHigh": "Ризик автомата: високий (можливе спрацювання)",
+  "chargeBreakerRiskHint": "Аналіз враховує резерв/live/профільне навантаження: {load} W",
+  "@chargeBreakerRiskHint": {
+    "placeholders": {
+      "load": {
+        "type": "String"
+      }
+    }
+  },
+  "chargeTimeToFullLabel": "Час до 100%",
+  "chargeTimeUnavailable": "Недостатньо даних",
+  "chargeEstimateNoRealtimeSoc": "Немає поточного SOC. Час заряду з'явиться після отримання телеметрії.",
+  "chargeEstimateBasedOnSoc": "Оцінка за поточним SOC: {soc}%",
+  "@chargeEstimateBasedOnSoc": {
+    "placeholders": {
+      "soc": {
+        "type": "String"
+      }
+    }
+  },
   "panelPowerLabel": "Потужність панелей",
   "inverterPowerLabel": "Потужність інвертора",
   "locationPreset": "Пресет локації",
@@ -294,6 +339,20 @@
         "type": "String"
       },
       "inverter": {
+        "type": "String"
+      }
+    }
+  },
+  "chargeLimitSummary": "Ввід C{breaker} -> безпечний заряд АКБ {power} W (~{current} A)",
+  "@chargeLimitSummary": {
+    "placeholders": {
+      "breaker": {
+        "type": "String"
+      },
+      "power": {
+        "type": "String"
+      },
+      "current": {
         "type": "String"
       }
     }
@@ -385,6 +444,62 @@
   "load": "Будинок",
   "connectionOnline": "Онлайн",
   "connectionOffline": "Офлайн",
+  "gridOutageDetectedShort": "Мережа відсутня",
+  "gridOutageVisualTitle": "Мережа зараз відсутня",
+  "gridOutageVisualBody": "Визначено за вхідною напругою ({voltage} В), а не перемиканням режиму",
+  "@gridOutageVisualBody": {
+    "placeholders": {
+      "voltage": {
+        "type": "String"
+      }
+    }
+  },
+  "backupRuntimeHybrid": "Орієнтовна автономність (АКБ + сонце): ~{duration}",
+  "@backupRuntimeHybrid": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "backupRuntimeBatteryOnly": "Лише АКБ: ~{duration}",
+  "@backupRuntimeBatteryOnly": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "backupRuntimeSolarCoverHint": "Сонце зараз покриває навантаження, тому фактичний час може бути довшим.",
+  "runtimeInfinite": "без обмеження",
+  "runtimeNow": "зараз",
+  "runtimeMinutes": "{minutes} хв",
+  "@runtimeMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "String"
+      }
+    }
+  },
+  "runtimeHoursOnly": "{hours} год",
+  "@runtimeHoursOnly": {
+    "placeholders": {
+      "hours": {
+        "type": "String"
+      }
+    }
+  },
+  "runtimeHoursMinutes": "{hours} год {minutes} хв",
+  "@runtimeHoursMinutes": {
+    "placeholders": {
+      "hours": {
+        "type": "String"
+      },
+      "minutes": {
+        "type": "String"
+      }
+    }
+  },
   "lastRealtimeUpdate": "Останнє оновлення",
   "updatedAt": "Оновлено о {time}",
   "@updatedAt": {
@@ -537,5 +652,160 @@
   "plannedOutageEnabledSubtitle": "Автопідзаряд перед відключенням",
   "plannedOutageDisabledSubtitle": "Немає ручного графіка відключень",
   "plannedOutageStartLabel": "Початок відключення",
-  "plannedOutageEndLabel": "Кінець відключення"
+  "plannedOutageEndLabel": "Кінець відключення",
+
+  "notificationsTitle": "Сповіщення",
+  "notificationsEmpty": "Поки немає сповіщень",
+  "notificationsClear": "Очистити всі",
+  "notificationMarkAllRead": "Позначити прочитаними",
+
+  "notifGridOutageTitle": "Відключення мережі",
+  "notifGridOutageBody": "Напруга мережі впала — живлення від сонця/батареї",
+  "notifGridRestoredTitle": "Мережа відновлена",
+  "notifGridRestoredBody": "Напруга мережі повернулась до норми ({voltage} В)",
+  "@notifGridRestoredBody": {
+    "placeholders": {
+      "voltage": {
+        "type": "String"
+      }
+    }
+  },
+  "notifLowBatteryTitle": "Низький заряд батареї",
+  "notifLowBatteryBody": "SOC батареї {soc}% — наближається до резервного порогу",
+  "@notifLowBatteryBody": {
+    "placeholders": {
+      "soc": {
+        "type": "String"
+      }
+    }
+  },
+  "notifBatteryRecoveredTitle": "Батарея заряджена",
+  "notifBatteryRecoveredBody": "SOC батареї відновився до {soc}%",
+  "@notifBatteryRecoveredBody": {
+    "placeholders": {
+      "soc": {
+        "type": "String"
+      }
+    }
+  },
+  "notifModeChangedTitle": "Режим HEMS змінено",
+  "notifModeChangedBody": "Активний режим: {mode}",
+  "@notifModeChangedBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "notifGridInstabilityTitle": "Нестабільність мережі",
+  "notifGridInstabilityBody": "Виявлено часті зміни стану мережі",
+  "notifAutoStormTitle": "Авто-режим Шторм активовано",
+  "notifAutoStormBody": "Виявлено відключення мережі — перемкнуто в режим Шторм для захисту батареї",
+  "notifForecastStormTitle": "Авто-Шторм за прогнозом",
+  "notifForecastStormBody": "Виявлено ризик сильної негоди ({reason}) — перемкнуто в режим Шторм",
+  "@notifForecastStormBody": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "notifForecastStormRestoredTitle": "Ризик шторму зменшився",
+  "notifForecastStormRestoredBody": "Погодні ризики знизились — відновлено попередній режим HEMS",
+  "notifAutoAdaptiveTitle": "Адаптивний режим відновлено",
+  "notifAutoAdaptiveBody": "Мережа повернулась — автоматично відновлено Адаптивний режим",
+  "notifAnomalyTitle": "Виявлено підвищене споживання",
+  "notifAnomalyBody": "Навантаження {load} Вт — {times}× вище норми для цієї години",
+  "@notifAnomalyBody": {
+    "placeholders": {
+      "load": {"type": "String"},
+      "times": {"type": "String"}
+    }
+  },
+  "notifCycleTitle": "Цикл заряду завершено",
+  "notifCycleBody": "Всього циклів: {count}. Стан батареї: {soh}%",
+  "@notifCycleBody": {
+    "placeholders": {
+      "count": {"type": "String"},
+      "soh": {"type": "String"}
+    }
+  },
+  "eventHistoryTitle": "Журнал подій",
+  "eventHistoryEmpty": "Ще немає записаних подій",
+  "eventHistoryClear": "Очистити журнал",
+  "eventHistoryShowAll": "Показати всі",
+  "exportCsv": "Експорт CSV",
+  "exportedTo": "Збережено:\n{path}",
+  "@exportedTo": {
+    "placeholders": {
+      "path": {"type": "String"}
+    }
+  },
+  "exportFailed": "Помилка експорту",
+  "currentCostPerHour": "Зараз коштує",
+  "uahPerHour": "₴/год",
+  "batteryCycles": "Цикли",
+  "batteryHealth": "Здоров'я батареї",
+  "battSohPercent": "SOH {soh}%",
+  "@battSohPercent": {
+    "placeholders": {
+      "soh": {"type": "String"}
+    }
+  },
+  "resetCycleCount": "Скинути лічильник",
+  "gridAutoStormNote": "Режим Шторм активовано автоматично через відключення мережі",
+
+  "autoStormByForecastTitle": "Автоматичний режим Шторм за прогнозом погоди",
+  "autoStormByForecastEnabledSubtitle": "Перемикає в режим Шторм при небезпечному прогнозі (найближчі 12 год)",
+  "autoStormByForecastDisabledSubtitle": "Автоматичний режим Шторм за прогнозом вимкнено",
+  "notifForecastStormTitle": "Режим Шторм — попередження погоди",
+  "notifForecastStormBody": "Небезпечна погода: {reason} — активовано режим Шторм",
+  "@notifForecastStormBody": {
+    "placeholders": {
+      "reason": {"type": "String"}
+    }
+  },
+  "notifForecastStormRestoredTitle": "Відновлено адаптивний режим",
+  "notifForecastStormRestoredBody": "Ризик поганої погоди минув — відновлено нормальний режим HEMS",
+
+  "socHistoryTitle": "SOC акумулятора — останні 24 год",
+  "socHistorySubtitle": "Тренд рівня заряду",
+  "socHistoryNoData": "Даних ще недостатньо.\nДані збираються кожні 5 хвилин.",
+  "socHistoryReserveLabel": "Резерв",
+  "socHistoryChargingLabel": "Заряд",
+  "socHistoryDischargingLabel": "Розряд",
+  "socHistoryIdleLabel": "Очікування",
+
+  "scheduleRulesTitle": "Розклад режимів",
+  "scheduleRulesSubtitle": "Примусовий режим HEMS у вказаний часовий проміжок",
+  "scheduleRulesEmpty": "Правил ще немає.\nНатисніть + щоб додати перше правило.",
+  "scheduleRuleAdd": "Додати правило",
+  "scheduleRuleEdit": "Редагувати правило",
+  "scheduleRuleDelete": "Видалити правило",
+  "scheduleRuleDeleteConfirm": "Видалити правило \"{name}\"?",
+  "@scheduleRuleDeleteConfirm": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "scheduleRuleName": "Назва правила",
+  "scheduleRuleNameHint": "Напр. Ранкова сонячна, Вихідний заряд…",
+  "scheduleRuleDays": "Активні дні",
+  "scheduleRuleStartTime": "Час початку",
+  "scheduleRuleEndTime": "Час завершення",
+  "scheduleRuleMode": "Примусовий режим HEMS",
+  "scheduleRuleModeAdaptive": "Адаптивний (Авто)",
+  "scheduleRuleModeArbitrage": "Нічний арбітраж",
+  "scheduleRuleModeStorm": "Шторм / Резерв",
+  "scheduleRuleActive": "Активно зараз",
+  "scheduleRuleNameEmpty": "Будь ласка, введіть назву",
+  "scheduleRuleNoDays": "Оберіть хоча б один день",
+  "scheduleRulePriority": "Пріоритет",
+  "scheduleRulePriorityHint": "Вищий пріоритет виграє при перетині правил",
+  "scheduleRuleConflict": "{count} правил активні зараз — обрано з найвищим пріоритетом",
+  "@scheduleRuleConflict": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  }
 }

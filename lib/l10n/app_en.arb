@@ -46,6 +46,7 @@
   "appSettings": "Application Settings",
   "editProfile": "Edit Profile",
   "cancel": "Cancel",
+  "confirm": "Confirm",
   "save": "Save",
   "userNameDefault": "User",
   "userId": "ID: {id}",
@@ -83,9 +84,14 @@
   "sessionId": "Session ID",
   "accountProfileHint": "Profile data is used for account display and inverter cloud access.",
   "logoutConfirmMessage": "Are you sure you want to sign out from this device?",
+  "dangerZone": "Danger zone",
   "nameCannotBeEmpty": "Name cannot be empty",
   "copy": "Copy",
   "copiedToClipboard": "Copied to clipboard",
+  "diagnosticsSnapshot": "Diagnostics snapshot",
+  "diagnosticsSnapshotHint": "Copy a compact report for troubleshooting or support.",
+  "copyDiagnosticsSnapshot": "Copy snapshot",
+  "diagnosticsSnapshotCopied": "Diagnostics snapshot copied to clipboard",
   "updatesTitle": "Updates",
   "updatesCheckingBackground": "Checking updates in background...",
   "updatesChecking": "Checking for updates...",
@@ -234,6 +240,45 @@
   "stationParameters": "Station parameters",
   "stationParametersHint": "These values help the intelligent algorithm calculate energy balance and weather-based forecasts more accurately.",
   "batteryCapacityLabel": "Battery capacity",
+  "inputBreakerLabel": "Input breaker",
+  "gridVoltageLabel": "Grid voltage",
+  "houseLoadReserveLabel": "House reserve load",
+  "autoReserveLoadTitle": "Auto reserve load",
+  "autoReserveLoadEnabledSubtitle": "Reserve is updated automatically from live and historical load",
+  "autoReserveLoadDisabledSubtitle": "Reserve is fixed manually",
+  "reserveModeAuto": "Mode: AUTO",
+  "reserveModeManual": "Mode: MANUAL",
+  "reserveModeAutoHint": "AUTO: reserve updates from live load and hourly profile with smoothing and safety headroom.",
+  "reserveModeManualHint": "MANUAL: reserve stays fixed to the value you set.",
+  "houseLoadReserveHint": "Reserve power for additional home appliances to avoid breaker trips during charging.",
+  "autoEstimateReserveLoad": "Auto estimate reserve load",
+  "chargePowerEstimateTitle": "Safe charge speed estimate",
+  "chargePowerSafeLimitLabel": "Battery charge power limit",
+  "chargeCurrentSafeLimitLabel": "Battery charge current limit",
+  "chargeCurrentConservativeLabel": "Conservative charge current",
+  "chargeInputCurrentEstimateLabel": "Estimated AC input current",
+  "chargeBreakerRiskSafe": "Breaker risk: low",
+  "chargeBreakerRiskElevated": "Breaker risk: elevated",
+  "chargeBreakerRiskHigh": "Breaker risk: high (trip likely)",
+  "chargeBreakerRiskHint": "Analysis uses reserve/live/profile house load: {load} W",
+  "@chargeBreakerRiskHint": {
+    "placeholders": {
+      "load": {
+        "type": "String"
+      }
+    }
+  },
+  "chargeTimeToFullLabel": "Time to 100%",
+  "chargeTimeUnavailable": "Not enough data",
+  "chargeEstimateNoRealtimeSoc": "Realtime SOC is unavailable. Charge time will appear when live data is received.",
+  "chargeEstimateBasedOnSoc": "Estimate based on current SOC: {soc}%",
+  "@chargeEstimateBasedOnSoc": {
+    "placeholders": {
+      "soc": {
+        "type": "String"
+      }
+    }
+  },
   "panelPowerLabel": "Panel power",
   "inverterPowerLabel": "Inverter power",
   "locationPreset": "Location preset",
@@ -294,6 +339,20 @@
         "type": "String"
       },
       "inverter": {
+        "type": "String"
+      }
+    }
+  },
+  "chargeLimitSummary": "Input C{breaker} -> safe battery charge {power} W (~{current} A)",
+  "@chargeLimitSummary": {
+    "placeholders": {
+      "breaker": {
+        "type": "String"
+      },
+      "power": {
+        "type": "String"
+      },
+      "current": {
         "type": "String"
       }
     }
@@ -385,6 +444,62 @@
   "load": "Load",
   "connectionOnline": "Online",
   "connectionOffline": "Offline",
+  "gridOutageDetectedShort": "Grid outage",
+  "gridOutageVisualTitle": "Grid power is unavailable",
+  "gridOutageVisualBody": "Detected by input voltage ({voltage} V), not by current mode switch",
+  "@gridOutageVisualBody": {
+    "placeholders": {
+      "voltage": {
+        "type": "String"
+      }
+    }
+  },
+  "backupRuntimeHybrid": "Estimated backup time (battery + solar): ~{duration}",
+  "@backupRuntimeHybrid": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "backupRuntimeBatteryOnly": "Battery only: ~{duration}",
+  "@backupRuntimeBatteryOnly": {
+    "placeholders": {
+      "duration": {
+        "type": "String"
+      }
+    }
+  },
+  "backupRuntimeSolarCoverHint": "Solar currently covers the load, so actual runtime may be longer.",
+  "runtimeInfinite": "continuous",
+  "runtimeNow": "now",
+  "runtimeMinutes": "{minutes} min",
+  "@runtimeMinutes": {
+    "placeholders": {
+      "minutes": {
+        "type": "String"
+      }
+    }
+  },
+  "runtimeHoursOnly": "{hours} h",
+  "@runtimeHoursOnly": {
+    "placeholders": {
+      "hours": {
+        "type": "String"
+      }
+    }
+  },
+  "runtimeHoursMinutes": "{hours} h {minutes} min",
+  "@runtimeHoursMinutes": {
+    "placeholders": {
+      "hours": {
+        "type": "String"
+      },
+      "minutes": {
+        "type": "String"
+      }
+    }
+  },
   "lastRealtimeUpdate": "Last update",
   "updatedAt": "Updated at {time}",
   "@updatedAt": {
@@ -537,5 +652,160 @@
   "plannedOutageEnabledSubtitle": "Auto-precharge before outage",
   "plannedOutageDisabledSubtitle": "No manual outage schedule",
   "plannedOutageStartLabel": "Outage start",
-  "plannedOutageEndLabel": "Outage end"
+  "plannedOutageEndLabel": "Outage end",
+
+  "notificationsTitle": "Notifications",
+  "notificationsEmpty": "No notifications yet",
+  "notificationsClear": "Clear all",
+  "notificationMarkAllRead": "Mark all read",
+
+  "notifGridOutageTitle": "Grid Power Outage",
+  "notifGridOutageBody": "Grid voltage dropped — running on solar/battery",
+  "notifGridRestoredTitle": "Grid Power Restored",
+  "notifGridRestoredBody": "Grid voltage is back to normal ({voltage} V)",
+  "@notifGridRestoredBody": {
+    "placeholders": {
+      "voltage": {
+        "type": "String"
+      }
+    }
+  },
+  "notifLowBatteryTitle": "Low Battery",
+  "notifLowBatteryBody": "Battery SOC is {soc}% — approaching reserve threshold",
+  "@notifLowBatteryBody": {
+    "placeholders": {
+      "soc": {
+        "type": "String"
+      }
+    }
+  },
+  "notifBatteryRecoveredTitle": "Battery Charged",
+  "notifBatteryRecoveredBody": "Battery SOC recovered to {soc}%",
+  "@notifBatteryRecoveredBody": {
+    "placeholders": {
+      "soc": {
+        "type": "String"
+      }
+    }
+  },
+  "notifModeChangedTitle": "HEMS Mode Changed",
+  "notifModeChangedBody": "Active mode: {mode}",
+  "@notifModeChangedBody": {
+    "placeholders": {
+      "mode": {
+        "type": "String"
+      }
+    }
+  },
+  "notifGridInstabilityTitle": "Grid Instability",
+  "notifGridInstabilityBody": "Frequent grid state changes detected",
+  "notifAutoStormTitle": "Auto Storm Mode Activated",
+  "notifAutoStormBody": "Grid outage detected — switched to Storm mode to protect battery",
+  "notifForecastStormTitle": "Auto Storm by Forecast",
+  "notifForecastStormBody": "Severe weather risk detected ({reason}) — switched to Storm mode",
+  "@notifForecastStormBody": {
+    "placeholders": {
+      "reason": {
+        "type": "String"
+      }
+    }
+  },
+  "notifForecastStormRestoredTitle": "Forecast Storm Cleared",
+  "notifForecastStormRestoredBody": "Weather risk is lower — restored previous HEMS mode",
+  "notifAutoAdaptiveTitle": "Adaptive Mode Restored",
+  "notifAutoAdaptiveBody": "Grid is back — restored to Adaptive mode automatically",
+  "notifAnomalyTitle": "High Consumption Detected",
+  "notifAnomalyBody": "Load is {load} W — {times}× above normal for this hour",
+  "@notifAnomalyBody": {
+    "placeholders": {
+      "load": {"type": "String"},
+      "times": {"type": "String"}
+    }
+  },
+  "notifCycleTitle": "Battery Cycle Completed",
+  "notifCycleBody": "Total cycles: {count}. Estimated battery health: {soh}%",
+  "@notifCycleBody": {
+    "placeholders": {
+      "count": {"type": "String"},
+      "soh": {"type": "String"}
+    }
+  },
+  "eventHistoryTitle": "Event History",
+  "eventHistoryEmpty": "No events recorded yet",
+  "eventHistoryClear": "Clear history",
+  "eventHistoryShowAll": "Show all",
+  "exportCsv": "Export CSV",
+  "exportedTo": "Saved to:\n{path}",
+  "@exportedTo": {
+    "placeholders": {
+      "path": {"type": "String"}
+    }
+  },
+  "exportFailed": "Export failed",
+  "currentCostPerHour": "Cost now",
+  "uahPerHour": "₴/h",
+  "batteryCycles": "Cycles",
+  "batteryHealth": "Battery health",
+  "battSohPercent": "SOH {soh}%",
+  "@battSohPercent": {
+    "placeholders": {
+      "soh": {"type": "String"}
+    }
+  },
+  "resetCycleCount": "Reset counter",
+  "gridAutoStormNote": "Auto Storm mode was activated due to grid outage",
+
+  "autoStormByForecastTitle": "Auto Storm mode by weather forecast",
+  "autoStormByForecastEnabledSubtitle": "Switches to Storm mode when bad weather is predicted (next 12 h)",
+  "autoStormByForecastDisabledSubtitle": "Forecast-based Storm mode is off",
+  "notifForecastStormTitle": "Storm Mode — Weather Alert",
+  "notifForecastStormBody": "Bad weather ahead: {reason} — switched to Storm mode",
+  "@notifForecastStormBody": {
+    "placeholders": {
+      "reason": {"type": "String"}
+    }
+  },
+  "notifForecastStormRestoredTitle": "Adaptive Mode Restored",
+  "notifForecastStormRestoredBody": "Weather risk cleared — restored to normal HEMS mode",
+
+  "socHistoryTitle": "Battery SOC — last 24 h",
+  "socHistorySubtitle": "Charge level trend",
+  "socHistoryNoData": "Not enough data yet.\nData is collected every 5 minutes.",
+  "socHistoryReserveLabel": "Reserve",
+  "socHistoryChargingLabel": "Charging",
+  "socHistoryDischargingLabel": "Discharging",
+  "socHistoryIdleLabel": "Idle",
+
+  "scheduleRulesTitle": "Schedule Rules",
+  "scheduleRulesSubtitle": "Force a HEMS mode during a recurring time window",
+  "scheduleRulesEmpty": "No schedule rules yet.\nTap + to add your first rule.",
+  "scheduleRuleAdd": "Add Rule",
+  "scheduleRuleEdit": "Edit Rule",
+  "scheduleRuleDelete": "Delete Rule",
+  "scheduleRuleDeleteConfirm": "Delete rule \"{name}\"?",
+  "@scheduleRuleDeleteConfirm": {
+    "placeholders": {
+      "name": { "type": "String" }
+    }
+  },
+  "scheduleRuleName": "Rule name",
+  "scheduleRuleNameHint": "E.g. Morning solar, Weekend charge…",
+  "scheduleRuleDays": "Active days",
+  "scheduleRuleStartTime": "Start time",
+  "scheduleRuleEndTime": "End time",
+  "scheduleRuleMode": "Forced HEMS mode",
+  "scheduleRuleModeAdaptive": "Adaptive (Auto)",
+  "scheduleRuleModeArbitrage": "Night Arbitrage",
+  "scheduleRuleModeStorm": "Storm / Reserve",
+  "scheduleRuleActive": "Active now",
+  "scheduleRuleNameEmpty": "Please enter a name",
+  "scheduleRuleNoDays": "Select at least one day",
+  "scheduleRulePriority": "Priority",
+  "scheduleRulePriorityHint": "Higher priority wins when rules overlap",
+  "scheduleRuleConflict": "{count} rules overlap now — using highest priority",
+  "@scheduleRuleConflict": {
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  }
 }

@@ -155,6 +155,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get cancel => 'Cancel';
 
   @override
+  String get confirm => 'Confirm';
+
+  @override
   String get save => 'Save';
 
   @override
@@ -251,6 +254,9 @@ class AppLocalizationsEn extends AppLocalizations {
       'Are you sure you want to sign out from this device?';
 
   @override
+  String get dangerZone => 'Danger zone';
+
+  @override
   String get nameCannotBeEmpty => 'Name cannot be empty';
 
   @override
@@ -258,6 +264,20 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get copiedToClipboard => 'Copied to clipboard';
+
+  @override
+  String get diagnosticsSnapshot => 'Diagnostics snapshot';
+
+  @override
+  String get diagnosticsSnapshotHint =>
+      'Copy a compact report for troubleshooting or support.';
+
+  @override
+  String get copyDiagnosticsSnapshot => 'Copy snapshot';
+
+  @override
+  String get diagnosticsSnapshotCopied =>
+      'Diagnostics snapshot copied to clipboard';
 
   @override
   String get updatesTitle => 'Updates';
@@ -442,6 +462,90 @@ class AppLocalizationsEn extends AppLocalizations {
   String get batteryCapacityLabel => 'Battery capacity';
 
   @override
+  String get inputBreakerLabel => 'Input breaker';
+
+  @override
+  String get gridVoltageLabel => 'Grid voltage';
+
+  @override
+  String get houseLoadReserveLabel => 'House reserve load';
+
+  @override
+  String get autoReserveLoadTitle => 'Auto reserve load';
+
+  @override
+  String get autoReserveLoadEnabledSubtitle =>
+      'Reserve is updated automatically from live and historical load';
+
+  @override
+  String get autoReserveLoadDisabledSubtitle => 'Reserve is fixed manually';
+
+  @override
+  String get reserveModeAuto => 'Mode: AUTO';
+
+  @override
+  String get reserveModeManual => 'Mode: MANUAL';
+
+  @override
+  String get reserveModeAutoHint =>
+      'AUTO: reserve updates from live load and hourly profile with smoothing and safety headroom.';
+
+  @override
+  String get reserveModeManualHint =>
+      'MANUAL: reserve stays fixed to the value you set.';
+
+  @override
+  String get houseLoadReserveHint =>
+      'Reserve power for additional home appliances to avoid breaker trips during charging.';
+
+  @override
+  String get autoEstimateReserveLoad => 'Auto estimate reserve load';
+
+  @override
+  String get chargePowerEstimateTitle => 'Safe charge speed estimate';
+
+  @override
+  String get chargePowerSafeLimitLabel => 'Battery charge power limit';
+
+  @override
+  String get chargeCurrentSafeLimitLabel => 'Battery charge current limit';
+
+  @override
+  String get chargeCurrentConservativeLabel => 'Conservative charge current';
+
+  @override
+  String get chargeInputCurrentEstimateLabel => 'Estimated AC input current';
+
+  @override
+  String get chargeBreakerRiskSafe => 'Breaker risk: low';
+
+  @override
+  String get chargeBreakerRiskElevated => 'Breaker risk: elevated';
+
+  @override
+  String get chargeBreakerRiskHigh => 'Breaker risk: high (trip likely)';
+
+  @override
+  String chargeBreakerRiskHint(String load) {
+    return 'Analysis uses reserve/live/profile house load: $load W';
+  }
+
+  @override
+  String get chargeTimeToFullLabel => 'Time to 100%';
+
+  @override
+  String get chargeTimeUnavailable => 'Not enough data';
+
+  @override
+  String get chargeEstimateNoRealtimeSoc =>
+      'Realtime SOC is unavailable. Charge time will appear when live data is received.';
+
+  @override
+  String chargeEstimateBasedOnSoc(String soc) {
+    return 'Estimate based on current SOC: $soc%';
+  }
+
+  @override
   String get panelPowerLabel => 'Panel power';
 
   @override
@@ -522,6 +626,11 @@ class AppLocalizationsEn extends AppLocalizations {
   @override
   String hardwareSummary(String battery, String pv, String inverter) {
     return 'Battery: $battery Ah • PV: $pv W\nInverter: $inverter W';
+  }
+
+  @override
+  String chargeLimitSummary(String breaker, String power, String current) {
+    return 'Input C$breaker -> safe battery charge $power W (~$current A)';
   }
 
   @override
@@ -701,6 +810,52 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get connectionOffline => 'Offline';
+
+  @override
+  String get gridOutageDetectedShort => 'Grid outage';
+
+  @override
+  String get gridOutageVisualTitle => 'Grid power is unavailable';
+
+  @override
+  String gridOutageVisualBody(String voltage) {
+    return 'Detected by input voltage ($voltage V), not by current mode switch';
+  }
+
+  @override
+  String backupRuntimeHybrid(String duration) {
+    return 'Estimated backup time (battery + solar): ~$duration';
+  }
+
+  @override
+  String backupRuntimeBatteryOnly(String duration) {
+    return 'Battery only: ~$duration';
+  }
+
+  @override
+  String get backupRuntimeSolarCoverHint =>
+      'Solar currently covers the load, so actual runtime may be longer.';
+
+  @override
+  String get runtimeInfinite => 'continuous';
+
+  @override
+  String get runtimeNow => 'now';
+
+  @override
+  String runtimeMinutes(String minutes) {
+    return '$minutes min';
+  }
+
+  @override
+  String runtimeHoursOnly(String hours) {
+    return '$hours h';
+  }
+
+  @override
+  String runtimeHoursMinutes(String hours, String minutes) {
+    return '$hours h $minutes min';
+  }
 
   @override
   String get lastRealtimeUpdate => 'Last update';
@@ -937,4 +1092,259 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get plannedOutageEndLabel => 'Outage end';
+
+  @override
+  String get notificationsTitle => 'Notifications';
+
+  @override
+  String get notificationsEmpty => 'No notifications yet';
+
+  @override
+  String get notificationsClear => 'Clear all';
+
+  @override
+  String get notificationMarkAllRead => 'Mark all read';
+
+  @override
+  String get notifGridOutageTitle => 'Grid Power Outage';
+
+  @override
+  String get notifGridOutageBody =>
+      'Grid voltage dropped — running on solar/battery';
+
+  @override
+  String get notifGridRestoredTitle => 'Grid Power Restored';
+
+  @override
+  String notifGridRestoredBody(String voltage) {
+    return 'Grid voltage is back to normal ($voltage V)';
+  }
+
+  @override
+  String get notifLowBatteryTitle => 'Low Battery';
+
+  @override
+  String notifLowBatteryBody(String soc) {
+    return 'Battery SOC is $soc% — approaching reserve threshold';
+  }
+
+  @override
+  String get notifBatteryRecoveredTitle => 'Battery Charged';
+
+  @override
+  String notifBatteryRecoveredBody(String soc) {
+    return 'Battery SOC recovered to $soc%';
+  }
+
+  @override
+  String get notifModeChangedTitle => 'HEMS Mode Changed';
+
+  @override
+  String notifModeChangedBody(String mode) {
+    return 'Active mode: $mode';
+  }
+
+  @override
+  String get notifGridInstabilityTitle => 'Grid Instability';
+
+  @override
+  String get notifGridInstabilityBody => 'Frequent grid state changes detected';
+
+  @override
+  String get notifAutoStormTitle => 'Auto Storm Mode Activated';
+
+  @override
+  String get notifAutoStormBody =>
+      'Grid outage detected — switched to Storm mode to protect battery';
+
+  @override
+  String get notifForecastStormTitle => 'Storm Mode — Weather Alert';
+
+  @override
+  String notifForecastStormBody(String reason) {
+    return 'Bad weather ahead: $reason — switched to Storm mode';
+  }
+
+  @override
+  String get notifForecastStormRestoredTitle => 'Adaptive Mode Restored';
+
+  @override
+  String get notifForecastStormRestoredBody =>
+      'Weather risk cleared — restored to normal HEMS mode';
+
+  @override
+  String get notifAutoAdaptiveTitle => 'Adaptive Mode Restored';
+
+  @override
+  String get notifAutoAdaptiveBody =>
+      'Grid is back — restored to Adaptive mode automatically';
+
+  @override
+  String get notifAnomalyTitle => 'High Consumption Detected';
+
+  @override
+  String notifAnomalyBody(String load, String times) {
+    return 'Load is $load W — $times× above normal for this hour';
+  }
+
+  @override
+  String get notifCycleTitle => 'Battery Cycle Completed';
+
+  @override
+  String notifCycleBody(String count, String soh) {
+    return 'Total cycles: $count. Estimated battery health: $soh%';
+  }
+
+  @override
+  String get eventHistoryTitle => 'Event History';
+
+  @override
+  String get eventHistoryEmpty => 'No events recorded yet';
+
+  @override
+  String get eventHistoryClear => 'Clear history';
+
+  @override
+  String get eventHistoryShowAll => 'Show all';
+
+  @override
+  String get exportCsv => 'Export CSV';
+
+  @override
+  String exportedTo(String path) {
+    return 'Saved to:\n$path';
+  }
+
+  @override
+  String get exportFailed => 'Export failed';
+
+  @override
+  String get currentCostPerHour => 'Cost now';
+
+  @override
+  String get uahPerHour => '₴/h';
+
+  @override
+  String get batteryCycles => 'Cycles';
+
+  @override
+  String get batteryHealth => 'Battery health';
+
+  @override
+  String battSohPercent(String soh) {
+    return 'SOH $soh%';
+  }
+
+  @override
+  String get resetCycleCount => 'Reset counter';
+
+  @override
+  String get gridAutoStormNote =>
+      'Auto Storm mode was activated due to grid outage';
+
+  @override
+  String get autoStormByForecastTitle => 'Auto Storm mode by weather forecast';
+
+  @override
+  String get autoStormByForecastEnabledSubtitle =>
+      'Switches to Storm mode when bad weather is predicted (next 12 h)';
+
+  @override
+  String get autoStormByForecastDisabledSubtitle =>
+      'Forecast-based Storm mode is off';
+
+  @override
+  String get socHistoryTitle => 'Battery SOC — last 24 h';
+
+  @override
+  String get socHistorySubtitle => 'Charge level trend';
+
+  @override
+  String get socHistoryNoData =>
+      'Not enough data yet.\nData is collected every 5 minutes.';
+
+  @override
+  String get socHistoryReserveLabel => 'Reserve';
+
+  @override
+  String get socHistoryChargingLabel => 'Charging';
+
+  @override
+  String get socHistoryDischargingLabel => 'Discharging';
+
+  @override
+  String get socHistoryIdleLabel => 'Idle';
+
+  @override
+  String get scheduleRulesTitle => 'Schedule Rules';
+
+  @override
+  String get scheduleRulesSubtitle =>
+      'Force a HEMS mode during a recurring time window';
+
+  @override
+  String get scheduleRulesEmpty =>
+      'No schedule rules yet.\nTap + to add your first rule.';
+
+  @override
+  String get scheduleRuleAdd => 'Add Rule';
+
+  @override
+  String get scheduleRuleEdit => 'Edit Rule';
+
+  @override
+  String get scheduleRuleDelete => 'Delete Rule';
+
+  @override
+  String scheduleRuleDeleteConfirm(String name) {
+    return 'Delete rule \"$name\"?';
+  }
+
+  @override
+  String get scheduleRuleName => 'Rule name';
+
+  @override
+  String get scheduleRuleNameHint => 'E.g. Morning solar, Weekend charge…';
+
+  @override
+  String get scheduleRuleDays => 'Active days';
+
+  @override
+  String get scheduleRuleStartTime => 'Start time';
+
+  @override
+  String get scheduleRuleEndTime => 'End time';
+
+  @override
+  String get scheduleRuleMode => 'Forced HEMS mode';
+
+  @override
+  String get scheduleRuleModeAdaptive => 'Adaptive (Auto)';
+
+  @override
+  String get scheduleRuleModeArbitrage => 'Night Arbitrage';
+
+  @override
+  String get scheduleRuleModeStorm => 'Storm / Reserve';
+
+  @override
+  String get scheduleRuleActive => 'Active now';
+
+  @override
+  String get scheduleRuleNameEmpty => 'Please enter a name';
+
+  @override
+  String get scheduleRuleNoDays => 'Select at least one day';
+
+  @override
+  String get scheduleRulePriority => 'Priority';
+
+  @override
+  String get scheduleRulePriorityHint =>
+      'Higher priority wins when rules overlap';
+
+  @override
+  String scheduleRuleConflict(int count) {
+    return '$count rules overlap now — using highest priority';
+  }
 }

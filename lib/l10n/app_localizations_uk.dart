@@ -154,6 +154,9 @@ class AppLocalizationsUk extends AppLocalizations {
   String get cancel => 'Скасувати';
 
   @override
+  String get confirm => 'Підтвердити';
+
+  @override
   String get save => 'Зберегти';
 
   @override
@@ -249,6 +252,9 @@ class AppLocalizationsUk extends AppLocalizations {
       'Ви впевнені, що хочете вийти на цьому пристрої?';
 
   @override
+  String get dangerZone => 'Небезпечна зона';
+
+  @override
   String get nameCannotBeEmpty => 'Ім\'я не може бути порожнім';
 
   @override
@@ -256,6 +262,20 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get copiedToClipboard => 'Скопійовано в буфер обміну';
+
+  @override
+  String get diagnosticsSnapshot => 'Знімок діагностики';
+
+  @override
+  String get diagnosticsSnapshotHint =>
+      'Скопіюйте компактний звіт для діагностики або підтримки.';
+
+  @override
+  String get copyDiagnosticsSnapshot => 'Копіювати знімок';
+
+  @override
+  String get diagnosticsSnapshotCopied =>
+      'Знімок діагностики скопійовано в буфер обміну';
 
   @override
   String get updatesTitle => 'Оновлення';
@@ -441,6 +461,91 @@ class AppLocalizationsUk extends AppLocalizations {
   String get batteryCapacityLabel => 'Ємність АКБ';
 
   @override
+  String get inputBreakerLabel => 'Ввідний автомат';
+
+  @override
+  String get gridVoltageLabel => 'Напруга мережі';
+
+  @override
+  String get houseLoadReserveLabel => 'Резерв навантаження будинку';
+
+  @override
+  String get autoReserveLoadTitle => 'Авто-резерв будинку';
+
+  @override
+  String get autoReserveLoadEnabledSubtitle =>
+      'Резерв оновлюється автоматично за live та історичним навантаженням';
+
+  @override
+  String get autoReserveLoadDisabledSubtitle => 'Резерв фіксується вручну';
+
+  @override
+  String get reserveModeAuto => 'Режим: AUTO';
+
+  @override
+  String get reserveModeManual => 'Режим: MANUAL';
+
+  @override
+  String get reserveModeAutoHint =>
+      'AUTO: резерв оновлюється за live-навантаженням і погодинним профілем зі згладжуванням та запасом безпеки.';
+
+  @override
+  String get reserveModeManualHint =>
+      'MANUAL: резерв фіксований і дорівнює значенню, яке ви задали вручну.';
+
+  @override
+  String get houseLoadReserveHint =>
+      'Резерв потужності для додаткових приладів, щоб під час заряду не вибивав автомат.';
+
+  @override
+  String get autoEstimateReserveLoad => 'Автооцінка резерву будинку';
+
+  @override
+  String get chargePowerEstimateTitle => 'Оцінка безпечної швидкості заряду';
+
+  @override
+  String get chargePowerSafeLimitLabel => 'Ліміт потужності заряду АКБ';
+
+  @override
+  String get chargeCurrentSafeLimitLabel => 'Ліміт струму заряду АКБ';
+
+  @override
+  String get chargeCurrentConservativeLabel => 'Консервативний струм заряду';
+
+  @override
+  String get chargeInputCurrentEstimateLabel => 'Оцінка струму по вводу AC';
+
+  @override
+  String get chargeBreakerRiskSafe => 'Ризик автомата: низький';
+
+  @override
+  String get chargeBreakerRiskElevated => 'Ризик автомата: підвищений';
+
+  @override
+  String get chargeBreakerRiskHigh =>
+      'Ризик автомата: високий (можливе спрацювання)';
+
+  @override
+  String chargeBreakerRiskHint(String load) {
+    return 'Аналіз враховує резерв/live/профільне навантаження: $load W';
+  }
+
+  @override
+  String get chargeTimeToFullLabel => 'Час до 100%';
+
+  @override
+  String get chargeTimeUnavailable => 'Недостатньо даних';
+
+  @override
+  String get chargeEstimateNoRealtimeSoc =>
+      'Немає поточного SOC. Час заряду з\'явиться після отримання телеметрії.';
+
+  @override
+  String chargeEstimateBasedOnSoc(String soc) {
+    return 'Оцінка за поточним SOC: $soc%';
+  }
+
+  @override
   String get panelPowerLabel => 'Потужність панелей';
 
   @override
@@ -522,6 +627,11 @@ class AppLocalizationsUk extends AppLocalizations {
   @override
   String hardwareSummary(String battery, String pv, String inverter) {
     return 'АКБ: $battery Ah • PV: $pv W\nІнвертор: $inverter W';
+  }
+
+  @override
+  String chargeLimitSummary(String breaker, String power, String current) {
+    return 'Ввід C$breaker -> безпечний заряд АКБ $power W (~$current A)';
   }
 
   @override
@@ -702,6 +812,52 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get connectionOffline => 'Офлайн';
+
+  @override
+  String get gridOutageDetectedShort => 'Мережа відсутня';
+
+  @override
+  String get gridOutageVisualTitle => 'Мережа зараз відсутня';
+
+  @override
+  String gridOutageVisualBody(String voltage) {
+    return 'Визначено за вхідною напругою ($voltage В), а не перемиканням режиму';
+  }
+
+  @override
+  String backupRuntimeHybrid(String duration) {
+    return 'Орієнтовна автономність (АКБ + сонце): ~$duration';
+  }
+
+  @override
+  String backupRuntimeBatteryOnly(String duration) {
+    return 'Лише АКБ: ~$duration';
+  }
+
+  @override
+  String get backupRuntimeSolarCoverHint =>
+      'Сонце зараз покриває навантаження, тому фактичний час може бути довшим.';
+
+  @override
+  String get runtimeInfinite => 'без обмеження';
+
+  @override
+  String get runtimeNow => 'зараз';
+
+  @override
+  String runtimeMinutes(String minutes) {
+    return '$minutes хв';
+  }
+
+  @override
+  String runtimeHoursOnly(String hours) {
+    return '$hours год';
+  }
+
+  @override
+  String runtimeHoursMinutes(String hours, String minutes) {
+    return '$hours год $minutes хв';
+  }
 
   @override
   String get lastRealtimeUpdate => 'Останнє оновлення';
@@ -942,4 +1098,260 @@ class AppLocalizationsUk extends AppLocalizations {
 
   @override
   String get plannedOutageEndLabel => 'Кінець відключення';
+
+  @override
+  String get notificationsTitle => 'Сповіщення';
+
+  @override
+  String get notificationsEmpty => 'Поки немає сповіщень';
+
+  @override
+  String get notificationsClear => 'Очистити всі';
+
+  @override
+  String get notificationMarkAllRead => 'Позначити прочитаними';
+
+  @override
+  String get notifGridOutageTitle => 'Відключення мережі';
+
+  @override
+  String get notifGridOutageBody =>
+      'Напруга мережі впала — живлення від сонця/батареї';
+
+  @override
+  String get notifGridRestoredTitle => 'Мережа відновлена';
+
+  @override
+  String notifGridRestoredBody(String voltage) {
+    return 'Напруга мережі повернулась до норми ($voltage В)';
+  }
+
+  @override
+  String get notifLowBatteryTitle => 'Низький заряд батареї';
+
+  @override
+  String notifLowBatteryBody(String soc) {
+    return 'SOC батареї $soc% — наближається до резервного порогу';
+  }
+
+  @override
+  String get notifBatteryRecoveredTitle => 'Батарея заряджена';
+
+  @override
+  String notifBatteryRecoveredBody(String soc) {
+    return 'SOC батареї відновився до $soc%';
+  }
+
+  @override
+  String get notifModeChangedTitle => 'Режим HEMS змінено';
+
+  @override
+  String notifModeChangedBody(String mode) {
+    return 'Активний режим: $mode';
+  }
+
+  @override
+  String get notifGridInstabilityTitle => 'Нестабільність мережі';
+
+  @override
+  String get notifGridInstabilityBody => 'Виявлено часті зміни стану мережі';
+
+  @override
+  String get notifAutoStormTitle => 'Авто-режим Шторм активовано';
+
+  @override
+  String get notifAutoStormBody =>
+      'Виявлено відключення мережі — перемкнуто в режим Шторм для захисту батареї';
+
+  @override
+  String get notifForecastStormTitle => 'Режим Шторм — попередження погоди';
+
+  @override
+  String notifForecastStormBody(String reason) {
+    return 'Небезпечна погода: $reason — активовано режим Шторм';
+  }
+
+  @override
+  String get notifForecastStormRestoredTitle => 'Відновлено адаптивний режим';
+
+  @override
+  String get notifForecastStormRestoredBody =>
+      'Ризик поганої погоди минув — відновлено нормальний режим HEMS';
+
+  @override
+  String get notifAutoAdaptiveTitle => 'Адаптивний режим відновлено';
+
+  @override
+  String get notifAutoAdaptiveBody =>
+      'Мережа повернулась — автоматично відновлено Адаптивний режим';
+
+  @override
+  String get notifAnomalyTitle => 'Виявлено підвищене споживання';
+
+  @override
+  String notifAnomalyBody(String load, String times) {
+    return 'Навантаження $load Вт — $times× вище норми для цієї години';
+  }
+
+  @override
+  String get notifCycleTitle => 'Цикл заряду завершено';
+
+  @override
+  String notifCycleBody(String count, String soh) {
+    return 'Всього циклів: $count. Стан батареї: $soh%';
+  }
+
+  @override
+  String get eventHistoryTitle => 'Журнал подій';
+
+  @override
+  String get eventHistoryEmpty => 'Ще немає записаних подій';
+
+  @override
+  String get eventHistoryClear => 'Очистити журнал';
+
+  @override
+  String get eventHistoryShowAll => 'Показати всі';
+
+  @override
+  String get exportCsv => 'Експорт CSV';
+
+  @override
+  String exportedTo(String path) {
+    return 'Збережено:\n$path';
+  }
+
+  @override
+  String get exportFailed => 'Помилка експорту';
+
+  @override
+  String get currentCostPerHour => 'Зараз коштує';
+
+  @override
+  String get uahPerHour => '₴/год';
+
+  @override
+  String get batteryCycles => 'Цикли';
+
+  @override
+  String get batteryHealth => 'Здоров\'я батареї';
+
+  @override
+  String battSohPercent(String soh) {
+    return 'SOH $soh%';
+  }
+
+  @override
+  String get resetCycleCount => 'Скинути лічильник';
+
+  @override
+  String get gridAutoStormNote =>
+      'Режим Шторм активовано автоматично через відключення мережі';
+
+  @override
+  String get autoStormByForecastTitle =>
+      'Автоматичний режим Шторм за прогнозом погоди';
+
+  @override
+  String get autoStormByForecastEnabledSubtitle =>
+      'Перемикає в режим Шторм при небезпечному прогнозі (найближчі 12 год)';
+
+  @override
+  String get autoStormByForecastDisabledSubtitle =>
+      'Автоматичний режим Шторм за прогнозом вимкнено';
+
+  @override
+  String get socHistoryTitle => 'SOC акумулятора — останні 24 год';
+
+  @override
+  String get socHistorySubtitle => 'Тренд рівня заряду';
+
+  @override
+  String get socHistoryNoData =>
+      'Даних ще недостатньо.\nДані збираються кожні 5 хвилин.';
+
+  @override
+  String get socHistoryReserveLabel => 'Резерв';
+
+  @override
+  String get socHistoryChargingLabel => 'Заряд';
+
+  @override
+  String get socHistoryDischargingLabel => 'Розряд';
+
+  @override
+  String get socHistoryIdleLabel => 'Очікування';
+
+  @override
+  String get scheduleRulesTitle => 'Розклад режимів';
+
+  @override
+  String get scheduleRulesSubtitle =>
+      'Примусовий режим HEMS у вказаний часовий проміжок';
+
+  @override
+  String get scheduleRulesEmpty =>
+      'Правил ще немає.\nНатисніть + щоб додати перше правило.';
+
+  @override
+  String get scheduleRuleAdd => 'Додати правило';
+
+  @override
+  String get scheduleRuleEdit => 'Редагувати правило';
+
+  @override
+  String get scheduleRuleDelete => 'Видалити правило';
+
+  @override
+  String scheduleRuleDeleteConfirm(String name) {
+    return 'Видалити правило \"$name\"?';
+  }
+
+  @override
+  String get scheduleRuleName => 'Назва правила';
+
+  @override
+  String get scheduleRuleNameHint => 'Напр. Ранкова сонячна, Вихідний заряд…';
+
+  @override
+  String get scheduleRuleDays => 'Активні дні';
+
+  @override
+  String get scheduleRuleStartTime => 'Час початку';
+
+  @override
+  String get scheduleRuleEndTime => 'Час завершення';
+
+  @override
+  String get scheduleRuleMode => 'Примусовий режим HEMS';
+
+  @override
+  String get scheduleRuleModeAdaptive => 'Адаптивний (Авто)';
+
+  @override
+  String get scheduleRuleModeArbitrage => 'Нічний арбітраж';
+
+  @override
+  String get scheduleRuleModeStorm => 'Шторм / Резерв';
+
+  @override
+  String get scheduleRuleActive => 'Активно зараз';
+
+  @override
+  String get scheduleRuleNameEmpty => 'Будь ласка, введіть назву';
+
+  @override
+  String get scheduleRuleNoDays => 'Оберіть хоча б один день';
+
+  @override
+  String get scheduleRulePriority => 'Пріоритет';
+
+  @override
+  String get scheduleRulePriorityHint =>
+      'Вищий пріоритет виграє при перетині правил';
+
+  @override
+  String scheduleRuleConflict(int count) {
+    return '$count правил активні зараз — обрано з найвищим пріоритетом';
+  }
 }

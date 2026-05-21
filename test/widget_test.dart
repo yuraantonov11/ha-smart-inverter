@@ -84,13 +84,17 @@ void main() {
     await _pumpMainScreen(
       tester,
       provider,
-      size: const Size(820, 900),
+      // Use 960×1000 so NavigationBar labels are shown (width > 950) and
+      // the bar is fully within the render bounds (height > bottom bar).
+      size: const Size(960, 1000),
     );
 
     expect(find.byType(NavigationBar), findsOneWidget);
     expect(find.byType(NavigationRail), findsNothing);
 
-    await tester.tap(find.text('Automation'));
+    // Tap the Automation destination — use warnIfMissed: false because on
+    // some test frame sizes the label text may sit right at the boundary.
+    await tester.tap(find.text('Automation'), warnIfMissed: false);
     await tester.pumpAndSettle();
 
     expect(find.text('Intelligent HEMS Modes'), findsOneWidget);

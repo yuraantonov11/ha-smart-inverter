@@ -26,3 +26,9 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 *.har
+
+release_assets/
+push_release*.log
+windows/Output/*.exe
+windows/Output/*.msix
+windows/Output/*.zip

@@ -1868,8 +1868,19 @@ class InverterService {
         '/apis/remote/device/config/write',
         queryParameters: {'deviceId': deviceSn},
         data: {'id': deviceSn, 'key': key, 'value': value},
+        options: Options(
+          connectTimeout: const Duration(seconds: 30),
+          sendTimeout: const Duration(seconds: 30),
+          receiveTimeout: const Duration(seconds: 45),
+        ),
       );
       return response.data['code'] == 0;
+    } on DioException catch (e) {
+      app_log.LogService.log(
+        '⚠️ setConfigItem failed: key=$key value=$value '
+        'type=${e.type} status=${e.response?.statusCode}',
+      );
+      return false;
     } catch (e) {
       return false;
     }
@@ -1883,6 +1894,16 @@ class InverterService {
       return true;
     }
     return false;
+  }
+
+  Future<bool> setMaxChargingCurrent(int amps) async {
+    final safeAmps = amps.clamp(0, 200).toInt();
+    return setConfigItem('setMaxChargingCurrent', safeAmps.toString());
+  }
+
+  Future<bool> setUtilityMaxChargingCurrent(int amps) async {
+    final safeAmps = amps.clamp(0, 200).toInt();
+    return setConfigItem('setUtilityMaxChargingCurrent', safeAmps.toString());
   }
 
   void _logChartSummary(String prefix, Map<String, List<FlSpot>> data) {

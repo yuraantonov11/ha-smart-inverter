@@ -380,6 +380,12 @@ abstract class AppLocalizations {
   /// **'Cancel'**
   String get cancel;
 
+  /// No description provided for @confirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Confirm'**
+  String get confirm;
+
   /// No description provided for @save.
   ///
   /// In en, this message translates to:
@@ -560,6 +566,12 @@ abstract class AppLocalizations {
   /// **'Are you sure you want to sign out from this device?'**
   String get logoutConfirmMessage;
 
+  /// No description provided for @dangerZone.
+  ///
+  /// In en, this message translates to:
+  /// **'Danger zone'**
+  String get dangerZone;
+
   /// No description provided for @nameCannotBeEmpty.
   ///
   /// In en, this message translates to:
@@ -577,6 +589,30 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Copied to clipboard'**
   String get copiedToClipboard;
+
+  /// No description provided for @diagnosticsSnapshot.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostics snapshot'**
+  String get diagnosticsSnapshot;
+
+  /// No description provided for @diagnosticsSnapshotHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy a compact report for troubleshooting or support.'**
+  String get diagnosticsSnapshotHint;
+
+  /// No description provided for @copyDiagnosticsSnapshot.
+  ///
+  /// In en, this message translates to:
+  /// **'Copy snapshot'**
+  String get copyDiagnosticsSnapshot;
+
+  /// No description provided for @diagnosticsSnapshotCopied.
+  ///
+  /// In en, this message translates to:
+  /// **'Diagnostics snapshot copied to clipboard'**
+  String get diagnosticsSnapshotCopied;
 
   /// No description provided for @updatesTitle.
   ///
@@ -878,6 +914,156 @@ abstract class AppLocalizations {
   /// **'Battery capacity'**
   String get batteryCapacityLabel;
 
+  /// No description provided for @inputBreakerLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Input breaker'**
+  String get inputBreakerLabel;
+
+  /// No description provided for @gridVoltageLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid voltage'**
+  String get gridVoltageLabel;
+
+  /// No description provided for @houseLoadReserveLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'House reserve load'**
+  String get houseLoadReserveLabel;
+
+  /// No description provided for @autoReserveLoadTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto reserve load'**
+  String get autoReserveLoadTitle;
+
+  /// No description provided for @autoReserveLoadEnabledSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Reserve is updated automatically from live and historical load'**
+  String get autoReserveLoadEnabledSubtitle;
+
+  /// No description provided for @autoReserveLoadDisabledSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Reserve is fixed manually'**
+  String get autoReserveLoadDisabledSubtitle;
+
+  /// No description provided for @reserveModeAuto.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode: AUTO'**
+  String get reserveModeAuto;
+
+  /// No description provided for @reserveModeManual.
+  ///
+  /// In en, this message translates to:
+  /// **'Mode: MANUAL'**
+  String get reserveModeManual;
+
+  /// No description provided for @reserveModeAutoHint.
+  ///
+  /// In en, this message translates to:
+  /// **'AUTO: reserve updates from live load and hourly profile with smoothing and safety headroom.'**
+  String get reserveModeAutoHint;
+
+  /// No description provided for @reserveModeManualHint.
+  ///
+  /// In en, this message translates to:
+  /// **'MANUAL: reserve stays fixed to the value you set.'**
+  String get reserveModeManualHint;
+
+  /// No description provided for @houseLoadReserveHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Reserve power for additional home appliances to avoid breaker trips during charging.'**
+  String get houseLoadReserveHint;
+
+  /// No description provided for @autoEstimateReserveLoad.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto estimate reserve load'**
+  String get autoEstimateReserveLoad;
+
+  /// No description provided for @chargePowerEstimateTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Safe charge speed estimate'**
+  String get chargePowerEstimateTitle;
+
+  /// No description provided for @chargePowerSafeLimitLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery charge power limit'**
+  String get chargePowerSafeLimitLabel;
+
+  /// No description provided for @chargeCurrentSafeLimitLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery charge current limit'**
+  String get chargeCurrentSafeLimitLabel;
+
+  /// No description provided for @chargeCurrentConservativeLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Conservative charge current'**
+  String get chargeCurrentConservativeLabel;
+
+  /// No description provided for @chargeInputCurrentEstimateLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated AC input current'**
+  String get chargeInputCurrentEstimateLabel;
+
+  /// No description provided for @chargeBreakerRiskSafe.
+  ///
+  /// In en, this message translates to:
+  /// **'Breaker risk: low'**
+  String get chargeBreakerRiskSafe;
+
+  /// No description provided for @chargeBreakerRiskElevated.
+  ///
+  /// In en, this message translates to:
+  /// **'Breaker risk: elevated'**
+  String get chargeBreakerRiskElevated;
+
+  /// No description provided for @chargeBreakerRiskHigh.
+  ///
+  /// In en, this message translates to:
+  /// **'Breaker risk: high (trip likely)'**
+  String get chargeBreakerRiskHigh;
+
+  /// No description provided for @chargeBreakerRiskHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Analysis uses reserve/live/profile house load: {load} W'**
+  String chargeBreakerRiskHint(String load);
+
+  /// No description provided for @chargeTimeToFullLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Time to 100%'**
+  String get chargeTimeToFullLabel;
+
+  /// No description provided for @chargeTimeUnavailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Not enough data'**
+  String get chargeTimeUnavailable;
+
+  /// No description provided for @chargeEstimateNoRealtimeSoc.
+  ///
+  /// In en, this message translates to:
+  /// **'Realtime SOC is unavailable. Charge time will appear when live data is received.'**
+  String get chargeEstimateNoRealtimeSoc;
+
+  /// No description provided for @chargeEstimateBasedOnSoc.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimate based on current SOC: {soc}%'**
+  String chargeEstimateBasedOnSoc(String soc);
+
   /// No description provided for @panelPowerLabel.
   ///
   /// In en, this message translates to:
@@ -1027,6 +1213,12 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Battery: {battery} Ah • PV: {pv} W\nInverter: {inverter} W'**
   String hardwareSummary(String battery, String pv, String inverter);
+
+  /// No description provided for @chargeLimitSummary.
+  ///
+  /// In en, this message translates to:
+  /// **'Input C{breaker} -> safe battery charge {power} W (~{current} A)'**
+  String chargeLimitSummary(String breaker, String power, String current);
 
   /// No description provided for @logsTitle.
   ///
@@ -1369,6 +1561,72 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Offline'**
   String get connectionOffline;
+
+  /// No description provided for @gridOutageDetectedShort.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid outage'**
+  String get gridOutageDetectedShort;
+
+  /// No description provided for @gridOutageVisualTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid power is unavailable'**
+  String get gridOutageVisualTitle;
+
+  /// No description provided for @gridOutageVisualBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Detected by input voltage ({voltage} V), not by current mode switch'**
+  String gridOutageVisualBody(String voltage);
+
+  /// No description provided for @backupRuntimeHybrid.
+  ///
+  /// In en, this message translates to:
+  /// **'Estimated backup time (battery + solar): ~{duration}'**
+  String backupRuntimeHybrid(String duration);
+
+  /// No description provided for @backupRuntimeBatteryOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery only: ~{duration}'**
+  String backupRuntimeBatteryOnly(String duration);
+
+  /// No description provided for @backupRuntimeSolarCoverHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Solar currently covers the load, so actual runtime may be longer.'**
+  String get backupRuntimeSolarCoverHint;
+
+  /// No description provided for @runtimeInfinite.
+  ///
+  /// In en, this message translates to:
+  /// **'continuous'**
+  String get runtimeInfinite;
+
+  /// No description provided for @runtimeNow.
+  ///
+  /// In en, this message translates to:
+  /// **'now'**
+  String get runtimeNow;
+
+  /// No description provided for @runtimeMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'{minutes} min'**
+  String runtimeMinutes(String minutes);
+
+  /// No description provided for @runtimeHoursOnly.
+  ///
+  /// In en, this message translates to:
+  /// **'{hours} h'**
+  String runtimeHoursOnly(String hours);
+
+  /// No description provided for @runtimeHoursMinutes.
+  ///
+  /// In en, this message translates to:
+  /// **'{hours} h {minutes} min'**
+  String runtimeHoursMinutes(String hours, String minutes);
 
   /// No description provided for @lastRealtimeUpdate.
   ///
@@ -1777,6 +2035,450 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Outage end'**
   String get plannedOutageEndLabel;
+
+  /// No description provided for @notificationsTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Notifications'**
+  String get notificationsTitle;
+
+  /// No description provided for @notificationsEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No notifications yet'**
+  String get notificationsEmpty;
+
+  /// No description provided for @notificationsClear.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear all'**
+  String get notificationsClear;
+
+  /// No description provided for @notificationMarkAllRead.
+  ///
+  /// In en, this message translates to:
+  /// **'Mark all read'**
+  String get notificationMarkAllRead;
+
+  /// No description provided for @notifGridOutageTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid Power Outage'**
+  String get notifGridOutageTitle;
+
+  /// No description provided for @notifGridOutageBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid voltage dropped — running on solar/battery'**
+  String get notifGridOutageBody;
+
+  /// No description provided for @notifGridRestoredTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid Power Restored'**
+  String get notifGridRestoredTitle;
+
+  /// No description provided for @notifGridRestoredBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid voltage is back to normal ({voltage} V)'**
+  String notifGridRestoredBody(String voltage);
+
+  /// No description provided for @notifLowBatteryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Low Battery'**
+  String get notifLowBatteryTitle;
+
+  /// No description provided for @notifLowBatteryBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery SOC is {soc}% — approaching reserve threshold'**
+  String notifLowBatteryBody(String soc);
+
+  /// No description provided for @notifBatteryRecoveredTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery Charged'**
+  String get notifBatteryRecoveredTitle;
+
+  /// No description provided for @notifBatteryRecoveredBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery SOC recovered to {soc}%'**
+  String notifBatteryRecoveredBody(String soc);
+
+  /// No description provided for @notifModeChangedTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'HEMS Mode Changed'**
+  String get notifModeChangedTitle;
+
+  /// No description provided for @notifModeChangedBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Active mode: {mode}'**
+  String notifModeChangedBody(String mode);
+
+  /// No description provided for @notifGridInstabilityTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid Instability'**
+  String get notifGridInstabilityTitle;
+
+  /// No description provided for @notifGridInstabilityBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Frequent grid state changes detected'**
+  String get notifGridInstabilityBody;
+
+  /// No description provided for @notifAutoStormTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto Storm Mode Activated'**
+  String get notifAutoStormTitle;
+
+  /// No description provided for @notifAutoStormBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid outage detected — switched to Storm mode to protect battery'**
+  String get notifAutoStormBody;
+
+  /// No description provided for @notifForecastStormTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Storm Mode — Weather Alert'**
+  String get notifForecastStormTitle;
+
+  /// No description provided for @notifForecastStormBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Bad weather ahead: {reason} — switched to Storm mode'**
+  String notifForecastStormBody(String reason);
+
+  /// No description provided for @notifForecastStormRestoredTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Adaptive Mode Restored'**
+  String get notifForecastStormRestoredTitle;
+
+  /// No description provided for @notifForecastStormRestoredBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Weather risk cleared — restored to normal HEMS mode'**
+  String get notifForecastStormRestoredBody;
+
+  /// No description provided for @notifAutoAdaptiveTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Adaptive Mode Restored'**
+  String get notifAutoAdaptiveTitle;
+
+  /// No description provided for @notifAutoAdaptiveBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Grid is back — restored to Adaptive mode automatically'**
+  String get notifAutoAdaptiveBody;
+
+  /// No description provided for @notifAnomalyTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'High Consumption Detected'**
+  String get notifAnomalyTitle;
+
+  /// No description provided for @notifAnomalyBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Load is {load} W — {times}× above normal for this hour'**
+  String notifAnomalyBody(String load, String times);
+
+  /// No description provided for @notifCycleTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery Cycle Completed'**
+  String get notifCycleTitle;
+
+  /// No description provided for @notifCycleBody.
+  ///
+  /// In en, this message translates to:
+  /// **'Total cycles: {count}. Estimated battery health: {soh}%'**
+  String notifCycleBody(String count, String soh);
+
+  /// No description provided for @eventHistoryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Event History'**
+  String get eventHistoryTitle;
+
+  /// No description provided for @eventHistoryEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No events recorded yet'**
+  String get eventHistoryEmpty;
+
+  /// No description provided for @eventHistoryClear.
+  ///
+  /// In en, this message translates to:
+  /// **'Clear history'**
+  String get eventHistoryClear;
+
+  /// No description provided for @eventHistoryShowAll.
+  ///
+  /// In en, this message translates to:
+  /// **'Show all'**
+  String get eventHistoryShowAll;
+
+  /// No description provided for @exportCsv.
+  ///
+  /// In en, this message translates to:
+  /// **'Export CSV'**
+  String get exportCsv;
+
+  /// No description provided for @exportedTo.
+  ///
+  /// In en, this message translates to:
+  /// **'Saved to:\n{path}'**
+  String exportedTo(String path);
+
+  /// No description provided for @exportFailed.
+  ///
+  /// In en, this message translates to:
+  /// **'Export failed'**
+  String get exportFailed;
+
+  /// No description provided for @currentCostPerHour.
+  ///
+  /// In en, this message translates to:
+  /// **'Cost now'**
+  String get currentCostPerHour;
+
+  /// No description provided for @uahPerHour.
+  ///
+  /// In en, this message translates to:
+  /// **'₴/h'**
+  String get uahPerHour;
+
+  /// No description provided for @batteryCycles.
+  ///
+  /// In en, this message translates to:
+  /// **'Cycles'**
+  String get batteryCycles;
+
+  /// No description provided for @batteryHealth.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery health'**
+  String get batteryHealth;
+
+  /// No description provided for @battSohPercent.
+  ///
+  /// In en, this message translates to:
+  /// **'SOH {soh}%'**
+  String battSohPercent(String soh);
+
+  /// No description provided for @resetCycleCount.
+  ///
+  /// In en, this message translates to:
+  /// **'Reset counter'**
+  String get resetCycleCount;
+
+  /// No description provided for @gridAutoStormNote.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto Storm mode was activated due to grid outage'**
+  String get gridAutoStormNote;
+
+  /// No description provided for @autoStormByForecastTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Auto Storm mode by weather forecast'**
+  String get autoStormByForecastTitle;
+
+  /// No description provided for @autoStormByForecastEnabledSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Switches to Storm mode when bad weather is predicted (next 12 h)'**
+  String get autoStormByForecastEnabledSubtitle;
+
+  /// No description provided for @autoStormByForecastDisabledSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Forecast-based Storm mode is off'**
+  String get autoStormByForecastDisabledSubtitle;
+
+  /// No description provided for @socHistoryTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Battery SOC — last 24 h'**
+  String get socHistoryTitle;
+
+  /// No description provided for @socHistorySubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Charge level trend'**
+  String get socHistorySubtitle;
+
+  /// No description provided for @socHistoryNoData.
+  ///
+  /// In en, this message translates to:
+  /// **'Not enough data yet.\nData is collected every 5 minutes.'**
+  String get socHistoryNoData;
+
+  /// No description provided for @socHistoryReserveLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Reserve'**
+  String get socHistoryReserveLabel;
+
+  /// No description provided for @socHistoryChargingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Charging'**
+  String get socHistoryChargingLabel;
+
+  /// No description provided for @socHistoryDischargingLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Discharging'**
+  String get socHistoryDischargingLabel;
+
+  /// No description provided for @socHistoryIdleLabel.
+  ///
+  /// In en, this message translates to:
+  /// **'Idle'**
+  String get socHistoryIdleLabel;
+
+  /// No description provided for @scheduleRulesTitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Schedule Rules'**
+  String get scheduleRulesTitle;
+
+  /// No description provided for @scheduleRulesSubtitle.
+  ///
+  /// In en, this message translates to:
+  /// **'Force a HEMS mode during a recurring time window'**
+  String get scheduleRulesSubtitle;
+
+  /// No description provided for @scheduleRulesEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'No schedule rules yet.\nTap + to add your first rule.'**
+  String get scheduleRulesEmpty;
+
+  /// No description provided for @scheduleRuleAdd.
+  ///
+  /// In en, this message translates to:
+  /// **'Add Rule'**
+  String get scheduleRuleAdd;
+
+  /// No description provided for @scheduleRuleEdit.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit Rule'**
+  String get scheduleRuleEdit;
+
+  /// No description provided for @scheduleRuleDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete Rule'**
+  String get scheduleRuleDelete;
+
+  /// No description provided for @scheduleRuleDeleteConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete rule \"{name}\"?'**
+  String scheduleRuleDeleteConfirm(String name);
+
+  /// No description provided for @scheduleRuleName.
+  ///
+  /// In en, this message translates to:
+  /// **'Rule name'**
+  String get scheduleRuleName;
+
+  /// No description provided for @scheduleRuleNameHint.
+  ///
+  /// In en, this message translates to:
+  /// **'E.g. Morning solar, Weekend charge…'**
+  String get scheduleRuleNameHint;
+
+  /// No description provided for @scheduleRuleDays.
+  ///
+  /// In en, this message translates to:
+  /// **'Active days'**
+  String get scheduleRuleDays;
+
+  /// No description provided for @scheduleRuleStartTime.
+  ///
+  /// In en, this message translates to:
+  /// **'Start time'**
+  String get scheduleRuleStartTime;
+
+  /// No description provided for @scheduleRuleEndTime.
+  ///
+  /// In en, this message translates to:
+  /// **'End time'**
+  String get scheduleRuleEndTime;
+
+  /// No description provided for @scheduleRuleMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Forced HEMS mode'**
+  String get scheduleRuleMode;
+
+  /// No description provided for @scheduleRuleModeAdaptive.
+  ///
+  /// In en, this message translates to:
+  /// **'Adaptive (Auto)'**
+  String get scheduleRuleModeAdaptive;
+
+  /// No description provided for @scheduleRuleModeArbitrage.
+  ///
+  /// In en, this message translates to:
+  /// **'Night Arbitrage'**
+  String get scheduleRuleModeArbitrage;
+
+  /// No description provided for @scheduleRuleModeStorm.
+  ///
+  /// In en, this message translates to:
+  /// **'Storm / Reserve'**
+  String get scheduleRuleModeStorm;
+
+  /// No description provided for @scheduleRuleActive.
+  ///
+  /// In en, this message translates to:
+  /// **'Active now'**
+  String get scheduleRuleActive;
+
+  /// No description provided for @scheduleRuleNameEmpty.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter a name'**
+  String get scheduleRuleNameEmpty;
+
+  /// No description provided for @scheduleRuleNoDays.
+  ///
+  /// In en, this message translates to:
+  /// **'Select at least one day'**
+  String get scheduleRuleNoDays;
+
+  /// No description provided for @scheduleRulePriority.
+  ///
+  /// In en, this message translates to:
+  /// **'Priority'**
+  String get scheduleRulePriority;
+
+  /// No description provided for @scheduleRulePriorityHint.
+  ///
+  /// In en, this message translates to:
+  /// **'Higher priority wins when rules overlap'**
+  String get scheduleRulePriorityHint;
+
+  /// No description provided for @scheduleRuleConflict.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} rules overlap now — using highest priority'**
+  String scheduleRuleConflict(int count);
 }
 
 class _AppLocalizationsDelegate

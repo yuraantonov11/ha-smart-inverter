@@ -1,10 +1,14 @@
 // ignore_for_file: deprecated_member_use
 
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:open_file/open_file.dart';
 import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
+import '../services/event_history_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
+import 'schedule_rules_section.dart';
 
 class AutomationTab extends StatelessWidget {
   final AppStateProvider provider;
@@ -14,7 +18,6 @@ class AutomationTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
-    final expressive = context.expressive;
     final modes = [
       (
         title: l10n.modeAdaptive,
@@ -41,6 +44,10 @@ class AutomationTab extends StatelessWidget {
         tooltip: l10n.modeStormDesc,
       ),
     ];
+    final selectedMode = modes.firstWhere(
+      (mode) => mode.value == provider.smartMode,
+      orElse: () => modes.first,
+    );
 
     final isCompact = MediaQuery.sizeOf(context).width < 600;
     return ListView(
@@ -56,39 +63,16 @@ class AutomationTab extends StatelessWidget {
           subtitle: l10n.hemsSubtitle,
           icon: Icons.tune_rounded,
         ),
-        AppCard(
-          borderRadius: expressive.cornerXL,
-          child: Row(
-            children: [
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Theme.of(context)
-                      .colorScheme
-                      .primary
-                      .withValues(alpha: 0.12),
-                  border: Border.all(
-                    color: Theme.of(context)
-                        .colorScheme
-                        .primary
-                        .withValues(alpha: 0.25),
-                  ),
-                ),
-                child: Icon(
-                  Icons.auto_graph_rounded,
-                  color: Theme.of(context).colorScheme.primary,
-                ),
-              ),
-              const SizedBox(width: AppTheme.spacingL),
-              Expanded(
-                child: Text(
-                  l10n.hemsSubtitle,
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-              ),
-            ],
+        AppSectionCard(
+          title: l10n.energyOverview,
+          subtitle: l10n.hemsSubtitle,
+          icon: Icons.auto_graph_rounded,
+          borderRadius: context.expressive.cornerXL,
+          child: _AutomationOverviewCard(
+            provider: provider,
+            modeTitle: selectedMode.title,
+            modeSubtitle: selectedMode.subtitle,
+            modeColor: selectedMode.color,
           ),
         ),
         const SizedBox(height: AppTheme.spacingM),
@@ -126,6 +110,10 @@ class AutomationTab extends StatelessWidget {
             );
           },
         ),
+        const SizedBox(height: AppTheme.spacingXL),
+        const ScheduleRulesSection(),
+        const SizedBox(height: AppTheme.spacingXL),
+        _EventHistorySection(provider: provider),
       ],
     );
   }
@@ -422,6 +410,395 @@ class _SmartModeCard extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _AutomationOverviewCard extends StatelessWidget {
+  final AppStateProvider provider;
+  final String modeTitle;
+  final String modeSubtitle;
+  final Color modeColor;
+
+  const _AutomationOverviewCard({
+    required this.provider,
+    required this.modeTitle,
+    required this.modeSubtitle,
+    required this.modeColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final diagnostics = provider.hemsService.buildDiagnosticsSnapshot();
+    final windowsLabel =
+        '${diagnostics.dayStartHour.toString().padLeft(2, '0')}:00 / '
+        '${diagnostics.eveningStartHour.toString().padLeft(2, '0')}:00 / '
+        '${diagnostics.nightStartHour.toString().padLeft(2, '0')}:00';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: modeColor.withValues(alpha: 0.12),
+                borderRadius:
+                    BorderRadius.circular(context.expressive.cornerMedium),
+              ),
+              child: Icon(Icons.bolt_rounded, color: modeColor),
+            ),
+            const SizedBox(width: AppTheme.spacingM),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    modeTitle,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: AppTheme.spacingXS),
+                  Text(
+                    modeSubtitle,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: AppTheme.spacingM),
+        Wrap(
+          spacing: AppTheme.spacingS,
+          runSpacing: AppTheme.spacingS,
+          children: [
+            AppStatusChip(
+              icon: provider.isInverterOffline
+                  ? Icons.cloud_off_rounded
+                  : Icons.cloud_done_rounded,
+              label: provider.isInverterOffline
+                  ? l10n.connectionOffline
+                  : l10n.connectionOnline,
+              color: provider.isInverterOffline
+                  ? theme.colorScheme.error
+                  : AppTheme.batteryColor,
+            ),
+            AppStatusChip(
+              icon: Icons.power_outlined,
+              label: provider.plannedOutageEnabled
+                  ? l10n.plannedOutageEnabledSubtitle
+                  : l10n.plannedOutageDisabledSubtitle,
+              color: provider.plannedOutageEnabled
+                  ? AppTheme.pvColor
+                  : theme.colorScheme.onSurfaceVariant,
+            ),
+            AppStatusChip(
+              icon: Icons.schedule_rounded,
+              label: windowsLabel,
+              color: theme.colorScheme.primary,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event History Section
+// ---------------------------------------------------------------------------
+
+class _EventHistorySection extends StatefulWidget {
+  final AppStateProvider provider;
+  const _EventHistorySection({required this.provider});
+
+  @override
+  State<_EventHistorySection> createState() => _EventHistorySectionState();
+}
+
+class _EventHistorySectionState extends State<_EventHistorySection> {
+  static const _previewCount = 8;
+  bool _showAll = false;
+
+  Future<void> _exportCsv(BuildContext context, AppLocalizations l10n) async {
+    final path = await widget.provider.eventHistory.exportToCsvFile();
+    if (!context.mounted) return;
+    if (path != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(l10n.exportedTo(path)),
+          action: Platform.isWindows
+              ? SnackBarAction(
+                  label: 'Open',
+                  onPressed: () => OpenFile.open(
+                      path.substring(0, path.lastIndexOf('\\')).isEmpty
+                          ? path
+                          : path.substring(0, path.lastIndexOf('\\'))),
+                )
+              : null,
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(l10n.exportFailed)),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
+    final history = widget.provider.eventHistory;
+
+    return ListenableBuilder(
+      listenable: history,
+      builder: (context, _) {
+        final events = history.events;
+        final displayEvents =
+            _showAll ? events : events.take(_previewCount).toList();
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AppSectionTitle(
+              title: l10n.eventHistoryTitle,
+              subtitle: events.isEmpty
+                  ? l10n.eventHistoryEmpty
+                  : '${events.length} events',
+              icon: Icons.history_rounded,
+              trailing: events.isEmpty
+                  ? null
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Tooltip(
+                          message: l10n.exportCsv,
+                          child: IconButton(
+                            icon: const Icon(Icons.download_rounded, size: 18),
+                            onPressed: () => _exportCsv(context, l10n),
+                          ),
+                        ),
+                        Tooltip(
+                          message: l10n.eventHistoryClear,
+                          child: IconButton(
+                            icon: const Icon(Icons.delete_outline_rounded,
+                                size: 18),
+                            onPressed: () {
+                              showDialog(
+                                context: context,
+                                builder: (ctx) => AlertDialog(
+                                  title: Text(l10n.eventHistoryClear),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () => Navigator.pop(ctx),
+                                      child: Text(l10n.cancel),
+                                    ),
+                                    TextButton(
+                                      onPressed: () {
+                                        history.clearAll();
+                                        Navigator.pop(ctx);
+                                      },
+                                      child: Text(l10n.confirm,
+                                          style: TextStyle(
+                                              color: theme.colorScheme.error)),
+                                    ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+            if (events.isEmpty)
+              AppCard(
+                borderRadius: expressive.cornerXL,
+                child: Padding(
+                  padding: const EdgeInsets.all(AppTheme.spacingXL),
+                  child: Center(
+                    child: Text(
+                      l10n.eventHistoryEmpty,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ),
+              )
+            else
+              AppCard(
+                borderRadius: expressive.cornerXL,
+                padding: EdgeInsets.zero,
+                child: Column(
+                  children: [
+                    ...displayEvents.asMap().entries.map((entry) {
+                      final i = entry.key;
+                      final e = entry.value;
+                      final isLast = i == displayEvents.length - 1 &&
+                          (events.length <= _previewCount || _showAll);
+                      return _EventTile(event: e, isLast: isLast);
+                    }),
+                    if (!_showAll && events.length > _previewCount)
+                      InkWell(
+                        borderRadius: BorderRadius.vertical(
+                          bottom: Radius.circular(expressive.cornerXL),
+                        ),
+                        onTap: () => setState(() => _showAll = true),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: AppTheme.spacingM),
+                          child: Center(
+                            child: Text(
+                              '${l10n.eventHistoryShowAll} (${events.length})',
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: theme.colorScheme.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_showAll && events.length > _previewCount)
+                      InkWell(
+                        borderRadius: BorderRadius.vertical(
+                          bottom: Radius.circular(expressive.cornerXL),
+                        ),
+                        onTap: () => setState(() => _showAll = false),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                              vertical: AppTheme.spacingM),
+                          child: Center(
+                            child: Text(
+                              '▲ Collapse',
+                              style: theme.textTheme.labelMedium?.copyWith(
+                                color: theme.colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _EventTile extends StatelessWidget {
+  final HemsEvent event;
+  final bool isLast;
+
+  const _EventTile({required this.event, required this.isLast});
+
+  Color _typeColor(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    switch (event.type) {
+      case HemsEventType.gridOutage:
+      case HemsEventType.lowBattery:
+      case HemsEventType.emergencyCharge:
+      case HemsEventType.anomaly:
+        return scheme.error;
+      case HemsEventType.gridRestored:
+      case HemsEventType.batteryRecovered:
+      case HemsEventType.stormAutoDeactivated:
+        return AppTheme.batteryColor;
+      case HemsEventType.stormAutoActivated:
+      case HemsEventType.gridInstability:
+        return AppTheme.pvColor;
+      default:
+        return scheme.onSurfaceVariant;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = _typeColor(context);
+    final t = event.time.toLocal();
+    final timeStr =
+        '${t.hour.toString().padLeft(2, '0')}:${t.minute.toString().padLeft(2, '0')} '
+        '${t.day.toString().padLeft(2, '0')}.${t.month.toString().padLeft(2, '0')}';
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppTheme.spacingL,
+            vertical: AppTheme.spacingM,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: 0.12),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: color.withValues(alpha: 0.3)),
+                ),
+                child: Center(
+                  child: Text(
+                    event.type.icon,
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ),
+              ),
+              const SizedBox(width: AppTheme.spacingM),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      event.message,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: event.type.isCritical
+                            ? color
+                            : theme.colorScheme.onSurface,
+                        fontWeight: event.type.isCritical
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      timeStr,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (!isLast)
+          Divider(
+            height: 1,
+            indent: AppTheme.spacingL + 32 + AppTheme.spacingM,
+            endIndent: AppTheme.spacingL,
+            color: theme.dividerColor.withValues(alpha: 0.5),
+          ),
+      ],
     );
   }
 }

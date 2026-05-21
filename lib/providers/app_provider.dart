@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:system_tray/system_tray.dart';
@@ -15,10 +16,17 @@ import '../services/tariff_forecast_service.dart';
 import '../services/demand_forecast_service.dart';
 import '../services/weather_service.dart';
 import '../services/log_service.dart';
+import '../services/notification_service.dart';
 import '../services/update_service.dart';
 import '../services/secure_storage_service.dart';
+import '../services/event_history_service.dart';
+import '../services/battery_tracker_service.dart';
+import '../services/soc_history_service.dart';
+import '../services/schedule_rules_service.dart';
+import '../services/grid_outage_detector.dart';
 import '../models/inverter_data.dart';
 import '../models/hems_optimization_profile.dart';
+import '../models/schedule_rule.dart';
 
 class AppStateProvider extends ChangeNotifier {
   static const String _defaultAppVersionLabel = 'Version --';
@@ -48,6 +56,11 @@ class AppStateProvider extends ChangeNotifier {
   double batteryCapacityAh = 230.0;
   double pvTotalCapacityW = 3000.0;
   double inverterMaxPowerW = 5000.0;
+  double acInputBreakerAmps = 20.0;
+  double nominalGridVoltage = 230.0;
+  double houseLoadReserveW = 600.0;
+  bool autoHouseLoadReserveEnabled = false;
+  DateTime? _lastAutoReservePersistAt;
 
   /// Battery installation date — used by BatteryHealthModel for adaptive reserve SOC.
   DateTime batteryInstallDate = DateTime(DateTime.now().year - 2, 1, 1);
@@ -119,6 +132,32 @@ class AppStateProvider extends ChangeNotifier {
   bool _isPollingInBackground = false;
   bool _timersStarted = false;
   int _consecutiveRealtimeNulls = 0;
+
+  // --- Notification tracking ---
+  final GridOutageDetector _gridOutageDetector = GridOutageDetector();
+  bool _lowBatteryNotified = false;
+  final NotificationService _notifService = NotificationService.instance;
+
+  // --- Event history & battery tracker (singletons) ---
+  final EventHistoryService _eventHistory = EventHistoryService.instance;
+  final BatteryTrackerService _batteryTracker = BatteryTrackerService.instance;
+  final SocHistoryService _socHistory = SocHistoryService.instance;
+  final ScheduleRulesService _scheduleRules = ScheduleRulesService.instance;
+
+  // Auto-Storm state: activated on grid outage if smartMode == 0
+  bool _gridOutageAutoStormActive = false;
+  int _prevSmartModeBeforeOutage = 0;
+
+  // Forecast-based Storm: auto-activates when bad weather is predicted
+  bool autoStormByForecastEnabled = false;
+  bool _forecastStormActive = false;
+  bool _emergencyChargeActive =
+      false; // set true when daytime SNU top-up is triggered; cleared on recovery
+  WeatherStormRisk? _latestStormRisk;
+
+  // Anomaly detection: rolling samples per hour
+  final Map<int, List<double>> _loadSamplesByHour = {};
+  int _lastAnomalyNotifHour = -1;
   int _consecutiveDeviceNotFoundCount = 0;
   DateTime? _lastRealtimeNullLogAt;
   DateTime? _lastDeviceNotFoundLogAt;
@@ -142,6 +181,181 @@ class AppStateProvider extends ChangeNotifier {
   bool get isCheckingForUpdates => _isCheckingForUpdates;
   DateTime? get lastUpdateCheckAt => _lastUpdateCheckAt;
   String? get skippedUpdateVersion => _skippedUpdateVersion;
+
+  // New: event history + battery tracker
+  EventHistoryService get eventHistory => _eventHistory;
+  BatteryTrackerService get batteryTracker => _batteryTracker;
+  SocHistoryService get socHistory => _socHistory;
+  ScheduleRulesService get scheduleRules => _scheduleRules;
+  bool get gridOutageAutoStormActive => _gridOutageAutoStormActive;
+  bool get forecastStormActive => _forecastStormActive;
+  WeatherStormRisk? get latestStormRisk => _latestStormRisk;
+  bool get isGridOutageDetected {
+    if (isInverterOffline) return false;
+    final snapshot = data;
+    if (snapshot == null) return false;
+    if (_gridOutageDetector.isInitialized) {
+      return !_gridOutageDetector.gridAvailable;
+    }
+    // Conservative fallback before detector initialization.
+    return snapshot.gridVoltage < 120.0;
+  }
+
+  double get usableBatteryEnergyWhNow {
+    final snapshot = data;
+    if (snapshot == null) return 0.0;
+    final reserveSoc = hemsService.tun.reserveSoc.clamp(0.0, 95.0).toDouble();
+    final socAboveReserve =
+        (snapshot.batterySoc.clamp(0.0, 100.0) - reserveSoc).clamp(0.0, 100.0);
+    final healthFactor =
+        (batteryHealthPercent / 100.0).clamp(0.5, 1.0).toDouble();
+    final nominalWh = batteryCapacityAh * 51.2;
+    return (nominalWh * (socAboveReserve / 100.0) * healthFactor)
+        .clamp(0.0, 100000.0)
+        .toDouble();
+  }
+
+  double get hybridBackupDeficitW {
+    final snapshot = data;
+    if (snapshot == null) return 0.0;
+    return (snapshot.loadPower - snapshot.pvPower)
+        .clamp(0.0, 50000.0)
+        .toDouble();
+  }
+
+  bool get isLoadCoveredBySolarNow => hybridBackupDeficitW <= 40.0;
+
+  double? estimateBackupHoursRemaining() {
+    final snapshot = data;
+    if (snapshot == null) return null;
+
+    final startEnergyWh = usableBatteryEnergyWhNow;
+    if (startEnergyWh <= 1.0) return 0.0;
+
+    final maxUsableWh = _maxUsableBatteryEnergyWh;
+    final roundTrip = batteryRoundTripEfficiencyFraction.clamp(0.5, 1.0);
+    final chargeEff = math.sqrt(roundTrip);
+    final dischargeEff = math.sqrt(roundTrip);
+
+    const stepMinutes = 15;
+    const maxHours = 72;
+    const minDeficitW = 35.0;
+    final stepHours = stepMinutes / 60.0;
+
+    var storedWh = startEnergyWh;
+    var elapsedHours = 0.0;
+    final now = DateTime.now();
+
+    while (elapsedHours < maxHours) {
+      final at = now.add(Duration(minutes: (elapsedHours * 60).round()));
+      final hourFromNow = elapsedHours.floor();
+      final loadW = _expectedLoadForOutageHour(
+        at,
+        fallbackLoadW: snapshot.loadPower,
+        hourFromNow: hourFromNow,
+      );
+      final pvW = _forecastPvForOutageHour(
+        at,
+        fallbackPvW: snapshot.pvPower,
+      );
+
+      final netLoadW = loadW - pvW;
+      if (netLoadW > minDeficitW) {
+        final batteryDrainWh = (netLoadW / dischargeEff) * stepHours;
+        if (storedWh <= batteryDrainWh) {
+          final safeStepFraction =
+              batteryDrainWh <= 0 ? 0.0 : (storedWh / batteryDrainWh);
+          final depletionHours = elapsedHours + (safeStepFraction * stepHours);
+          return depletionHours.clamp(0.0, 240.0).toDouble();
+        }
+        storedWh -= batteryDrainWh;
+      } else {
+        final surplusW = -netLoadW;
+        if (surplusW > minDeficitW) {
+          final chargeWh = surplusW * chargeEff * stepHours;
+          storedWh = (storedWh + chargeWh).clamp(0.0, maxUsableWh).toDouble();
+        }
+      }
+
+      elapsedHours += stepHours;
+    }
+
+    return double.infinity;
+  }
+
+  double? estimateBatteryOnlyHoursRemaining() {
+    final snapshot = data;
+    if (snapshot == null) return null;
+    final loadW = snapshot.loadPower.clamp(0.0, 50000.0).toDouble();
+    final usableWh = usableBatteryEnergyWhNow;
+    if (usableWh <= 1.0) return 0.0;
+    if (loadW <= 40.0) return double.infinity;
+    final hours = usableWh / loadW;
+    if (!hours.isFinite) return null;
+    return hours.clamp(0.0, 240.0).toDouble();
+  }
+
+  double get _maxUsableBatteryEnergyWh {
+    final reserveSoc = hemsService.tun.reserveSoc.clamp(0.0, 95.0).toDouble();
+    final usableSocSpan = (100.0 - reserveSoc).clamp(0.0, 100.0) / 100.0;
+    final healthFactor =
+        (batteryHealthPercent / 100.0).clamp(0.5, 1.0).toDouble();
+    final nominalWh = batteryCapacityAh * 51.2;
+    return (nominalWh * usableSocSpan * healthFactor)
+        .clamp(0.0, 120000.0)
+        .toDouble();
+  }
+
+  double _expectedLoadForOutageHour(
+    DateTime at, {
+    required double fallbackLoadW,
+    required int hourFromNow,
+  }) {
+    final profiled = (avgHourlyConsumptionStats[at.hour] ?? 0.0)
+        .clamp(0.0, 50000.0)
+        .toDouble();
+    final base = fallbackLoadW.clamp(0.0, 50000.0).toDouble();
+    if (profiled <= 1.0) return base;
+
+    // Use current load near-term and gradually move to hourly profile.
+    final blend = (hourFromNow / 4.0).clamp(0.0, 1.0);
+    return (base * (1.0 - blend) + profiled * blend)
+        .clamp(0.0, 50000.0)
+        .toDouble();
+  }
+
+  double _forecastPvForOutageHour(DateTime at, {required double fallbackPvW}) {
+    final hourKey = _formatForecastHourKey(at);
+    final forecastW = hourlyForecast[hourKey];
+    if (forecastW != null) {
+      return forecastW.clamp(0.0, pvTotalCapacityW).toDouble();
+    }
+
+    // Forecast map usually contains daylight hours only; missing key at night means 0.
+    final isNight = at.hour < 5 || at.hour > 21;
+    if (isNight) return 0.0;
+
+    // For current hour while forecast is refreshing, keep runtime stable.
+    final now = DateTime.now();
+    final sameHour = at.year == now.year &&
+        at.month == now.month &&
+        at.day == now.day &&
+        at.hour == now.hour;
+    if (sameHour) {
+      return fallbackPvW.clamp(0.0, pvTotalCapacityW).toDouble();
+    }
+
+    return 0.0;
+  }
+
+  String _formatForecastHourKey(DateTime dt) {
+    final y = dt.year.toString().padLeft(4, '0');
+    final m = dt.month.toString().padLeft(2, '0');
+    final d = dt.day.toString().padLeft(2, '0');
+    final h = dt.hour.toString().padLeft(2, '0');
+    return '$y-$m-$d $h:00';
+  }
+
   bool get hasPendingUpdate =>
       _updateInfo != null &&
       _updateInfo!.hasUpdate &&
@@ -221,6 +435,105 @@ class AppStateProvider extends ChangeNotifier {
     final projected = actual / _monthProgressFraction;
     return projected.isFinite ? projected : null;
   }
+
+  /// Real-time cost: current load power × effective tariff → ₴/hour.
+  double get currentCostPerHourUah {
+    final loadW = data?.loadPower ?? 0.0;
+    return loadW * effectiveTariffUahPerKwh / 1000.0;
+  }
+
+  double get safeGridInputPowerW {
+    final amps = acInputBreakerAmps.clamp(6.0, 80.0).toDouble();
+    final volts = nominalGridVoltage.clamp(180.0, 260.0).toDouble();
+    // Derating keeps continuous draw below the nominal breaker threshold.
+    return (amps * volts * 0.9).clamp(0.0, 20000.0).toDouble();
+  }
+
+  double get recommendedBatteryChargePowerW {
+    final availableForCharging = safeGridInputPowerW - houseLoadReserveW;
+    final clampedByInverter =
+        availableForCharging.clamp(0.0, inverterMaxPowerW).toDouble();
+    return clampedByInverter;
+  }
+
+  double get recommendedBatteryChargeCurrentA =>
+      (recommendedBatteryChargePowerW / 51.2).clamp(0.0, 400.0).toDouble();
+
+  double? estimateChargeHoursToFull({double? fromSoc}) {
+    final startSoc =
+        (fromSoc ?? data?.batterySoc)?.clamp(0.0, 100.0).toDouble();
+    if (startSoc == null) return null;
+    final targetSoc = 100.0;
+    if (startSoc >= targetSoc) return 0.0;
+    final maxPower = recommendedBatteryChargePowerW;
+    if (maxPower <= 1.0) return null;
+
+    final capacityWh = batteryCapacityAh * 51.2;
+    final deltaSoc = (targetSoc - startSoc) / 100.0;
+    final neededStoredWh = capacityWh * deltaSoc;
+    final chargingEfficiency = math.sqrt(batteryRoundTripEfficiencyFraction);
+    final requiredInputWh = neededStoredWh / chargingEfficiency;
+    final hours = requiredInputWh / maxPower;
+    if (!hours.isFinite) return null;
+    return hours.clamp(0.0, 240.0).toDouble();
+  }
+
+  double estimateHouseLoadReserveW({DateTime? nowOverride}) {
+    final now = nowOverride ?? DateTime.now();
+    final hour = now.hour;
+    final profileW =
+        (avgHourlyConsumptionStats[hour] ?? 0.0).clamp(0.0, 15000.0).toDouble();
+    final liveW = (data?.loadPower ?? 0.0).clamp(0.0, 15000.0).toDouble();
+
+    if (profileW <= 0.0 && liveW <= 0.0) {
+      return houseLoadReserveW.clamp(200.0, 8000.0).toDouble();
+    }
+
+    final baselineW = math.max(profileW, liveW);
+    final withHeadroomW = (baselineW * 1.15) + 150.0;
+    return withHeadroomW.clamp(200.0, 8000.0).toDouble();
+  }
+
+  Future<void> _maybeAutoTuneHouseReserve() async {
+    if (!autoHouseLoadReserveEnabled) return;
+
+    final suggested = estimateHouseLoadReserveW();
+    final delta = (suggested - houseLoadReserveW).abs();
+    if (delta < 80.0) return;
+
+    // Smooth reserve updates to avoid reacting to short transient spikes.
+    final smoothed = ((houseLoadReserveW * 0.7) + (suggested * 0.3))
+        .clamp(200.0, 8000.0)
+        .toDouble();
+    final changedBy = (smoothed - houseLoadReserveW).abs();
+    if (changedBy < 30.0) return;
+
+    houseLoadReserveW = smoothed;
+
+    final now = DateTime.now();
+    final shouldPersist = _lastAutoReservePersistAt == null ||
+        now.difference(_lastAutoReservePersistAt!) >=
+            const Duration(minutes: 15) ||
+        changedBy >= 250.0;
+    if (shouldPersist) {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('house_load_reserve_w', houseLoadReserveW);
+      await prefs.setBool(
+          'auto_house_load_reserve_enabled', autoHouseLoadReserveEnabled);
+      _lastAutoReservePersistAt = now;
+    }
+
+    LogService.log(
+      '⚡ auto reserve tuned: suggested=${suggested.toStringAsFixed(0)}W '
+      'applied=${houseLoadReserveW.toStringAsFixed(0)}W delta=${changedBy.toStringAsFixed(0)}W',
+    );
+    notifyListeners();
+  }
+
+  int get batteryCycles => _batteryTracker.cycleCount;
+
+  double get batteryHealthPercent =>
+      _batteryTracker.estimatedSohPercent(installDate: batteryInstallDate);
 
   AppStateProvider() {
     // Initial build with defaults; will be rebuilt after loadSettings().
@@ -313,6 +626,11 @@ class AppStateProvider extends ChangeNotifier {
     batteryCapacityAh = prefs.getDouble('battery_capacity_ah') ?? 230.0;
     pvTotalCapacityW = prefs.getDouble('pv_total_capacity_w') ?? 3000.0;
     inverterMaxPowerW = prefs.getDouble('inverter_max_power_w') ?? 5000.0;
+    acInputBreakerAmps = prefs.getDouble('ac_input_breaker_amps') ?? 20.0;
+    nominalGridVoltage = prefs.getDouble('nominal_grid_voltage') ?? 230.0;
+    houseLoadReserveW = prefs.getDouble('house_load_reserve_w') ?? 600.0;
+    autoHouseLoadReserveEnabled =
+        prefs.getBool('auto_house_load_reserve_enabled') ?? false;
     siteLatitude = prefs.getDouble('site_latitude') ?? 49.0;
     siteLongitude = prefs.getDouble('site_longitude') ?? 31.0;
     siteTimeZone = prefs.getString('site_time_zone') ?? 'Europe/Kyiv';
@@ -354,6 +672,8 @@ class AppStateProvider extends ChangeNotifier {
     _rebuildHemsService();
 
     smartMode = prefs.getInt('smart_mode') ?? 0;
+    autoStormByForecastEnabled =
+        prefs.getBool('auto_storm_by_forecast') ?? false;
     lang = prefs.getString('app_lang') ?? 'en';
     if (_supportsDesktopIntegrations) {
       isAutostartEnabled = await launchAtStartup.isEnabled();
@@ -420,6 +740,11 @@ class AppStateProvider extends ChangeNotifier {
     if (loggedIn) {
       await _updateMonthlyEconomics(force: true);
     }
+    // Load persisted event history and battery tracker
+    await _eventHistory.load();
+    await _batteryTracker.load();
+    await _socHistory.load();
+    await _scheduleRules.load();
     await _updateStatusMessage(true);
     // Fire-and-forget startup check for a non-intrusive update badge in Settings.
     // ignore: unawaited_futures
@@ -448,6 +773,22 @@ class AppStateProvider extends ChangeNotifier {
         _skippedUpdateVersion = null;
         final prefs = await SharedPreferences.getInstance();
         await prefs.remove(_skippedUpdateVersionKey);
+      }
+
+      // Notify when a new update is found (only once per version)
+      if (info.hasUpdate && info.latestVersion != _skippedUpdateVersion) {
+        final alreadyNotified = _notifService.notifications.any(
+          (n) =>
+              n.type == AppNotificationType.updateAvailable &&
+              n.title.contains(info.latestVersion),
+        );
+        if (!alreadyNotified) {
+          await _notifService.show(
+            type: AppNotificationType.updateAvailable,
+            title: 'Update Available',
+            body: 'Version ${info.latestVersion} is ready to install',
+          );
+        }
       }
 
       return info;
@@ -627,6 +968,17 @@ class AppStateProvider extends ChangeNotifier {
         _monthDailyEconomics = telemetryEconomics.daily;
         _monthEconomicsUsesTelemetryTou = true;
 
+        final expectedLoadWh = (_monthGridWh! + _monthSelfConsumedWh!);
+        if (_monthLoadWh! + 1.0 < expectedLoadWh) {
+          LogService.logCritical(
+            'monthly economics normalized: load ${_monthLoadWh!.toStringAsFixed(0)}Wh '
+            '-> ${expectedLoadWh.toStringAsFixed(0)}Wh '
+            '(grid=${_monthGridWh!.toStringAsFixed(0)}Wh, self=${_monthSelfConsumedWh!.toStringAsFixed(0)}Wh)',
+            category: 'ECONOMICS',
+          );
+          _monthLoadWh = expectedLoadWh;
+        }
+
         LogService.log(
             '📊 TOU TELEMETRY: load=${_monthLoadWh?.toStringAsFixed(0)}Wh, grid=${_monthGridWh?.toStringAsFixed(0)}Wh');
         LogService.log(
@@ -703,14 +1055,35 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> saveHardwareSettings(double battery, double pv, double inverter,
-      {DateTime? installDate}) async {
+      {DateTime? installDate,
+      double? breakerAmps,
+      double? gridVoltage,
+      double? loadReserveW,
+      bool? autoReserveEnabled}) async {
     final prefs = await SharedPreferences.getInstance();
     batteryCapacityAh = battery;
     pvTotalCapacityW = pv;
     inverterMaxPowerW = inverter;
+    if (breakerAmps != null) {
+      acInputBreakerAmps = breakerAmps.clamp(6.0, 80.0).toDouble();
+    }
+    if (gridVoltage != null) {
+      nominalGridVoltage = gridVoltage.clamp(180.0, 260.0).toDouble();
+    }
+    if (loadReserveW != null) {
+      houseLoadReserveW = loadReserveW.clamp(0.0, 12000.0).toDouble();
+    }
+    if (autoReserveEnabled != null) {
+      autoHouseLoadReserveEnabled = autoReserveEnabled;
+    }
     await prefs.setDouble('battery_capacity_ah', battery);
     await prefs.setDouble('pv_total_capacity_w', pv);
     await prefs.setDouble('inverter_max_power_w', inverter);
+    await prefs.setDouble('ac_input_breaker_amps', acInputBreakerAmps);
+    await prefs.setDouble('nominal_grid_voltage', nominalGridVoltage);
+    await prefs.setDouble('house_load_reserve_w', houseLoadReserveW);
+    await prefs.setBool(
+        'auto_house_load_reserve_enabled', autoHouseLoadReserveEnabled);
     if (installDate != null) {
       batteryInstallDate = installDate;
       await prefs.setInt(
@@ -791,6 +1164,17 @@ class AppStateProvider extends ChangeNotifier {
       await prefs.remove('planned_outage_end_ms');
     }
     _rebuildHemsService();
+    notifyListeners();
+  }
+
+  /// Saves the "auto Storm mode by weather forecast" toggle.
+  Future<void> saveAutoStormByForecast(bool enabled) async {
+    autoStormByForecastEnabled = enabled;
+    if (!enabled && _forecastStormActive) {
+      _forecastStormActive = false;
+    }
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('auto_storm_by_forecast', enabled);
     notifyListeners();
   }
 
@@ -929,11 +1313,234 @@ class AppStateProvider extends ChangeNotifier {
   }
 
   Future<void> setSmartMode(int mode) async {
+    final prevMode = smartMode;
     smartMode = mode;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt('smart_mode', mode);
     notifyListeners();
+    // Notify on intentional mode changes
+    if (prevMode != mode) {
+      final l10n = await _getL10n();
+      final modeName = switch (mode) {
+        0 => l10n.modeAdaptive,
+        1 => l10n.modeArbitrage,
+        2 => l10n.modeStorm,
+        _ => 'Mode $mode',
+      };
+      await _notifService.show(
+        type: AppNotificationType.modeChanged,
+        title: l10n.notifModeChangedTitle,
+        body: l10n.notifModeChangedBody(modeName),
+      );
+      _eventHistory.addEvent(
+        HemsEventType.modeChanged,
+        l10n.notifModeChangedBody(modeName),
+        meta: {'prevMode': prevMode, 'newMode': mode},
+      );
+      // If user manually changes mode, cancel any auto-Storm override
+      if (_gridOutageAutoStormActive) {
+        _gridOutageAutoStormActive = false;
+        LogService.log(
+            '🔄 Auto-Storm override cancelled by manual mode change → mode=$mode');
+      }
+    }
     await _checkAutomations(isManualTrigger: true);
+  }
+
+  /// Detects grid outage / restore events and fires notifications.
+  Future<void> _checkGridState(InverterData d) async {
+    final decision = _gridOutageDetector.evaluate(
+      gridVoltage: d.gridVoltage,
+      now: DateTime.now(),
+    );
+
+    if (decision.transition == GridTransition.outage) {
+      // Grid just went down
+      final l10n = await _getL10n();
+      await _notifService.show(
+        type: AppNotificationType.gridOutage,
+        title: l10n.notifGridOutageTitle,
+        body: l10n.notifGridOutageBody,
+      );
+      _eventHistory.addEvent(
+        HemsEventType.gridOutage,
+        '${l10n.notifGridOutageTitle} — ${l10n.notifGridOutageBody}',
+        meta: {'voltage': d.gridVoltage, 'soc': d.batterySoc},
+      );
+      LogService.logCritical(
+          'GRID OUTAGE: voltage=${d.gridVoltage}V SOC=${d.batterySoc}%',
+          category: 'GRID_OUTAGE');
+
+      // Auto-switch to Storm mode if in Adaptive mode
+      if (smartMode == 0 && !_gridOutageAutoStormActive) {
+        _prevSmartModeBeforeOutage = smartMode;
+        _gridOutageAutoStormActive = true;
+        smartMode = 2; // Storm
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('smart_mode', 2);
+        notifyListeners();
+        await _notifService.show(
+          type: AppNotificationType.modeChanged,
+          title: l10n.notifAutoStormTitle,
+          body: l10n.notifAutoStormBody,
+        );
+        _eventHistory.addEvent(
+          HemsEventType.stormAutoActivated,
+          l10n.notifAutoStormBody,
+          meta: {'prevMode': _prevSmartModeBeforeOutage, 'soc': d.batterySoc},
+        );
+        LogService.logCritical(
+            'AUTO STORM: grid outage → Storm mode activated (prev mode=$_prevSmartModeBeforeOutage)',
+            category: 'MODE_CONFLICT');
+      }
+    } else if (decision.transition == GridTransition.restored) {
+      // Grid just restored
+      final l10n = await _getL10n();
+      await _notifService.show(
+        type: AppNotificationType.gridRestored,
+        title: l10n.notifGridRestoredTitle,
+        body: l10n.notifGridRestoredBody(d.gridVoltage.toStringAsFixed(0)),
+      );
+      _eventHistory.addEvent(
+        HemsEventType.gridRestored,
+        '${l10n.notifGridRestoredTitle} — ${d.gridVoltage.toStringAsFixed(0)} V',
+        meta: {'voltage': d.gridVoltage, 'soc': d.batterySoc},
+      );
+
+      // Restore previous HEMS mode if Auto-Storm was activated
+      if (_gridOutageAutoStormActive) {
+        _gridOutageAutoStormActive = false;
+        smartMode = _prevSmartModeBeforeOutage;
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('smart_mode', smartMode);
+        notifyListeners();
+        await _notifService.show(
+          type: AppNotificationType.modeChanged,
+          title: l10n.notifAutoAdaptiveTitle,
+          body: l10n.notifAutoAdaptiveBody,
+        );
+        _eventHistory.addEvent(
+          HemsEventType.stormAutoDeactivated,
+          l10n.notifAutoAdaptiveBody,
+          meta: {'restoredMode': smartMode, 'soc': d.batterySoc},
+        );
+        LogService.logCritical(
+            'AUTO STORM DEACTIVATED: grid restored → mode=$smartMode',
+            category: 'MODE_CONFLICT');
+      }
+    }
+
+    if (decision.instabilityAlert) {
+      final l10n = await _getL10n();
+      await _notifService.show(
+        type: AppNotificationType.gridInstability,
+        title: l10n.notifGridInstabilityTitle,
+        body: l10n.notifGridInstabilityBody,
+      );
+      _eventHistory.addEvent(
+        HemsEventType.gridInstability,
+        l10n.notifGridInstabilityBody,
+      );
+    }
+  }
+
+  /// Detects low-battery and recovery events.  SOC threshold matches HEMS reserve.
+  Future<void> _checkBatterySoc(InverterData d) async {
+    final soc = d.batterySoc;
+    final threshold = hemsService.tun.reserveSoc + 5.0; // just above reserve
+
+    // Battery cycle tracking
+    final cycleCompleted = _batteryTracker.trackSoc(soc);
+    if (cycleCompleted) {
+      final l10n = await _getL10n();
+      final soh =
+          _batteryTracker.estimatedSohPercent(installDate: batteryInstallDate);
+      await _notifService.show(
+        type: AppNotificationType.custom,
+        title: l10n.notifCycleTitle,
+        body: l10n.notifCycleBody(
+          _batteryTracker.cycleCount.toString(),
+          soh.toStringAsFixed(0),
+        ),
+        showOsToast: false, // informational only
+      );
+      _eventHistory.addEvent(
+        HemsEventType.batteryRecovered,
+        l10n.notifCycleBody(
+          _batteryTracker.cycleCount.toString(),
+          soh.toStringAsFixed(0),
+        ),
+        meta: {'cycles': _batteryTracker.cycleCount, 'soh': soh},
+      );
+    }
+
+    if (soc < threshold && !_lowBatteryNotified) {
+      _lowBatteryNotified = true;
+      final l10n = await _getL10n();
+      await _notifService.show(
+        type: AppNotificationType.lowBattery,
+        title: l10n.notifLowBatteryTitle,
+        body: l10n.notifLowBatteryBody(soc.toStringAsFixed(0)),
+      );
+      _eventHistory.addEvent(
+        HemsEventType.lowBattery,
+        l10n.notifLowBatteryBody(soc.toStringAsFixed(0)),
+        meta: {'soc': soc, 'threshold': threshold},
+      );
+    } else if (soc >= threshold + 10.0 && _lowBatteryNotified) {
+      _lowBatteryNotified = false;
+      final l10n = await _getL10n();
+      await _notifService.show(
+        type: AppNotificationType.batteryRecovered,
+        title: l10n.notifBatteryRecoveredTitle,
+        body: l10n.notifBatteryRecoveredBody(soc.toStringAsFixed(0)),
+      );
+      _eventHistory.addEvent(
+        HemsEventType.batteryRecovered,
+        l10n.notifBatteryRecoveredBody(soc.toStringAsFixed(0)),
+        meta: {'soc': soc},
+      );
+    }
+  }
+
+  /// Detects abnormal load spikes vs hourly rolling average.
+  Future<void> _checkLoadAnomaly(InverterData d) async {
+    final loadW = d.loadPower;
+    if (loadW < 200) return; // ignore very low load
+    final hour = DateTime.now().hour;
+    final samples = _loadSamplesByHour.putIfAbsent(hour, () => []);
+    if (samples.length >= 14) samples.removeAt(0);
+
+    if (samples.length >= 5) {
+      final avg = samples.reduce((a, b) => a + b) / samples.length;
+      if (avg > 150 &&
+          loadW > avg * 2.5 &&
+          loadW > 800 &&
+          _lastAnomalyNotifHour != hour) {
+        _lastAnomalyNotifHour = hour;
+        final times = (loadW / avg).toStringAsFixed(1);
+        final l10n = await _getL10n();
+        await _notifService.show(
+          type: AppNotificationType.custom,
+          title: l10n.notifAnomalyTitle,
+          body: l10n.notifAnomalyBody(loadW.toStringAsFixed(0), times),
+          showOsToast: true,
+        );
+        _eventHistory.addEvent(
+          HemsEventType.anomaly,
+          l10n.notifAnomalyBody(loadW.toStringAsFixed(0), times),
+          meta: {'loadW': loadW, 'avgW': avg, 'hour': hour, 'times': times},
+        );
+        LogService.log(
+            '📊 Load anomaly: ${loadW.toStringAsFixed(0)}W vs avg ${avg.toStringAsFixed(0)}W ($times×)');
+      }
+    }
+    samples.add(loadW);
+  }
+
+  Future<void> resetBatteryCycles() async {
+    await _batteryTracker.resetCycleCount();
+    notifyListeners();
   }
 
   Future<void> toggleAutostart(bool val) async {
@@ -1071,6 +1678,7 @@ class AppStateProvider extends ChangeNotifier {
     _monthEconomicsUsesTelemetryTou = false;
     _monthlyEconomicsPendingForce = false;
     _monthlyEconomicsInFlight = null;
+    _gridOutageDetector.reset();
     await prefs.remove(_lastSnapshotKey);
 
     stopTimers();
@@ -1198,12 +1806,19 @@ class AppStateProvider extends ChangeNotifier {
       data = newData;
       _cachedSnapshotData = newData;
       _recordPvHistory(newData);
+      _socHistory.addSample(
+        soc: newData.batterySoc,
+        pvPower: newData.pvPower,
+        loadPower: newData.loadPower,
+        batteryPower: newData.batteryPower,
+      );
       avgHourlyConsumptionStats = demandForecastService.updateEwmaProfile(
         avgHourlyConsumptionStats,
         timestamp: DateTime.now(),
         loadW: newData.loadPower,
       );
       await _persistConsumptionProfile();
+      await _maybeAutoTuneHouseReserve();
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString(
           _lastSnapshotKey, json.encode(newData.toCacheMap()));
@@ -1211,6 +1826,15 @@ class AppStateProvider extends ChangeNotifier {
       if (isAuthenticated && _supportsDesktopIntegrations) {
         await _updateTrayMenu();
       }
+
+      // --- Grid outage / restore detection ---
+      await _checkGridState(newData);
+
+      // --- Low battery alert + cycle tracking ---
+      await _checkBatterySoc(newData);
+
+      // --- Consumption anomaly detection ---
+      await _checkLoadAnomaly(newData);
 
       if (avgHourlyConsumptionStats.isEmpty &&
           service.currentStationId != null) {
@@ -1319,6 +1943,132 @@ class AppStateProvider extends ChangeNotifier {
     Future.delayed(const Duration(seconds: 65), () => fetchData());
   }
 
+  int? _readConfigIntValue(String key) {
+    final fullConfigs = data?.rawFields['fullConfigs'];
+    if (fullConfigs is! Map<String, dynamic>) return null;
+    final raw = fullConfigs[key];
+    if (raw is Map<String, dynamic>) {
+      final value = raw['value'] ?? raw['valueDisplay'];
+      if (value is num) return value.round();
+      return int.tryParse(value?.toString() ?? '');
+    }
+    if (raw is num) return raw.round();
+    return int.tryParse(raw?.toString() ?? '');
+  }
+
+  Future<bool> _writeConfigWithRetry(
+    String key,
+    String value, {
+    int attempts = 2,
+    Duration retryDelay = const Duration(seconds: 3),
+  }) async {
+    for (var attempt = 1; attempt <= attempts; attempt++) {
+      final ok = await service.setConfigItem(key, value);
+      if (ok) return true;
+      if (attempt < attempts) {
+        LogService.log(
+          '⏳ safe current write retry: key=$key value=$value attempt=$attempt/$attempts',
+        );
+        await Future.delayed(retryDelay);
+      }
+    }
+    return false;
+  }
+
+  Future<
+      ({
+        bool success,
+        int targetA,
+        int? readTotalA,
+        int? readUtilityA,
+      })> applySafeChargingCurrent(double suggestedCurrentA) async {
+    final targetA = suggestedCurrentA.round().clamp(0, 200).toInt();
+    if (targetA <= 0) {
+      return (
+        success: false,
+        targetA: targetA,
+        readTotalA: null,
+        readUtilityA: null,
+      );
+    }
+
+    _isSettingChanging = true;
+    notifyListeners();
+    try {
+      LogService.log(
+          '🔧 safe current apply start: target=${targetA}A deviceSn=${service.deviceSn ?? '-'} stationId=${service.currentStationId ?? '-'}');
+
+      Future<({bool totalOk, bool utilityOk})> writePass() async {
+        final totalOk = await _writeConfigWithRetry(
+          'setMaxChargingCurrent',
+          targetA.toString(),
+        );
+        final utilityOk = await _writeConfigWithRetry(
+          'setUtilityMaxChargingCurrent',
+          targetA.toString(),
+        );
+        return (totalOk: totalOk, utilityOk: utilityOk);
+      }
+
+      var pass = await writePass();
+
+      // Give backend more time to propagate write commands before read-back check.
+      await Future.delayed(const Duration(seconds: 8));
+      await fetchData();
+      await refreshDeviceConfigs();
+
+      var readTotalA = _readConfigIntValue('setMaxChargingCurrent');
+      var readUtilityA = _readConfigIntValue('setUtilityMaxChargingCurrent');
+      var readMatches = readTotalA == targetA && readUtilityA == targetA;
+
+      // If the backend accepted the command but readback is still stale,
+      // perform one more write/verify pass before giving up.
+      if (!readMatches) {
+        LogService.log(
+          '⏳ safe current readback mismatch: target=${targetA}A '
+          'read=${readTotalA?.toString() ?? '--'}/${readUtilityA?.toString() ?? '--'}A '
+          '→ retrying once more after refresh',
+        );
+        await Future.delayed(const Duration(seconds: 5));
+        await fetchData();
+        await refreshDeviceConfigs();
+        pass = await writePass();
+
+        await Future.delayed(const Duration(seconds: 10));
+        await fetchData();
+        await refreshDeviceConfigs();
+
+        readTotalA = _readConfigIntValue('setMaxChargingCurrent');
+        readUtilityA = _readConfigIntValue('setUtilityMaxChargingCurrent');
+        readMatches = readTotalA == targetA && readUtilityA == targetA;
+      }
+
+      final success = pass.totalOk && pass.utilityOk && readMatches;
+
+      if (!success) {
+        LogService.logCritical(
+          '❌ safe current not confirmed: target=${targetA}A '
+          'read=${readTotalA?.toString() ?? '--'}/${readUtilityA?.toString() ?? '--'}A '
+          'deviceSn=${service.deviceSn ?? '-'} stationId=${service.currentStationId ?? '-'}',
+          category: 'CONTROL_WRITE',
+        );
+      } else {
+        LogService.log(
+            '✅ safe current confirmed: target=${targetA}A read=${readTotalA}/${readUtilityA}A');
+      }
+
+      return (
+        success: success,
+        targetA: targetA,
+        readTotalA: readTotalA,
+        readUtilityA: readUtilityA,
+      );
+    } finally {
+      _isSettingChanging = false;
+      notifyListeners();
+    }
+  }
+
   /// Force re-fetch device configs (invalidates cooldown cache)
   Future<void> refreshDeviceConfigs() async {
     if (_isPollingInBackground) return; // already running
@@ -1327,7 +2077,7 @@ class AppStateProvider extends ChangeNotifier {
     await _fetchConfigsInBackground(data!);
   }
 
-  Future<void> changeSetting(String key, String value) async {
+  Future<bool> changeSetting(String key, String value) async {
     final l10n = await _getL10n();
     final oldFields = data?.rawFields != null
         ? Map<String, dynamic>.from(data!.rawFields)
@@ -1344,17 +2094,26 @@ class AppStateProvider extends ChangeNotifier {
     if (success) {
       statusMessage = l10n.updated;
       await fetchData();
+      LogService.log(
+          '✅ setting.write applied: key=$key value=$value deviceSn=${service.deviceSn ?? '-'}');
     } else {
       if (oldFields != null && data != null) {
         data!.rawFields = oldFields;
       }
       statusMessage = l10n.updateFailed;
+      LogService.logCritical(
+          '❌ setting.write failed: key=$key value=$value '
+          'deviceSn=${service.deviceSn ?? '-'} stationId=${service.currentStationId ?? '-'} '
+          '(likely API timeout/offline).',
+          category: 'CONTROL_WRITE');
       notifyListeners();
     }
+
+    return success;
   }
 
-  Future<void> setMode(int mode) async {
-    await changeSetting('outputSourcePrioritySetting', mode.toString());
+  Future<bool> setMode(int mode) async {
+    return changeSetting('outputSourcePrioritySetting', mode.toString());
   }
 
   Future<void> _checkAutomations({bool isManualTrigger = false}) async {
@@ -1373,10 +2132,28 @@ class AppStateProvider extends ChangeNotifier {
         final currentOutput =
             data!.rawFields['outputSourcePriority']?['value']?.toString();
         if (currentOutput != '0') {
+          final gridV = data!.gridVoltage;
+          final gridUnavailable = gridV < 120.0;
           LogService.log(
               '🆘 ЗАХИСТ АКБ: дані застарілі (${DateTime.now().difference(_lastSuccessfulRealtimeAt!).inMinutes} хв), '
               'SOC=$soc%, нічний=$isNight → примусово USB (мережа) для захисту акумулятора!',
               level: LogLevel.error);
+          LogService.log(
+              '🔎 DEBUG USB switch: stale-data protection requests USB '
+              '(gridV=${gridV.toStringAsFixed(1)}V, gridUnavailable=$gridUnavailable, '
+              'currentOutput=$currentOutput, reason=stale_data_emergency)');
+          if (gridUnavailable) {
+            LogService.logCritical(
+                'DEBUG USB PATH: grid unavailable during stale-data USB request '
+                '(gridV=${gridV.toStringAsFixed(1)}V). Output priority will be set to USB, '
+                'but inverter may continue off-grid until mains returns.',
+                category: 'GRID_OUTAGE');
+          }
+          LogService.logCritical(
+              'STALE DATA EMERGENCY: '
+              'no realtime for ${DateTime.now().difference(_lastSuccessfulRealtimeAt!).inMinutes}m, '
+              'SOC=$soc% (${isNight ? 'night' : 'day'}) → Force USB for protection',
+              category: 'STALE_DATA');
           await service.setMode(0);
         } else {
           LogService.log('🛡️ ЗАХИСТ АКБ: дані застарілі, вже на USB — добре.',
@@ -1384,6 +2161,48 @@ class AppStateProvider extends ChangeNotifier {
         }
       }
       return; // skip HEMS when data is stale
+    }
+
+    // *** NEW: Emergency top-up reserve when SOC is near critical
+    // If SOC < 25% and grid is available, enable SNU (grid top-up) temporarily.
+    // Skip this block entirely in Storm mode (smartMode==2) because Storm mode
+    // intentionally keeps charger=SNU and would cause an infinite recovery loop.
+    final soc = data!.batterySoc;
+    final currentCharger =
+        data!.rawFields['chargerSourcePriority']?['value']?.toString();
+    final hour = DateTime.now().hour;
+    final isNight = hour >= 22 || hour < 7;
+
+    final _isStormMode = smartMode == 2;
+    if (!_isStormMode) {
+      if (soc < 25.0 && !isNight) {
+        // Daytime emergency: charge from grid to prevent lights-out
+        if (currentCharger != '1') {
+          LogService.log(
+              '🚨 Emergency reserve top-up: SOC=$soc% < 25% → enabling SNU (grid+solar top-up)');
+          LogService.logCritical(
+              'EMERGENCY TOP-UP: SOC=$soc% < 25% at hour=$hour (day) '
+              '→ Enable SNU for immediate grid charging',
+              category: 'EMERGENCY_CHARGE');
+          await service.setConfigItem('chargerSourcePrioritySetting', '1');
+        }
+      } else if (soc >= 45.0 && isNight && currentCharger == '1') {
+        // Recovery complete: back to night strategy.
+        // Guard: only log+act on the first tick of recovery, not every minute.
+        if (_emergencyChargeActive) {
+          _emergencyChargeActive = false;
+          LogService.log(
+              '✅ Emergency reserve recovered: SOC=$soc% > 45% → OSO during night');
+          LogService.logCritical(
+              'RECOVERY COMPLETE: SOC=$soc% >= 45% at hour=$hour (night) '
+              '→ Back to OSO strategy',
+              category: 'EMERGENCY_CHARGE');
+          await service.setConfigItem('chargerSourcePrioritySetting', '2');
+        }
+      }
+      if (soc < 25.0 && !isNight) {
+        _emergencyChargeActive = true;
+      }
     }
 
     if (!isManualTrigger) {
@@ -1403,7 +2222,75 @@ class AppStateProvider extends ChangeNotifier {
       }
     }
 
-    switch (smartMode) {
+    // Schedule rules: if a time-based rule is active, override smartMode for this tick.
+    final activeRule = _scheduleRules.getActiveRuleNow();
+    final effectiveSmartMode =
+        activeRule != null ? activeRule.mode.smartModeIndex : smartMode;
+    if (activeRule != null) {
+      LogService.log(
+          '📅 ScheduleRule active: "${activeRule.name}" → mode=${activeRule.mode.name} '
+          '(${activeRule.timeRangeLabel})');
+    }
+
+    // ── Forecast-based Storm auto-activation ────────────────────────────────
+    // If the feature is enabled, fetch storm risk for the next 12 hours.
+    // High risk (score ≥ 0.6) overrides HEMS and locks Storm mode until clear.
+    if (autoStormByForecastEnabled) {
+      final risk = await weatherService.fetchStormRisk(
+        lat: siteLatitude,
+        lon: siteLongitude,
+      );
+      _latestStormRisk = risk;
+
+      if (risk.isHighRisk && !_forecastStormActive) {
+        // Activate storm mode
+        _forecastStormActive = true;
+        LogService.log(
+            '🌩️ Auto-Storm by forecast: score=${risk.score.toStringAsFixed(2)}, '
+            'reason="${risk.reason}" → Storm mode activated');
+        final l10n = await _getL10n();
+        _eventHistory.addEvent(
+          HemsEventType.stormAutoActivated,
+          l10n.notifForecastStormBody(risk.reason),
+          meta: {
+            'score': risk.score,
+            'reason': risk.reason,
+            'soc': data!.batterySoc
+          },
+        );
+        await _notifService.show(
+          type: AppNotificationType.modeChanged,
+          title: l10n.notifForecastStormTitle,
+          body: l10n.notifForecastStormBody(risk.reason),
+        );
+        await hemsService.executeStormMode(data!);
+        return;
+      } else if (risk.isHighRisk && _forecastStormActive) {
+        // Stay in storm mode
+        await hemsService.executeStormMode(data!);
+        return;
+      } else if (!risk.isHighRisk && _forecastStormActive) {
+        // Weather cleared — deactivate
+        _forecastStormActive = false;
+        LogService.log(
+            '☀️ Auto-Storm by forecast: risk cleared (score=${risk.score.toStringAsFixed(2)}) '
+            '→ restoring normal HEMS');
+        final l10n = await _getL10n();
+        _eventHistory.addEvent(
+          HemsEventType.stormAutoDeactivated,
+          l10n.notifForecastStormRestoredBody,
+          meta: {'score': risk.score, 'soc': data!.batterySoc},
+        );
+        await _notifService.show(
+          type: AppNotificationType.modeChanged,
+          title: l10n.notifForecastStormRestoredTitle,
+          body: l10n.notifForecastStormRestoredBody,
+        );
+        // Fall through to normal HEMS below
+      }
+    }
+
+    switch (effectiveSmartMode) {
       case 0: // Адаптивний (Прогноз + Піки)
         // Викликаємо метод, передаючи параметри, сумісні з твоєю версією алгоритму
         await hemsService.executeAdaptiveMode(

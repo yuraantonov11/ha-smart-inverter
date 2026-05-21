@@ -139,23 +139,48 @@ class TariffForecastData {
     return pricePerKwh.values.reduce((a, b) => a + b) / pricePerKwh.length;
   }
 
-  DateTime? getNextCheapWindow(Duration minDuration, double priceMargin) {
+  DateTime? getNextCheapWindow(
+    Duration minDuration,
+    double priceMargin, {
+    DateTime? from,
+  }) {
     if (pricePerKwh.isEmpty) return null;
-    final prices = pricePerKwh.values.toList()..sort();
-    final median = prices[prices.length ~/ 2];
-    final maxPrice = median * priceMargin;
+    final startFrom = from ?? DateTime.now();
+    final avg = _averagePrice;
+    final maxPrice = avg * priceMargin;
 
-    for (final entry in (pricePerKwh.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key)))) {
-      if (entry.value <= maxPrice) {
-        var cheapDuration = Duration.zero;
-        for (final futureEntry in pricePerKwh.entries) {
-          if (futureEntry.key.isAfter(entry.key) &&
-              futureEntry.value <= maxPrice) {
-            cheapDuration = futureEntry.key.difference(entry.key);
-          }
+    final sorted = pricePerKwh.entries.toList()
+      ..sort((a, b) => a.key.compareTo(b.key));
+
+    DateTime? blockStart;
+    DateTime? prevKey;
+
+    for (final entry in sorted) {
+      if (entry.key.isBefore(startFrom)) {
+        continue;
+      }
+
+      final isCheap = entry.value <= maxPrice;
+      if (!isCheap) {
+        blockStart = null;
+        prevKey = null;
+        continue;
+      }
+
+      if (blockStart == null) {
+        blockStart = entry.key;
+        prevKey = entry.key;
+      } else {
+        final gap = entry.key.difference(prevKey!);
+        if (gap > const Duration(hours: 1, minutes: 5)) {
+          blockStart = entry.key;
         }
-        if (cheapDuration >= minDuration) return entry.key;
+        prevKey = entry.key;
+      }
+
+      final duration = entry.key.difference(blockStart);
+      if (duration >= minDuration) {
+        return blockStart;
       }
     }
     return null;

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 class AppMotionTokens extends ThemeExtension<AppMotionTokens> {
   final Duration quick;
@@ -182,18 +181,34 @@ class AppTheme {
     required FontWeight weight,
     required double letterSpacing,
   }) {
-    if (_useCyrillicDisplay(languageCode)) {
-      // Orbitron has poor Cyrillic coverage; Exo 2 keeps a tech look for Ukrainian.
-      return GoogleFonts.exo2(
-        color: color,
-        fontWeight: weight,
-        letterSpacing: letterSpacing * 0.75,
-      );
-    }
-    return GoogleFonts.orbitron(
+    final displayFamily =
+        _useCyrillicDisplay(languageCode) ? 'Exo 2' : 'Orbitron';
+    final adjustedLetterSpacing = _useCyrillicDisplay(languageCode)
+        ? letterSpacing * 0.75
+        : letterSpacing;
+
+    return TextStyle(
+      color: color,
+      fontWeight: weight,
+      letterSpacing: adjustedLetterSpacing,
+      fontFamily: displayFamily,
+      fontFamilyFallback: const ['Inter', 'Manrope', 'Segoe UI', 'Roboto'],
+    );
+  }
+
+  static TextStyle _uiStyle({
+    required Color color,
+    FontWeight weight = FontWeight.w400,
+    double? letterSpacing,
+    double? fontSize,
+  }) {
+    return TextStyle(
       color: color,
       fontWeight: weight,
       letterSpacing: letterSpacing,
+      fontSize: fontSize,
+      fontFamily: 'Inter',
+      fontFamilyFallback: const ['Manrope', 'Segoe UI', 'Roboto'],
     );
   }
 
@@ -207,7 +222,12 @@ class AppTheme {
       useMaterial3: true,
       brightness: brightness,
     ).textTheme;
-    final bodyTheme = GoogleFonts.manropeTextTheme(base);
+    final bodyTheme = base.apply(
+      bodyColor: secondary,
+      displayColor: body,
+      fontFamily: 'Manrope',
+    );
+
     return bodyTheme.copyWith(
       displayLarge: _displayStyle(
         languageCode: languageCode,
@@ -245,26 +265,26 @@ class AppTheme {
         weight: FontWeight.w600,
         letterSpacing: 0.6,
       ),
-      titleMedium: GoogleFonts.inter(
+      titleMedium: _uiStyle(
         color: body,
-        fontWeight: FontWeight.w600,
+        weight: FontWeight.w600,
       ),
-      titleSmall: GoogleFonts.inter(
+      titleSmall: _uiStyle(
         color: body,
-        fontWeight: FontWeight.w600,
+        weight: FontWeight.w600,
       ),
-      bodyLarge: GoogleFonts.inter(color: body),
-      bodyMedium: GoogleFonts.inter(color: secondary),
-      bodySmall: GoogleFonts.inter(color: secondary, fontSize: 12),
-      labelLarge: GoogleFonts.inter(color: body, fontWeight: FontWeight.w600),
-      labelMedium: GoogleFonts.inter(
+      bodyLarge: _uiStyle(color: body),
+      bodyMedium: _uiStyle(color: secondary),
+      bodySmall: _uiStyle(color: secondary, fontSize: 12),
+      labelLarge: _uiStyle(color: body, weight: FontWeight.w600),
+      labelMedium: _uiStyle(
         color: secondary,
-        fontWeight: FontWeight.w500,
+        weight: FontWeight.w500,
         letterSpacing: 0.5,
       ),
-      labelSmall: GoogleFonts.inter(
+      labelSmall: _uiStyle(
         color: secondary,
-        fontWeight: FontWeight.w500,
+        weight: FontWeight.w500,
         letterSpacing: 0.5,
       ),
     );
@@ -443,7 +463,7 @@ class AppTheme {
         ),
       ),
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: scheme.surfaceContainer.withValues(alpha: 0.95),
+        backgroundColor: Colors.transparent,
         indicatorColor: scheme.secondaryContainer,
         elevation: 0,
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
@@ -660,7 +680,7 @@ class AppTheme {
         labelStyle: textTheme.labelMedium ?? const TextStyle(),
       ),
       navigationBarTheme: NavigationBarThemeData(
-        backgroundColor: scheme.surfaceContainer.withValues(alpha: 0.92),
+        backgroundColor: Colors.transparent,
         indicatorColor: scheme.secondaryContainer.withValues(alpha: 0.8),
         elevation: 0,
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,

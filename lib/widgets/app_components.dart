@@ -219,6 +219,9 @@ class AppCard extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           onTap: onTap,
+          mouseCursor: SystemMouseCursors.click,
+          hoverColor: Theme.of(context).hoverColor,
+          focusColor: Theme.of(context).focusColor,
           borderRadius: BorderRadius.circular(borderRadius),
           child: content,
         ),
@@ -252,14 +255,21 @@ class AppGlassSurface extends StatelessWidget {
     final expressive = context.expressive;
     final isDark = theme.brightness == Brightness.dark;
     final isCompact = MediaQuery.sizeOf(context).shortestSide < 600;
-    final allowBackdrop =
-        enableBlur && (kIsWeb || !(Platform.isAndroid || Platform.isIOS));
+    // BackdropFilter / ImageFilter.blur causes EGL_CONTEXT_LOST (12302) on
+    // Windows with certain GPU drivers — disable it on Windows entirely.
+    // Works correctly on macOS, Linux, and web.
+    final allowBackdrop = enableBlur &&
+        !Platform.isWindows &&
+        (kIsWeb || !(Platform.isAndroid || Platform.isIOS));
+    // When blur is disabled (e.g. Windows), boost surface opacity so panel
+    // remains visually solid without the blur layer.
+    final opacityBoost = allowBackdrop ? 0.0 : 0.28;
     final sigma = isCompact ? (isStrong ? 5.0 : 2.5) : (isStrong ? 12.0 : 6.0);
     final lightTop = (backgroundColor ?? Colors.white).withValues(
-      alpha: isStrong ? 0.95 : 0.84,
+      alpha: ((isStrong ? 0.95 : 0.84) + opacityBoost).clamp(0.0, 1.0),
     );
     final lightBottom = theme.colorScheme.surface.withValues(
-      alpha: isStrong ? 0.88 : 0.76,
+      alpha: ((isStrong ? 0.88 : 0.76) + opacityBoost).clamp(0.0, 1.0),
     );
 
     final decoratedChild = AnimatedContainer(
@@ -271,15 +281,19 @@ class AppGlassSurface extends StatelessWidget {
             isDark
                 ? (backgroundColor ?? theme.colorScheme.surfaceContainerHighest)
                     .withValues(
-                        alpha: isStrong
-                            ? expressive.shellBackdropOpacity + 0.08
-                            : expressive.shellBackdropOpacity - 0.02)
+                        alpha: ((isStrong
+                                    ? expressive.shellBackdropOpacity + 0.08
+                                    : expressive.shellBackdropOpacity - 0.02) +
+                                opacityBoost)
+                            .clamp(0.0, 1.0))
                 : lightTop,
             isDark
                 ? theme.colorScheme.surfaceContainer.withValues(
-                    alpha: isStrong
-                        ? expressive.shellBackdropOpacity
-                        : expressive.shellBackdropOpacity - 0.1)
+                    alpha: ((isStrong
+                                ? expressive.shellBackdropOpacity
+                                : expressive.shellBackdropOpacity - 0.1) +
+                            opacityBoost)
+                        .clamp(0.0, 1.0))
                 : lightBottom,
           ],
           begin: Alignment.topLeft,
@@ -425,12 +439,14 @@ class AppSectionTitle extends StatelessWidget {
   final String title;
   final String? subtitle;
   final IconData? icon;
+  final Widget? trailing;
 
   const AppSectionTitle({
     super.key,
     required this.title,
     this.subtitle,
     this.icon,
+    this.trailing,
   });
 
   @override
@@ -466,12 +482,15 @@ class AppSectionTitle extends StatelessWidget {
                 ),
                 const SizedBox(width: AppTheme.spacingS),
               ],
-              Text(
-                title,
-                style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      letterSpacing: 0.9,
-                    ),
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        letterSpacing: 0.9,
+                      ),
+                ),
               ),
+              if (trailing != null) trailing!,
             ],
           ),
           if (subtitle != null) ...[
@@ -481,6 +500,128 @@ class AppSectionTitle extends StatelessWidget {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class AppSectionCard extends StatelessWidget {
+  final String title;
+  final String? subtitle;
+  final IconData icon;
+  final Widget child;
+  final Widget? trailing;
+  final double? borderRadius;
+  final bool enableBlur;
+
+  const AppSectionCard({
+    super.key,
+    required this.title,
+    this.subtitle,
+    required this.icon,
+    required this.child,
+    this.trailing,
+    this.borderRadius,
+    this.enableBlur = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final expressive = context.expressive;
+    return AppCard(
+      borderRadius: borderRadius ?? expressive.cornerLarge,
+      enableBlur: enableBlur,
+      backgroundColor: theme.colorScheme.surfaceContainerLow,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(expressive.cornerSmall),
+                ),
+                child: Icon(icon, size: 18, color: theme.colorScheme.primary),
+              ),
+              const SizedBox(width: AppTheme.spacingS),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (subtitle != null && subtitle!.trim().isNotEmpty)
+                      Text(
+                        subtitle!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (trailing != null) ...[
+                const SizedBox(width: AppTheme.spacingS),
+                trailing!,
+              ],
+            ],
+          ),
+          const SizedBox(height: AppTheme.spacingM),
+          child,
+        ],
+      ),
+    );
+  }
+}
+
+class AppStatusChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  const AppStatusChip({
+    super.key,
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppTheme.spacingM,
+        vertical: AppTheme.spacingXS,
+      ),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.32)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: color),
+          const SizedBox(width: AppTheme.spacingS),
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
         ],
       ),
     );

@@ -10,13 +10,15 @@ class _FakeAppStateProvider extends AppStateProvider {
   final List<MapEntry<String, String>> changeSettingCalls = [];
 
   @override
-  Future<void> setMode(int mode) async {
+  Future<bool> setMode(int mode) async {
     setModeCalls.add(mode);
+    return true;
   }
 
   @override
-  Future<void> changeSetting(String key, String value) async {
+  Future<bool> changeSetting(String key, String value) async {
     changeSettingCalls.add(MapEntry(key, value));
+    return true;
   }
 }
 
@@ -103,7 +105,7 @@ void main() {
       final service = HemsAlgorithmService(provider, tun: _testTun);
 
       await service.executeAdaptiveMode(
-        data: _buildData(soc: 40.0, outputPriority: '0', chargerPriority: '2'),
+        data: _buildData(soc: 40.0, outputPriority: '2', chargerPriority: '2'),
         batteryCapacityAh: 230,
         hourlyForecast: const {},
         avgHourlyConsumptionStats: const {
@@ -198,8 +200,11 @@ void main() {
         nowOverride: DateTime(2026, 6, 1, 14),
       );
 
-      // surplus = -600W < exit threshold AND soc < midSoc → USB
-      expect(provider.setModeCalls, contains(0));
+      // Output remains on USB; recovery logic only refreshes charging.
+      expect(provider.setModeCalls, isEmpty);
+      final chargerChange = provider.changeSettingCalls.where(
+          (e) => e.key == 'chargerSourcePrioritySetting' && e.value == '1');
+      expect(chargerChange, isNotEmpty);
     });
   });
 
@@ -699,7 +704,15 @@ void main() {
       final highReserve =
           HemsAlgorithmService(providerHighReserve, tun: highReserveTun);
 
-      final data = _buildData(
+      final lowReserveData = _buildData(
+        soc: 36,
+        outputPriority: '2',
+        chargerPriority: '2',
+        pvPower: 2000,
+        loadPower: 500,
+      );
+
+      final highReserveData = _buildData(
         soc: 28,
         outputPriority: '2',
         chargerPriority: '2',
@@ -708,7 +721,7 @@ void main() {
       );
 
       await lowReserve.executeAdaptiveMode(
-        data: data,
+        data: lowReserveData,
         batteryCapacityAh: 230,
         hourlyForecast: const {},
         avgHourlyConsumptionStats: const {},
@@ -716,7 +729,7 @@ void main() {
         nowOverride: DateTime(2026, 6, 1, 13),
       );
       await highReserve.executeAdaptiveMode(
-        data: data,
+        data: highReserveData,
         batteryCapacityAh: 230,
         hourlyForecast: const {},
         avgHourlyConsumptionStats: const {},

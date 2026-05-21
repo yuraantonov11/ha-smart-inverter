@@ -14,6 +14,7 @@ import 'providers/app_provider.dart';
 import 'screens/auth_screen.dart';
 import 'screens/main_screen.dart';
 import 'services/log_service.dart';
+import 'services/notification_service.dart';
 import 'services/secure_storage_service.dart';
 
 bool get _isDesktopPlatform =>
@@ -35,6 +36,9 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   LogService.log('Додаток запускається...');
+
+  // Initialize file-based logging for debug purposes
+  await LogService.initializeFileLogging();
 
   final prefs = await SharedPreferences.getInstance();
 
@@ -78,6 +82,9 @@ void main() async {
     });
   }
 
+  // Initialize notification service (must be before runApp so toasts work)
+  await NotificationService.instance.initialize();
+
   // 3. Запуск додатку
   runApp(
     MultiProvider(
@@ -85,8 +92,11 @@ void main() async {
         ChangeNotifierProvider(
           create: (_) => AppStateProvider()..loadSettings(),
         ),
+        ChangeNotifierProvider.value(
+          value: NotificationService.instance,
+        ),
       ],
-      child: const MyApp(), // Тут тепер не має бути помилки
+      child: const MyApp(),
     ),
   );
 } // <--- ПЕРЕВІРТЕ: Ця дужка має закривати функцію main()

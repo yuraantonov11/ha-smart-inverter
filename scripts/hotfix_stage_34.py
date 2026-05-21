@@ -4,7 +4,14 @@ import sys
 
 
 def run(cmd, data=None):
-    p = subprocess.run(cmd, input=data, text=True, capture_output=True)
+    p = subprocess.run(
+        cmd,
+        input=data,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
     if p.returncode != 0:
         print("CMD FAILED:", " ".join(cmd))
         print(p.stdout)
@@ -55,4 +62,5 @@ pubspec = re.sub(r"(^\s*msix_version:\s*)2\.0\.0\.\d+\s*$", r"\g<1>2.0.0.34", pu
 stage("pubspec.yaml", pubspec)
 
 print("staged hotfix files")
+
 

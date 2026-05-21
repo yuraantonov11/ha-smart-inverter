@@ -145,6 +145,7 @@ Quick command for validation/build only:
 
 ## License 📄
 This project is licensed under the MIT License.
+Bundled fonts and their licenses are documented in `FONTS_LICENSES.md`.
 
 ## Disclaimer ⚠️
 This application uses the internal API of the solar.siseli.com platform. Use at your own risk.

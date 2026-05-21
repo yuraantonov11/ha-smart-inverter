@@ -1,5 +1,5 @@
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [string]$Version,
 
     [Parameter(Mandatory = $false)]
@@ -34,6 +34,10 @@ if ($Help) {
     Write-Host "  -SkipInno        Pass through to build_release.ps1"
     Write-Host "  -InnoCompilerPath Pass through to build_release.ps1"
     exit 0
+}
+
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    throw "Version is required. Use -Version X.Y.Z"
 }
 
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {

@@ -126,6 +126,11 @@ class HemsAlgorithmService {
   DateTime? _lastOutputSwitchAt;
   DateTime? _manualOverrideUntil;
 
+  // Backoff circuit breaker for control writes when backend is timing out.
+  int _consecutiveControlWriteFailures = 0;
+  DateTime? _controlWriteBlockedUntil;
+  DateTime? _lastControlWriteBlockedLogAt;
+
   final List<double> _recentSurplusHistory = <double>[];
   static const int _surplusHistorySize = 30;
 
@@ -198,18 +203,101 @@ class HemsAlgorithmService {
       _manualOverrideUntil != null &&
       DateTime.now().isBefore(_manualOverrideUntil!);
 
+  ({double? gridV, bool unavailable}) _gridDebugState() {
+    final v = provider.data?.gridVoltage;
+    final unavailable = v != null && v < 120.0;
+    return (gridV: v, unavailable: unavailable);
+  }
+
+  bool _isControlWriteBlocked() {
+    final until = _controlWriteBlockedUntil;
+    if (until == null) return false;
+    final now = DateTime.now();
+    if (!now.isBefore(until)) {
+      _controlWriteBlockedUntil = null;
+      return false;
+    }
+
+    if (_lastControlWriteBlockedLogAt == null ||
+        now.difference(_lastControlWriteBlockedLogAt!) >=
+            const Duration(seconds: 12)) {
+      _lastControlWriteBlockedLogAt = now;
+      final remaining = until.difference(now).inSeconds.clamp(1, 999);
+      LogService.log(
+          '⏸️ HEMS: control writes paused for ${remaining}s after repeated API failures (reason=control_write_backoff)');
+    }
+    return true;
+  }
+
+  void _recordControlWriteResult({
+    required bool success,
+    required String target,
+    required String reason,
+  }) {
+    if (success) {
+      if (_consecutiveControlWriteFailures > 0) {
+        LogService.log(
+            '✅ HEMS: control write recovered (target=$target, failures=$_consecutiveControlWriteFailures)');
+      }
+      _consecutiveControlWriteFailures = 0;
+      _controlWriteBlockedUntil = null;
+      return;
+    }
+
+    _consecutiveControlWriteFailures++;
+    final backoffSeconds = switch (_consecutiveControlWriteFailures) {
+      <= 2 => 5,
+      3 => 12,
+      4 => 25,
+      _ => 45,
+    };
+    _controlWriteBlockedUntil =
+        DateTime.now().add(Duration(seconds: backoffSeconds));
+    LogService.logCritical(
+        'HEMS control write failed: target=$target reason=$reason '
+        'failures=$_consecutiveControlWriteFailures backoff=${backoffSeconds}s',
+        category: 'CONTROL_WRITE');
+  }
+
   // ------------------------------------------------------------------
   // Helpers: command application with dedup + dwell
   // ------------------------------------------------------------------
+  /// Apply output mode with intelligent state sync.
+  /// After sending command, re-fetch inverter state to detect external changes
+  /// (e.g., another app or user changing mode).
   Future<bool> _applyOutput(String desired, String reason,
       {bool force = false}) async {
+    if (_isControlWriteBlocked()) {
+      return false;
+    }
+
     final now = DateTime.now();
+    final gridState = _gridDebugState();
+    final currentOutput =
+        provider.data?.rawFields['outputSourcePriority']?['value']?.toString();
+
+    if (desired == _Out.usb) {
+      LogService.log(
+          '🔎 HEMS output request: target=USB reason=$reason force=$force '
+          'current=$currentOutput gridV=${gridState.gridV?.toStringAsFixed(1) ?? '-'}V '
+          'gridUnavailable=${gridState.unavailable}');
+      if (gridState.unavailable) {
+        LogService.logCritical(
+            'DEBUG USB REQUEST WITH GRID OUTAGE: reason=$reason '
+            'gridV=${gridState.gridV?.toStringAsFixed(1) ?? '-'}V, current=$currentOutput. '
+            'USB priority can be written, but real import from grid is impossible until mains returns.',
+            category: 'GRID_OUTAGE');
+      }
+    }
+
     // Dedup identical command in short window
     if (_lastCmdOutput == desired &&
         _lastCmdOutputAt != null &&
         now.difference(_lastCmdOutputAt!) < tun.commandDedupWindow) {
       LogService.log(
-          '⏭️ HEMS: skip output write (reason=${_Reason.dedupSkipOutput}, target=${_modeName(desired)})');
+          '⏭️ HEMS: skip output write (reason=${_Reason.dedupSkipOutput}, target=${_modeName(desired)}, '
+          'requested=$reason, gridV=${gridState.gridV?.toStringAsFixed(1) ?? '-'}V, '
+          'gridUnavailable=${gridState.unavailable})');
       return false;
     }
     // Dwell: avoid flapping output mode — Phase 2b: use adaptive dwell time
@@ -220,22 +308,69 @@ class HemsAlgorithmService {
         _lastCmdOutput != desired &&
         now.difference(_lastOutputSwitchAt!) < dwell) {
       LogService.log(
-          '⏳ HEMS: skip switch to ${_modeName(desired)} (reason=${_Reason.dwellLock}, requested=$reason, dwell=${dwell.inMinutes}m)');
+          '⏳ HEMS: skip switch to ${_modeName(desired)} (reason=${_Reason.dwellLock}, requested=$reason, '
+          'dwell=${dwell.inMinutes}m, gridV=${gridState.gridV?.toStringAsFixed(1) ?? '-'}V, '
+          'gridUnavailable=${gridState.unavailable})');
       return false;
     }
 
     final modeInt = desired == _Out.sbu ? 2 : 0;
-    await provider.setMode(modeInt);
+    final applied = await provider.setMode(modeInt);
+    if (!applied) {
+      _recordControlWriteResult(
+          success: false,
+          target: 'output:${_modeName(desired)}',
+          reason: reason);
+      LogService.logCritical(
+          '❌ HEMS: output write failed (target=${_modeName(desired)}, reason=$reason, '
+          'gridV=${gridState.gridV?.toStringAsFixed(1) ?? '-'}V, gridUnavailable=${gridState.unavailable})',
+          category: 'CONTROL_WRITE');
+      return false;
+    }
+    _recordControlWriteResult(
+        success: true, target: 'output:${_modeName(desired)}', reason: reason);
     if (_lastCmdOutput != desired) {
       _lastOutputSwitchAt = now;
     }
     _lastCmdOutput = desired;
     _lastCmdOutputAt = now;
     LogService.log('🔀 HEMS: output → ${_modeName(desired)} (reason=$reason)');
+
+    // *** Multi-app sync: After sending command, fetch fresh state to detect
+    // external changes (another app, web UI, physical button, etc.)
+    Future.delayed(const Duration(milliseconds: 500), () async {
+      try {
+        final fresh = await provider.service.getRealTimeData();
+        if (fresh != null) {
+          final actualOutput =
+              fresh.rawFields['outputSourcePriority']?['value']?.toString();
+          if (actualOutput != null && actualOutput != _lastCmdOutput) {
+            LogService.log('🔄 HEMS: detected external mode change! '
+                'sent=$desired, but device shows=$actualOutput → syncing local state');
+            LogService.logCritical(
+                'EXTERNAL MODE CHANGE: sent=${_modeName(desired)}, '
+                'device shows=${_modeName(actualOutput)} → sync conflict detected!',
+                category: 'MODE_CONFLICT');
+            _lastCmdOutput = actualOutput;
+            _lastCmdOutputAt = DateTime.now();
+            _detectManualOverride(fresh);
+          }
+        }
+      } catch (e) {
+        // Non-critical — just log
+        LogService.log(
+            'ℹ️ HEMS: post-command sync failed (likely API throttle): $e');
+      }
+    });
+
     return true;
   }
 
   Future<bool> _applyCharger(String desired, String reason) async {
+    if (_isControlWriteBlocked()) {
+      return false;
+    }
+
     final now = DateTime.now();
     if (_lastCmdCharger == desired &&
         _lastCmdChargerAt != null &&
@@ -244,7 +379,20 @@ class HemsAlgorithmService {
           '⏭️ HEMS: skip charger write (reason=${_Reason.dedupSkipCharger}, target=${_chgName(desired)})');
       return false;
     }
-    await provider.changeSetting('chargerSourcePrioritySetting', desired);
+    final applied =
+        await provider.changeSetting('chargerSourcePrioritySetting', desired);
+    if (!applied) {
+      _recordControlWriteResult(
+          success: false,
+          target: 'charger:${_chgName(desired)}',
+          reason: reason);
+      LogService.logCritical(
+          '❌ HEMS: charger write failed (target=${_chgName(desired)}, reason=$reason)',
+          category: 'CONTROL_WRITE');
+      return false;
+    }
+    _recordControlWriteResult(
+        success: true, target: 'charger:${_chgName(desired)}', reason: reason);
     _lastCmdCharger = desired;
     _lastCmdChargerAt = now;
     LogService.log('🔌 HEMS: charger → ${_chgName(desired)} (reason=$reason)');
@@ -308,7 +456,13 @@ class HemsAlgorithmService {
     if (currentBuzzer == desiredBuzzer || _lastAppliedBuzzer == desiredBuzzer) {
       return;
     }
-    await provider.changeSetting('buzzerAlarmSetting', desiredBuzzer);
+    final applied =
+        await provider.changeSetting('buzzerAlarmSetting', desiredBuzzer);
+    if (!applied) {
+      LogService.log(
+          'ℹ️ Buzzer write skipped: backend unavailable (desired=$desiredBuzzer)');
+      return;
+    }
     final fullConfigs = data.rawFields['fullConfigs'];
     if (fullConfigs is Map<String, dynamic> &&
         fullConfigs['buzzerAlarmSetting'] is Map<String, dynamic>) {
@@ -399,8 +553,12 @@ class HemsAlgorithmService {
     try {
       final tf = optimizationProfile?.tariffForecast;
       if (tf == null) return null;
-      // priceMargin=1.1 → accept prices up to 10% above median (finds cheap block)
-      return tf.getNextCheapWindow(const Duration(hours: 2), 1.1) as DateTime?;
+      // priceMargin=1.0 → keep only hours at/below average forecast price.
+      return tf.getNextCheapWindow(
+        const Duration(hours: 2),
+        1.0,
+        from: now,
+      ) as DateTime?;
     } catch (_) {
       return null;
     }
@@ -489,6 +647,10 @@ class HemsAlgorithmService {
     if (data.batterySoc <= reserveSoc + 2.0) {
       await _applyOutput(_Out.usb, _Reason.reserveSocProtection, force: true);
       await _applyCharger(_Chg.snu, _Reason.reserveSocProtection);
+      LogService.logCritical(
+          'HARD FLOOR: SOC=${data.batterySoc.toStringAsFixed(1)}% ≤ ${(reserveSoc + 2.0).toStringAsFixed(1)}% '
+          '→ Force USB+SNU',
+          category: 'BATTERY_SAFETY');
       return;
     }
 
@@ -580,6 +742,29 @@ class HemsAlgorithmService {
     final socOk = data.batterySoc >= tun.minOperatingSoc;
     final pvActive = pv > 80; // panels actually producing
 
+    // ***CRITICAL: BATTERY RECOVERY PHASE***
+    // If SOC is below 35%, we MUST stay on USB (grid-powered operation)
+    // until SOC recovers to 45% or higher. This prevents cascade failures.
+    if (data.batterySoc < 35.0) {
+      await _applyOutput(_Out.usb, _Reason.reserveSocProtection, force: true);
+      await _applyCharger(_Chg.snu, _Reason.reserveSocProtection);
+      LogService.logCritical(
+          'CRITICAL RECOVERY: SOC=${data.batterySoc.toStringAsFixed(1)}% < 35% '
+          '→ Force USB+SNU until 45%+',
+          category: 'BATTERY_RECOVERY');
+      return;
+    }
+    // Hysteresis: once recovered above 45%, normal logic resumes
+    if (data.batterySoc < 45.0 && currentOutput == _Out.usb) {
+      // Stay in recovery mode but allow charger switch if safe
+      await _applyCharger(_Chg.snu, _Reason.reserveSocProtection);
+      LogService.logCritical(
+          'HYSTERESIS: SOC=${data.batterySoc.toStringAsFixed(1)}% < 45% '
+          'on USB → maintain SNU charging',
+          category: 'BATTERY_RECOVERY');
+      return;
+    }
+
     // (a) Realtime SURPLUS — strong reason to use SBU now.
     // Phase 2b: use adaptive threshold instead of fixed tun.pvSurplusEnterW
     if (pvActive && socOk && surplus >= adaptivePvSurplusEnter) {
@@ -606,19 +791,77 @@ class HemsAlgorithmService {
 
     if (isEvening) {
       // Evening: protect reserve more aggressively
-      final eveningSafetyWh = maxBatteryCapacityWh * 0.01;
-      final availableEnergyWh = max(0.0, currentEnergyWh - reserveEnergyWh);
-      final reserveProtectionActive = data.batterySoc <= (reserveSoc + 2.0) ||
-          availableEnergyWh <= eveningSafetyWh ||
-          deficitTillNight > 0;
-      final batteryCanBeUsed = data.batterySoc >= (reserveSoc + 5.0) &&
-          availableEnergyWh > eveningSafetyWh &&
-          deficitTillNight == 0;
+      // Safety margin: 30 min of avg consumption or 5% battery capacity (whichever is higher)
+      final avgConsumptionWh =
+          (load > 0 ? load : 500.0) * 0.5; // 30 min at current load
+      final capacityMarginWh = maxBatteryCapacityWh * 0.05; // 5% capacity
+      final eveningSafetyWh = max(avgConsumptionWh, capacityMarginWh);
 
-      if (reserveProtectionActive) {
+      final availableEnergyWh = max(0.0, currentEnergyWh - reserveEnergyWh);
+
+      // Log evening context for debugging
+      LogService.log(
+          '🌅 HEMS evening: SOC=${data.batterySoc.toStringAsFixed(1)}%, '
+          'available=${availableEnergyWh.toStringAsFixed(0)}Wh, '
+          'safety=${eveningSafetyWh.toStringAsFixed(0)}Wh, '
+          'load=${load.toInt()}W, deficit=${deficitTillNight.toInt()}Wh');
+
+      // Condition 1: Critical low SOC — always USB + charge
+      if (data.batterySoc <= reserveSoc + 1.0) {
+        LogService.log('🆘 Evening critical: SOC near reserve → USB+charge');
+        LogService.logCritical(
+            'EVENING CRITICAL: SOC=${data.batterySoc.toStringAsFixed(1)}% ≤ ${(reserveSoc + 1.0).toStringAsFixed(1)}% '
+            'at hour=$currentHour → Emergency USB+SNU',
+            category: 'EVENING_PROTECTION');
         await _applyOutput(_Out.usb, _Reason.eveningReserveProtection);
-      } else if (batteryCanBeUsed) {
+        await _applyCharger(_Chg.snu, _Reason.eveningReserveProtection);
+        return;
+      }
+
+      // Condition 2: Available energy is very low — stay on USB to preserve battery
+      if (availableEnergyWh <= eveningSafetyWh) {
+        LogService.log(
+            '⚠️ Evening low energy: available ≤ safety margin → USB');
+        LogService.logCritical(
+            'EVENING LOW ENERGY: available=${availableEnergyWh.toStringAsFixed(0)}Wh ≤ '
+            'safety=${eveningSafetyWh.toStringAsFixed(0)}Wh at hour=$currentHour → USB',
+            category: 'EVENING_PROTECTION');
+        await _applyOutput(_Out.usb, _Reason.eveningReserveProtection);
+        return;
+      }
+
+      // Condition 3: Forecast deficit — only if we have time before night and sufficient buffer
+      if (deficitTillNight > availableEnergyWh * 0.3) {
+        // Deficit is >30% of available energy → risky, use grid
+        LogService.log(
+            '📉 Evening deficit risk: deficit=${deficitTillNight.toInt()}Wh '
+            '> 30% of available=(${(availableEnergyWh * 0.3).toInt()}Wh) → USB');
+        LogService.logCritical(
+            'EVENING DEFICIT RISK: deficit=${deficitTillNight.toInt()}Wh '
+            '> 30%*(${availableEnergyWh.toStringAsFixed(0)}Wh) at hour=$currentHour → USB',
+            category: 'EVENING_PROTECTION');
+        await _applyOutput(_Out.usb, _Reason.eveningReserveProtection);
+        return;
+      }
+
+      // Condition 4: Safe to use battery if forecast is good or fully charged
+      if (data.batterySoc >= reserveSoc + 10.0 &&
+          deficitTillNight <= availableEnergyWh * 0.2) {
+        // Forecast is manageable, buffer is good → use battery to reduce grid
+        LogService.log(
+            '✅ Evening battery safe: SOC=${data.batterySoc.toStringAsFixed(1)}%, '
+            'deficit manageable → SBU');
         await _applyOutput(_Out.sbu, _Reason.eveningBatteryUse);
+        return;
+      }
+
+      // Condition 5: Default evening behavior — stay on USB for safety
+      LogService.log(
+          '🔒 Evening default: stay on ${_modeName(currentOutput ?? _Out.usb)} '
+          '(ambiguous conditions)');
+      // Keep current state unless risky
+      if (currentOutput != _Out.usb && deficitTillNight > 0) {
+        await _applyOutput(_Out.usb, _Reason.eveningReserveProtection);
       }
       return;
     }
@@ -774,8 +1017,10 @@ class HemsAlgorithmService {
             .clamp(-1.0, 1.0);
     final h = acos(cosH);
     final daylightHours = (2 * h) * 24 / (2 * pi);
-    final sunrise = 12.0 - daylightHours / 2.0 - (longitude / 15.0);
-    final sunset = 12.0 + daylightHours / 2.0 - (longitude / 15.0);
+    final tzOffsetHours = now.timeZoneOffset.inMinutes / 60.0;
+    final solarNoonLocal = 12.0 + tzOffsetHours - (longitude / 15.0);
+    final sunrise = solarNoonLocal - daylightHours / 2.0;
+    final sunset = solarNoonLocal + daylightHours / 2.0;
 
     final sunriseHour = sunrise.floor().clamp(0, 23);
     final sunsetHour = sunset.floor().clamp(0, 23);

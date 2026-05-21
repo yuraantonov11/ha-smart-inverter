@@ -4,6 +4,7 @@ import '../l10n/app_localizations.dart';
 import '../providers/app_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_components.dart';
+import '../widgets/notification_panel.dart';
 import 'dashboard_tab.dart';
 import 'automation_tab.dart';
 import 'details_tab.dart';
@@ -75,7 +76,10 @@ class _MainScreenState extends State<MainScreen> {
     required bool isDataLoading,
     required AppLocalizations l10n,
   }) {
-    final child = _buildRawPage(
+    // Page headers are intentionally omitted: the navigation rail / bottom
+    // nav already indicates the active section, so an extra title would be
+    // redundant. We just render the raw page content directly.
+    return _buildRawPage(
       index: index,
       provider: provider,
       viewData: viewData,
@@ -83,43 +87,6 @@ class _MainScreenState extends State<MainScreen> {
       statusMessage: statusMessage,
       isDataLoading: isDataLoading,
     );
-
-    switch (index) {
-      case 0:
-        return AppScreenFrame(
-          icon: Icons.dashboard_rounded,
-          title: l10n.dashboard,
-          subtitle: l10n.energyOverview,
-          trailing: _PageStatusPill(
-            isOffline: isInverterOffline,
-            onlineLabel: l10n.connectionOnline,
-            offlineLabel: l10n.connectionOffline,
-          ),
-          child: child,
-        );
-      case 1:
-        return AppScreenFrame(
-          icon: Icons.smart_toy_rounded,
-          title: l10n.automation,
-          subtitle: l10n.hemsSubtitle,
-          child: child,
-        );
-      case 2:
-        return AppScreenFrame(
-          icon: Icons.list_alt_rounded,
-          title: l10n.data,
-          subtitle: l10n.realtimeReadings,
-          child: child,
-        );
-      case 3:
-      default:
-        return AppScreenFrame(
-          icon: Icons.settings_rounded,
-          title: l10n.settings,
-          subtitle: l10n.appSettings,
-          child: child,
-        );
-    }
   }
 
   @override
@@ -171,7 +138,6 @@ class _MainScreenState extends State<MainScreen> {
         final compactRailMinWidth = 72.0;
         final safeIndex = _selectedIndex.clamp(0, destinations.length - 1);
         final langCode = lang.toUpperCase();
-        final activePageLabel = destinations[safeIndex].label;
 
         Widget buildPageSwitcher() {
           return AnimatedSwitcher(
@@ -243,7 +209,8 @@ class _MainScreenState extends State<MainScreen> {
         }
 
         return Scaffold(
-          extendBody: useRail,
+          // Let page background continue under compact bottom navigation.
+          extendBody: !useRail,
           appBar: AppBar(
             titleSpacing: AppTheme.spacingS,
             flexibleSpace: DecoratedBox(
@@ -264,33 +231,19 @@ class _MainScreenState extends State<MainScreen> {
                 _RailLogoIcon(theme: theme),
                 const SizedBox(width: AppTheme.spacingS),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        l10n.appTitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleMedium,
-                      ),
-                      Text(
-                        activePageLabel,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
+                  child: Text(
+                    l10n.appTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium,
                   ),
                 ),
               ],
             ),
             scrolledUnderElevation: 0,
             actions: [
-              // Dashboard online/offline pill — only in compact (mobile) mode
-              if (!useRail && safeIndex == 0)
+              // Dashboard online/offline pill on every layout
+              if (safeIndex == 0)
                 Padding(
                   padding: const EdgeInsets.only(right: AppTheme.spacingXS),
                   child: _PageStatusPill(
@@ -310,6 +263,8 @@ class _MainScreenState extends State<MainScreen> {
                     icon: const Icon(Icons.language_rounded, size: 20),
                   ),
                 ),
+              // Notification bell
+              const NotificationBell(),
               Tooltip(
                 message: isDark ? l10n.lightTheme : l10n.darkTheme,
                 child: IconButton(
@@ -373,34 +328,17 @@ class _MainScreenState extends State<MainScreen> {
                                                 const SizedBox(
                                                     width: AppTheme.spacingM),
                                                 Expanded(
-                                                  child: Column(
-                                                    crossAxisAlignment:
-                                                        CrossAxisAlignment
-                                                            .start,
-                                                    mainAxisSize:
-                                                        MainAxisSize.min,
-                                                    children: [
-                                                      Text(
-                                                        l10n.appTitle,
-                                                        maxLines: 1,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                        style: theme.textTheme
-                                                            .titleSmall
-                                                            ?.copyWith(
-                                                          fontWeight:
-                                                              FontWeight.w700,
-                                                        ),
-                                                      ),
-                                                      Text(
-                                                        activePageLabel,
-                                                        maxLines: 1,
-                                                        overflow: TextOverflow
-                                                            .ellipsis,
-                                                        style: theme.textTheme
-                                                            .labelSmall,
-                                                      ),
-                                                    ],
+                                                  child: Text(
+                                                    l10n.appTitle,
+                                                    maxLines: 1,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                    style: theme
+                                                        .textTheme.titleSmall
+                                                        ?.copyWith(
+                                                      fontWeight:
+                                                          FontWeight.w700,
+                                                    ),
                                                   ),
                                                 ),
                                               ],
@@ -455,31 +393,41 @@ class _MainScreenState extends State<MainScreen> {
           bottomNavigationBar: useRail
               ? null
               : SafeArea(
-                  minimum: const EdgeInsets.fromLTRB(
-                    AppTheme.spacingS,
+                  minimum: EdgeInsets.fromLTRB(
+                    AppTheme.spacingXS,
+                    AppTheme.spacingXS,
+                    AppTheme.spacingXS,
                     0,
-                    AppTheme.spacingS,
-                    AppTheme.spacingS,
                   ),
                   child: AppGlassSurface(
-                    isStrong: true,
                     borderRadius: expressive.cornerXL,
-                    child: NavigationBar(
-                      selectedIndex: safeIndex,
-                      height: 64,
-                      onDestinationSelected: (index) {
-                        setState(() => _selectedIndex = index);
-                      },
-                      labelBehavior:
-                          NavigationDestinationLabelBehavior.onlyShowSelected,
-                      destinations: destinations
-                          .map(
-                            (d) => NavigationDestination(
-                              icon: Icon(d.icon),
-                              label: d.label,
-                            ),
-                          )
-                          .toList(),
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        minHeight: constraints.maxWidth < 950 ? 56 : 64,
+                        maxHeight: constraints.maxWidth < 950 ? 56 : 64,
+                      ),
+                      child: NavigationBar(
+                        selectedIndex: safeIndex,
+                        backgroundColor: Colors.transparent,
+                        surfaceTintColor: Colors.transparent,
+                        elevation: 0,
+                        shadowColor: Colors.transparent,
+                        onDestinationSelected: (index) {
+                          setState(() => _selectedIndex = index);
+                        },
+                        labelBehavior: constraints.maxWidth < 950
+                            ? NavigationDestinationLabelBehavior.alwaysHide
+                            : NavigationDestinationLabelBehavior
+                                .onlyShowSelected,
+                        destinations: destinations
+                            .map(
+                              (d) => NavigationDestination(
+                                icon: Icon(d.icon),
+                                label: d.label,
+                              ),
+                            )
+                            .toList(),
+                      ),
                     ),
                   ),
                 ),

@@ -1,0 +1,21 @@
+Smart Inverter diagnostics snapshot
+Generated: 2026-05-15 12:09:13
+Status: Оновлено о 12:08:31
+Last realtime update: 2026-05-15 12:08:31
+App version: Version 2.0.4+4
+Device SN: 448411180556320769
+Working mode: Line Mode
+Current mode:
+Offline: no
+Control raw: output=0 charger=2
+Power: PV 79 W | Grid 226 W | Battery 0 W | Load 305 W
+Battery: SOC 100.0% | Voltage 54.0 V | Load 6.0%
+Economics: daily 0.4 kWh | total 118.5 kWh | CO2 49.8 kg
+Month economics: load 113.2 kWh | grid 118.5 kWh | self-consumed 16.9 kWh | saved 72.3 UAH | payable 445.6 UAH
+HEMS: mode Adaptive | strategy solarMaxed | windows astronomical
+HEMS windows: day 4:00 | evening 17:00 | night 19:00
+HEMS tuning: reserve 17.0% | pv enter 99 W | dwell 25 min
+Tariff forecast: active | cheap now no | next 2026-05-15 12:00:00
+Weather perf: local hit/miss 4/2 (join 0) avg 69ms | daily hit/miss 9/1 (join 0) avg 65ms
+[chart] timing requestId=21 total=418ms chart=102ms daily=184ms day=128ms
+

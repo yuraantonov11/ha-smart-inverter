@@ -123,6 +123,45 @@ class InverterData {
     return fieldObject.toString();
   }
 
+  static String _normalizeModeLabel(String raw) {
+    final value = raw.trim();
+    if (value.isEmpty || value.toLowerCase() == 'null') return '';
+    if (value == '0') return 'USB';
+    if (value == '1') return 'SUB';
+    if (value == '2') return 'SBU';
+    return value;
+  }
+
+  static String _resolveCurrentMode(
+    String currentModeStr,
+    Map<String, dynamic> fields,
+  ) {
+    final explicit = _normalizeModeLabel(currentModeStr);
+    if (explicit.isNotEmpty) return explicit;
+
+    final outputPriority = fields['outputSourcePriority'];
+    if (outputPriority is Map) {
+      final normalized = _normalizeModeLabel(
+        outputPriority['valueDisplay']?.toString() ??
+            outputPriority['value']?.toString() ??
+            '',
+      );
+      if (normalized.isNotEmpty) return normalized;
+    }
+
+    final outputPrioritySetting = fields['outputSourcePrioritySetting'];
+    if (outputPrioritySetting is Map) {
+      final normalized = _normalizeModeLabel(
+        outputPrioritySetting['valueDisplay']?.toString() ??
+            outputPrioritySetting['value']?.toString() ??
+            '',
+      );
+      if (normalized.isNotEmpty) return normalized;
+    }
+
+    return 'N/A';
+  }
+
   factory InverterData.fromJson(
       Map<String, dynamic> json, String deviceSn, String currentModeStr) {
     final fields = json['deviceAttributeState']?['fields'] ?? {};
@@ -180,7 +219,7 @@ class InverterData {
       loadPercentage: loadPct,
       workingMode: workingState,
       deviceSn: deviceSn,
-      currentModeStr: currentModeStr,
+      currentModeStr: _resolveCurrentMode(currentModeStr, fields),
       rawFields: fields,
     );
   }

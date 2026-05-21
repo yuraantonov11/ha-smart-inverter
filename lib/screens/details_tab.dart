@@ -43,52 +43,66 @@ class DetailsTab extends StatelessWidget {
             AppTheme.spacingL,
           ),
           children: [
-            // Settings header
-            _SectionHeader(
-              icon: Icons.tune_rounded,
+            AppSectionCard(
               title: l10n.inverterSettings,
+              subtitle: l10n.advancedSettings,
+              icon: Icons.tune_rounded,
               trailing: (provider.isSettingChanging || provider.isConfigLoading)
                   ? const SizedBox(
                       width: 16,
                       height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
-                  : IconButton(
+                  : IconButton.filledTonal(
                       icon: const Icon(Icons.refresh_rounded, size: 18),
                       tooltip: l10n.refreshSettings,
                       onPressed: () => provider.refreshDeviceConfigs(),
                     ),
+              child: configList.isEmpty
+                  ? AppCard(
+                      backgroundColor:
+                          Theme.of(context).colorScheme.surfaceContainerHigh,
+                      child: ListTile(
+                        leading: provider.isConfigLoading
+                            ? const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : const Icon(Icons.hourglass_empty_rounded),
+                        title: Text(l10n.settingsLoadingTitle),
+                        subtitle: Text(provider.isConfigLoading
+                            ? l10n.waitingInverterResponse
+                            : l10n.tapRefreshToLoad),
+                      ),
+                    )
+                  : Column(
+                      children: [
+                        for (var i = 0; i < configList.length; i++) ...[
+                          _buildConfigTile(context, configList[i]),
+                          if (i != configList.length - 1)
+                            const SizedBox(height: AppTheme.spacingS),
+                        ],
+                      ],
+                    ),
             ),
-            const SizedBox(height: 8),
-            if (configList.isEmpty)
-              AppCard(
-                child: ListTile(
-                  leading: provider.isConfigLoading
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.hourglass_empty_rounded),
-                  title: Text(l10n.settingsLoadingTitle),
-                  subtitle: Text(provider.isConfigLoading
-                      ? l10n.waitingInverterResponse
-                      : l10n.tapRefreshToLoad),
-                ),
-              )
-            else
-              ...configList.map((cfg) => _buildConfigTile(context, cfg)),
-
-            const SizedBox(height: 20),
-
-            // Realtime readings header
-            _SectionHeader(
-              icon: Icons.monitor_heart_rounded,
+            const SizedBox(height: AppTheme.spacingL),
+            AppSectionCard(
               title: l10n.realtimeReadings,
+              subtitle: l10n.energyOverview,
+              icon: Icons.monitor_heart_rounded,
+              child: Column(
+                children: [
+                  for (var i = 0; i < stateKeys.length; i++) ...[
+                    _buildStateTile(
+                        context, stateKeys[i], realtimeFields[stateKeys[i]]),
+                    if (i != stateKeys.length - 1)
+                      const SizedBox(height: AppTheme.spacingS),
+                  ],
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
-            ...stateKeys.map(
-                (key) => _buildStateTile(context, key, realtimeFields[key])),
             const SizedBox(height: 16),
           ],
         ),
@@ -151,44 +165,49 @@ class DetailsTab extends StatelessWidget {
     final key = cfg['key']?.toString() ?? '';
     final name =
         cfg['nameDisplay']?.toString() ?? cfg['name']?.toString() ?? key;
-    final valueDisplay = '-';
+    final valueDisplay =
+        cfg['valueDisplay']?.toString().trim().isNotEmpty == true
+            ? cfg['valueDisplay']?.toString() ?? '-'
+            : cfg['value']?.toString() ?? '-';
     final unit = cfg['unit']?.toString() ?? '';
     final displayText = (unit.isNotEmpty && unit != 'null')
         ? '$valueDisplay $unit'
         : valueDisplay;
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: AppCard(
-        child: ListTile(
-          leading: Icon(
-            _iconForSetting(key),
-            color: Theme.of(context).colorScheme.primary,
-            size: 22,
-          ),
-          title: Text(
-            name,
-            style: theme.textTheme.bodyMedium?.copyWith(fontSize: 13),
-          ),
-          subtitle: Text(
-            displayText,
-            style: theme.textTheme.titleSmall?.copyWith(
-              fontWeight: FontWeight.w700,
-              fontSize: 15,
-              color: theme.colorScheme.secondary,
-            ),
-          ),
-          trailing: provider.isSettingChanging
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.edit_rounded, size: 18),
-          onTap: provider.isSettingChanging
-              ? null
-              : () => _showEditDialog(context, key, name, cfg),
+    return AppCard(
+      backgroundColor: theme.colorScheme.surfaceContainerHigh,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: AppTheme.spacingM,
+          vertical: AppTheme.spacingXS,
         ),
+        leading: Icon(
+          _iconForSetting(key),
+          color: Theme.of(context).colorScheme.primary,
+          size: 22,
+        ),
+        title: Text(
+          name,
+          style: theme.textTheme.bodyMedium?.copyWith(fontSize: 13),
+        ),
+        subtitle: Text(
+          displayText,
+          style: theme.textTheme.titleSmall?.copyWith(
+            fontWeight: FontWeight.w700,
+            fontSize: 15,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+        trailing: provider.isSettingChanging
+            ? const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            : const Icon(Icons.edit_rounded, size: 18),
+        onTap: provider.isSettingChanging
+            ? null
+            : () => _showEditDialog(context, key, name, cfg),
       ),
     );
   }
@@ -210,17 +229,29 @@ class DetailsTab extends StatelessWidget {
       value = fieldData.toString();
     }
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: AppCard(
-        child: ListTile(
-          dense: true,
-          title: Text(
-            name,
-            style: theme.textTheme.bodyMedium?.copyWith(fontSize: 13),
-          ),
-          trailing: Text(
+    return AppCard(
+      backgroundColor: theme.colorScheme.surfaceContainerHigh,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: AppTheme.spacingM,
+          vertical: AppTheme.spacingXS,
+        ),
+        leading: Icon(
+          _iconForSetting(key),
+          size: 18,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        title: Text(
+          name,
+          style: theme.textTheme.bodyMedium?.copyWith(fontSize: 13),
+        ),
+        trailing: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 140),
+          child: Text(
             (unit.isNotEmpty && unit != 'null') ? '$value $unit' : value,
+            textAlign: TextAlign.end,
+            overflow: TextOverflow.ellipsis,
+            maxLines: 2,
             style: theme.textTheme.titleSmall?.copyWith(
               fontSize: 14,
               fontWeight: FontWeight.w700,
@@ -277,7 +308,7 @@ class DetailsTab extends StatelessWidget {
                 ),
               if (presets != null)
                 DropdownButtonFormField<String>(
-                  value: selected,
+                  initialValue: selected,
                   items: presets,
                   onChanged: (val) {
                     if (val != null) setState(() => selected = val);
@@ -437,50 +468,5 @@ class DetailsTab extends StatelessWidget {
     }
     if (k.contains('equalization')) return Icons.balance_rounded;
     return Icons.settings_rounded;
-  }
-}
-// ---------------------------------------------------------------------------
-// Helper widget
-// ---------------------------------------------------------------------------
-
-class _SectionHeader extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final Widget? trailing;
-
-  const _SectionHeader({
-    required this.icon,
-    required this.title,
-    this.trailing,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final expressive = context.expressive;
-    final theme = Theme.of(context);
-    return Row(
-      children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(expressive.cornerSmall),
-            color: theme.colorScheme.primaryContainer.withValues(alpha: 0.58),
-          ),
-          child: Icon(icon, color: theme.colorScheme.primary, size: 18),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            title,
-            style: Theme.of(context)
-                .textTheme
-                .titleLarge
-                ?.copyWith(fontWeight: FontWeight.bold),
-          ),
-        ),
-        if (trailing != null) trailing!,
-      ],
-    );
   }
 }
