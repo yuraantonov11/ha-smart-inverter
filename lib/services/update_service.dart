@@ -32,8 +32,8 @@ class UpdateInfo {
 }
 
 class UpdateService {
-  static const String repoUrl =
-      'https://api.github.com/repos/yuraantonov11/siseli-app/releases/latest';
+  static const String releasesUrl =
+      'https://api.github.com/repos/yuraantonov11/siseli-app/releases?per_page=20';
   static final _client = http.Client();
 
   static List<String> get _supportedAssetExtensions =>
@@ -75,7 +75,7 @@ class UpdateService {
 
     try {
       final response = await _client
-          .get(Uri.parse(repoUrl), headers: _headers)
+          .get(Uri.parse(releasesUrl), headers: _headers)
           .timeout(const Duration(seconds: 15));
       if (response.statusCode != 200) {
         LogService.log(
@@ -87,15 +87,27 @@ class UpdateService {
         );
       }
 
-      final data = json.decode(response.body) as Map<String, dynamic>;
+      final decoded = json.decode(response.body);
+      final releases = (decoded is List ? decoded : const <dynamic>[])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+
+      final compatible = _findLatestCompatibleRelease(releases);
+      if (compatible == null) {
+        LogService.log(
+            '⚠️ update.check: no compatible release asset found for platform=${Platform.operatingSystem}');
+        return UpdateInfo(
+          hasUpdate: false,
+          currentVersion: currentVersion,
+          latestVersion: currentVersion,
+        );
+      }
+
+      final data = compatible.release;
+      final asset = compatible.asset;
       final latestTag = (data['tag_name'] as String?) ?? currentVersion;
       final latestVersion = _cleanVersion(latestTag);
       final hasUpdate = _isVersionNewer(latestVersion, currentVersion);
-
-      final assets = (data['assets'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .toList();
-      final asset = _pickBestInstallerAsset(assets);
 
       return UpdateInfo(
         hasUpdate: hasUpdate,
@@ -104,9 +116,9 @@ class UpdateService {
         releaseName: data['name']?.toString(),
         releaseNotes: data['body']?.toString(),
         publishedAt: DateTime.tryParse(data['published_at']?.toString() ?? ''),
-        assetName: asset?['name']?.toString(),
-        downloadUrl: asset?['browser_download_url']?.toString(),
-        assetSize: _parseAssetSize(asset?['size']),
+        assetName: asset['name']?.toString(),
+        downloadUrl: asset['browser_download_url']?.toString(),
+        assetSize: _parseAssetSize(asset['size']),
       );
     } catch (e) {
       LogService.log('❌ update.check exception', error: e);
@@ -183,6 +195,26 @@ class UpdateService {
       return extRank(a['name'].toString()) - extRank(b['name'].toString());
     });
     return supported.first;
+  }
+
+  static ({Map<String, dynamic> release, Map<String, dynamic> asset})?
+      _findLatestCompatibleRelease(List<Map<String, dynamic>> releases) {
+    // GitHub releases API returns newest first; pick the first non-draft,
+    // non-prerelease release that has an installer for current platform.
+    for (final release in releases) {
+      final isDraft = release['draft'] == true;
+      final isPrerelease = release['prerelease'] == true;
+      if (isDraft || isPrerelease) continue;
+
+      final assets = (release['assets'] as List<dynamic>? ?? const [])
+          .whereType<Map<String, dynamic>>()
+          .toList();
+      final asset = _pickBestInstallerAsset(assets);
+      if (asset != null) {
+        return (release: release, asset: asset);
+      }
+    }
+    return null;
   }
 
   static int? _parseAssetSize(dynamic value) {
