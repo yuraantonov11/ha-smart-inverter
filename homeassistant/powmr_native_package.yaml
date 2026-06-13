@@ -1,0 +1,937 @@
+# PowMr Smart Inverter — HA-native package
+#
+# Purpose:
+# - Keep the custom component as a thin bridge to the inverter API
+# - Move HEMS logic, helpers, and common automations into Home Assistant
+# - Use standard HA entities/services so the setup stays maintainable
+
+input_number:
+  hems_reserve_soc:
+    name: HEMS Reserve SOC
+    min: 10
+    max: 40
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:battery-low
+    initial: 20
+
+  hems_pv_surplus_w:
+    name: PV Surplus Threshold
+    min: 50
+    max: 1000
+    step: 10
+    unit_of_measurement: "W"
+    icon: mdi:solar-power
+    initial: 250
+
+  day_tariff_uah:
+    name: Day Tariff
+    min: 0.5
+    max: 20
+    step: 0.01
+    unit_of_measurement: "UAH/kWh"
+    icon: mdi:cash
+    initial: 4.32
+
+  night_tariff_uah:
+    name: Night Tariff
+    min: 0.5
+    max: 20
+    step: 0.01
+    unit_of_measurement: "UAH/kWh"
+    icon: mdi:cash
+    initial: 2.16
+
+  powmr_learned_ratio:
+    name: Learned PV Ratio
+    min: 0.01
+    max: 0.50
+    step: 0.001
+    unit_of_measurement: "W/W/m²"
+    icon: mdi:brain
+    initial: 0.12
+
+input_boolean:
+  hems_manual_override:
+    name: HEMS Manual Override
+    icon: mdi:hand-back-right
+    initial: false
+
+  hems_auto_storm:
+    name: Auto-Storm by Forecast
+    icon: mdi:weather-lightning
+    initial: true
+
+  hems_use_house_price:
+    name: Use House Electricity Price
+    icon: mdi:home-lightning-bolt
+    initial: true
+
+input_select:
+  hems_strategy:
+    name: HEMS Optimization Strategy
+    options:
+      - Hybrid
+      - Economical
+      - Solar Maxed
+      - Battery Life
+      - Grid Reliance
+    initial: Hybrid
+    icon: mdi:strategy
+
+input_datetime:
+  planned_outage_start:
+    name: Planned Outage Start
+    has_date: true
+    has_time: true
+    icon: mdi:clock-start
+
+  planned_outage_end:
+    name: Planned Outage End
+    has_date: true
+    has_time: true
+    icon: mdi:clock-end
+
+template:
+  - sensor:
+      - name: PowMr Тариф зараз
+        unique_id: powmr_tariff_now
+        icon: mdi:cash-clock
+        state: >
+          {% set global_price = states('sensor.electricity_price') %}
+          {% set has_global = global_price not in ['unknown', 'unavailable', 'none', 'None', ''] %}
+          {% if is_state('input_boolean.hems_use_house_price', 'on') and has_global %}
+            Будинок ({{ (global_price | float(0)) | round(2) }} грн/кВт·год)
+          {% else %}
+          {% set hour = now().hour %}
+          {% if hour >= 23 or hour < 7 %}
+            Ніч ({{ (states('input_number.night_tariff_uah') | float(2.16)) | round(2) }} грн/кВт·год)
+          {% else %}
+            День ({{ (states('input_number.day_tariff_uah') | float(4.32)) | round(2) }} грн/кВт·год)
+          {% endif %}
+          {% endif %}
+
+      - name: PowMr Тарифна ставка зараз
+        unique_id: powmr_tariff_rate_now
+        icon: mdi:cash
+        unit_of_measurement: "UAH/kWh"
+        state_class: measurement
+        state: >
+          {% set global_price = states('sensor.electricity_price') %}
+          {% set has_global = global_price not in ['unknown', 'unavailable', 'none', 'None', ''] %}
+          {% if is_state('input_boolean.hems_use_house_price', 'on') and has_global %}
+            {{ (global_price | float(0)) | round(2) }}
+          {% else %}
+          {% set hour = now().hour %}
+          {% if hour >= 23 or hour < 7 %}
+            {{ (states('input_number.night_tariff_uah') | float(2.16)) | round(2) }}
+          {% else %}
+            {{ (states('input_number.day_tariff_uah') | float(4.32)) | round(2) }}
+          {% endif %}
+          {% endif %}
+
+      - name: PowMr Grid Status
+        unique_id: powmr_grid_status
+        icon: mdi:transmission-tower
+        state: >
+          {% if states('binary_sensor.powmr_smart_inverter_4') == 'on' %}
+            Аварія мережі
+          {% else %}
+            Мережа доступна
+          {% endif %}
+
+      - name: PowMr Grid Outage Status
+        unique_id: powmr_grid_outage_status
+        icon: mdi:power-plug-off
+        state: >
+          {% if states('binary_sensor.powmr_smart_inverter_4') == 'on' %}
+            Аварія мережі
+          {% else %}
+            Норма
+          {% endif %}
+
+      - name: PowMr Low Battery Status
+        unique_id: powmr_low_battery_status
+        icon: mdi:battery-alert
+        state: >
+          {% if states('binary_sensor.powmr_smart_inverter_2') == 'on' %}
+            Низький заряд
+          {% else %}
+            Норма
+          {% endif %}
+
+      - name: PowMr Solar Elevation
+        unique_id: powmr_solar_elevation
+        icon: mdi:angle-acute
+        unit_of_measurement: "°"
+        state_class: measurement
+        state: "{{ state_attr('sun.sun', 'elevation') | float(0) | round(1) }}"
+
+      - name: PowMr Solar Forecast Factor
+        unique_id: powmr_solar_forecast_factor
+        icon: mdi:weather-sunny-alert
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set w = states('weather.forecast_golovna') %}
+          {% if w in ['sunny', 'clear-night'] %}
+            95
+          {% elif w in ['partlycloudy'] %}
+            75
+          {% elif w in ['cloudy', 'windy', 'windy-variant'] %}
+            55
+          {% elif w in ['fog'] %}
+            45
+          {% elif w in ['rainy', 'pouring', 'snowy', 'snowy-rainy', 'hail'] %}
+            25
+          {% elif w in ['lightning', 'lightning-rainy', 'exceptional'] %}
+            15
+          {% else %}
+            60
+          {% endif %}
+
+      - name: PowMr Solar Generation Forecast
+        unique_id: powmr_solar_generation_forecast
+        icon: mdi:solar-power-variant
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set pv_now = states('sensor.powmr_smart_inverter') | float(0) %}
+          {% set factor = states('sensor.powmr_solar_forecast_factor') | float(60) / 100 %}
+          {% set elevation = states('sensor.powmr_solar_elevation') | float(0) %}
+          {% set daylight_scale = (elevation / 60) if elevation > 0 else 0 %}
+          {% set daylight_scale = 1 if daylight_scale > 1 else daylight_scale %}
+          {% set baseline = pv_now if pv_now > 0 else 300 %}
+          {% if elevation <= 0 %}
+            0
+          {% else %}
+            {{ (baseline * factor * daylight_scale) | round(0) }}
+          {% endif %}
+
+      # ── Solar forecast: radiation from sun.sun + weather × learned ratio ──
+      #
+      # Algorithm (self-learning, no manual panel config):
+      #   1. Clear‑sky radiation ≈ sin(sun_elevation°) × 1000 W/m²
+      #   2. Weather factor: sunny=0.9, partlycloudy=0.7, cloudy=0.4, rain=0.2
+      #   3. PV forecast = radiation × weather × learned_ratio
+      #   4. Ratio updates daily: actual_PV_kWh ÷ total_radiation_kWh
+      #
+      # This auto‑accounts for: panel angle, shading, dirt, degradation.
+      # Uses ONLY built‑in HA data — no REST sensor needed.
+
+      - name: PowMr Radiation Clear Sky
+        unique_id: powmr_radiation_clear
+        icon: mdi:white-balance-sunny
+        unit_of_measurement: "W/m²"
+        state_class: measurement
+        state: >
+          {% set el = state_attr('sun.sun', 'elevation') | float(0) %}
+          {% if el > 0 %}
+            {{ (sin(el * 3.14159 / 180) * 1000) | round(0) }}
+          {% else %}
+            0
+          {% endif %}
+
+      - name: PowMr Radiation Weather Factor
+        unique_id: powmr_radiation_factor
+        icon: mdi:weather-sunny-alert
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set w = states('weather.forecast_golovna') %}
+          {% if w in ['sunny', 'clear-night'] %}90
+          {% elif w in ['partlycloudy'] %}70
+          {% elif w in ['cloudy', 'windy', 'windy-variant'] %}40
+          {% elif w in ['fog'] %}35
+          {% elif w in ['rainy', 'pouring', 'snowy', 'snowy-rainy', 'hail'] %}20
+          {% elif w in ['lightning', 'lightning-rainy', 'exceptional'] %}10
+          {% else %}50
+          {% endif %}
+
+      - name: PowMr Radiation Now
+        unique_id: powmr_radiation_now
+        icon: mdi:sun-wireless
+        unit_of_measurement: "W/m²"
+        state_class: measurement
+        state: >
+          {% set clear = states('sensor.powmr_radiation_clear') | float(0) %}
+          {% set factor = states('sensor.powmr_radiation_factor') | float(50) / 100 %}
+          {{ (clear * factor) | round(0) }}
+
+      - name: PowMr Learned PV Ratio
+        unique_id: powmr_learned_pv_ratio
+        icon: mdi:brain
+        unit_of_measurement: "W/W/m²"
+        state_class: measurement
+        state: "{{ states('input_number.powmr_learned_ratio') | float(0.12) }}"
+
+      - name: PowMr Forecast PV Now
+        unique_id: powmr_forecast_pv_now
+        icon: mdi:solar-power
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {% set rad = states('sensor.powmr_radiation_now') | float(0) %}
+          {% set ratio = states('input_number.powmr_learned_ratio') | float(0.12) %}
+          {{ (rad * ratio) | round(0) }}
+
+      # ── Multi-day forecast (2nd day uses weather.forecast_golovna) ─
+      - name: PowMr Forecast Tomorrow kWh
+        unique_id: powmr_forecast_tomorrow_kwh
+        icon: mdi:solar-power-variant
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: measurement
+        state: >
+          {% set fc = state_attr('weather.forecast_golovna', 'forecast') %}
+          {% if fc and fc | length > 0 %}
+            {% set d = fc[0] %}
+            {% set c = d.condition %}
+            {% if c in ['sunny','clear-night'] %} {% set f = 0.9 %}
+            {% elif c in ['partlycloudy'] %} {% set f = 0.7 %}
+            {% elif c in ['cloudy','windy','windy-variant'] %} {% set f = 0.4 %}
+            {% elif c in ['fog'] %} {% set f = 0.35 %}
+            {% elif c in ['rainy','pouring','snowy','snowy-rainy','hail'] %} {% set f = 0.2 %}
+            {% elif c in ['lightning','lightning-rainy','exceptional'] %} {% set f = 0.1 %}
+            {% else %} {% set f = 0.5 %}
+            {% endif %}
+            {% set mo = now().month %}
+            {% if mo >=5 and mo <=8 %} {% set h = 5.5 %}
+            {% elif mo in [3,4,9] %} {% set h = 3.5 %}
+            {% elif mo in [2,10] %} {% set h = 2.0 %}
+            {% else %} {% set h = 1.2 %}
+            {% endif %}
+            {% set ratio = states('input_number.powmr_learned_ratio') | float(0.12) %}
+            {{ (1000 * f * h * ratio / 1000 * 0.5) | round(1) }}
+          {% else %}—{% endif %}
+
+      - name: PowMr Forecast Day After kWh
+        unique_id: powmr_forecast_day2_kwh
+        icon: mdi:solar-power-variant
+        unit_of_measurement: "kWh"
+        device_class: energy
+        state_class: measurement
+        state: >
+          {% set fc = state_attr('weather.forecast_golovna', 'forecast') %}
+          {% if fc and fc | length > 1 %}
+            {% set d = fc[1] %}
+            {% set c = d.condition %}
+            {% if c in ['sunny','clear-night'] %} {% set f = 0.9 %}
+            {% elif c in ['partlycloudy'] %} {% set f = 0.7 %}
+            {% elif c in ['cloudy','windy','windy-variant'] %} {% set f = 0.4 %}
+            {% elif c in ['fog'] %} {% set f = 0.35 %}
+            {% elif c in ['rainy','pouring','snowy','snowy-rainy','hail'] %} {% set f = 0.2 %}
+            {% elif c in ['lightning','lightning-rainy','exceptional'] %} {% set f = 0.1 %}
+            {% else %} {% set f = 0.5 %}
+            {% endif %}
+            {% set mo = now().month %}
+            {% if mo >=5 and mo <=8 %} {% set h = 5.5 %}
+            {% elif mo in [3,4,9] %} {% set h = 3.5 %}
+            {% elif mo in [2,10] %} {% set h = 2.0 %}
+            {% else %} {% set h = 1.2 %}
+            {% endif %}
+            {% set ratio = states('input_number.powmr_learned_ratio') | float(0.12) %}
+            {{ (1000 * f * h * ratio / 1000 * 0.5) | round(1) }}
+          {% else %}—{% endif %}
+      - name: PowMr HEMS Forecast Status
+        unique_id: powmr_hems_forecast_status
+        icon: mdi:brain
+        state: >
+          {% set pv_forecast = states('sensor.powmr_forecast_pv_now') | float(0) %}
+          {% if pv_forecast >= 400 %}
+            Висока генерація ({{ pv_forecast }} W)
+          {% elif pv_forecast >= 100 %}
+            Середня генерація ({{ pv_forecast }} W)
+          {% elif pv_forecast > 0 %}
+            Низька генерація
+          {% else %}
+            Без сонця
+          {% endif %}
+
+      # ── Ukrainian state labels (replaces English defaults) ─────────
+      - name: PowMr Grid Status UA
+        unique_id: powmr_grid_status_ua
+        icon: mdi:transmission-tower
+        state: >
+          {% set outage = states('binary_sensor.powmr_smart_inverter_4') %}
+          {% if outage == 'on' %} Аварія мережі
+          {% elif outage == 'off' %} Мережа в нормі
+          {% else %} Невідомо
+          {% endif %}
+
+      - name: PowMr Battery Status UA
+        unique_id: powmr_battery_status_ua
+        icon: mdi:battery
+        state: >
+          {% set low = states('binary_sensor.powmr_smart_inverter_2') %}
+          {% if low == 'on' %} Низький заряд
+          {% elif low == 'off' %} Норма
+          {% else %} Невідомо
+          {% endif %}
+
+      - name: PowMr Charging Status UA
+        unique_id: powmr_charging_status_ua
+        icon: mdi:battery-charging
+        state: >
+          {% set chg = states('binary_sensor.powmr_smart_inverter_3') %}
+          {% if chg == 'on' %} Заряджається від мережі
+          {% elif chg == 'off' %} Не заряджається
+          {% else %} Невідомо
+          {% endif %}
+
+      - name: PowMr Solar Forecast Summary
+        unique_id: powmr_solar_forecast_summary
+        icon: mdi:chart-line
+        state: >
+          {% set fc = states('sensor.powmr_solar_generation_forecast') | float(0) %}
+          {% if fc >= 1500 %}
+            Очікується висока генерація
+          {% elif fc >= 600 %}
+            Очікується середня генерація
+          {% elif fc > 0 %}
+            Очікується низька генерація
+          {% else %}
+            Генерація не очікується
+          {% endif %}
+
+automation:
+  - alias: PowMr HEMS — Adaptive Mode
+    description: Real-time PV surplus control for inverter priorities
+    mode: single
+    max_exceeded: silent
+    trigger:
+      - platform: time_pattern
+        seconds: "/30"
+    condition:
+      - condition: state
+        entity_id: select.powmr_smart_inverter_3
+        state: Adaptive
+      - condition: state
+        entity_id: switch.powmr_smart_inverter
+        state: "on"
+    action:
+      - variables:
+          soc: "{{ states('sensor.powmr_smart_inverter_9') | float(50) }}"
+          surplus: "{{ states('sensor.powmr_smart_inverter_15') | float(0) }}"
+          reserve_soc: "{{ states('input_number.hems_reserve_soc') | float(20) }}"
+          pv_threshold: "{{ states('input_number.hems_pv_surplus_w') | float(250) }}"
+          forecast_tomorrow: "{{ states('sensor.powmr_forecast_pv_now') | float(0) }}"
+          current_output: "{{ states('select.powmr_smart_inverter') }}"
+          current_charger: "{{ states('select.powmr_smart_inverter_2') }}"
+          output_is_usb: "{{ current_output not in ['unknown', 'unavailable', 'none', 'None', ''] and current_output[:3] == 'USB' }}"
+          output_is_sbu: "{{ current_output not in ['unknown', 'unavailable', 'none', 'None', ''] and current_output[:3] == 'SBU' }}"
+          charger_is_snu: "{{ current_charger not in ['unknown', 'unavailable', 'none', 'None', ''] and current_charger[:3] == 'SNU' }}"
+          charger_is_oso: "{{ current_charger not in ['unknown', 'unavailable', 'none', 'None', ''] and current_charger[:3] == 'OSO' }}"
+
+      - if:
+          - condition: template
+            value_template: "{{ soc <= (reserve_soc + 2) }}"
+        then:
+          - if:
+              - condition: template
+                value_template: "{{ not output_is_usb }}"
+            then:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter
+                data:
+                  option: USB (Grid First)
+          - if:
+              - condition: template
+                value_template: "{{ not charger_is_snu }}"
+            then:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter_2
+                data:
+                  option: SNU (Solar + Utility)
+          - stop: Safety floor — low SOC protection
+
+      - if:
+          - condition: state
+            entity_id: input_boolean.hems_manual_override
+            state: "on"
+        then:
+          - stop: Manual override active
+
+      - if:
+          - condition: template
+            value_template: "{{ now().hour >= 23 or now().hour < 7 }}"
+        then:
+          - if:
+              - condition: template
+                value_template: "{{ not output_is_usb }}"
+            then:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter
+                data:
+                  option: USB (Grid First)
+          - stop: Night window — grid priority
+
+      - if:
+          - condition: template
+            value_template: "{{ surplus >= pv_threshold and soc >= 30 }}"
+        then:
+          - if:
+              - condition: template
+                value_template: "{{ not output_is_sbu }}"
+            then:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter
+                data:
+                  option: SBU (Solar/Battery First)
+          - if:
+              - condition: template
+                value_template: "{{ not charger_is_oso }}"
+            then:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter_2
+                data:
+                  option: OSO (Solar Only)
+          - stop: PV surplus — solar priority
+
+      - stop: No adaptive action needed now
+
+  - alias: PowMr HEMS — Night Arbitrage
+    description: Charge battery at night, use solar/battery during day
+    mode: single
+    trigger:
+      - platform: time
+        at: "23:00:00"
+      - platform: time
+        at: "07:00:00"
+    condition:
+      - condition: state
+        entity_id: select.powmr_smart_inverter_3
+        state: Arbitrage
+      - condition: state
+        entity_id: switch.powmr_smart_inverter
+        state: "on"
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ now().hour == 23 }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter
+                data:
+                  option: USB (Grid First)
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter_2
+                data:
+                  option: SNU (Solar + Utility)
+              - service: logbook.log
+                data:
+                  name: PowMr Arbitrage
+                  message: Night mode — grid charging enabled
+                  domain: powmr_inverter
+          - conditions:
+              - condition: template
+                value_template: "{{ now().hour == 7 }}"
+            sequence:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter
+                data:
+                  option: SBU (Solar/Battery First)
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter_2
+                data:
+                  option: OSO (Solar Only)
+              - service: logbook.log
+                data:
+                  name: PowMr Arbitrage
+                  message: Day mode — solar + battery priority
+                  domain: powmr_inverter
+
+  - alias: PowMr HEMS — Storm Mode
+    description: Keep battery charged for outage resilience
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: select.powmr_smart_inverter_3
+        to: Storm
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: state
+        entity_id: select.powmr_smart_inverter_3
+        state: Storm
+      - condition: state
+        entity_id: switch.powmr_smart_inverter
+        state: "on"
+    action:
+      - variables:
+          current_output: "{{ states('select.powmr_smart_inverter') }}"
+          current_charger: "{{ states('select.powmr_smart_inverter_2') }}"
+          charger_is_snu: "{{ current_charger not in ['unknown', 'unavailable', 'none', 'None', ''] and current_charger[:3] == 'SNU' }}"
+          output_is_sbu: "{{ current_output not in ['unknown', 'unavailable', 'none', 'None', ''] and current_output[:3] == 'SBU' }}"
+      - if:
+          - condition: template
+            value_template: "{{ not charger_is_snu }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.powmr_smart_inverter_2
+            data:
+              option: SNU (Solar + Utility)
+      - if:
+          - condition: template
+            value_template: "{{ not output_is_sbu }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.powmr_smart_inverter
+            data:
+              option: SBU (Solar/Battery First)
+
+  - alias: PowMr HEMS — Auto Storm by Weather
+    description: Auto-switch to Storm mode when weather becomes risky
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: weather.forecast_golovna
+    condition:
+      - condition: state
+        entity_id: input_boolean.hems_auto_storm
+        state: "on"
+      - condition: state
+        entity_id: switch.powmr_smart_inverter
+        state: "on"
+      - condition: state
+        entity_id: select.powmr_smart_inverter_3
+        state: Adaptive
+      - condition: template
+        value_template: >
+          {{ trigger.to_state is not none and trigger.to_state.state in [
+             'lightning',
+             'lightning-rainy',
+             'pouring',
+             'snowy-rainy',
+             'hail',
+             'exceptional'
+          ] }}
+    action:
+      - service: select.select_option
+        target:
+          entity_id: select.powmr_smart_inverter_3
+        data:
+          option: Storm
+      - service: logbook.log
+        data:
+          name: PowMr Forecast
+          message: Switched to Storm mode due to weather forecast risk
+          domain: powmr_inverter
+
+  - alias: PowMr Grid Outage Alert
+    description: Notify on outage and auto-activate storm strategy
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.powmr_smart_inverter_4
+        from: "off"
+        to: "on"
+      - platform: state
+        entity_id: binary_sensor.powmr_smart_inverter_4
+        from: "on"
+        to: "off"
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.to_state.state == 'on' }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: Grid outage detected
+                  message: >
+                    Grid voltage dropped to {{ states('sensor.powmr_smart_inverter_6') }} V.
+                    Battery SOC: {{ states('sensor.powmr_smart_inverter_9') }}%.
+              - if:
+                  - condition: state
+                    entity_id: select.powmr_smart_inverter_3
+                    state: Adaptive
+                then:
+                  - service: select.select_option
+                    target:
+                      entity_id: select.powmr_smart_inverter_3
+                    data:
+                      option: Storm
+                  - service: logbook.log
+                    data:
+                      name: PowMr
+                      message: Auto-activated Storm mode due to grid outage
+                      domain: powmr_inverter
+          - conditions:
+              - condition: template
+                value_template: "{{ trigger.to_state.state == 'off' }}"
+            sequence:
+              - service: persistent_notification.create
+                data:
+                  title: Grid restored
+                  message: >
+                    Grid voltage back to {{ states('sensor.powmr_smart_inverter_6') }} V.
+                    Battery SOC: {{ states('sensor.powmr_smart_inverter_9') }}%.
+
+  - alias: PowMr Battery Keepalive
+    description: Periodic short charge cycle to prevent battery inactivity
+    mode: single
+    trigger:
+      - platform: time_pattern
+        hours: "*"
+        minutes: "0"
+        seconds: "0"
+    condition:
+      - condition: state
+        entity_id: switch.powmr_smart_inverter
+        state: "on"
+      - condition: template
+        value_template: "{{ states('sensor.powmr_smart_inverter_9') | float(50) > 22 }}"
+    action:
+      - variables:
+          battery_power: "{{ states('sensor.powmr_smart_inverter_3') | float(0) }}"
+          inactive: "{{ (battery_power | abs) < 50 }}"
+          current_charger: "{{ states('select.powmr_smart_inverter_2') }}"
+      - if:
+          - condition: template
+            value_template: "{{ inactive }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.powmr_smart_inverter_2
+            data:
+              option: SNU (Solar + Utility)
+          - delay:
+              seconds: 90
+          - if:
+              - condition: template
+                value_template: "{{ current_charger is not none }}"
+            then:
+              - service: select.select_option
+                target:
+                  entity_id: select.powmr_smart_inverter_2
+                data:
+                  option: "{{ current_charger }}"
+          - service: logbook.log
+            data:
+              name: PowMr Keepalive
+              message: Keepalive cycle completed (90 sec charge)
+              domain: powmr_inverter
+
+  - alias: PowMr Low Battery Alert
+    description: Notify when corrected SOC drops below the safety threshold
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.powmr_smart_inverter_9
+        below: 25
+        for:
+          minutes: 2
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Low battery alert
+          message: >
+            Corrected SOC fell below 25%.
+            Current SOC: {{ states('sensor.powmr_smart_inverter_9') }}%.
+            Recommended action: switch to Storm mode or restore grid charging.
+
+  - alias: PowMr Battery Recovered
+    description: Notify when SOC recovers above 30% after low battery
+    mode: single
+    trigger:
+      - platform: numeric_state
+        entity_id: sensor.powmr_smart_inverter_9
+        above: 30
+        for:
+          minutes: 2
+    condition:
+      - condition: template
+        value_template: >
+          {# Only fire if the previous state was below 30 #}
+          {{ trigger.from_state is not none and trigger.from_state.state | float(0) < 30 }}
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Батарея заряджена
+          message: >
+            SOC батареї відновився до {{ states('sensor.powmr_smart_inverter_9') }}%.
+
+  - alias: PowMr HEMS Mode Changed
+    description: Notify when HEMS smart mode changes
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: select.powmr_smart_inverter_3
+    condition:
+      - condition: template
+        value_template: "{{ trigger.to_state is not none and trigger.from_state is not none and trigger.to_state.state != trigger.from_state.state }}"
+    action:
+      - service: persistent_notification.create
+        data:
+          title: Режим HEMS змінено
+          message: >
+            Новий режим: {{ trigger.to_state.state }}
+            (попередній: {{ trigger.from_state.state }}).
+
+  - alias: PowMr Forecast Storm Cleared
+    description: Return to Adaptive mode when weather risk passes
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: weather.forecast_golovna
+    condition:
+      - condition: state
+        entity_id: input_boolean.hems_auto_storm
+        state: "on"
+      - condition: state
+        entity_id: switch.powmr_smart_inverter
+        state: "on"
+      - condition: state
+        entity_id: select.powmr_smart_inverter_3
+        state: Storm
+      - condition: template
+        value_template: >
+          {{ trigger.to_state is not none and trigger.to_state.state not in [
+             'lightning', 'lightning-rainy', 'pouring', 'snowy-rainy', 'hail', 'exceptional'
+          ] }}
+    action:
+      - service: select.select_option
+        target:
+          entity_id: select.powmr_smart_inverter_3
+        data:
+          option: Adaptive
+      - service: persistent_notification.create
+        data:
+          title: Ризик шторму зменшився
+          message: Погодні ризики знизились — відновлено попередній режим HEMS.
+      - service: logbook.log
+        data:
+          name: PowMr Forecast
+          message: Storm mode cleared, returned to Adaptive mode
+          domain: powmr_inverter
+
+  - alias: PowMr Grid Restored Adaptive
+    description: Restore Adaptive mode after grid outage recovers
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.powmr_smart_inverter_4
+        from: "on"
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: select.powmr_smart_inverter_3
+        state: Storm
+      - condition: template
+        value_template: "{{ states('sensor.powmr_smart_inverter_9') | float(0) > 30 }}"
+    action:
+      - service: select.select_option
+        target:
+          entity_id: select.powmr_smart_inverter_3
+        data:
+          option: Adaptive
+      - service: persistent_notification.create
+        data:
+          title: Адаптивний режим відновлено
+          message: Мережа повернулась — автоматично відновлено Адаптивний режим.
+
+  - alias: PowMr Auto Disable Feed-in at Night
+    description: Turn off grid feed-in from 22:00 to 06:00 to avoid selling at night
+    mode: single
+    trigger:
+      - platform: time
+        at: "22:00:00"
+      - platform: time
+        at: "06:00:00"
+    action:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ now().hour >= 22 or now().hour < 6 }}"
+            sequence:
+              - service: powmr_inverter.set_grid_feed_in
+                data:
+                  enable: false
+              - service: logbook.log
+                data:
+                  name: PowMr
+                  message: Night mode — grid feed-in disabled
+                  domain: powmr_inverter
+          - conditions:
+              - condition: template
+                value_template: "{{ now().hour >= 6 and now().hour < 22 }}"
+            sequence:
+              - service: powmr_inverter.set_grid_feed_in
+                data:
+                  enable: true
+              - service: logbook.log
+                data:
+                  name: PowMr
+                  message: Day mode — grid feed-in enabled
+                  domain: powmr_inverter
+
+  - alias: PowMr Storm Charge Limit
+    description: Set battery charge limit to 100% when Storm mode is active
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: select.powmr_smart_inverter_3
+        to: Storm
+    action:
+      - service: powmr_inverter.set_battery_charge_limit
+        data:
+          percent: 100
+      - service: powmr_inverter.set_grid_charge_power
+        data:
+          watts: 3000
+      - service: logbook.log
+        data:
+          name: PowMr
+          message: Storm mode — charge limit 100%, grid charge 3000W
+          domain: powmr_inverter
+
+  - alias: PowMr Learn PV Ratio
+    description: Daily update of learned PV ratio from real peak data
+    mode: single
+    trigger:
+      - platform: time
+        at: "21:00:00"
+    condition:
+      - condition: template
+        value_template: >
+          {{ states('sensor.powmr_smart_inverter_14') | float(0) > 0.05 }}
+    action:
+      - variables:
+          daily_pv_kwh: "{{ states('sensor.powmr_smart_inverter_14') | float(0) }}"
+          weather_factor: "{{ states('sensor.powmr_radiation_factor') | float(50) / 100 }}"
+          est_radiation_kwh: "{{ (1000 * weather_factor * 10 * 0.4 / 1000) | round(2) }}"
+          new_ratio: >
+            {% if est_radiation_kwh > 0.01 %}
+              {{ (daily_pv_kwh / est_radiation_kwh) | round(4) }}
+            {% else %}
+              {{ states('input_number.powmr_learned_ratio') | float(0.12) }}
+            {% endif %}
+          old_ratio: "{{ states('input_number.powmr_learned_ratio') | float(0.12) }}"
+          smoothed: >
+            {{ (old_ratio * 0.7 + new_ratio * 0.3) | round(4) }}
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.powmr_learned_ratio
+        data:
+          value: "{{ [0.02, [0.30, smoothed] | min] | max }}"
+      - service: logbook.log
+        data:
+          name: PowMr Forecast
+          message: >
+            PV ratio: {{ old_ratio }} → {{ smoothed }}
+            (PV: {{ daily_pv_kwh }} kWh, weather: {{ weather_factor }})

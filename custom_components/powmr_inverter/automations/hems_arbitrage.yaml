@@ -1,0 +1,70 @@
+# ============================================================================
+# HEMS Night Arbitrage Automation
+# ============================================================================
+# Charge battery from grid during cheap night tariff (23:00–07:00),
+# then use battery during expensive daytime.
+# ============================================================================
+
+alias: "HEMS — Night Arbitrage"
+description: "Charge battery at night (cheap tariff), use during day"
+mode: single
+
+trigger:
+  - platform: time
+    at: "23:00:00"
+  - platform: time
+    at: "07:00:00"
+
+condition:
+  - condition: state
+    entity_id: select.inverter_smart_mode
+    state: "Arbitrage"
+  - condition: state
+    entity_id: switch.inverter_hems_auto_mode
+    state: "on"
+
+action:
+  - variables:
+      hour: "{{ now().hour }}"
+
+  # ── Night starts (23:00): switch to grid charge ──
+  - if:
+      - condition: template
+        value_template: "{{ hour == 23 }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_output_priority
+        data:
+          option: "USB (Grid First)"
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_charger_priority
+        data:
+          option: "SNU (Solar + Utility)"
+      - service: logbook.log
+        data:
+          name: "HEMS Arbitrage"
+          message: "Night mode — grid charging enabled"
+          domain: Inverter_inverter
+
+  # ── Day starts (07:00): switch to solar priority ──
+  - if:
+      - condition: template
+        value_template: "{{ hour == 7 }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_output_priority
+        data:
+          option: "SBU (Solar/Battery First)"
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_charger_priority
+        data:
+          option: "OSO (Solar Only)"
+      - service: logbook.log
+        data:
+          name: "HEMS Arbitrage"
+          message: "Day mode — solar + battery priority"
+          domain: Inverter_inverter

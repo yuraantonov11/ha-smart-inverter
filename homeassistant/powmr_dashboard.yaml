@@ -1,0 +1,256 @@
+title: Smart Solar Енергопанель
+views:
+  - title: Потужність
+    path: powmr-power
+    icon: mdi:home-lightning-bolt
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: markdown
+            content: |
+              # Smart Solar Inverter
+              Живий потік потужності, стан мережі та батареї в одному місці.
+          - type: tile
+            entity: sensor.powmr_grid_status
+            name: Стан мережі
+            icon: mdi:transmission-tower
+          - type: tile
+            entity: sensor.powmr_smart_inverter_14
+            name: Режим роботи
+            icon: mdi:state-machine
+          - type: tile
+            entity: sensor.powmr_tariff_rate_now
+            name: Поточний тариф
+            icon: mdi:cash-clock
+          - type: tile
+            entity: sensor.powmr_smart_inverter_9
+            name: Скоригований SOC
+            icon: mdi:battery-heart-variant
+          - type: tile
+            entity: sensor.powmr_smart_inverter_15
+            name: Надлишок PV
+            icon: mdi:flash
+          - type: tile
+            entity: sensor.powmr_smart_inverter_6
+            name: Напруга мережі
+            icon: mdi:sine-wave
+      - type: grid
+        cards:
+          - type: gauge
+            entity: sensor.powmr_smart_inverter_9
+            name: SOC батареї
+            min: 0
+            max: 100
+            severity:
+              green: 45
+              yellow: 25
+              red: 0
+          - type: gauge
+            entity: sensor.powmr_smart_inverter
+            name: Потужність PV
+            min: 0
+            max: 5000
+            severity:
+              green: 1200
+              yellow: 400
+              red: 0
+          - type: gauge
+            entity: sensor.powmr_smart_inverter_4
+            name: Потужність навантаження
+            min: 0
+            max: 5000
+            severity:
+              green: 0
+              yellow: 2200
+              red: 3600
+          - type: statistics-graph
+            title: Потік потужності (24г)
+            chart_type: line
+            period: hour
+            days_to_show: 1
+            stat_types:
+              - mean
+            entities:
+              - sensor.powmr_smart_inverter
+              - sensor.powmr_smart_inverter_4
+              - sensor.powmr_smart_inverter_2
+              - sensor.powmr_smart_inverter_3
+          - type: history-graph
+            title: SOC та струм батареї (24г)
+            hours_to_show: 24
+            refresh_interval: 60
+            entities:
+              - sensor.powmr_smart_inverter_8
+              - sensor.powmr_smart_inverter_9
+              - sensor.powmr_smart_inverter_16
+
+          - type: statistics-graph
+            title: Прогноз vs Факт генерації (24г)
+            chart_type: line
+            period: hour
+            days_to_show: 1
+            stat_types:
+              - mean
+            entities:
+              - sensor.powmr_smart_inverter
+              - sensor.powmr_solar_generation_forecast
+      - type: grid
+        cards:
+          - type: entities
+            title: Керування інвертором
+            show_header_toggle: false
+            entities:
+              - entity: select.powmr_smart_inverter
+                name: Пріоритет виходу
+              - entity: select.powmr_smart_inverter_2
+                name: Пріоритет заряджання
+              - entity: select.powmr_smart_inverter_3
+                name: Режим HEMS
+              - entity: switch.powmr_smart_inverter
+                name: Авто-режим HEMS
+              - entity: switch.powmr_smart_inverter_4
+                name: Резервний режим (SBU)
+          - type: entities
+            title: Струми та ліміти
+            show_header_toggle: false
+            entities:
+              - entity: number.powmr_smart_inverter
+                name: Макс. струм заряджання
+              - entity: number.powmr_smart_inverter_2
+                name: Макс. струм заряду від мережі
+              - entity: number.powmr_smart_inverter_3
+                name: Ліміт заряду АКБ
+              - entity: number.powmr_smart_inverter_4
+                name: Ліміт розряду АКБ
+              - entity: number.powmr_smart_inverter_5
+                name: Макс. потужність заряду (мережа)
+          - type: entities
+            title: Керування мережею
+            show_header_toggle: false
+            entities:
+              - entity: switch.powmr_smart_inverter_2
+                name: Заряд від мережі
+              - entity: switch.powmr_smart_inverter_3
+                name: Віддача в мережу
+          - type: entities
+            title: Поточний стан
+            show_header_toggle: false
+            entities:
+              - entity: sensor.powmr_grid_status_ua
+                name: Стан мережі
+              - entity: sensor.powmr_battery_status_ua
+                name: Стан батареї
+              - entity: sensor.powmr_charging_status_ua
+                name: Заряджання
+              - entity: sensor.powmr_smart_inverter_5
+                name: Напруга PV
+              - entity: sensor.powmr_smart_inverter_6
+                name: Напруга мережі
+              - entity: sensor.powmr_smart_inverter_7
+                name: Напруга АКБ
+              - entity: sensor.powmr_smart_inverter_13
+                name: Струм батареї
+              - entity: sensor.powmr_smart_inverter_17
+                name: Вихідна потужність AC
+              - entity: sensor.powmr_smart_inverter_18
+                name: Віддача в мережу
+              - entity: sensor.powmr_smart_inverter_19
+                name: Споживання з мережі
+
+          - type: entities
+            title: Прогноз сонячної генерації
+            show_header_toggle: false
+            entities:
+              - entity: sensor.powmr_forecast_pv_now
+                name: Прогноз PV зараз (W)
+              - entity: sensor.powmr_forecast_tomorrow_kwh
+                name: Прогноз на завтра (kWh)
+              - entity: sensor.powmr_forecast_day2_kwh
+                name: Прогноз на післязавтра (kWh)
+              - entity: sensor.powmr_radiation_now
+                name: Сонячна радіація (W/m²)
+              - entity: input_number.powmr_learned_ratio
+                name: Коефіцієнт (самонавчання)
+
+  - title: HEMS
+    path: powmr-hems
+    icon: mdi:brain
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: markdown
+            content: |
+              # Налаштування HEMS
+              Резерв SOC, тарифи та стратегія без редагування YAML.
+          - type: entities
+            title: Стратегія та режими
+            show_header_toggle: false
+            entities:
+              - entity: input_select.hems_strategy
+                name: Стратегія оптимізації
+              - entity: select.powmr_smart_inverter_3
+                name: Активний режим інвертора
+              - entity: switch.powmr_smart_inverter
+                name: Авто-режим HEMS
+              - entity: input_boolean.hems_manual_override
+                name: Ручне втручання
+              - entity: input_boolean.hems_auto_storm
+                name: Авто Storm за прогнозом
+              - entity: weather.forecast_golovna
+                name: Погодні умови (джерело)
+      - type: grid
+        cards:
+          - type: entities
+            title: Політика батареї
+            show_header_toggle: false
+            entities:
+              - entity: input_number.hems_reserve_soc
+                name: Резервний SOC
+              - entity: input_number.hems_pv_surplus_w
+                name: Поріг надлишку PV
+              - entity: sensor.powmr_smart_inverter_9
+                name: Поточний скоригований SOC
+              - entity: sensor.powmr_smart_inverter_15
+                name: Поточний надлишок PV
+          - type: entities
+            title: Політика тарифів
+            show_header_toggle: false
+            entities:
+              - entity: input_boolean.hems_use_house_price
+                name: Використовувати загальнобудинкову ціну
+              - entity: sensor.electricity_price
+                name: Загальна ціна електроенергії (дім)
+              - entity: input_number.day_tariff_uah
+                name: Денний тариф (fallback)
+              - entity: input_number.night_tariff_uah
+                name: Нічний тариф (fallback)
+              - entity: sensor.powmr_tariff_now
+                name: Активний тарифний режим
+              - entity: sensor.powmr_tariff_rate_now
+                name: Активна тарифна ставка
+      - type: grid
+        cards:
+          - type: entities
+            title: Планування відключень
+            show_header_toggle: false
+            entities:
+              - entity: input_datetime.planned_outage_start
+                name: Початок планового відключення
+              - entity: input_datetime.planned_outage_end
+                name: Кінець планового відключення
+              - entity: sensor.powmr_grid_status
+                name: Стан мережі
+              - entity: binary_sensor.powmr_smart_inverter_4
+                name: Відключення виявлено
+          - type: history-graph
+            title: Таймлайн HEMS (24г)
+            hours_to_show: 24
+            refresh_interval: 60
+            entities:
+              - select.powmr_smart_inverter_3
+              - switch.powmr_smart_inverter
+              - sensor.powmr_grid_status

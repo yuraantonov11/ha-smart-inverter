@@ -1,0 +1,90 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smart Solar Inverter",
+        "description": "Введіть облікові дані solar.siseli.com",
+        "data": {
+          "email": "Email",
+          "password": "Пароль"
+        }
+      }
+    },
+    "error": {
+      "auth_failed": "Помилка авторизації. Перевірте email та пароль.",
+      "no_device": "Не знайдено пристроїв для цього акаунту."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Налаштування Inverter Inverter",
+        "description": "Інтервал опитування та параметри HEMS",
+        "data": {
+          "poll_interval": "Інтервал опитування (секунд)",
+          "reserve_soc": "Резервний SOC (%)",
+          "pv_surplus_threshold_w": "Поріг PV надлишку (Вт)",
+          "tariff_day": "Денний тариф (грн/кВт·год)",
+          "tariff_night": "Нічний тариф (грн/кВт·год)",
+          "site_latitude": "Широта",
+          "site_longitude": "Довгота"
+        }
+      }
+    },
+    "error": {
+      "invalid_poll_interval": "Інтервал має бути від 3 до 30 секунд."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "pv_power": { "name": "Потужність PV" },
+      "grid_power": { "name": "Потужність мережі" },
+      "battery_power": { "name": "Потужність АКБ" },
+      "load_power": { "name": "Потужність навантаження" },
+      "battery_soc": { "name": "SOC батареї" },
+      "battery_soc_corrected": { "name": "SOC батареї (скоригований)" },
+      "pv_voltage": { "name": "Напруга PV" },
+      "grid_voltage": { "name": "Напруга мережі" },
+      "battery_voltage": { "name": "Напруга АКБ" },
+      "load_percentage": { "name": "Навантаження (%)" },
+      "working_mode": { "name": "Режим роботи" },
+      "daily_energy": { "name": "Добова генерація PV" },
+      "total_energy": { "name": "Загальна генерація PV" },
+      "co2_saved": { "name": "Зекономлено CO2" },
+      "pv_surplus": { "name": "Надлишок PV" },
+      "battery_current": { "name": "Струм батареї" },
+      "ac_output_power": { "name": "Вихідна потужність AC" },
+      "feed_in_power": { "name": "Віддача в мережу" },
+      "grid_import_power": { "name": "Споживання з мережі" },
+      "battery_charge_current": { "name": "Струм заряду АКБ" },
+      "battery_discharge_current": { "name": "Струм розряду АКБ" },
+      "inverter_temperature": { "name": "Температура інвертора" }
+    },
+    "select": {
+      "output_priority": { "name": "Пріоритет виходу" },
+      "charger_priority": { "name": "Пріоритет заряджання" },
+      "smart_mode": { "name": "HEMS режим" }
+    },
+    "number": {
+      "max_charging_current": { "name": "Макс. струм заряджання" },
+      "max_utility_charging_current": { "name": "Макс. струм заряду від мережі" },
+      "battery_charge_limit": { "name": "Ліміт заряду АКБ" },
+      "battery_discharge_limit": { "name": "Ліміт розряду АКБ" },
+      "grid_charge_power_limit": { "name": "Макс. потужність заряду від мережі" }
+    },
+    "switch": {
+      "hems_auto_mode": { "name": "HEMS авто-режим" },
+      "grid_charging": { "name": "Заряд від мережі" },
+      "grid_feed_in": { "name": "Віддача в мережу" },
+      "backup_mode": { "name": "Резервний режим (SBU)" },
+      "buzzer": { "name": "Зумер" },
+      "eco_mode": { "name": "ECO режим" }
+    },
+    "binary_sensor": {
+      "grid_available": { "name": "Мережа доступна" },
+      "low_battery": { "name": "Низький заряд батареї" },
+      "charging_from_grid": { "name": "Заряд від мережі" },
+      "grid_outage": { "name": "Аварія мережі" }
+    }
+  }
+}

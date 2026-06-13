@@ -1,0 +1,137 @@
+# ============================================================================
+# HEMS Adaptive Mode Automation
+# ============================================================================
+# Runs every 30 seconds when smart mode is "Adaptive".
+# Implements the same logic as HemsAlgorithmService in the Flutter app:
+#   - Safety floor (SOC ≤ 22% → USB + SNU)
+#   - Manual override detection
+#   - Night window (23:00–07:00 → USB)
+#   - PV surplus (≥250W + SOC ≥ 30% → SBU + OSO)
+#   - Anti-flapping (dwell time, dedup)
+#
+# Requires: Inverter Inverter custom integration + input helpers
+# ============================================================================
+
+alias: "HEMS — Adaptive Mode"
+description: "Real-time PV surplus + forecast-driven inverter control"
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: time_pattern
+    seconds: "/30"
+
+condition:
+  - condition: state
+    entity_id: select.inverter_smart_mode
+    state: "Adaptive"
+  - condition: state
+    entity_id: switch.inverter_hems_auto_mode
+    state: "on"
+
+action:
+  - variables:
+      soc: "{{ states('sensor.inverter_battery_soc_corrected') | float(50) }}"
+      pv: "{{ states('sensor.inverter_pv_power') | float(0) }}"
+      load: "{{ states('sensor.inverter_load_power') | float(0) }}"
+      grid_v: "{{ states('sensor.inverter_grid_voltage') | float(230) }}"
+      hour: "{{ now().hour }}"
+      surplus: "{{ (states('sensor.inverter_pv_power') | float(0)) - (states('sensor.inverter_load_power') | float(0)) }}"
+      reserve_soc: "{{ states('input_number.hems_reserve_soc') | float(20) }}"
+      pv_threshold: "{{ states('input_number.hems_pv_surplus_w') | float(250) }}"
+      current_output: "{{ state_attr('select.inverter_output_priority', 'option') }}"
+      current_charger: "{{ state_attr('select.inverter_charger_priority', 'option') }}"
+
+  # ── Safety floor: SOC ≤ reserve + 2% ──
+  - if:
+      - condition: template
+        value_template: "{{ soc <= (reserve_soc + 2) }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ current_output != 'USB (Grid First)' }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.inverter_output_priority
+            data:
+              option: "USB (Grid First)"
+      - if:
+          - condition: template
+            value_template: "{{ current_charger != 'SNU (Solar + Utility)' }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.inverter_charger_priority
+            data:
+              option: "SNU (Solar + Utility)"
+      - stop: "Safety floor — low SOC protection"
+
+  # ── Manual override ──
+  - if:
+      - condition: state
+        entity_id: input_boolean.hems_manual_override
+        state: "on"
+    then:
+      - stop: "Manual override active"
+
+  # ── Night window (23:00–07:00) ──
+  - if:
+      - condition: template
+        value_template: "{{ hour >= 23 or hour < 7 }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ current_output != 'USB (Grid First)' }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.inverter_output_priority
+            data:
+              option: "USB (Grid First)"
+      - stop: "Night window — grid priority"
+
+  # ── PV surplus: free solar energy ──
+  - if:
+      - condition: template
+        value_template: "{{ surplus >= pv_threshold and soc >= 30 }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ current_output != 'SBU (Solar/Battery First)' }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.inverter_output_priority
+            data:
+              option: "SBU (Solar/Battery First)"
+      - if:
+          - condition: template
+            value_template: "{{ current_charger != 'OSO (Solar Only)' }}"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.inverter_charger_priority
+            data:
+              option: "OSO (Solar Only)"
+      - stop: "PV surplus — solar priority"
+
+  # ── Default: not enough sun → grid charge ──
+  - if:
+      - condition: template
+        value_template: "{{ current_output != 'USB (Grid First)' }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_output_priority
+        data:
+          option: "USB (Grid First)"
+  - if:
+      - condition: template
+        value_template: "{{ current_charger != 'SNU (Solar + Utility)' }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_charger_priority
+        data:
+          option: "SNU (Solar + Utility)"

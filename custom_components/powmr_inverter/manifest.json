@@ -1,0 +1,13 @@
+{
+  "domain": "Inverter_inverter",
+  "name": "Smart Solar Inverter",
+  "codeowners": ["@yuraantonov11"],
+  "config_flow": true,
+  "documentation": "https://github.com/yuraantonov11/ha-Inverter-inverter",
+  "issue_tracker": "https://github.com/yuraantonov11/ha-Inverter-inverter/issues",
+  "iot_class": "cloud_polling",
+  "version": "1.0.0",
+  "requirements": ["aiohttp>=3.9.0", "cryptography"],
+  "dependencies": [],
+  "after_dependencies": ["energy"]
+}
