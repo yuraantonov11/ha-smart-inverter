@@ -1,13 +1,13 @@
 {
   "domain": "powmr_inverter",
   "name": "Smart Solar Inverter",
+  "after_dependencies": ["energy"],
   "codeowners": ["@yuraantonov11"],
   "config_flow": true,
-  "documentation": "https://github.com/yuraantonov11/ha-smart-inverter",
-  "issue_tracker": "https://github.com/yuraantonov11/ha-smart-inverter/issues",
-  "iot_class": "cloud_polling",
-  "version": "1.0.0",
-  "requirements": ["aiohttp>=3.9.0", "cryptography"],
   "dependencies": [],
-  "after_dependencies": ["energy"]
+  "documentation": "https://github.com/yuraantonov11/ha-smart-inverter",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/yuraantonov11/ha-smart-inverter/issues",
+  "requirements": ["aiohttp>=3.9.0", "cryptography"],
+  "version": "1.0.0"
 }
