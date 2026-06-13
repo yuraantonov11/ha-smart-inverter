@@ -9,7 +9,7 @@
 #   - PV surplus (≥250W + SOC ≥ 30% → SBU + OSO)
 #   - Anti-flapping (dwell time, dedup)
 #
-# Requires: PowMr Inverter custom integration + input helpers
+# Requires: Inverter Inverter custom integration + input helpers
 # ============================================================================
 
 alias: "HEMS — Adaptive Mode"

@@ -18,7 +18,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "PowMr Inverter Options",
+        "title": "Inverter Inverter Options",
         "description": "Adjust polling interval and HEMS settings",
         "data": {
           "poll_interval": "Polling interval (seconds)",

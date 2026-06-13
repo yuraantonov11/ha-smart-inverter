@@ -1,4 +1,4 @@
-"""PowMr Smart Inverter API client.
+"""Inverter Smart Inverter API client.
 
 Mirrors the Dart `InverterService` class — handles authentication with
 MD5-signed requests, device discovery, real-time data polling, and
@@ -46,24 +46,24 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class PowMrApiError(Exception):
-    """Raised when the PowMr API returns an error."""
+class InverterApiError(Exception):
+    """Raised when the inverter API returns an error."""
 
 
-class PowMrAuthError(PowMrApiError):
+class InverterAuthError(InverterApiError):
     """Raised when authentication fails."""
 
 
-class PowMrOfflineError(PowMrApiError):
+class InverterOfflineError(InverterApiError):
     """Raised when the inverter appears offline."""
 
 
-class TokenExpiredError(PowMrApiError):
+class TokenExpiredError(InverterApiError):
     """Raised when the access token is expired and needs refresh/re-auth."""
 
 
-class PowMrApiClient:
-    """Async HTTP client for the PowMr/SmartESS solar.siseli.com API."""
+class InverterApiClient:
+    """Async HTTP client for the solar.siseli.com inverter API."""
 
     def __init__(self, email: str, password: str) -> None:
         self._email = email
@@ -222,12 +222,12 @@ class PowMrApiClient:
                         "Login JSON parse error: %s. Raw: %s",
                         json_err, raw_text[:300]
                     )
-                    raise PowMrAuthError(
+                    raise InverterAuthError(
                         f"Invalid API response (status={status})"
                     )
         except aiohttp.ClientError as exc:
             _LOGGER.error("Login request failed: %s", exc)
-            raise PowMrApiError(f"Connection failed: {exc}") from exc
+            raise InverterApiError(f"Connection failed: {exc}") from exc
 
         code = data.get("code")
         if code != 0:
@@ -236,7 +236,7 @@ class PowMrApiClient:
                 "Login failed: code=%s msg=%s data=%s",
                 code, msg, str(data)[:300]
             )
-            raise PowMrAuthError(msg)
+            raise InverterAuthError(msg)
 
         resp_data = data.get("data", {})
         self.access_token = resp_data.get("accessToken") or resp_data.get("token")
@@ -247,12 +247,12 @@ class PowMrApiClient:
 
     async def _ensure_authenticated(self) -> None:
         """Re-authenticate silently when token is missing or expired."""
-        _LOGGER.info("Re-authenticating with PowMr API")
+        _LOGGER.info("Re-authenticating with Inverter API")
         self.access_token = None  # force fresh login
         try:
             await self.authenticate()
             _LOGGER.info("Re-authentication successful")
-        except PowMrAuthError as exc:
+        except InverterAuthError as exc:
             raise TokenExpiredError(
                 f"Re-authentication failed (invalid credentials): {exc}"
             ) from exc
@@ -290,9 +290,9 @@ class PowMrApiClient:
                     self.current_station_id,
                 )
             else:
-                raise PowMrApiError("No devices found for this account")
+                raise InverterApiError("No devices found for this account")
         else:
-            raise PowMrApiError(
+            raise InverterApiError(
                 data.get("msg", "Failed to fetch device list")
             )
 

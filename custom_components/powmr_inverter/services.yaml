@@ -1,4 +1,4 @@
-# PowMr Smart Inverter — Custom Services
+# Inverter Smart Inverter — Custom Services
 # These can be called from automations, scripts, or developer tools.
 
 set_output_priority:

@@ -21,7 +21,7 @@ from .const import (
     EASUN_BOOLEAN_ON_DISPLAYS,
     EASUN_SENSOR_META,
 )
-from .coordinator import PowMrCoordinator
+from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up binary sensor entities — manual + dynamic from available rawFields."""
-    coordinator: PowMrCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    coordinator: InverterCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
     device_sn = coordinator.api.device_sn or "unknown"
 
     # ── Clean up stale v1 binary sensors (unique_id format: {sn}_bin_{key}) ──
@@ -67,10 +67,10 @@ async def async_setup_entry(
         _LOGGER.info("🧹 Cleaned up %d stale v1 binary sensor entities", removed)
 
     entities: list[BinarySensorEntity] = [
-        PowMrGridAvailableSensor(coordinator),
-        PowMrLowBatterySensor(coordinator),
-        PowMrChargingFromGridSensor(coordinator),
-        PowMrGridOutageSensor(coordinator),
+        InverterGridAvailableSensor(coordinator),
+        InverterLowBatterySensor(coordinator),
+        InverterChargingFromGridSensor(coordinator),
+        InverterGridOutageSensor(coordinator),
     ]
 
     # Debug: log all available rawFields keys
@@ -89,7 +89,7 @@ async def async_setup_entry(
         if meta.get("kind") != "binary":
             continue
         if key in raw_fields:
-            entities.append(PowMrFaultFlagSensor(coordinator, device_sn, key, meta))
+            entities.append(InverterFaultFlagSensor(coordinator, device_sn, key, meta))
             found_binary.append(key)
         else:
             missing_binary.append(key)
@@ -118,12 +118,12 @@ async def async_setup_entry(
 
 # ── Manual sensors (existing) ───────────────────────────────────────────────
 
-class PowMrBinarySensorBase(CoordinatorEntity, BinarySensorEntity):
-    """Base binary sensor for PowMr."""
+class InverterBinarySensorBase(CoordinatorEntity, BinarySensorEntity):
+    """Base binary sensor for Inverter."""
 
     def __init__(
         self,
-        coordinator: PowMrCoordinator,
+        coordinator: InverterCoordinator,
         description: BinarySensorEntityDescription,
     ) -> None:
         super().__init__(coordinator)
@@ -135,10 +135,10 @@ class PowMrBinarySensorBase(CoordinatorEntity, BinarySensorEntity):
         }
 
 
-class PowMrGridAvailableSensor(PowMrBinarySensorBase):
+class InverterGridAvailableSensor(InverterBinarySensorBase):
     """Binary sensor: is the grid available?"""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
             BinarySensorEntityDescription(
@@ -156,10 +156,10 @@ class PowMrGridAvailableSensor(PowMrBinarySensorBase):
         return self.coordinator.data.get("gridAvailable", True)
 
 
-class PowMrGridOutageSensor(PowMrBinarySensorBase):
+class InverterGridOutageSensor(InverterBinarySensorBase):
     """Binary sensor: is there a grid outage?"""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
             BinarySensorEntityDescription(
@@ -177,10 +177,10 @@ class PowMrGridOutageSensor(PowMrBinarySensorBase):
         return not self.coordinator.data.get("gridAvailable", True)
 
 
-class PowMrLowBatterySensor(PowMrBinarySensorBase):
+class InverterLowBatterySensor(InverterBinarySensorBase):
     """Binary sensor: low battery alert (SOC < 25%)."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
             BinarySensorEntityDescription(
@@ -199,10 +199,10 @@ class PowMrLowBatterySensor(PowMrBinarySensorBase):
         return soc < 25.0
 
 
-class PowMrChargingFromGridSensor(PowMrBinarySensorBase):
+class InverterChargingFromGridSensor(InverterBinarySensorBase):
     """Binary sensor: is battery charging from grid?"""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
             BinarySensorEntityDescription(
@@ -224,12 +224,12 @@ class PowMrChargingFromGridSensor(PowMrBinarySensorBase):
 
 # ── Dynamic binary sensors from EASUN_SENSOR_META ────────────────────────────
 
-class PowMrFaultFlagSensor(CoordinatorEntity, BinarySensorEntity):
+class InverterFaultFlagSensor(CoordinatorEntity, BinarySensorEntity):
     """Binary sensor for fault flags / run state / grid presence / lights."""
 
     def __init__(
         self,
-        coordinator: PowMrCoordinator,
+        coordinator: InverterCoordinator,
         device_sn: str,
         sensor_key: str,
         meta: dict,

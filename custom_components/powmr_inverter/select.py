@@ -1,4 +1,4 @@
-"""Select entities for PowMr Smart Inverter.
+"""Select entities for Inverter Smart Inverter.
 
 Provides output priority, charger priority, and HEMS mode selection.
 """
@@ -26,7 +26,7 @@ from .const import (
     SMART_MODE_ARBITRAGE,
     SMART_MODE_STORM,
 )
-from .coordinator import PowMrCoordinator
+from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -83,23 +83,23 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up PowMr select entities."""
-    coordinator: PowMrCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    """Set up Inverter select entities."""
+    coordinator: InverterCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
     entities = [
-        PowMrOutputPrioritySelect(coordinator),
-        PowMrChargerPrioritySelect(coordinator),
-        PowMrSmartModeSelect(coordinator),
+        InverterOutputPrioritySelect(coordinator),
+        InverterChargerPrioritySelect(coordinator),
+        InverterSmartModeSelect(coordinator),
     ]
     async_add_entities(entities)
 
 
-class PowMrSelectBase(CoordinatorEntity, SelectEntity):
-    """Base class for PowMr select entities."""
+class InverterSelectBase(CoordinatorEntity, SelectEntity):
+    """Base class for Inverter select entities."""
 
     def __init__(
         self,
-        coordinator: PowMrCoordinator,
+        coordinator: InverterCoordinator,
         description: SelectEntityDescription,
         options: list[str],
     ) -> None:
@@ -115,10 +115,10 @@ class PowMrSelectBase(CoordinatorEntity, SelectEntity):
         self._attr_options = options
 
 
-class PowMrOutputPrioritySelect(PowMrSelectBase):
+class InverterOutputPrioritySelect(InverterSelectBase):
     """Select entity for inverter output source priority."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
             SelectEntityDescription(
@@ -148,10 +148,10 @@ class PowMrOutputPrioritySelect(PowMrSelectBase):
             _LOGGER.error("Failed to set output priority to %s", option)
 
 
-class PowMrChargerPrioritySelect(PowMrSelectBase):
+class InverterChargerPrioritySelect(InverterSelectBase):
     """Select entity for inverter charger source priority."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
             SelectEntityDescription(
@@ -181,10 +181,10 @@ class PowMrChargerPrioritySelect(PowMrSelectBase):
             _LOGGER.error("Failed to set charger priority to %s", option)
 
 
-class PowMrSmartModeSelect(PowMrSelectBase):
+class InverterSmartModeSelect(InverterSelectBase):
     """Select entity for HEMS smart mode."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
             SelectEntityDescription(

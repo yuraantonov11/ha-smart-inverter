@@ -1,8 +1,8 @@
 # ============================================================================
-# Home Assistant Configuration for PowMr Smart Inverter
+# Home Assistant Configuration for Inverter Smart Inverter
 # ============================================================================
 # Copy this to your configuration.yaml and customize as needed.
-# Requires the powmr_inverter custom integration.
+# Requires the Inverter_inverter custom integration.
 # ============================================================================
 
 # ── Input Helpers — HEMS tuning parameters ───────────────────────────

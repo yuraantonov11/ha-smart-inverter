@@ -1,11 +1,11 @@
-"""Tests for PowMr Inverter SOC correction (LiFePO4 16S).
+"""Tests for Inverter Inverter SOC correction (LiFePO4 16S).
 
 Mirrors test/hems_algorithm_test.dart from the Flutter app.
 """
 
 import pytest
 
-from custom_components.powmr_inverter.hems.soc_correction import (
+from custom_components.Inverter_inverter.hems.soc_correction import (
     get_real_soc,
     voltage_to_soc,
 )
@@ -83,14 +83,14 @@ class TestOcvTableConsistency:
     """Ensure the OCV table is monotonically decreasing."""
 
     def test_thresholds_are_descending(self):
-        from custom_components.powmr_inverter.hems.soc_correction import _OCV_TABLE
+        from custom_components.Inverter_inverter.hems.soc_correction import _OCV_TABLE
         for i in range(len(_OCV_TABLE) - 1):
             assert _OCV_TABLE[i][0] > _OCV_TABLE[i + 1][0], (
                 f"Threshold {_OCV_TABLE[i][0]} should be > {_OCV_TABLE[i+1][0]}"
             )
 
     def test_soc_values_are_descending(self):
-        from custom_components.powmr_inverter.hems.soc_correction import _OCV_TABLE
+        from custom_components.Inverter_inverter.hems.soc_correction import _OCV_TABLE
         for i in range(len(_OCV_TABLE) - 1):
             assert _OCV_TABLE[i][1] > _OCV_TABLE[i + 1][1], (
                 f"SOC {_OCV_TABLE[i][1]} should be > {_OCV_TABLE[i+1][1]}"

@@ -32,7 +32,7 @@ from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import PowMrCoordinator
+from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -47,16 +47,16 @@ WORKING_MODE_LABELS_UK: dict[str, str] = {
 
 
 @dataclass(frozen=True, kw_only=True)
-class PowMrSensorDescription(SensorEntityDescription):
-    """Description for PowMr sensor entities."""
+class InverterSensorDescription(SensorEntityDescription):
+    """Description for Inverter sensor entities."""
 
     value_fn: callable[[dict[str, Any]], StateType] | None = None
     attr_fn: callable[[dict[str, Any]], dict[str, Any]] | None = None
 
 
-SENSORS: tuple[PowMrSensorDescription, ...] = (
+SENSORS: tuple[InverterSensorDescription, ...] = (
     # ── Power sensors ──────────────────────────────────────────────
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="pv_power",
         translation_key="pv_power",
         device_class=SensorDeviceClass.POWER,
@@ -66,7 +66,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:solar-power",
         value_fn=lambda d: d.get("pvPower"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="grid_power",
         translation_key="grid_power",
         device_class=SensorDeviceClass.POWER,
@@ -76,7 +76,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:transmission-tower",
         value_fn=lambda d: d.get("gridPower"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="battery_power",
         translation_key="battery_power",
         device_class=SensorDeviceClass.POWER,
@@ -86,7 +86,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:battery-charging",
         value_fn=lambda d: d.get("batteryPower"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="load_power",
         translation_key="load_power",
         device_class=SensorDeviceClass.POWER,
@@ -97,7 +97,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         value_fn=lambda d: d.get("loadPower"),
     ),
     # ── Voltage sensors ────────────────────────────────────────────
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="pv_voltage",
         translation_key="pv_voltage",
         device_class=SensorDeviceClass.VOLTAGE,
@@ -107,7 +107,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:solar-panel",
         value_fn=lambda d: d.get("pvVoltage"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="grid_voltage",
         translation_key="grid_voltage",
         device_class=SensorDeviceClass.VOLTAGE,
@@ -117,7 +117,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:flash",
         value_fn=lambda d: d.get("gridVoltage"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="battery_voltage",
         translation_key="battery_voltage",
         device_class=SensorDeviceClass.VOLTAGE,
@@ -128,7 +128,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         value_fn=lambda d: d.get("batteryVoltage"),
     ),
     # ── SOC sensors ────────────────────────────────────────────────
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="battery_soc",
         translation_key="battery_soc",
         device_class=SensorDeviceClass.BATTERY,
@@ -138,7 +138,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:battery",
         value_fn=lambda d: d.get("batterySoc"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="battery_soc_corrected",
         translation_key="battery_soc_corrected",
         device_class=SensorDeviceClass.BATTERY,
@@ -154,7 +154,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
     ),
     # Energy/CO2 are exposed by dedicated API-backed sensors below to avoid duplicates.
     # ── Other ──────────────────────────────────────────────────────
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="load_percentage",
         translation_key="load_percentage",
         state_class=SensorStateClass.MEASUREMENT,
@@ -163,7 +163,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:gauge",
         value_fn=lambda d: d.get("loadPercentage"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="working_mode",
         translation_key="working_mode",
         icon="mdi:cog",
@@ -172,7 +172,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
             d.get("workingMode"),
         ),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="pv_surplus",
         translation_key="pv_surplus",
         device_class=SensorDeviceClass.POWER,
@@ -186,7 +186,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
             - (d.get("loadPower", 0.0) or 0.0),
         ),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="battery_current",
         translation_key="battery_current",
         device_class=SensorDeviceClass.CURRENT,
@@ -197,7 +197,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         value_fn=lambda d: d.get("batteryCurrent", 0.0),
     ),
     # ── New metrics from latest_state API ───────────────────────────
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="ac_output_power",
         translation_key="ac_output_power",
         device_class=SensorDeviceClass.POWER,
@@ -207,7 +207,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:power-plug",
         value_fn=lambda d: d.get("acOutputPower"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="feed_in_power",
         translation_key="feed_in_power",
         device_class=SensorDeviceClass.POWER,
@@ -217,7 +217,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:transmission-tower-export",
         value_fn=lambda d: d.get("feedInPower"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="grid_import_power",
         translation_key="grid_import_power",
         device_class=SensorDeviceClass.POWER,
@@ -227,7 +227,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:transmission-tower-import",
         value_fn=lambda d: d.get("gridImportPower") or d.get("gridPower"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="battery_charge_current",
         translation_key="battery_charge_current",
         device_class=SensorDeviceClass.CURRENT,
@@ -237,7 +237,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:battery-plus",
         value_fn=lambda d: d.get("batteryChargeCurrent"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="battery_discharge_current",
         translation_key="battery_discharge_current",
         device_class=SensorDeviceClass.CURRENT,
@@ -247,7 +247,7 @@ SENSORS: tuple[PowMrSensorDescription, ...] = (
         icon="mdi:battery-minus",
         value_fn=lambda d: d.get("batteryDischargeCurrent"),
     ),
-    PowMrSensorDescription(
+    InverterSensorDescription(
         key="inverter_temperature",
         translation_key="inverter_temperature",
         device_class=SensorDeviceClass.TEMPERATURE,
@@ -265,30 +265,30 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up PowMr sensors."""
-    coordinator: PowMrCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    """Set up Inverter sensors."""
+    coordinator: InverterCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
-    entities: list[PowMrSensor] = []
+    entities: list[InverterSensor] = []
     for desc in SENSORS:
-        entities.append(PowMrSensor(coordinator, desc))
+        entities.append(InverterSensor(coordinator, desc))
 
     # Add dynamic energy sensors from API
-    entities.append(PowMrDailyEnergySensor(coordinator))
-    entities.append(PowMrTotalEnergySensor(coordinator))
-    entities.append(PowMrCO2Sensor(coordinator))
+    entities.append(InverterDailyEnergySensor(coordinator))
+    entities.append(InverterTotalEnergySensor(coordinator))
+    entities.append(InverterCO2Sensor(coordinator))
 
     async_add_entities(entities)
 
 
-class PowMrSensor(CoordinatorEntity, SensorEntity):
-    """Base sensor for PowMr inverter data."""
+class InverterSensor(CoordinatorEntity, SensorEntity):
+    """Base sensor for Inverter inverter data."""
 
-    entity_description: PowMrSensorDescription
+    entity_description: InverterSensorDescription
 
     def __init__(
         self,
-        coordinator: PowMrCoordinator,
-        description: PowMrSensorDescription,
+        coordinator: InverterCoordinator,
+        description: InverterSensorDescription,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
@@ -318,13 +318,13 @@ class PowMrSensor(CoordinatorEntity, SensorEntity):
         return None
 
 
-class PowMrDailyEnergySensor(PowMrSensor):
+class InverterDailyEnergySensor(InverterSensor):
     """Sensor for daily PV energy from API (not from realtime data)."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
-            PowMrSensorDescription(
+            InverterSensorDescription(
                 key="daily_energy_api",
                 translation_key="daily_energy",
                 device_class=SensorDeviceClass.ENERGY,
@@ -339,13 +339,13 @@ class PowMrDailyEnergySensor(PowMrSensor):
         return self.coordinator.api.daily_energy
 
 
-class PowMrTotalEnergySensor(PowMrSensor):
+class InverterTotalEnergySensor(InverterSensor):
     """Sensor for total PV energy from API."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
-            PowMrSensorDescription(
+            InverterSensorDescription(
                 key="total_energy_api",
                 translation_key="total_energy",
                 device_class=SensorDeviceClass.ENERGY,
@@ -360,13 +360,13 @@ class PowMrTotalEnergySensor(PowMrSensor):
         return self.coordinator.api.total_energy
 
 
-class PowMrCO2Sensor(PowMrSensor):
+class InverterCO2Sensor(InverterSensor):
     """Sensor for CO2 savings."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
             coordinator,
-            PowMrSensorDescription(
+            InverterSensorDescription(
                 key="co2_saved_api",
                 translation_key="co2_saved",
                 state_class=SensorStateClass.MEASUREMENT,

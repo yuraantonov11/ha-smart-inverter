@@ -1,4 +1,4 @@
-"""Switch entities for PowMr Inverter — HEMS automation toggle."""
+"""Switch entities for Inverter Inverter — HEMS automation toggle."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import PowMrCoordinator
+from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,24 +21,24 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up PowMr switch entities."""
-    coordinator: PowMrCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    """Set up Inverter switch entities."""
+    coordinator: InverterCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
     entities = [
-        PowMrHemsAutoModeSwitch(coordinator),
-        PowMrGridChargingSwitch(coordinator),
-        PowMrGridFeedInSwitch(coordinator),
-        PowMrBackupModeSwitch(coordinator),
-        PowMrBuzzerSwitch(coordinator),
-        PowMrEcoModeSwitch(coordinator),
+        InverterHemsAutoModeSwitch(coordinator),
+        InverterGridChargingSwitch(coordinator),
+        InverterGridFeedInSwitch(coordinator),
+        InverterBackupModeSwitch(coordinator),
+        InverterBuzzerSwitch(coordinator),
+        InverterEcoModeSwitch(coordinator),
     ]
     async_add_entities(entities)
 
 
-class PowMrHemsAutoModeSwitch(CoordinatorEntity, SwitchEntity):
+class InverterHemsAutoModeSwitch(CoordinatorEntity, SwitchEntity):
     """Switch to enable/disable HEMS automatic control."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self.entity_description = SwitchEntityDescription(
@@ -81,10 +81,10 @@ def _setting_int(data: dict | None, key: str) -> int | None:
         return None
 
 
-class PowMrGridChargingSwitch(CoordinatorEntity, SwitchEntity):
+class InverterGridChargingSwitch(CoordinatorEntity, SwitchEntity):
     """Switch: enable/disable grid (AC) battery charging."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "grid_charging"
@@ -109,10 +109,10 @@ class PowMrGridChargingSwitch(CoordinatorEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
 
-class PowMrGridFeedInSwitch(CoordinatorEntity, SwitchEntity):
+class InverterGridFeedInSwitch(CoordinatorEntity, SwitchEntity):
     """Switch: enable/disable grid feed-in (export)."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "grid_feed_in"
@@ -137,10 +137,10 @@ class PowMrGridFeedInSwitch(CoordinatorEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
 
-class PowMrBackupModeSwitch(CoordinatorEntity, SwitchEntity):
+class InverterBackupModeSwitch(CoordinatorEntity, SwitchEntity):
     """Switch: toggle backup mode (SBU priority) on/off."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "backup_mode"
@@ -167,10 +167,10 @@ class PowMrBackupModeSwitch(CoordinatorEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
 
-class PowMrBuzzerSwitch(CoordinatorEntity, SwitchEntity):
+class InverterBuzzerSwitch(CoordinatorEntity, SwitchEntity):
     """Switch: toggle inverter buzzer on/off."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "buzzer"
@@ -195,10 +195,10 @@ class PowMrBuzzerSwitch(CoordinatorEntity, SwitchEntity):
         await self.coordinator.async_request_refresh()
 
 
-class PowMrEcoModeSwitch(CoordinatorEntity, SwitchEntity):
+class InverterEcoModeSwitch(CoordinatorEntity, SwitchEntity):
     """Switch: toggle ECO mode on/off."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "eco_mode"

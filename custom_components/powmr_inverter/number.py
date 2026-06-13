@@ -1,4 +1,4 @@
-"""Number entities for PowMr Inverter — max charging currents."""
+"""Number entities for Inverter Inverter — max charging currents."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import PowMrCoordinator
+from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,23 +33,23 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up PowMr number entities."""
-    coordinator: PowMrCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
+    """Set up Inverter number entities."""
+    coordinator: InverterCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
 
     entities = [
-        PowMrMaxChargingCurrent(coordinator),
-        PowMrMaxUtilityChargingCurrent(coordinator),
-        PowMrBatteryChargeLimitPercent(coordinator),
-        PowMrBatteryDischargeLimitPercent(coordinator),
-        PowMrGridChargePowerLimit(coordinator),
+        InverterMaxChargingCurrent(coordinator),
+        InverterMaxUtilityChargingCurrent(coordinator),
+        InverterBatteryChargeLimitPercent(coordinator),
+        InverterBatteryDischargeLimitPercent(coordinator),
+        InverterGridChargePowerLimit(coordinator),
     ]
     async_add_entities(entities)
 
 
-class PowMrMaxChargingCurrent(CoordinatorEntity, NumberEntity):
+class InverterMaxChargingCurrent(CoordinatorEntity, NumberEntity):
     """Number entity for max total charging current."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self.entity_description = NumberEntityDescription(
@@ -76,10 +76,10 @@ class PowMrMaxChargingCurrent(CoordinatorEntity, NumberEntity):
             self.async_write_ha_state()
 
 
-class PowMrMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
+class InverterMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
     """Number entity for max utility (grid) charging current."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self.entity_description = NumberEntityDescription(
@@ -124,10 +124,10 @@ def _setting_number(coordinator_data: dict | None, key: str) -> float | None:
         return None
 
 
-class PowMrBatteryChargeLimitPercent(CoordinatorEntity, NumberEntity):
+class InverterBatteryChargeLimitPercent(CoordinatorEntity, NumberEntity):
     """Number: battery charge limit in percent (0-100)."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "battery_charge_limit"
@@ -154,10 +154,10 @@ class PowMrBatteryChargeLimitPercent(CoordinatorEntity, NumberEntity):
             self.async_write_ha_state()
 
 
-class PowMrBatteryDischargeLimitPercent(CoordinatorEntity, NumberEntity):
+class InverterBatteryDischargeLimitPercent(CoordinatorEntity, NumberEntity):
     """Number: battery discharge limit in percent (0-100)."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "battery_discharge_limit"
@@ -184,10 +184,10 @@ class PowMrBatteryDischargeLimitPercent(CoordinatorEntity, NumberEntity):
             self.async_write_ha_state()
 
 
-class PowMrGridChargePowerLimit(CoordinatorEntity, NumberEntity):
+class InverterGridChargePowerLimit(CoordinatorEntity, NumberEntity):
     """Number: max grid charge power in watts (0-5000)."""
 
-    def __init__(self, coordinator: PowMrCoordinator) -> None:
+    def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "grid_charge_power_limit"

@@ -10,20 +10,20 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .api import PowMrApiClient, PowMrOfflineError, TokenExpiredError
+from .api import InverterApiClient, InverterOfflineError, TokenExpiredError
 from .const import DOMAIN
 from .hems.soc_correction import get_real_soc
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class PowMrCoordinator(DataUpdateCoordinator):
-    """Coordinator that polls PowMr API and computes derived values."""
+class InverterCoordinator(DataUpdateCoordinator):
+    """Coordinator that polls Inverter API and computes derived values."""
 
     def __init__(
         self,
         hass: HomeAssistant,
-        api: PowMrApiClient,
+        api: InverterApiClient,
         entry: ConfigEntry,
         update_interval: timedelta = timedelta(seconds=5),
     ) -> None:
@@ -81,7 +81,7 @@ class PowMrCoordinator(DataUpdateCoordinator):
             _LOGGER.error("Token expired — triggering re-auth")
             self._entry.async_start_reauth(self.hass)
             return self._build_offline_state(now)
-        except PowMrOfflineError:
+        except InverterOfflineError:
             self._consecutive_nulls += 1
             _LOGGER.warning(
                 "Realtime offline (attempt #%d), using fallback state",

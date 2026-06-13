@@ -1,4 +1,4 @@
-"""Config flow for PowMr Smart Inverter integration."""
+"""Config flow for Inverter Smart Inverter integration."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .api import PowMrApiClient, PowMrAuthError
+from .api import InverterApiClient, InverterAuthError
 from .const import (
     CONF_EMAIL,
     CONF_PASSWORD,
@@ -28,8 +28,8 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
-class PowMrConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for PowMr Inverter."""
+class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Inverter Inverter."""
 
     VERSION = 1
 
@@ -44,10 +44,10 @@ class PowMrConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             password = user_input[CONF_PASSWORD]
 
             # Validate credentials
-            api = PowMrApiClient(email=email, password=password)
+            api = InverterApiClient(email=email, password=password)
             try:
                 ok = await api.authenticate()
-            except PowMrAuthError as exc:
+            except InverterAuthError as exc:
                 errors["base"] = "auth_failed"
                 _LOGGER.error("Auth failed: %s", exc)
             except Exception as exc:
@@ -94,9 +94,9 @@ class PowMrConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> PowMrOptionsFlow:
+    ) -> InverterOptionsFlow:
         """Create the options flow."""
-        return PowMrOptionsFlow()
+        return InverterOptionsFlow()
 
     async def async_step_reauth(
         self, user_input: dict[str, Any] | None = None
@@ -108,10 +108,10 @@ class PowMrConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             email = user_input.get(CONF_EMAIL, entry.data[CONF_EMAIL])
             password = user_input[CONF_PASSWORD]
-            api = PowMrApiClient(email=email, password=password)
+            api = InverterApiClient(email=email, password=password)
             try:
                 ok = await api.authenticate()
-            except PowMrAuthError:
+            except InverterAuthError:
                 errors["base"] = "auth_failed"
             else:
                 if ok and api.device_sn:
@@ -152,7 +152,7 @@ class PowMrConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
 
 
-class PowMrOptionsFlow(config_entries.OptionsFlow):
+class InverterOptionsFlow(config_entries.OptionsFlow):
     """Handle options."""
 
     async def async_step_init(

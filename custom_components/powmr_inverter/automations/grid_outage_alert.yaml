@@ -60,7 +60,7 @@ action:
             data:
               name: "HEMS"
               message: "Auto-activated Storm mode due to grid outage"
-              domain: powmr_inverter
+              domain: Inverter_inverter
 
   # ── Grid restored ──
   - if:

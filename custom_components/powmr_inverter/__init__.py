@@ -1,4 +1,4 @@
-"""The PowMr Smart Inverter integration."""
+"""The Smart Solar Inverter integration."""
 
 from __future__ import annotations
 
@@ -10,9 +10,9 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
-from .api import PowMrApiClient
+from .api import InverterApiClient
 from .const import DOMAIN
-from .coordinator import PowMrCoordinator
+from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,10 +26,10 @@ PLATFORMS: list[Platform] = [
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up PowMr Inverter from a config entry."""
+    """Set up Smart Solar Inverter from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
-    api = PowMrApiClient(
+    api = InverterApiClient(
         email=entry.data["email"],
         password=entry.data["password"],
     )
@@ -37,11 +37,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         # Authenticate
         if not await api.authenticate():
-            _LOGGER.error("Failed to authenticate with PowMr API")
+            _LOGGER.error("Failed to authenticate with inverter API")
             return False
 
         # Create coordinator
-        coordinator = PowMrCoordinator(
+        coordinator = InverterCoordinator(
             hass=hass,
             api=api,
             entry=entry,
@@ -77,7 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return True
 
     except Exception as exc:
-        _LOGGER.error("Failed to set up PowMr integration: %s", exc)
+        _LOGGER.error("Failed to set up inverter integration: %s", exc)
         await api.close()
         return False
 
@@ -89,7 +89,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if unload_ok:
         if entry_data is not None:
-            api: PowMrApiClient | None = entry_data.get("api")
+            api: InverterApiClient | None = entry_data.get("api")
             if api is not None:
                 await api.close()
         hass.data[DOMAIN].pop(entry.entry_id, None)

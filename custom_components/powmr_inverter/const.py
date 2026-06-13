@@ -1,6 +1,6 @@
 """Constants for Smart Solar Inverter integration."""
 
-DOMAIN = "powmr_inverter"
+DOMAIN = "Inverter_inverter"
 
 # API
 BASE_URL = "https://solar.siseli.com"
@@ -176,7 +176,7 @@ EASUN_SENSOR_META: dict[str, dict] = {
 }
 
 # Device info
-DEVICE_MANUFACTURER = "PowMr"
+DEVICE_MANUFACTURER = "Inverter"
 DEVICE_MODEL = "SmartESS Inverter"
 
 # Output priorities (inverter API values)

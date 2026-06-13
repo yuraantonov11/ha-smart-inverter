@@ -46,7 +46,7 @@ action:
         data:
           name: "HEMS Arbitrage"
           message: "Night mode — grid charging enabled"
-          domain: powmr_inverter
+          domain: Inverter_inverter
 
   # ── Day starts (07:00): switch to solar priority ──
   - if:
@@ -67,4 +67,4 @@ action:
         data:
           name: "HEMS Arbitrage"
           message: "Day mode — solar + battery priority"
-          domain: powmr_inverter
+          domain: Inverter_inverter

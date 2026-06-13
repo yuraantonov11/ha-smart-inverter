@@ -18,7 +18,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Налаштування PowMr Inverter",
+        "title": "Налаштування Inverter Inverter",
         "description": "Інтервал опитування та параметри HEMS",
         "data": {
           "poll_interval": "Інтервал опитування (секунд)",

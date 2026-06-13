@@ -1,4 +1,4 @@
-"""Services for PowMr Inverter — register custom services."""
+"""Services for Inverter Inverter — register custom services."""
 
 from __future__ import annotations
 
@@ -61,17 +61,17 @@ _MODE_VALUE = {
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
-    """Register PowMr custom services."""
+    """Register Inverter custom services."""
 
     async def _get_api(call: ServiceCall):
         """Get API client from first config entry."""
         entries = hass.config_entries.async_entries(DOMAIN)
         if not entries:
-            raise RuntimeError("No PowMr config entry found")
+            raise RuntimeError("No Inverter config entry found")
         entry_id = entries[0].entry_id
         data = hass.data[DOMAIN].get(entry_id)
         if data is None:
-            raise RuntimeError("PowMr integration not loaded")
+            raise RuntimeError("Inverter integration not loaded")
         return data["api"], data["coordinator"]
 
     async def handle_set_output_priority(call: ServiceCall) -> None:

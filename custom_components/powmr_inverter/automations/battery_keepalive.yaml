@@ -53,4 +53,4 @@ action:
         data:
           name: "Battery Keepalive"
           message: "Keepalive cycle completed (90 sec charge)"
-          domain: powmr_inverter
+          domain: Inverter_inverter

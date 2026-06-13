@@ -1,11 +1,11 @@
 # Smart Solar Inverter — Home Assistant Integration
 
 [![HACS Default](https://img.shields.io/badge/HACS-Default-orange.svg)](https://hacs.xyz)
-[![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-powmr-inverter)](https://github.com/yuraantonov11/ha-powmr-inverter/releases)
+[![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-Inverter-inverter)](https://github.com/yuraantonov11/ha-Inverter-inverter/releases)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.6%2B-41BDF5)
 
 Custom integration for **solar inverters** with battery storage and HEMS control.
-Currently supports the `solar.siseli.com` cloud platform (PowMr, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
+Currently supports the `solar.siseli.com` cloud platform (Inverter, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
 Architecture is designed to support additional data sources in the future (direct inverter connection, other cloud platforms).
 
 ## ✨ Features
@@ -40,7 +40,7 @@ Architecture is designed to support additional data sources in the future (direc
 
 ### HACS
 
-1. HACS → Integrations → Custom repositories → `yuraantonov11/ha-powmr-inverter`
+1. HACS → Integrations → Custom repositories → `yuraantonov11/ha-Inverter-inverter`
 2. Install "Smart Solar Inverter"
 3. Restart HA → Settings → Devices → Add → Smart Solar
 4. Enter `solar.siseli.com` email + password
@@ -49,15 +49,15 @@ Architecture is designed to support additional data sources in the future (direc
 
 ```bash
 cd /config/custom_components
-git clone https://github.com/yuraantonov11/ha-powmr-inverter.git powmr_inverter
+git clone https://github.com/yuraantonov11/ha-Inverter-inverter.git Inverter_inverter
 ```
 
 Restart HA, then add the integration from the UI.
 
 ### HA Package
 
-Copy `homeassistant/powmr_native_package.yaml` → `/config/packages/`  
-Copy `homeassistant/powmr_dashboard.yaml` → `/config/`
+Copy `homeassistant/Inverter_native_package.yaml` → `/config/packages/`  
+Copy `homeassistant/Inverter_dashboard.yaml` → `/config/`
 
 ## 🔧 Requirements
 
@@ -73,8 +73,8 @@ No external API keys, no REST sensors, no cloud services needed beyond the Sisel
 
 MIT
 
-| `powmr_inverter.set_smart_mode` | Set HEMS mode (adaptive/arbitrage/storm) |
-| `powmr_inverter.force_grid_charge` | Force battery charge from grid (duration in minutes) |
+| `Inverter_inverter.set_smart_mode` | Set HEMS mode (adaptive/arbitrage/storm) |
+| `Inverter_inverter.force_grid_charge` | Force battery charge from grid (duration in minutes) |
 
 ## HEMS Automations
 
@@ -108,10 +108,10 @@ cd core
 script/setup
 
 # Link custom component
-ln -s /path/to/this/repo config/custom_components/powmr_inverter
+ln -s /path/to/this/repo config/custom_components/Inverter_inverter
 
 # Run tests
-pytest custom_components/powmr_inverter/tests/
+pytest custom_components/Inverter_inverter/tests/
 ```
 
 ## Requirements
