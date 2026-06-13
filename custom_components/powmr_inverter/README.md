@@ -1,7 +1,7 @@
 # Smart Solar Inverter — Home Assistant Integration
 
 [![HACS Default](https://img.shields.io/badge/HACS-Default-orange.svg)](https://hacs.xyz)
-[![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-Inverter-inverter)](https://github.com/yuraantonov11/ha-Inverter-inverter/releases)
+[![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-smart-inverter)](https://github.com/yuraantonov11/ha-smart-inverter/releases)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.6%2B-41BDF5)
 
 Custom integration for **solar inverters** with battery storage and HEMS control.
@@ -40,7 +40,7 @@ Architecture is designed to support additional data sources in the future (direc
 
 ### HACS
 
-1. HACS → Integrations → Custom repositories → `yuraantonov11/ha-Inverter-inverter`
+1. HACS → Integrations → Custom repositories → `yuraantonov11/ha-smart-inverter`
 2. Install "Smart Solar Inverter"
 3. Restart HA → Settings → Devices → Add → Smart Solar
 4. Enter `solar.siseli.com` email + password
@@ -49,7 +49,7 @@ Architecture is designed to support additional data sources in the future (direc
 
 ```bash
 cd /config/custom_components
-git clone https://github.com/yuraantonov11/ha-Inverter-inverter.git Inverter_inverter
+git clone https://github.com/yuraantonov11/ha-smart-inverter.git powmr_inverter
 ```
 
 Restart HA, then add the integration from the UI.
