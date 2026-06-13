@@ -1,0 +1,78 @@
+# ============================================================================
+# Grid Outage Notifications
+# ============================================================================
+# Sends mobile push notifications when grid goes down / comes back.
+# Also auto-activates Storm mode on outage.
+# ============================================================================
+
+alias: "Grid Outage Alert"
+description: "Notify on grid outage and auto-activate Storm mode"
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: binary_sensor.inverter_grid_outage
+    from: "off"
+    to: "on"
+  - platform: state
+    entity_id: binary_sensor.inverter_grid_outage
+    from: "on"
+    to: "off"
+
+action:
+  - variables:
+      is_outage: "{{ trigger.to_state.state == 'on' }}"
+      grid_v: "{{ states('sensor.inverter_grid_voltage') | float(0) }}"
+      soc: "{{ states('sensor.inverter_battery_soc_corrected') | float(0) }}"
+
+  # ── Grid outage ──
+  - if:
+      - condition: template
+        value_template: "{{ is_outage }}"
+    then:
+      # Notify
+      - service: notify.mobile_app_phone
+        data:
+          title: "⚡ Grid Outage Detected!"
+          message: >
+            Grid voltage dropped to {{ grid_v }}V.
+            Battery SOC: {{ soc }}%.
+            Inverter will run on battery.
+          data:
+            push:
+              sound: "default"
+              importance: "high"
+            ttl: 0
+            priority: "high"
+
+      # Auto-activate Storm mode if in Adaptive mode
+      - if:
+          - condition: state
+            entity_id: select.inverter_smart_mode
+            state: "Adaptive"
+        then:
+          - service: select.select_option
+            target:
+              entity_id: select.inverter_smart_mode
+            data:
+              option: "Storm"
+          - service: logbook.log
+            data:
+              name: "HEMS"
+              message: "Auto-activated Storm mode due to grid outage"
+              domain: powmr_inverter
+
+  # ── Grid restored ──
+  - if:
+      - condition: template
+        value_template: "{{ not is_outage }}"
+    then:
+      - service: notify.mobile_app_phone
+        data:
+          title: "🔌 Grid Restored"
+          message: >
+            Grid voltage back to {{ grid_v }}V.
+            Battery SOC: {{ soc }}%.
+          data:
+            push:
+              sound: "default"

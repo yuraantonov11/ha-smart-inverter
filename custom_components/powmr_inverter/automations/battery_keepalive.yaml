@@ -1,0 +1,56 @@
+# ============================================================================
+# Battery Keepalive Automation
+# ============================================================================
+# Performs a brief charge/discharge cycle every 2 hours to prevent
+# battery degradation from prolonged inactivity.
+# Mirrors the keepalive logic from HemsAlgorithmService.
+# ============================================================================
+
+alias: "Battery Keepalive"
+description: "Periodic brief battery activity to prevent degradation"
+mode: single
+
+trigger:
+  - platform: time_pattern
+    hours: "*"
+    minutes: "0"
+    seconds: "0"
+
+condition:
+  - condition: state
+    entity_id: switch.inverter_hems_auto_mode
+    state: "on"
+  - condition: template
+    value_template: >
+      {% set soc = states('sensor.inverter_battery_soc_corrected') | float(50) %}
+      {{ soc > 22 }}
+
+action:
+  - variables:
+      battery_power: "{{ states('sensor.inverter_battery_power') | float(0) }}"
+      # Battery inactive if |power| < 50W
+      inactive: "{{ (battery_power | abs) < 50 }}"
+      current_charger: "{{ state_attr('select.inverter_charger_priority', 'option') }}"
+
+  - if:
+      - condition: template
+        value_template: "{{ inactive }}"
+    then:
+      # Brief toggle: switch charger to SNU for 90 seconds, then back
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_charger_priority
+        data:
+          option: "SNU (Solar + Utility)"
+      - delay:
+          seconds: 90
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_charger_priority
+        data:
+          option: "{{ current_charger }}"
+      - service: logbook.log
+        data:
+          name: "Battery Keepalive"
+          message: "Keepalive cycle completed (90 sec charge)"
+          domain: powmr_inverter

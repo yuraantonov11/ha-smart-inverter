@@ -1,0 +1,9 @@
+{
+  "name": "Smart Solar Inverter",
+  "content_in_root": false,
+  "zip_release": true,
+  "filename": "powmr_inverter.zip",
+  "homeassistant": "2023.6.0",
+  "render_readme": true,
+  "country": ["UA"]
+}

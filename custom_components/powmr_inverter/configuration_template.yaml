@@ -1,0 +1,257 @@
+# ============================================================================
+# Home Assistant Configuration for PowMr Smart Inverter
+# ============================================================================
+# Copy this to your configuration.yaml and customize as needed.
+# Requires the powmr_inverter custom integration.
+# ============================================================================
+
+# ── Input Helpers — HEMS tuning parameters ───────────────────────────
+input_number:
+  hems_reserve_soc:
+    name: "HEMS Reserve SOC"
+    min: 10
+    max: 40
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:battery-low
+    initial: 20
+
+  hems_pv_surplus_w:
+    name: "PV Surplus Threshold"
+    min: 50
+    max: 1000
+    step: 10
+    unit_of_measurement: "W"
+    icon: mdi:solar-power
+    initial: 250
+
+  battery_capacity_ah:
+    name: "Battery Capacity"
+    min: 50
+    max: 500
+    step: 10
+    unit_of_measurement: "Ah"
+    icon: mdi:battery
+    initial: 230
+
+  pv_total_capacity_w:
+    name: "PV Total Capacity"
+    min: 500
+    max: 20000
+    step: 100
+    unit_of_measurement: "W"
+    icon: mdi:solar-panel
+    initial: 3000
+
+  day_tariff_uah:
+    name: "Day Tariff"
+    min: 0.5
+    max: 20
+    step: 0.01
+    unit_of_measurement: "UAH/kWh"
+    icon: mdi:cash
+    initial: 4.32
+
+  night_tariff_uah:
+    name: "Night Tariff"
+    min: 0.5
+    max: 20
+    step: 0.01
+    unit_of_measurement: "UAH/kWh"
+    icon: mdi:cash
+    initial: 2.16
+
+  house_load_reserve_w:
+    name: "House Load Reserve"
+    min: 0
+    max: 5000
+    step: 50
+    unit_of_measurement: "W"
+    icon: mdi:home-lightning-bolt
+    initial: 600
+
+input_boolean:
+  hems_manual_override:
+    name: "HEMS Manual Override"
+    icon: mdi:hand-back-right
+    initial: false
+
+  hems_auto_storm:
+    name: "Auto-Storm by Forecast"
+    icon: mdi:weather-lightning
+    initial: true
+
+input_datetime:
+  battery_install_date:
+    name: "Battery Install Date"
+    has_date: true
+    has_time: false
+    initial: "2024-01-01"
+
+  planned_outage_start:
+    name: "Planned Outage Start"
+    has_date: true
+    has_time: true
+    icon: mdi:clock-start
+
+  planned_outage_end:
+    name: "Planned Outage End"
+    has_date: true
+    has_time: true
+    icon: mdi:clock-end
+
+input_select:
+  hems_strategy:
+    name: "HEMS Optimization Strategy"
+    options:
+      - "Hybrid"
+      - "Economical"
+      - "Solar Maxed"
+      - "Battery Life"
+      - "Grid Reliance"
+    initial: "Hybrid"
+    icon: mdi:strategy
+
+# ── Template Sensors — derived computations ──────────────────────────
+template:
+  - sensor:
+      - name: "PV Surplus"
+        unique_id: pv_surplus
+        unit_of_measurement: "W"
+        device_class: power
+        state_class: measurement
+        state: >
+          {{ (states('sensor.inverter_pv_power') | float(0)) -
+             (states('sensor.inverter_load_power') | float(0)) }}
+        icon: mdi:flash-plus
+
+      - name: "Tariff Now"
+        unique_id: tariff_now
+        state: >
+          {% set hour = now().hour %}
+          {% if hour >= 23 or hour < 7 %}
+            Night ({{ states('input_number.night_tariff_uah') | float(2.16) }} UAH/kWh)
+          {% else %}
+            Day ({{ states('input_number.day_tariff_uah') | float(4.32) }} UAH/kWh)
+          {% endif %}
+        icon: mdi:cash-clock
+
+      - name: "Tariff Rate Now"
+        unique_id: tariff_rate_now
+        unit_of_measurement: "UAH/kWh"
+        state_class: measurement
+        state: >
+          {% set hour = now().hour %}
+          {% if hour >= 23 or hour < 7 %}
+            {{ states('input_number.night_tariff_uah') | float(2.16) }}
+          {% else %}
+            {{ states('input_number.day_tariff_uah') | float(4.32) }}
+          {% endif %}
+        icon: mdi:cash
+
+      - name: "Battery Cycle Count"
+        unique_id: battery_cycle_count
+        state: "{{ states('counter.battery_cycles') | int(0) }}"
+        icon: mdi:counter
+
+      - name: "Battery SOH"
+        unique_id: battery_soh
+        unit_of_measurement: "%"
+        state_class: measurement
+        state: >
+          {% set cycles = states('counter.battery_cycles') | int(0) %}
+          {% set install = states('input_datetime.battery_install_date') | as_datetime %}
+          {% set years = ((now().date() - install.date()).days / 365) | float(0) if install else 0 %}
+          {% set cycle_degrade = min((cycles / 2000), 0.8) %}
+          {% set age_factor = min((1 - years * 0.03), 1.0) %}
+          {{ ((1 - cycle_degrade) * age_factor * 100) | round(1) }}
+        icon: mdi:heart-pulse
+
+      - name: "Grid Status"
+        unique_id: grid_status
+        state: >
+          {% if states('binary_sensor.inverter_grid_outage') == 'on' %}
+            Outage
+          {% else %}
+            Available
+          {% endif %}
+        icon: mdi:transmission-tower
+
+  - binary_sensor:
+      - name: "Grid Outage (Template)"
+        unique_id: grid_outage_template
+        device_class: problem
+        state: >
+          {{ states('sensor.inverter_grid_voltage') | float(230) < 90 }}
+        delay_on:
+          seconds: 10
+        delay_off:
+          seconds: 10
+
+      - name: "Low Battery Alert (Template)"
+        unique_id: low_battery_alert_template
+        device_class: battery
+        state: >
+          {{ states('sensor.inverter_battery_soc_corrected') | float(100) < 25 }}
+
+# ── Utility Meters — monthly tracking ────────────────────────────────
+utility_meter:
+  monthly_pv_energy:
+    source: sensor.inverter_daily_energy
+    cycle: monthly
+    name: "Monthly PV Energy"
+
+  monthly_grid_import:
+    source: sensor.inverter_grid_power
+    cycle: monthly
+    name: "Monthly Grid Import"
+    tariffs:
+      - day
+      - night
+
+# ── Counters ─────────────────────────────────────────────────────────
+counter:
+  battery_cycles:
+    name: "Battery Cycles"
+    initial: 0
+    restore: true
+    icon: mdi:recycle
+
+# ── Groups — dashboard convenience ───────────────────────────────────
+group:
+  inverter_power:
+    name: "Inverter — Power"
+    entities:
+      - sensor.inverter_pv_power
+      - sensor.inverter_grid_power
+      - sensor.inverter_battery_power
+      - sensor.inverter_load_power
+      - sensor.pv_surplus
+
+  inverter_battery:
+    name: "Inverter — Battery"
+    entities:
+      - sensor.inverter_battery_soc
+      - sensor.inverter_battery_soc_corrected
+      - sensor.inverter_battery_voltage
+      - sensor.inverter_battery_current
+      - sensor.battery_cycle_count
+      - sensor.battery_soh
+
+  inverter_energy:
+    name: "Inverter — Energy"
+    entities:
+      - sensor.inverter_daily_energy
+      - sensor.inverter_total_energy
+      - sensor.inverter_co2_saved
+      - sensor.monthly_pv_energy
+      - sensor.monthly_grid_import
+
+  inverter_controls:
+    name: "Inverter — Controls"
+    entities:
+      - select.inverter_output_priority
+      - select.inverter_charger_priority
+      - select.inverter_smart_mode
+      - switch.inverter_hems_auto_mode
+      - input_boolean.hems_manual_override

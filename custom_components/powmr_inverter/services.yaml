@@ -1,0 +1,132 @@
+# PowMr Smart Inverter — Custom Services
+# These can be called from automations, scripts, or developer tools.
+
+set_output_priority:
+  name: "Set Output Priority"
+  description: "Set inverter output source priority."
+  fields:
+    priority:
+      name: "Priority"
+      description: "USB = Grid first, SBU = Solar/Battery first"
+      required: true
+      example: "SBU"
+      selector:
+        select:
+          options:
+            - "USB"
+            - "SBU"
+
+set_charger_priority:
+  name: "Set Charger Priority"
+  description: "Set inverter charger source priority."
+  fields:
+    priority:
+      name: "Priority"
+      description: "CSO = Solar first, SNU = Solar+Utility, OSO = Solar only, UTO = Utility only"
+      required: true
+      example: "SNU"
+      selector:
+        select:
+          options:
+            - "CSO"
+            - "SNU"
+            - "OSO"
+            - "UTO"
+
+set_smart_mode:
+  name: "Set HEMS Smart Mode"
+  description: "Change HEMS operating mode."
+  fields:
+    mode:
+      name: "Mode"
+      description: "Adaptive, Arbitrage, or Storm"
+      required: true
+      example: "adaptive"
+      selector:
+        select:
+          options:
+            - "adaptive"
+            - "arbitrage"
+            - "storm"
+
+force_grid_charge:
+  name: "Force Grid Charge"
+  description: "Temporarily force battery charging from grid."
+  fields:
+    duration_minutes:
+      name: "Duration"
+      description: "How long to charge (minutes)"
+      required: false
+      default: 60
+      example: 120
+      selector:
+        number:
+          min: 5
+          max: 480
+          unit_of_measurement: "minutes"
+
+set_grid_charging:
+  name: "Toggle Grid Charging"
+  description: "Enable or disable AC grid battery charging."
+  fields:
+    enable:
+      name: "Enable"
+      description: "Turn grid charging on or off"
+      required: true
+      example: true
+      selector:
+        boolean:
+
+set_grid_feed_in:
+  name: "Toggle Grid Feed-In"
+  description: "Enable or disable power export to the grid."
+  fields:
+    enable:
+      name: "Enable"
+      description: "Turn grid feed-in on or off"
+      required: true
+      example: false
+      selector:
+        boolean:
+
+set_backup_mode:
+  name: "Toggle Backup Mode (SBU)"
+  description: "Switch inverter output priority to SBU (backup) or USB (grid first)."
+  fields:
+    enable:
+      name: "Enable"
+      description: "Turn backup mode on or off"
+      required: true
+      example: false
+      selector:
+        boolean:
+
+set_battery_charge_limit:
+  name: "Set Battery Charge Limit"
+  description: "Set the maximum battery charge level in percent."
+  fields:
+    percent:
+      name: "Percent"
+      description: "Charge limit (10-100)"
+      required: true
+      example: 80
+      selector:
+        number:
+          min: 10
+          max: 100
+          unit_of_measurement: "%"
+
+set_grid_charge_power:
+  name: "Set Grid Charge Power Limit"
+  description: "Set the maximum power drawn from grid for battery charging."
+  fields:
+    watts:
+      name: "Watts"
+      description: "Power limit (0-5000 W)"
+      required: true
+      example: 2000
+      selector:
+        number:
+          min: 0
+          max: 5000
+          unit_of_measurement: "W"

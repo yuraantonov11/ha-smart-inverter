@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smart Solar Inverter",
+        "description": "Enter your solar.siseli.com account credentials",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "auth_failed": "Authentication failed. Check your email and password.",
+      "no_device": "No device found for this account."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Inverter Options",
+        "description": "Adjust polling interval and HEMS settings",
+        "data": {
+          "poll_interval": "Polling interval (seconds)",
+          "reserve_soc": "Reserve SOC (%)",
+          "pv_surplus_threshold_w": "PV surplus threshold (W)",
+          "tariff_day": "Day tariff (UAH/kWh)",
+          "tariff_night": "Night tariff (UAH/kWh)",
+          "site_latitude": "Latitude",
+          "site_longitude": "Longitude"
+        }
+      }
+    },
+    "error": {
+      "invalid_poll_interval": "Poll interval must be between 3 and 30 seconds."
+    }
+  }
+}

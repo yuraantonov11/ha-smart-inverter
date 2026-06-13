@@ -1,0 +1,130 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Smart Solar Inverter",
+        "description": "Enter your solar.siseli.com account credentials",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "auth_failed": "Authentication failed. Check your email and password.",
+      "no_device": "No device found for this account."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "PowMr Inverter Options",
+        "description": "Adjust polling interval and HEMS settings",
+        "data": {
+          "poll_interval": "Polling interval (seconds)",
+          "reserve_soc": "Reserve SOC (%)",
+          "pv_surplus_threshold_w": "PV surplus threshold (W)",
+          "tariff_day": "Day tariff (UAH/kWh)",
+          "tariff_night": "Night tariff (UAH/kWh)",
+          "site_latitude": "Latitude",
+          "site_longitude": "Longitude"
+        }
+      }
+    },
+    "error": {
+      "invalid_poll_interval": "Poll interval must be between 3 and 30 seconds."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "pv_power": { "name": "PV Power" },
+      "grid_power": { "name": "Grid Power" },
+      "battery_power": { "name": "Battery Power" },
+      "load_power": { "name": "Load Power" },
+      "battery_soc": { "name": "Battery SOC" },
+      "battery_soc_corrected": { "name": "Battery SOC (Corrected)" },
+      "pv_voltage": { "name": "PV Voltage" },
+      "grid_voltage": { "name": "Grid Voltage" },
+      "battery_voltage": { "name": "Battery Voltage" },
+      "load_percentage": { "name": "Load Percentage" },
+      "working_mode": { "name": "Working Mode" },
+      "daily_energy": { "name": "Daily PV Energy" },
+      "total_energy": { "name": "Total PV Energy" },
+      "co2_saved": { "name": "CO2 Saved" },
+      "pv_surplus": { "name": "PV Surplus" },
+      "battery_current": { "name": "Battery Current" },
+      "ac_output_power": { "name": "AC Output Power" },
+      "feed_in_power": { "name": "Grid Feed-in Power" },
+      "grid_import_power": { "name": "Grid Import Power" },
+      "battery_charge_current": { "name": "Battery Charge Current" },
+      "battery_discharge_current": { "name": "Battery Discharge Current" },
+      "inverter_temperature": { "name": "Inverter Temperature" }
+    },
+    "select": {
+      "output_priority": { "name": "Output Priority" },
+      "charger_priority": { "name": "Charger Priority" },
+      "smart_mode": { "name": "HEMS Smart Mode" }
+    },
+    "number": {
+      "max_charging_current": { "name": "Max Charging Current" },
+      "max_utility_charging_current": { "name": "Max Utility Charging Current" },
+      "battery_charge_limit": { "name": "Battery Charge Limit" },
+      "battery_discharge_limit": { "name": "Battery Discharge Limit" },
+      "grid_charge_power_limit": { "name": "Grid Charge Power Limit" }
+    },
+    "switch": {
+      "hems_auto_mode": { "name": "HEMS Auto Mode" },
+      "grid_charging": { "name": "Grid Charging" },
+      "grid_feed_in": { "name": "Grid Feed-In" },
+      "backup_mode": { "name": "Backup Mode (SBU)" },
+      "buzzer": { "name": "Buzzer" },
+      "eco_mode": { "name": "ECO Mode" }
+    },
+    "binary_sensor": {
+      "grid_available": { "name": "Grid Available" },
+      "low_battery": { "name": "Low Battery" }
+    }
+  },
+  "services": {
+    "set_output_priority": {
+      "name": "Set Output Priority",
+      "description": "Set inverter output source priority",
+      "fields": {
+        "priority": {
+          "name": "Priority",
+          "description": "USB = Grid first, SBU = Solar/Battery first"
+        }
+      }
+    },
+    "set_charger_priority": {
+      "name": "Set Charger Priority",
+      "description": "Set inverter charger source priority",
+      "fields": {
+        "priority": {
+          "name": "Priority",
+          "description": "CSO = Solar first, SNU = Solar+Utility, OSO = Solar only, UTO = Utility only"
+        }
+      }
+    },
+    "set_smart_mode": {
+      "name": "Set HEMS Smart Mode",
+      "description": "Change HEMS operating mode",
+      "fields": {
+        "mode": {
+          "name": "Mode",
+          "description": "Adaptive, Arbitrage, or Storm"
+        }
+      }
+    },
+    "force_grid_charge": {
+      "name": "Force Grid Charge",
+      "description": "Temporarily force battery charging from grid",
+      "fields": {
+        "duration_minutes": {
+          "name": "Duration",
+          "description": "How long to charge (minutes)"
+        }
+      }
+    }
+  }
+}
