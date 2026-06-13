@@ -4,6 +4,7 @@
 [![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-smart-inverter)](https://github.com/yuraantonov11/ha-smart-inverter/releases)
 [![HA](https://img.shields.io/badge/Home%20Assistant-2023.6%2B-41BDF5)](https://www.home-assistant.io)
 [![License](https://img.shields.io/github/license/yuraantonov11/ha-smart-inverter)](LICENSE)
+[![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=powmr_inverter)
 
 Custom integration for **solar inverters** with battery storage and HEMS (Home Energy Management System) control. Real-time monitoring, intelligent automation, and self-learning solar forecast — all within Home Assistant.
 

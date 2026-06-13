@@ -3,6 +3,7 @@
 [![HACS Default](https://img.shields.io/badge/HACS-Default-orange.svg)](https://hacs.xyz)
 [![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-smart-inverter)](https://github.com/yuraantonov11/ha-smart-inverter/releases)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.6%2B-41BDF5)
+[![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=powmr_inverter)
 
 Custom integration for **solar inverters** with battery storage and HEMS control.
 Currently supports the `solar.siseli.com` cloud platform (Inverter, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
