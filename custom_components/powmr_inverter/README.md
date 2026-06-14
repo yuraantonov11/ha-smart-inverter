@@ -41,8 +41,8 @@ Architecture is designed to support additional data sources in the future (direc
 
 ### HACS
 
-1. HACS → Integrations → Custom repositories → `yuraantonov11/ha-smart-inverter`
-2. Install "Smart Solar Inverter"
+1. HACS → Integrations → пошук "Smart Solar Inverter"
+2. Install
 3. Restart HA → Settings → Devices → Add → Smart Solar
 4. Enter `solar.siseli.com` email + password
 
