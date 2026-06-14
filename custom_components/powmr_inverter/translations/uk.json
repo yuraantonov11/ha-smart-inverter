@@ -18,7 +18,7 @@
   "options": {
     "step": {
       "init": {
-        "title": "Налаштування Inverter Inverter",
+        "title": "Smart Solar Inverter — налаштування",
         "description": "Інтервал опитування та параметри HEMS",
         "data": {
           "poll_interval": "Інтервал опитування (секунд)",

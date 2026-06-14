@@ -1,4 +1,4 @@
-"""Number entities for Inverter Inverter — max charging currents."""
+"""Number entities for Smart Solar Inverter — max charging currents."""
 
 from __future__ import annotations
 

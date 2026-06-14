@@ -74,6 +74,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from .services import async_register_services
         await async_register_services(hass)
 
+        # ── Auto-install dashboard on first setup ─────────────────
+        await _auto_install_dashboard(hass)
+
         return True
 
     except Exception as exc:
@@ -101,3 +104,41 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await async_unload_entry(hass, entry)
     await async_setup_entry(hass, entry)
+
+
+async def _auto_install_dashboard(hass: HomeAssistant) -> None:
+    """Write the bundled dashboard YAML to the config dir on first setup.
+
+    Does NOT modify configuration.yaml — the user still needs to add
+    the ``lovelace.dashboards`` block manually (one-time), or the
+    dashboard shows up under Settings → Dashboards → Add Dashboard.
+    """
+    import os, pathlib
+
+    dash_dir = os.path.join(hass.config.config_dir, "dashboards")
+    dash_file = os.path.join(dash_dir, "powmr_dashboard.yaml")
+
+    # Try to copy from the component directory first (bundled with HACS)
+    src = os.path.join(os.path.dirname(__file__), "dashboard.yaml")
+    if not os.path.exists(src):
+        # Fallback: look in the repo root (dev mode / manual install)
+        repo_root = os.path.join(os.path.dirname(__file__), "..", "..", "..")
+        src = os.path.join(repo_root, "homeassistant", "powmr_dashboard.yaml")
+        if not os.path.exists(src):
+            _LOGGER.warning("Dashboard YAML not found, skipping auto-install")
+            return
+
+    os.makedirs(dash_dir, exist_ok=True)
+    if not os.path.exists(dash_file):
+        try:
+            with open(src, "r", encoding="utf-8") as inf:
+                dashboard_yaml = inf.read()
+            with open(dash_file, "w", encoding="utf-8") as outf:
+                outf.write(dashboard_yaml)
+            _LOGGER.info(
+                "Dashboard written to %s — add to configuration.yaml or "
+                "Settings → Dashboards → Add Dashboard to activate",
+                dash_file,
+            )
+        except OSError as exc:
+            _LOGGER.error("Failed to write dashboard YAML: %s", exc)

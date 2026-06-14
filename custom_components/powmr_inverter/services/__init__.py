@@ -1,4 +1,4 @@
-"""Services for Inverter Inverter — register custom services."""
+"""Services for Smart Solar Inverter — register custom services."""
 
 from __future__ import annotations
 

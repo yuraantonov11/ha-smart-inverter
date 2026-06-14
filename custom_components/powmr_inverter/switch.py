@@ -1,4 +1,4 @@
-"""Switch entities for Inverter Inverter — HEMS automation toggle."""
+"""Switch entities for Smart Solar Inverter — HEMS automation toggle."""
 
 from __future__ import annotations
 

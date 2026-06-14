@@ -1,6 +1,6 @@
 """Constants for Smart Solar Inverter integration."""
 
-DOMAIN = "Inverter_inverter"
+DOMAIN = "powmr_inverter"
 
 # API
 BASE_URL = "https://solar.siseli.com"

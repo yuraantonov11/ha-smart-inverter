@@ -29,7 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Inverter Inverter."""
+    """Handle a config flow for Smart Solar Inverter."""
 
     VERSION = 1
 
