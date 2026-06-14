@@ -41,13 +41,15 @@ Full Ukrainian translation of all entities, states, and configuration UI.
 
 ### HACS (рекомендовано)
 
-1. **HACS → Integrations → знайти "Smart Solar Inverter"**
-2. Встановити
-3. Перезавантажити Home Assistant
-4. **Settings → Devices & Services → Add Integration → Smart Solar Inverter**
-5. Ввести email + пароль від `solar.siseli.com`
+1. **HACS → Integrations → ⋮ → Custom repositories**
+2. URL: `https://github.com/yuraantonov11/ha-smart-inverter`, Type: **Integration**
+3. Натиснути **Add**
+4. Знайти **"Smart Solar Inverter"** в HACS → Install
+5. Перезавантажити Home Assistant
+6. **Settings → Devices & Services → Add Integration → Smart Solar Inverter**
+7. Ввести email + пароль від `solar.siseli.com`
 
-Або встановити прямо за посиланням (після HACS):
+Або встановити прямо за посиланням (після додавання custom repository):
 
 ### Manual
 
