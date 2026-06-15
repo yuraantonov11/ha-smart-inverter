@@ -120,23 +120,29 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
 
     src_dir = os.path.join(os.path.dirname(__file__), "frontend")
     www_dir = os.path.join(hass.config.config_dir, "www", "community", "powmr-inverter")
+    # Also copy icons to the legacy HACS path so a cached (unpatched) JS
+    # that still looks at /local/community/k-flow-card/ finds them.
+    legacy_dir = os.path.join(hass.config.config_dir, "www", "community", "k-flow-card")
     resource_url = "/local/community/powmr-inverter/k-flow-card.js"
 
     def _copy_files() -> bool:
-        """Sync bundled frontend files to www/ (only when missing or changed)."""
+        """Copy bundled frontend files to www/ — always overwrite so updates stick."""
         js_src = os.path.join(src_dir, "k-flow-card.js")
         if not os.path.exists(js_src):
             return False
+        # Primary destination
         os.makedirs(www_dir, exist_ok=True)
-        for fname in ("k-flow-card.js", "grid-icon.png", "home-icon.png",
-                      "ev-charger-icon.png"):
+        shutil.copy2(js_src, os.path.join(www_dir, "k-flow-card.js"))
+        _LOGGER.info("Installed k-flow-card.js → www/")
+        # Icon PNGs → both primary AND legacy path (safety net for cached JS)
+        for fname in ("grid-icon.png", "home-icon.png", "ev-charger-icon.png"):
             src = os.path.join(src_dir, fname)
-            dst = os.path.join(www_dir, fname)
             if not os.path.exists(src):
                 continue
-            if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(src):
-                shutil.copy2(src, dst)
-                _LOGGER.info("Installed %s → www/", fname)
+            shutil.copy2(src, os.path.join(www_dir, fname))
+            os.makedirs(legacy_dir, exist_ok=True)
+            shutil.copy2(src, os.path.join(legacy_dir, fname))
+        _LOGGER.info("Installed icons → www/ (both primary & legacy paths)")
         return True
 
     copied = await hass.async_add_executor_job(_copy_files)
@@ -146,7 +152,8 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
 
     try:
         from homeassistant.components.frontend import add_extra_js_url
-        add_extra_js_url(hass, f"{resource_url}?v=1.1.3")
+        # Bump the cache-buster on every release so browsers pick up the new JS
+        add_extra_js_url(hass, f"{resource_url}?v=1.7.1")
         _LOGGER.info("Flow card module registered")
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
