@@ -76,6 +76,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from .services import async_register_services
         await async_register_services(hass)
 
+        # ── Bundle the energy-flow card (load once per HA start) ───
+        global _FRONTEND_REGISTERED
+        if not _FRONTEND_REGISTERED:
+            await _install_flow_card(hass)
+            _FRONTEND_REGISTERED = True
+
         # ── Auto-install dashboard on first setup ─────────────────
         await _auto_install_dashboard(hass, entry)
 
@@ -109,53 +115,46 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def _install_flow_card(hass: HomeAssistant) -> None:
-    """Copy k-flow-card.js to www folder and register as Lovelace resource."""
-    import shutil, json as _json
+    """Bundle the energy-flow card so it loads automatically — no manual HACS step.
+
+    Strategy (uses only stable HA APIs):
+      1. Copy k-flow-card.js into /config/www/community/powmr-inverter/ which HA
+         serves automatically at /local/... (no static-path registration needed).
+      2. Register the module via frontend.add_extra_js_url so every dashboard loads
+         it and the <k-flow-card> custom element is defined globally.
+    """
+    import shutil
 
     src = os.path.join(os.path.dirname(__file__), "frontend", "k-flow-card.js")
-    if not os.path.exists(src):
-        _LOGGER.warning("k-flow-card.js not found, skipping energy flow card")
-        return
-
     www_dir = os.path.join(hass.config.config_dir, "www", "community", "powmr-inverter")
     dst = os.path.join(www_dir, "k-flow-card.js")
     resource_url = "/local/community/powmr-inverter/k-flow-card.js"
 
-    # Check if already registered
-    resources_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.resources")
-
-    def _do_install() -> bool:
-        # Copy JS file if needed
+    def _copy_file() -> bool:
+        """Copy the bundled JS into www/ (only when missing or changed)."""
+        if not os.path.exists(src):
+            return False
+        os.makedirs(www_dir, exist_ok=True)
         if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(src):
-            os.makedirs(www_dir, exist_ok=True)
             shutil.copy2(src, dst)
-            _LOGGER.info("k-flow-card.js installed to %s", dst)
-
-        # Check if resource already registered
-        if os.path.exists(resources_path):
-            with open(resources_path, "r") as f:
-                data = _json.loads(f.read())
-            items = data.get("data", {}).get("items", [])
-            if any(r.get("url") == resource_url for r in items):
-                return False  # Already registered
-
-        # Register resource
-        if os.path.exists(resources_path):
-            with open(resources_path, "r") as f:
-                data = _json.loads(f.read())
-        else:
-            data = {"data": {"items": []}, "key": "lovelace_resources", "version": 1}
-        items = data.setdefault("data", {}).setdefault("items", [])
-        items.append({"type": "module", "url": resource_url})
-        os.makedirs(os.path.dirname(resources_path), exist_ok=True)
-        with open(resources_path, "w") as f:
-            f.write(_json.dumps(data))
-        _LOGGER.info("k-flow-card registered as Lovelace resource")
+            _LOGGER.info("k-flow-card.js copied to %s", dst)
         return True
 
-    await hass.async_add_executor_job(_do_install)
+    copied = await hass.async_add_executor_job(_copy_file)
+    if not copied:
+        _LOGGER.warning("k-flow-card.js missing in integration; flow card unavailable")
+        return
 
+    # Register the module so the frontend loads it on every dashboard.
+    try:
+        from homeassistant.components.frontend import add_extra_js_url
 
+        # Cache-busting query so browsers fetch the new file after updates.
+        module_url = f"{resource_url}?v=1.1.3"
+        add_extra_js_url(hass, module_url)
+        _LOGGER.info("Energy flow card module registered at %s", module_url)
+    except Exception as exc:  # noqa: BLE001 - never block setup over a cosmetic card
+        _LOGGER.warning("Could not auto-register flow card module: %s", exc)
 
 
 async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -265,14 +264,32 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("              green: 0")
         lines.append("              yellow: 2200")
         lines.append("              red: 3600")
-    # ── Energy flow tiles ──
+    # ── Animated energy-flow card (k-flow-card, bundled & auto-loaded) ──
+    if _e("pv_power") or _e("battery_power") or _e("grid_power"):
+        lines.append("      - type: custom:k-flow-card")
+        lines.append("        inverter_name: PowMr")
+        if _e("pv_power"):
+            lines.append(f"        pv_total_power: {_e('pv_power')}")
+        if _e("grid_power"):
+            lines.append(f"        grid_active_power: {_e('grid_power')}")
+        if _e("load_power"):
+            lines.append(f"        consump: {_e('load_power')}")
+        # Prefer the SOC-compensated value if present
+        if _e("battery_soc_corrected"):
+            lines.append(f"        battery_soc: {_e('battery_soc_corrected')}")
+        elif _e("battery_soc"):
+            lines.append(f"        battery_soc: {_e('battery_soc')}")
+        if _e("battery_power"):
+            lines.append(f"        battery_power: {_e('battery_power')}")
+        if _e("battery_voltage"):
+            lines.append(f"        battery_voltage: {_e('battery_voltage')}")
+        if _e("daily_energy"):
+            lines.append(f"        today_pv: {_e('daily_energy')}")
+        lines.append("        sun: sun.sun")
+        lines.append("        _show_battery: true")
+    # ── Energy flow tiles (exact W values — always-working complement) ──
     lines.append("      - type: grid")
     lines.append("        cards:")
-    if _e("pv_power"):
-        lines.append("          - type: tile")
-        lines.append(f"            entity: {_e('pv_power')}")
-        lines.append("            name: ☀️ PV")
-        lines.append("            icon: mdi:solar-power")
     if _e("load_power"):
         lines.append("          - type: tile")
         lines.append(f"            entity: {_e('load_power')}")
