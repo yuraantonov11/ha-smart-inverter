@@ -277,6 +277,13 @@ async def async_setup_entry(
     entities.append(InverterTotalEnergySensor(coordinator))
     entities.append(InverterCO2Sensor(coordinator))
 
+    # Add forecast & economics sensors
+    entities.append(ForecastTomorrowSensor(coordinator))
+    entities.append(ForecastDayAfterSensor(coordinator))
+    entities.append(LearnedRatioSensor(coordinator))
+    entities.append(DailySavingsSensor(coordinator))
+    entities.append(MonthlySavingsSensor(coordinator))
+
     async_add_entities(entities)
 
 
@@ -378,3 +385,104 @@ class InverterCO2Sensor(InverterSensor):
     @property
     def native_value(self) -> float:
         return self.coordinator.api.co2_reduction
+
+
+class ForecastTomorrowSensor(InverterSensor):
+    """Sensor: forecasted PV energy for tomorrow (kWh)."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="forecast_tomorrow",
+                translation_key="forecast_tomorrow",
+                device_class=SensorDeviceClass.ENERGY,
+                state_class=SensorStateClass.MEASUREMENT,
+                native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                icon="mdi:solar-power-variant",
+            ),
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.forecast_tomorrow_kwh
+
+
+class ForecastDayAfterSensor(InverterSensor):
+    """Sensor: forecasted PV energy for day after tomorrow (kWh)."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="forecast_day_after",
+                translation_key="forecast_day_after",
+                device_class=SensorDeviceClass.ENERGY,
+                state_class=SensorStateClass.MEASUREMENT,
+                native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                icon="mdi:solar-power-variant",
+            ),
+        )
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.forecast_day_after_kwh
+
+
+class LearnedRatioSensor(InverterSensor):
+    """Sensor: self-learned PV conversion ratio (W per W/m²)."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="learned_ratio",
+                translation_key="learned_ratio",
+                state_class=SensorStateClass.MEASUREMENT,
+                icon="mdi:brain",
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return round(self.coordinator.forecast_learned_ratio, 4)
+
+
+class DailySavingsSensor(InverterSensor):
+    """Sensor: estimated savings today (UAH) from battery usage."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="daily_savings",
+                translation_key="daily_savings",
+                state_class=SensorStateClass.MEASUREMENT,
+                native_unit_of_measurement="UAH",
+                icon="mdi:cash-check",
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.daily_savings_uah
+
+
+class MonthlySavingsSensor(InverterSensor):
+    """Sensor: estimated savings this month (UAH) from battery usage."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="monthly_savings",
+                translation_key="monthly_savings",
+                state_class=SensorStateClass.MEASUREMENT,
+                native_unit_of_measurement="UAH",
+                icon="mdi:cash-multiple",
+            ),
+        )
+
+    @property
+    def native_value(self) -> float:
+        return self.coordinator.monthly_savings_uah

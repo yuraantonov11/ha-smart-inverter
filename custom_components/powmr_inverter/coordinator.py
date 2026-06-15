@@ -71,6 +71,22 @@ class InverterCoordinator(DataUpdateCoordinator):
         # Load demand EWMA profile
         self._load_profile: dict[int, float] = {}
 
+        # ── Forecast & Economics ──────────────────────────────────────
+        self._last_midnight: datetime | None = None
+        self._daily_pv_kwh: float = 0.0
+        self._daily_grid_import_kwh: float = 0.0
+        self._daily_grid_export_kwh: float = 0.0
+        self._daily_battery_discharge_kwh: float = 0.0
+        self._daily_savings_uah: float = 0.0
+        self._monthly_savings_uah: float = 0.0
+        self._day_tariff_uah: float = 4.32
+        self._night_tariff_uah: float = 2.16
+        # Forecast values (updated by coordinator or template sensors)
+        self.forecast_tomorrow_kwh: float | None = None
+        self.forecast_day_after_kwh: float | None = None
+        self.forecast_learned_ratio: float = 0.12
+        self.radiation_now_wm2: float | None = None
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest data and compute derived values."""
         now = datetime.now()
@@ -136,6 +152,9 @@ class InverterCoordinator(DataUpdateCoordinator):
             except Exception as exc:
                 _LOGGER.debug("Device settings fetch skipped: %s", exc)
                 device_settings = self.data.get("deviceSettings", {}) if self.data else {}
+
+        # ── Daily energy & savings tracking ──────────────────────
+        self._accumulate_daily_energy(now, raw)
 
         return {
             **raw,
@@ -276,3 +295,54 @@ class InverterCoordinator(DataUpdateCoordinator):
         alpha = 0.25
         old = self._load_profile.get(hour, clamped)
         self._load_profile[hour] = alpha * clamped + (1 - alpha) * old
+
+    # ── Daily Energy & Savings ───────────────────────────────────────
+
+    def _accumulate_daily_energy(self, now: datetime, raw: dict[str, Any]) -> None:
+        """Integrate 5-second power samples into daily kWh totals."""
+        # Reset at midnight
+        today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        if self._last_midnight != today:
+            self._last_midnight = today
+            # Roll daily savings into monthly before reset
+            self._monthly_savings_uah += self._daily_savings_uah
+            self._daily_pv_kwh = 0.0
+            self._daily_grid_import_kwh = 0.0
+            self._daily_grid_export_kwh = 0.0
+            self._daily_battery_discharge_kwh = 0.0
+            self._daily_savings_uah = 0.0
+            # Reset monthly on 1st of month
+            if now.day == 1:
+                self._monthly_savings_uah = 0.0
+
+        # 5-second integration: W * (5/3600) = kWh
+        dt_h = 5.0 / 3600.0
+
+        pv_w = raw.get("pvPower", 0.0) or 0.0
+        grid_w = raw.get("gridPower", 0.0) or 0.0
+        battery_w = raw.get("batteryPower", 0.0) or 0.0
+
+        self._daily_pv_kwh += pv_w * dt_h
+
+        if grid_w > 10:  # importing from grid
+            self._daily_grid_import_kwh += grid_w * dt_h
+        elif grid_w < -10:  # exporting to grid
+            self._daily_grid_export_kwh += abs(grid_w) * dt_h
+
+        if battery_w > 10:  # battery discharging
+            self._daily_battery_discharge_kwh += battery_w * dt_h
+
+        # Savings: battery discharge replaces grid import at day tariff
+        self._daily_savings_uah = round(
+            self._daily_battery_discharge_kwh * self._day_tariff_uah
+            - self._daily_grid_import_kwh * self._night_tariff_uah,
+            2,
+        )
+
+    @property
+    def daily_savings_uah(self) -> float:
+        return max(0.0, self._daily_savings_uah)
+
+    @property
+    def monthly_savings_uah(self) -> float:
+        return max(0.0, self._monthly_savings_uah + self._daily_savings_uah)

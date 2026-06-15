@@ -58,7 +58,12 @@
       "grid_import_power": { "name": "Споживання з мережі" },
       "battery_charge_current": { "name": "Струм заряду АКБ" },
       "battery_discharge_current": { "name": "Струм розряду АКБ" },
-      "inverter_temperature": { "name": "Температура інвертора" }
+      "inverter_temperature": { "name": "Температура інвертора" },
+      "forecast_tomorrow": { "name": "Прогноз PV на завтра" },
+      "forecast_day_after": { "name": "Прогноз PV на післязавтра" },
+      "learned_ratio": { "name": "Коефіцієнт PV (самонавчання)" },
+      "daily_savings": { "name": "Економія за день" },
+      "monthly_savings": { "name": "Економія за місяць" }
     },
     "select": {
       "output_priority": { "name": "Пріоритет виходу" },

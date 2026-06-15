@@ -58,7 +58,12 @@
       "grid_import_power": { "name": "Grid Import Power" },
       "battery_charge_current": { "name": "Battery Charge Current" },
       "battery_discharge_current": { "name": "Battery Discharge Current" },
-      "inverter_temperature": { "name": "Inverter Temperature" }
+      "inverter_temperature": { "name": "Inverter Temperature" },
+      "forecast_tomorrow": { "name": "PV Forecast Tomorrow" },
+      "forecast_day_after": { "name": "PV Forecast Day After" },
+      "learned_ratio": { "name": "Learned PV Ratio" },
+      "daily_savings": { "name": "Daily Savings" },
+      "monthly_savings": { "name": "Monthly Savings" }
     },
     "select": {
       "output_priority": { "name": "Output Priority" },
