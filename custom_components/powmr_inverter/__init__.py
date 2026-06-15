@@ -213,10 +213,10 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("              green: 0")
         lines.append("              yellow: 2200")
         lines.append("              red: 3600")
-    # ── Animated energy flow (Power Flow Card Plus) ──
-    lines.append("      - type: grid")
-    lines.append("        cards:")
+    # ── Animated energy flow (optional — needs Power Flow Card Plus from HACS) ──
     if _e("pv_power") and _e("load_power") and _e("grid_power") and _e("battery_power"):
+        lines.append("      - type: grid")
+        lines.append("        cards:")
         lines.append("          - type: custom:power-flow-card-plus")
         lines.append("            entities:")
         lines.append("              solar:")

@@ -396,7 +396,7 @@ class ForecastTomorrowSensor(InverterSensor):
             InverterSensorDescription(
                 key="forecast_tomorrow",
                 translation_key="forecast_tomorrow",
-                device_class=SensorDeviceClass.ENERGY,
+                device_class=None,
                 state_class=SensorStateClass.MEASUREMENT,
                 native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
                 icon="mdi:solar-power-variant",
@@ -417,7 +417,7 @@ class ForecastDayAfterSensor(InverterSensor):
             InverterSensorDescription(
                 key="forecast_day_after",
                 translation_key="forecast_day_after",
-                device_class=SensorDeviceClass.ENERGY,
+                device_class=None,
                 state_class=SensorStateClass.MEASUREMENT,
                 native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
                 icon="mdi:solar-power-variant",

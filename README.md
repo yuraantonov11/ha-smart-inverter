@@ -70,15 +70,20 @@ git clone https://github.com/yuraantonov11/ha-smart-inverter.git powmr_inverter
 
 ---
 
-## ⚙️ Configuration
+## 📡 Звідки беруться дані
 
-After adding the integration, configure these optional settings:
+| Дані | Джерело | Оновлення |
+|------|---------|-----------|
+| ⚡ Потужність PV, мережа, АКБ, дім | `solar.siseli.com` API | Кожні 5 сек |
+| 🔋 SOC, напруги, струми, температура | `solar.siseli.com` API | Кожні 5 сек |
+| ☀️ Прогноз генерації (завтра/післязавтра) | **Open-Meteo** × коефіцієнт PV | Кожні 15 хв |
+| 🧠 Коефіцієнт PV (самонавчання) | Факт ÷ розрахункова радіація | Щодня о 21:00 |
+| 💰 Економія (грн) | Розряд АКБ × денний тариф − заряд × нічний | Кожні 5 сек |
+| 🌙 Нічний тариф | **Ви вказуєте** (Options → Night tariff) | — |
+| ☀️ Денний тариф | **Ви вказуєте** (Options → Day tariff) | — |
+| 📍 Координати | **Ви вказуєте** (Options → Latitude/Longitude) | — |
 
-| Setting | Default | Description |
-|---|---|---|
-| Poll interval | 5 seconds | Data refresh rate |
-| Grid tariff | 4.32 UAH/kWh | Used for savings calculations |
-| Feed-in tariff | 0.00 | Feed-in revenue rate |
+> Якщо немає нічного тарифу — встановіть обидва тарифи однаковими.
 
 ### Dashboard & Automations
 

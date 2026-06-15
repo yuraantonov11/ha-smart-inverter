@@ -648,8 +648,12 @@ class InverterApiClient:
 
     async def set_max_utility_charging_current(self, amps: int) -> bool:
         """Set max utility (grid) charging current in amps."""
-        # Use the same key as the working Flutter client.
-        return await self.set_config_item("setUtilityMaxChargingCurrent", str(amps))
+        # Some inverters use different key names — try both
+        for key in ("setUtilityMaxChargingCurrent", "maxUtilityChargingCurrent"):
+            ok = await self.set_config_item(key, str(amps))
+            if ok:
+                return True
+        return False
 
     async def fetch_device_configs(self) -> dict[str, Any]:
         """Fetch all device configuration settings from the inverter.
