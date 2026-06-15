@@ -42,8 +42,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Failed to authenticate with inverter API")
             return False
 
-        # ── Register frontend card (once per HA session) ─────────
-        awordinator = InverterCoordinator(
+        # Create coordinator
+        coordinator = InverterCoordinator(
             hass=hass,
             api=api,
             entry=entry,
