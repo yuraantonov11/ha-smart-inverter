@@ -287,29 +287,6 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("        today_pv: " + _e("daily_energy"))
     lines.append("        sun: sun.sun")
     lines.append("        _show_battery: true")
-    # ── Exact-watt tile row (always-working complement) ──
-    lines.append("      - type: grid")
-    lines.append("        cards:")
-    if _e("pv_power"):
-        lines.append("          - type: tile")
-        lines.append("            entity: " + _e("pv_power"))
-        lines.append("            name: ☀️ PV")
-        lines.append("            icon: mdi:solar-power")
-    if _e("load_power"):
-        lines.append("          - type: tile")
-        lines.append("            entity: " + _e("load_power"))
-        lines.append("            name: 🏠 Дім")
-        lines.append("            icon: mdi:home-lightning-bolt")
-    if _e("battery_power"):
-        lines.append("          - type: tile")
-        lines.append("            entity: " + _e("battery_power"))
-        lines.append("            name: 🔋 АКБ")
-        lines.append("            icon: mdi:battery-charging")
-    if _e("grid_power"):
-        lines.append("          - type: tile")
-        lines.append("            entity: " + _e("grid_power"))
-        lines.append("            name: 🔌 Мережа")
-        lines.append("            icon: mdi:transmission-tower")
     # ── Energy flow chart (combined 4-power graph) ──
     lines.append("      - type: grid")
     lines.append("        cards:")
