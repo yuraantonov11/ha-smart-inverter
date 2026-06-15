@@ -247,17 +247,17 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("                name: Авто-режим HEMS")
     if _e("backup_mode"):
         lines.append(f"              - entity: {_e('backup_mode')}")
-        lines.append("     
+        lines.append("                name: Резервний режим")
+    lines.append("          - type: entities")
+    lines.append("            title: Керування мережею")
+    lines.append("            show_header_toggle: false")
+    lines.append("            entities:")
+    if _e("grid_charging"):
         lines.append(f"              - entity: {_e('grid_charging')}")
         lines.append("                name: Заряд від мережі")
     if _e("grid_feed_in"):
         lines.append(f"              - entity: {_e('grid_feed_in')}")
-        lines.append("            show_header_toggle: false")
-    lines.append("            entities:")
-    if _e("grid_charging"): lines.append(f"              - entity: {_e('grid_charging')}")
-    lines.append("                name: Заряд від мережі")
-    if _e("grid_feed_in"): lines.append(f"              - entity: {_e('grid_feed_in')}")
-    lines.append("                name: Віддача в мережу")
+        lines.append("                name: Віддача в мережу")
     lines.append("          - type: entities")
     lines.append("            title: Струми та ліміти")
     lines.append("            show_header_toggle: false")
