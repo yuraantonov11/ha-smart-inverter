@@ -127,13 +127,12 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
     # Check if already registered
     resources_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.resources")
 
-    async def _do_install() -> bool:
+    def _do_install() -> bool:
         # Copy JS file if needed
         if not os.path.exists(dst) or os.path.getsize(dst) != os.path.getsize(src):
             os.makedirs(www_dir, exist_ok=True)
             shutil.copy2(src, dst)
             _LOGGER.info("k-flow-card.js installed to %s", dst)
-            return True
 
         # Check if resource already registered
         if os.path.exists(resources_path):
@@ -144,22 +143,18 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
                 return False  # Already registered
 
         # Register resource
-        try:
-            if os.path.exists(resources_path):
-                with open(resources_path, "r") as f:
-                    data = _json.loads(f.read())
-            else:
-                data = {"data": {"items": []}, "key": "lovelace_resources", "version": 1}
-            items = data.setdefault("data", {}).setdefault("items", [])
-            items.append({"type": "module", "url": resource_url})
-            os.makedirs(os.path.dirname(resources_path), exist_ok=True)
-            with open(resources_path, "w") as f:
-                f.write(_json.dumps(data))
-            _LOGGER.info("k-flow-card registered as Lovelace resource")
-            return True
-        except Exception as exc:
-            _LOGGER.warning("Failed to register k-flow-card resource: %s", exc)
-            return False
+        if os.path.exists(resources_path):
+            with open(resources_path, "r") as f:
+                data = _json.loads(f.read())
+        else:
+            data = {"data": {"items": []}, "key": "lovelace_resources", "version": 1}
+        items = data.setdefault("data", {}).setdefault("items", [])
+        items.append({"type": "module", "url": resource_url})
+        os.makedirs(os.path.dirname(resources_path), exist_ok=True)
+        with open(resources_path, "w") as f:
+            f.write(_json.dumps(data))
+        _LOGGER.info("k-flow-card registered as Lovelace resource")
+        return True
 
     await hass.async_add_executor_job(_do_install)
 
