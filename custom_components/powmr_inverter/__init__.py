@@ -420,13 +420,24 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     dash_dir = os.path.join(hass.config.config_dir, "dashboards")
     dash_file = os.path.join(dash_dir, "powmr_dashboard.yaml")
 
+    # Store a hash so we only rewrite when the dashboard template changed
+    import hashlib
+    new_hash = hashlib.md5(dashboard_yaml.encode()).hexdigest()[:8]
+    old_hash = hass.data[DOMAIN][entry.entry_id].get("dash_hash", "")
+
+    if new_hash == old_hash:
+        _LOGGER.debug("Dashboard unchanged (hash=%s), skipping rewrite", new_hash)
+        await _register_lovelace_dashboard(hass, dash_file)
+        return
+
     def _write() -> None:
         os.makedirs(dash_dir, exist_ok=True)
         with open(dash_file, "w", encoding="utf-8") as f:
             f.write(dashboard_yaml)
 
     await hass.async_add_executor_job(_write)
-    _LOGGER.info("Dashboard regenerated with %d entity mappings", len(eid))
+    _LOGGER.info("Dashboard regenerated (%d entities, hash=%s)", len(eid), new_hash)
+    hass.data[DOMAIN][entry.entry_id]["dash_hash"] = new_hash
 
     # Register in lovelace
     await _register_lovelace_dashboard(hass, dash_file)
