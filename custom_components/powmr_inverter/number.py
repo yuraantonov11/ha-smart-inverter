@@ -56,7 +56,7 @@ class InverterMaxChargingCurrent(CoordinatorEntity, NumberEntity):
             key="max_charging_current",
             translation_key="max_charging_current",
             native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-            mode=NumberMode.SLIDER,
+            mode=NumberMode.BOX,
             icon="mdi:current-dc",
         )
         self._attr_unique_id = f"{coordinator.api.device_sn}_max_charging_current"
@@ -86,7 +86,7 @@ class InverterMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
             key="max_utility_charging_current",
             translation_key="max_utility_charging_current",
             native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-            mode=NumberMode.SLIDER,
+            mode=NumberMode.BOX,
             icon="mdi:current-dc",
         )
         self._attr_unique_id = f"{coordinator.api.device_sn}_max_utility_charging_current"
@@ -139,7 +139,7 @@ class InverterBatteryChargeLimitPercent(CoordinatorEntity, NumberEntity):
         self._attr_native_max_value = 100
         self._attr_native_step = 1
         self._attr_native_unit_of_measurement = "%"
-        self._attr_mode = NumberMode.SLIDER
+        self._attr_mode = NumberMode.BOX
         self._attr_icon = "mdi:battery-plus"
         self._setting_key = "batteryChargeLimit"
 
@@ -169,7 +169,7 @@ class InverterBatteryDischargeLimitPercent(CoordinatorEntity, NumberEntity):
         self._attr_native_max_value = 100
         self._attr_native_step = 1
         self._attr_native_unit_of_measurement = "%"
-        self._attr_mode = NumberMode.SLIDER
+        self._attr_mode = NumberMode.BOX
         self._attr_icon = "mdi:battery-minus"
         self._setting_key = "batteryDischargeLimit"
 
@@ -199,7 +199,7 @@ class InverterGridChargePowerLimit(CoordinatorEntity, NumberEntity):
         self._attr_native_max_value = 5000
         self._attr_native_step = 50
         self._attr_native_unit_of_measurement = "W"
-        self._attr_mode = NumberMode.SLIDER
+        self._attr_mode = NumberMode.BOX
         self._attr_icon = "mdi:flash"
         self._setting_key = "gridConnectedPowers"
 
