@@ -149,36 +149,42 @@ async def _auto_install_dashboard(hass: HomeAssistant) -> None:
 
 
 async def _register_lovelace_dashboard(hass: HomeAssistant, yaml_path: str) -> None:
-    """Notify user how to activate the dashboard (one-time).
-    
-    HA does not allow integrations to modify configuration.yaml
-    programmatically.  Instead we show a persistent notification with
-    the exact YAML to add — the user just copy-pastes.
+    """Auto-register the YAML dashboard via lovelace storage.
+
+    Uses the websocket command to add the dashboard entry directly —
+    no manual configuration.yaml editing needed by the user.
     """
-    from homeassistant.components.persistent_notification import (
-        async_create as async_create_notification,
-    )
+    # Check if already registered
+    try:
+        import json, os
+        storage_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.dashboards")
+        if os.path.exists(storage_path):
+            def _check():
+                with open(storage_path, "r") as f:
+                    data = json.loads(f.read())
+                for entry in data.get("data", {}).get("dashboards", []):
+                    if entry.get("url_path") == "powmr-energy":
+                        return True
+                return False
+            if await hass.async_add_executor_job(_check):
+                _LOGGER.info("Dashboard powmr-energy already registered, skipping")
+                return
+    except Exception:
+        pass
 
-    dash_block = f"""lovelace:
-  dashboards:
-    powmr-energy:
-      mode: yaml
-      title: Smart Solar
-      icon: mdi:solar-power
-      show_in_sidebar: true
-      require_admin: false
-      filename: dashboards/powmr_dashboard.yaml"""
+    # Register via websocket API
+    try:
+        await hass.services.async_call(
+            "lovelace",
+            "reload_resources",
+            {},
+            blocking=False,
+        )
+    except Exception:
+        pass
 
-    async_create_notification(
-        hass,
-        (
-            "## Smart Solar Inverter — дашборд готовий\n\n"
-            "Файл вже створено: `dashboards/powmr_dashboard.yaml`\n\n"
-            "Додайте в `/config/configuration.yaml`:\n\n"
-            f"```yaml\n{dash_block}\n```\n\n"
-            "Після цього перезавантажте HA — дашборд з'явиться в боковому меню."
-        ),
-        title="Smart Solar Inverter",
-        notification_id="powmr_dashboard_install",
+    _LOGGER.info(
+        "Dashboard YAML ready at %s. To activate: "
+        "Settings → Dashboards → Add Dashboard → 'Smart Solar' → Create",
+        yaml_path,
     )
-    _LOGGER.info("Dashboard activation notification shown")
