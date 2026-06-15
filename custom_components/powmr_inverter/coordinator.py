@@ -75,9 +75,11 @@ class InverterCoordinator(DataUpdateCoordinator):
         # ── Forecast & Economics ──────────────────────────────────────
         self._last_midnight: datetime | None = None
         self._daily_pv_kwh: float = 0.0
-        self._daily_grid_import_kwh: float = 0.0
+        self._daily_grid_import_day_kwh: float = 0.0
+        self._daily_grid_import_night_kwh: float = 0.0
         self._daily_grid_export_kwh: float = 0.0
-        self._daily_battery_discharge_kwh: float = 0.0
+        self._daily_battery_discharge_day_kwh: float = 0.0
+        self._daily_battery_discharge_night_kwh: float = 0.0
         self._daily_savings_uah: float = 0.0
         self._monthly_savings_uah: float = 0.0
         self._day_tariff_uah: float = 4.32
@@ -305,6 +307,11 @@ class InverterCoordinator(DataUpdateCoordinator):
 
     # ── Daily Energy & Savings ───────────────────────────────────────
 
+    @staticmethod
+    def _is_daytime(now: datetime) -> bool:
+        """Ukrainian two-zone tariff: day 07:00–23:00, night 23:00–07:00."""
+        return 7 <= now.hour < 23
+
     def _accumulate_daily_energy(self, now: datetime, raw: dict[str, Any]) -> None:
         """Integrate 5-second power samples into daily kWh totals."""
         # Reset at midnight
@@ -314,9 +321,11 @@ class InverterCoordinator(DataUpdateCoordinator):
             # Roll daily savings into monthly before reset
             self._monthly_savings_uah += self._daily_savings_uah
             self._daily_pv_kwh = 0.0
-            self._daily_grid_import_kwh = 0.0
+            self._daily_grid_import_day_kwh = 0.0
+            self._daily_grid_import_night_kwh = 0.0
             self._daily_grid_export_kwh = 0.0
-            self._daily_battery_discharge_kwh = 0.0
+            self._daily_battery_discharge_day_kwh = 0.0
+            self._daily_battery_discharge_night_kwh = 0.0
             self._daily_savings_uah = 0.0
             # Reset monthly on 1st of month
             if now.day == 1:
@@ -324,6 +333,7 @@ class InverterCoordinator(DataUpdateCoordinator):
 
         # 5-second integration: W * (5/3600) = kWh
         dt_h = 5.0 / 3600.0
+        daytime = self._is_daytime(now)
 
         pv_w = raw.get("pvPower", 0.0) or 0.0
         grid_w = raw.get("gridPower", 0.0) or 0.0
@@ -332,17 +342,26 @@ class InverterCoordinator(DataUpdateCoordinator):
         self._daily_pv_kwh += pv_w * dt_h
 
         if grid_w > 10:  # importing from grid
-            self._daily_grid_import_kwh += grid_w * dt_h
+            if daytime:
+                self._daily_grid_import_day_kwh += grid_w * dt_h
+            else:
+                self._daily_grid_import_night_kwh += grid_w * dt_h
         elif grid_w < -10:  # exporting to grid
             self._daily_grid_export_kwh += abs(grid_w) * dt_h
 
-        if battery_w > 10:  # battery discharging
-            self._daily_battery_discharge_kwh += battery_w * dt_h
+        if battery_w > 10:  # battery discharging (avoids grid import)
+            if daytime:
+                self._daily_battery_discharge_day_kwh += battery_w * dt_h
+            else:
+                self._daily_battery_discharge_night_kwh += battery_w * dt_h
 
-        # Savings: battery discharge replaces grid import at day tariff
+        # Savings = avoided grid cost (battery discharge @ time-of-day rate)
+        # minus actual grid import cost (@ time-of-day rate)
         self._daily_savings_uah = round(
-            self._daily_battery_discharge_kwh * self._day_tariff_uah
-            - self._daily_grid_import_kwh * self._night_tariff_uah,
+            self._daily_battery_discharge_day_kwh * self._day_tariff_uah
+            + self._daily_battery_discharge_night_kwh * self._night_tariff_uah
+            - self._daily_grid_import_day_kwh * self._day_tariff_uah
+            - self._daily_grid_import_night_kwh * self._night_tariff_uah,
             2,
         )
 
