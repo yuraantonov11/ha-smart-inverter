@@ -213,21 +213,30 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("              green: 0")
         lines.append("              yellow: 2200")
         lines.append("              red: 3600")
-    # ── Animated energy flow (optional — needs Power Flow Card Plus from HACS) ──
-    if _e("pv_power") and _e("load_power") and _e("grid_power") and _e("battery_power"):
-        lines.append("      - type: grid")
-        lines.append("        cards:")
-        lines.append("          - type: custom:power-flow-card-plus")
-        lines.append("            entities:")
-        lines.append("              solar:")
-        lines.append(f"                entity: {_e('pv_power')}")
-        lines.append("              home:")
-        lines.append(f"                entity: {_e('load_power')}")
-        lines.append("              grid:")
-        lines.append(f"                entity: {_e('grid_power')}")
-        lines.append("              battery:")
-        lines.append(f"                entity: {_e('battery_power')}")
-    # ── Energy flow chart ──
+    # ── Energy flow tiles (4 built-in tiles, no dependencies) ──
+    lines.append("      - type: grid")
+    lines.append("        cards:")
+    if _e("pv_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('pv_power')}")
+        lines.append("            name: ☀️ PV")
+        lines.append("            icon: mdi:solar-power")
+    if _e("load_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('load_power')}")
+        lines.append("            name: 🏠 Дім")
+        lines.append("            icon: mdi:home-lightning-bolt")
+    if _e("battery_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('battery_power')}")
+        lines.append("            name: 🔋 АКБ")
+        lines.append("            icon: mdi:battery-charging")
+    if _e("grid_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('grid_power')}")
+        lines.append("            name: 🔌 Мережа")
+        lines.append("            icon: mdi:transmission-tower")
+    # ── Energy flow chart (combined 4-power graph) ──
     lines.append("      - type: grid")
     lines.append("        cards:")
     lines.append("          - type: statistics-graph")
