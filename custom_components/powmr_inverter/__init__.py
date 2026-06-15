@@ -217,29 +217,55 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("              green: 0")
         lines.append("              yellow: 2200")
         lines.append("              red: 3600")
-    # ── Energy flow tiles (always works) ──
-    lines.append("      - type: grid")
-    lines.append("        cards:")
-    if _e("pv_power"):
-        lines.append("          - type: tile")
-        lines.append(f"            entity: {_e('pv_power')}")
-        lines.append("            name: ☀️ PV")
-        lines.append("            icon: mdi:solar-power")
-    if _e("load_power"):
-        lines.append("          - type: tile")
-        lines.append(f"            entity: {_e('load_power')}")
-        lines.append("            name: 🏠 Дім")
-        lines.append("            icon: mdi:home-lightning-bolt")
-    if _e("battery_power"):
-        lines.append("          - type: tile")
-        lines.append(f"            entity: {_e('battery_power')}")
-        lines.append("            name: 🔋 АКБ")
-        lines.append("            icon: mdi:battery-charging")
-    if _e("grid_power"):
-        lines.append("          - type: tile")
-        lines.append(f"            entity: {_e('grid_power')}")
-        lines.append("            name: 🔌 Мережа")
-        lines.append("            icon: mdi:transmission-tower")
+    # ── Animated energy flow (picture-elements + SVG, zero deps) ──
+    if _e("pv_power") and _e("load_power") and _e("grid_power") and _e("battery_power"):
+        # Read bundled SVG and embed as data URI
+        svg_path = os.path.join(os.path.dirname(__file__), "frontend", "flow-bg.svg")
+        import base64
+        svg_data = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0MDAgMzAwIj48ZGVmcz48c3R5bGU+QGtleWZyYW1lcyBmbG93eyAwe3N0cm9rZS1kYXNob2Zmc2V0OjI0fSAxMDAle3N0cm9rZS1kYXNob2Zmc2V0OjB9IH1Aa2V5ZnJhbWVzIHB1bHNleyAwJSwxMDAle29wYWNpdHk6LjN9IDUwJXtvcGFjaXR5OjF9IH0ubGluZXtmaWxsOm5vbmU7c3Ryb2tlLXdpZHRoOjM7c3Ryb2tlLWRhc2hhcnJheTo4IDR9Lmwtc3tmaWxsOiNmNTllMGI7c3Ryb2tlOiNmNTllMGI7YW5pbWF0aW9uOmZsb3cgMXMgbGluZWFyIGluZmluaXRlfS5sLWd7ZmlsbDojNmI3MjgwO3N0cm9rZTojNmI3MjgwO2FuaW1hdGlvbjpmbG93IDEuMnMgbGluZWFyIGluZmluaXRlfS5sLWJ7ZmlsbDojMTBiOTgxO3N0cm9rZTojMTBiOTgxO2FuaW1hdGlvbjpmbG93IC44cyBsaW5lYXIgaW5maW5pdGV9LnR4dHtmb250LWZhbWlseTpzYW5zLXNlcmlmO3RleHQtYW5jaG9yOm1pZGRsZTtmb250LXNpemU6MTJweDtmaWxsOiM5Y2EzYWZ9PC9zdHlsZT48L2RlZnM+PHJlY3Qgd2lkdGg9IjQwMCIgaGVpZ2h0PSIzMDAiIHJ4PSIxNiIgZmlsbD0idmFyKC0tY2FyZC1iYWNrZ3JvdW5kLWNvbG9yLCMxZTFlMmUpIi8+PGNpcmNsZSBjeD0iNDAiIGN5PSI0NSIgcj0iMjAiIGZpbGw9IiNmNTllMGIiIG9wYWNpdHk9Ii4yIi8+PGNpcmNsZSBjeD0iNDAiIGN5PSI0NSIgcj0iMTIiIGZpbGw9IiNmNTllMGIiLz48cmVjdCB4PSIxMCIgeT0iNzAiIHdpZHRoPSI1NSIgaGVpZ2h0PSI2IiByeD0iMiIgZmlsbD0iIzNiODJmNiIvPjxyZWN0IHg9IjEwIiB5PSI4MCIgd2lkdGg9IjU1IiBoZWlnaHQ9IjYiIHJ4PSIyIiBmaWxsPSIjM2I4MmY2Ii8+PHJlY3QgeD0iMTAiIHk9IjkwIiB3aWR0aD0iNTUiIGhlaWdodD0iNiIgcng9IjIiIGZpbGw9IiMzYjgyZjYiLz48dGV4dCB4PSIzOCIgeT0iMTEwIiBjbGFzcz0idHh0Ij7imqDvuI8gUFY8L3RleHQ+PHBvbHlnb24gcG9pbnRzPSIxODAsOTAgMjIwLDYwIDI2MCw5MCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNmI3MjgwIiBzdHJva2Utd2lkdGg9IjIiLz48cmVjdCB4PSIxOTUiIHk9IjkwIiB3aWR0aD0iNTAiIGhlaWdodD0iNDUiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzZiNzI4MCIgc3Ryb2tlLXdpZHRoPSIyIi8+PHJlY3QgeD0iMjEwIiB5PSIxMTAiIHdpZHRoPSIyMCIgaGVpZ2h0PSIyNSIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNmI3MjgwIiBzdHJva2Utd2lkdGg9IjEuNSIgcng9IjIiLz48dGV4dCB4PSIyMjAiIHk9IjE1MiIgY2xhc3M9InR4dCI+8J+PoCDQlNGW0Lw8L3RleHQ+PGxpbmUgeDE9IjM0MCIgeTE9IjYwIiB4Mj0iMzQwIiB5Mj0iMTIwIiBzdHJva2U9IiM2YjcyODAiIHN0cm9rZS13aWR0aD0iMiIvPjxsaW5lIHgxPSIzMjAiIHkxPSI3MCIgeDI9IjM2MCIgeTI9IjcwIiBzdHJva2U9IiM2YjcyODAiIHN0cm9rZS13aWR0aD0iMiIvPjxsaW5lIHgxPSIzMjAiIHkxPSI5MCIgeDI9IjM2MCIgeTI9IjkwIiBzdHJva2U9IiM2YjcyODAiIHN0cm9rZS13aWR0aD0iMiIvPjx0ZXh0IHg9IjM0MCIgeT0iMTQwIiBjbGFzcz0idHh0Ij7wn5SMINCe0YDQtdC20LA8L3RleHQ+PHJlY3QgeD0iMTQ1IiB5PSIxODAiIHdpZHRoPSI1MCIgaGVpZ2h0PSIyOCIgcng9IjQiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzEwYjk4MSIgc3Ryb2tlLXdpZHRoPSIyIi8+PHJlY3QgeD0iMTU4IiB5PSIxNzIiIHdpZHRoPSIyNCIgaGVpZ2h0PSI4IiByeD0iMiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMTBiOTgxIiBzdHJva2Utd2lkdGg9IjEuNSIvPjxyZWN0IHg9IjE1MCIgeT0iMTg1IiB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHJ4PSIyIiBmaWxsPSIjMTBiOTgxIiBvcGFjaXR5PSIuMyIvPjx0ZXh0IHg9IjE3MCIgeT0iMjI1IiBjbGFzcz0idHh0Ij7wn5SXINCQ0JrQkTwvdGV4dD48cGF0aCBkPSJNIDY1IDg1IFEgMTMwIDcwLCAxOTUgOTAiIGNsYXNzPSJsaW5lIGwtcyIvPjxwYXRoIGQ9Ik0gMjQ1IDkwIFEgMjkwIDc1LCAzNDAgOTAiIGNsYXNzPSJsaW5lIGwtZyIvPjxwYXRoIGQ9Ik0gMjIwIDEzNSBRIDIyMCAxNTUsIDE5NSAxODAiIGNsYXNzPSJsaW5lIGwtYiIvPjxwYXRoIGQ9Ik0gMTk1IDE5NSBRIDI1MCAxODUsIDMxMCAxMjAiIGNsYXNzPSJsaW5lIGwtYiIvPjxjaXJjbGUgcj0iNCIgY2xhc3M9ImwtcyI+PGFuaW1hdGVNb3Rpb24gZHVyPSIycyIgcmVwZWF0Q291bnQ9ImluZGVmaW5pdGUiIHBhdGg9Ik0gNjUgODUgUSAxMzAgNzAsIDE5NSA5MCIvPjwvY2lyY2xlPjxjaXJjbGUgcj0iNCIgY2xhc3M9ImwtYiI+PGFuaW1hdGVNb3Rpb24gZHVyPSIxLjVzIiByZXBlYXRDb3VudD0iaW5kZWZpbml0ZSIgcGF0aD0iTSAyMjAgMTM1IFEgMjIwIDE1NSwgMTk1IDE4MCIvPjwvY2lyY2xlPjwvc3ZnPg=="
+        try:
+            def _read_svg() -> str | None:
+                if os.path.exists(svg_path):
+                    with open(svg_path, "r", encoding="utf-8") as f:
+                        raw = f.read()
+                    return "data:image/svg+xml;base64," + base64.b64encode(raw.encode()).decode()
+                return None
+            svg_data = await hass.async_add_executor_job(_read_svg) or svg_data
+        except Exception:
+            pass
+        lines.append("      - type: grid")
+        lines.append("        cards:")
+        lines.append("          - type: picture-elements")
+        lines.append(f"            image: '{svg_data}'")
+        lines.append("            elements:")
+        lines.append(f"              - type: state-label")
+        lines.append(f"                entity: {_e('pv_power')}")
+        lines.append("                style:")
+        lines.append("                  left: 8%")
+        lines.append("                  top: 8%")
+        lines.append("                  font-size: 1.3em")
+        lines.append("                  font-weight: bold")
+        lines.append("                  color: '#f59e0b'")
+        lines.append(f"              - type: state-label")
+        lines.append(f"                entity: {_e('load_power')}")
+        lines.append("                style:")
+        lines.append("                  left: 42%")
+        lines.append("                  top: 42%")
+        lines.append("                  font-size: 1.3em")
+        lines.append("                  font-weight: bold")
+        lines.append(f"              - type: state-label")
+        lines.append(f"                entity: {_e('grid_power')}")
+        lines.append("                style:")
+        lines.append("                  left: 76%")
+        lines.append("                  top: 42%")
+        lines.append("                  font-size: 1.3em")
+        lines.append("                  font-weight: bold")
+        lines.append(f"              - type: state-label")
+        lines.append(f"                entity: {_e('battery_power')}")
+        lines.append("                style:")
+        lines.append("                  left: 42%")
+        lines.append("                  top: 68%")
+        lines.append("                  font-size: 1.1em")
     # ── Energy flow chart (combined 4-power graph) ──
     lines.append("      - type: grid")
     lines.append("        cards:")
