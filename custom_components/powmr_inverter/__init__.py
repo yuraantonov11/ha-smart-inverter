@@ -27,7 +27,6 @@ PLATFORMS: list[Platform] = [
 
 _FRONTEND_REGISTERED = False
 
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Smart Solar Inverter from a config entry."""
     hass.data.setdefault(DOMAIN, {})
@@ -44,10 +43,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return False
 
         # ── Register frontend card (once per HA session) ─────────
-        await _register_frontend(hass)
-
-        # Create coordinator
-        coordinator = InverterCoordinator(
+        awordinator = InverterCoordinator(
             hass=hass,
             api=api,
             entry=entry,
@@ -112,48 +108,7 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await async_setup_entry(hass, entry)
 
 
-async def _register_frontend(hass: HomeAssistant) -> None:
-    """Register the bundled energy-flow custom card (once per session)."""
-    global _FRONTEND_REGISTERED
-    if _FRONTEND_REGISTERED:
-        return
-    _FRONTEND_REGISTERED = True
 
-    # Serve the JS file from integration directory
-    js_path = os.path.join(os.path.dirname(__file__), "frontend", "energy-flow-card.js")
-    if not os.path.exists(js_path):
-        _LOGGER.warning("Frontend card JS not found at %s", js_path)
-        return
-
-    hass.http.register_static_path(
-        "/powmr_inverter/energy-flow-card.js",
-        js_path,
-        cache_headers=False,
-    )
-
-    # Register as Lovelace module resource (one-time, async-safe)
-    import json as _json
-    resources_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.resources")
-
-    def _register_resource() -> None:
-        try:
-            if os.path.exists(resources_path):
-                with open(resources_path, "r") as f:
-                    data = _json.loads(f.read())
-            else:
-                data = {"data": {"items": []}, "key": "lovelace_resources", "version": 1}
-            items = data.setdefault("data", {}).setdefault("items", [])
-            url = "/powmr_inverter/energy-flow-card.js"
-            if not any(r.get("url") == url for r in items):
-                items.append({"type": "module", "url": url})
-                os.makedirs(os.path.dirname(resources_path), exist_ok=True)
-                with open(resources_path, "w") as f:
-                    f.write(_json.dumps(data))
-                _LOGGER.info("Energy flow card registered as Lovelace resource")
-        except Exception as exc:
-            _LOGGER.warning("Failed to register energy flow resource: %s", exc)
-
-    await hass.async_add_executor_job(_register_resource)
 
 async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Generate and register the Smart Solar dashboard with real entity IDs.
@@ -285,16 +240,6 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append(f"            entity: {_e('grid_power')}")
         lines.append("            name: 🔌 Мережа")
         lines.append("            icon: mdi:transmission-tower")
-    # ── Animated energy flow (built-in, no extra install) ──
-    if _e("pv_power") and _e("load_power") and _e("grid_power") and _e("battery_power"):
-        lines.append("      - type: grid")
-        lines.append("        cards:")
-        lines.append("          - type: custom:smart-solar-energy-flow")
-        lines.append("            entities:")
-        lines.append(f"              solar: {_e('pv_power')}")
-        lines.append(f"              home: {_e('load_power')}")
-        lines.append(f"              grid: {_e('grid_power')}")
-        lines.append(f"              battery: {_e('battery_power')}")
     # ── Energy flow chart (combined 4-power graph) ──
     lines.append("      - type: grid")
     lines.append("        cards:")
