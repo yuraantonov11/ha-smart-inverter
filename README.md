@@ -49,6 +49,15 @@ Full Ukrainian translation of all entities, states, and configuration UI.
 6. **Settings → Devices & Services → Add Integration → Smart Solar Inverter**
 7. Ввести email + пароль від `solar.siseli.com`
 
+### 🎨 Анімований потік енергії (рекомендовано)
+
+Для красивого відображення потоків (як на фото) встановіть **Power Flow Card Plus**:
+
+1. HACS → Frontend → **Power Flow Card Plus** → Install
+2. Дашборд автоматично підхопить картку після перезавантаження HA
+
+Без неї дашборд працюватиме, але замість анімації буде звичайний графік.
+
 Або встановити прямо за посиланням (після додавання custom repository):
 
 ### Manual
