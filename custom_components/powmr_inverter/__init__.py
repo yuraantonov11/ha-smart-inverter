@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.components.frontend import add_extra_js_module
 
 from .api import InverterApiClient
 from .const import DOMAIN
@@ -23,6 +25,8 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.BINARY_SENSOR,
 ]
+
+_FRONTEND_REGISTERED = False
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -39,6 +43,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not await api.authenticate():
             _LOGGER.error("Failed to authenticate with inverter API")
             return False
+
+        # ── Register frontend card (once per HA session) ─────────
+        await _register_frontend(hass)
 
         # Create coordinator
         coordinator = InverterCoordinator(
@@ -104,6 +111,28 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Reload config entry."""
     await async_unload_entry(hass, entry)
     await async_setup_entry(hass, entry)
+
+
+async def _register_frontend(hass: HomeAssistant) -> None:
+    """Register the bundled energy-flow custom card (once per session)."""
+    global _FRONTEND_REGISTERED
+    if _FRONTEND_REGISTERED:
+        return
+    _FRONTEND_REGISTERED = True
+
+    # Serve the JS file from integration directory
+    js_path = os.path.join(os.path.dirname(__file__), "frontend", "energy-flow-card.js")
+    if not os.path.exists(js_path):
+        _LOGGER.warning("Frontend card JS not found at %s", js_path)
+        return
+
+    hass.http.register_static_path(
+        "/powmr_inverter/energy-flow-card.js",
+        js_path,
+        cache_headers=False,
+    )
+    add_extra_js_module(hass, "/powmr_inverter/energy-flow-card.js")
+    _LOGGER.info("Smart Solar energy flow card registered")
 
 
 async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -236,20 +265,16 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append(f"            entity: {_e('grid_power')}")
         lines.append("            name: 🔌 Мережа")
         lines.append("            icon: mdi:transmission-tower")
-    # ── Animated flow (optional: install Power Flow Card Plus from HACS) ──
+    # ── Animated energy flow (built-in, no extra install) ──
     if _e("pv_power") and _e("load_power") and _e("grid_power") and _e("battery_power"):
         lines.append("      - type: grid")
         lines.append("        cards:")
-        lines.append("          - type: custom:power-flow-card-plus")
+        lines.append("          - type: custom:smart-solar-energy-flow")
         lines.append("            entities:")
-        lines.append("              solar:")
-        lines.append(f"                entity: {_e('pv_power')}")
-        lines.append("              home:")
-        lines.append(f"                entity: {_e('load_power')}")
-        lines.append("              grid:")
-        lines.append(f"                entity: {_e('grid_power')}")
-        lines.append("              battery:")
-        lines.append(f"                entity: {_e('battery_power')}")
+        lines.append(f"              solar: {_e('pv_power')}")
+        lines.append(f"              home: {_e('load_power')}")
+        lines.append(f"              grid: {_e('grid_power')}")
+        lines.append(f"              battery: {_e('battery_power')}")
     # ── Energy flow chart (combined 4-power graph) ──
     lines.append("      - type: grid")
     lines.append("        cards:")
