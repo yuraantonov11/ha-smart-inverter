@@ -10,7 +10,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
-from homeassistant.components.frontend import add_extra_js_module
 
 from .api import InverterApiClient
 from .const import DOMAIN
@@ -131,9 +130,30 @@ async def _register_frontend(hass: HomeAssistant) -> None:
         js_path,
         cache_headers=False,
     )
-    add_extra_js_module(hass, "/powmr_inverter/energy-flow-card.js")
-    _LOGGER.info("Smart Solar energy flow card registered")
 
+    # Register as Lovelace module resource (one-time, async-safe)
+    import json as _json
+    resources_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.resources")
+
+    def _register_resource() -> None:
+        try:
+            if os.path.exists(resources_path):
+                with open(resources_path, "r") as f:
+                    data = _json.loads(f.read())
+            else:
+                data = {"data": {"items": []}, "key": "lovelace_resources", "version": 1}
+            items = data.setdefault("data", {}).setdefault("items", [])
+            url = "/powmr_inverter/energy-flow-card.js"
+            if not any(r.get("url") == url for r in items):
+                items.append({"type": "module", "url": url})
+                os.makedirs(os.path.dirname(resources_path), exist_ok=True)
+                with open(resources_path, "w") as f:
+                    f.write(_json.dumps(data))
+                _LOGGER.info("Energy flow card registered as Lovelace resource")
+        except Exception as exc:
+            _LOGGER.warning("Failed to register energy flow resource: %s", exc)
+
+    await hass.async_add_executor_job(_register_resource)
 
 async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Generate and register the Smart Solar dashboard with real entity IDs.
