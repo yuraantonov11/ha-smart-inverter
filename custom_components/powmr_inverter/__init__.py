@@ -76,9 +76,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         from .services import async_register_services
         await async_register_services(hass)
 
-        # ── Install k-flow-card frontend resource (once) ──────────
-        await _install_flow_card(hass)
-
         # ── Auto-install dashboard on first setup ─────────────────
         await _auto_install_dashboard(hass, entry)
 
@@ -268,27 +265,30 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("              green: 0")
         lines.append("              yellow: 2200")
         lines.append("              red: 3600")
-    # ── Animated energy flow (k-flow-card, auto-installed) ──
-    if _e("pv_power") and _e("load_power") and _e("grid_power") and _e("battery_soc_corrected"):
-        lines.append("      - type: grid")
-        lines.append("        cards:")
-        lines.append("          - type: custom:k-flow-card")
-        lines.append("            inverter_name: Smart Solar")
-        lines.append(f"            pv1_power: {_e('pv_power')}")
-        lines.append(f"            grid_active_power: {_e('grid_power')}")
-        lines.append(f"            consump: {_e('load_power')}")
-        lines.append(f"            battery_soc: {_e('battery_soc_corrected')}")
-        if _e("battery_power"):
-            lines.append(f"            battery_power: {_e('battery_power')}")
-        if _e("battery_voltage"):
-            lines.append(f"            battery_voltage: {_e('battery_voltage')}")
-        if _e("battery_current"):
-            lines.append(f"            battery_current: {_e('battery_current')}")
-        if _e("daily_energy"):
-            lines.append(f"            today_pv: {_e('daily_energy')}")
-
-
-    # Remove old picture-elements flow (keep chart below)
+    # ── Energy flow tiles ──
+    lines.append("      - type: grid")
+    lines.append("        cards:")
+    if _e("pv_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('pv_power')}")
+        lines.append("            name: ☀️ PV")
+        lines.append("            icon: mdi:solar-power")
+    if _e("load_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('load_power')}")
+        lines.append("            name: 🏠 Дім")
+        lines.append("            icon: mdi:home-lightning-bolt")
+    if _e("battery_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('battery_power')}")
+        lines.append("            name: 🔋 АКБ")
+        lines.append("            icon: mdi:battery-charging")
+    if _e("grid_power"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('grid_power')}")
+        lines.append("            name: 🔌 Мережа")
+        lines.append("            icon: mdi:transmission-tower")
+    # ── Energy flow chart ──
     lines.append("      - type: grid")
     lines.append("        cards:")
     lines.append("          - type: statistics-graph")
