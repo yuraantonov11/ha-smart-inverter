@@ -138,78 +138,86 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     def _e(key: str) -> str:
         return eid.get(key, "")
 
-    # Build dashboard YAML dynamically
+    # Build dashboard YAML dynamically — 4 logically organized views
     lines: list[str] = []
     lines.append("title: Smart Solar Енергопанель")
     lines.append("views:")
-    # ── View 1: Power ──
-    lines.append("  - title: Потужність")
-    lines.append("    path: powmr-power")
+
+    # ═══════════════════════════════════════════════════════════════
+    # View 1: ОГЛЯД — summary, gauges, energy flow, combined graphs
+    # ═══════════════════════════════════════════════════════════════
+    lines.append("  - title: Огляд")
+    lines.append("    path: powmr-overview")
     lines.append("    icon: mdi:home-lightning-bolt")
     lines.append("    type: sections")
     lines.append("    max_columns: 3")
     lines.append("    sections:")
+    # ── Status tiles ──
     lines.append("      - type: grid")
     lines.append("        cards:")
-    # Header
-    lines.append("          - type: markdown")
-    lines.append("            content: |")
-    lines.append("              # Smart Solar Inverter")
-    lines.append("              Живий потік потужності, стан мережі та батареї.")
-    # Tiles
-    lines.append("          - type: tile")
-    lines.append(f"            entity: {_e('grid_available')}")
-    lines.append("            name: Стан мережі")
-    lines.append("            icon: mdi:transmission-tower")
-    lines.append("          - type: tile")
-    lines.append(f"            entity: {_e('working_mode')}")
-    lines.append("            name: Режим роботи")
-    lines.append("            icon: mdi:state-machine")
-    lines.append("          - type: tile")
-    lines.append(f"            entity: {_e('battery_soc_corrected')}")
-    lines.append("            name: Скоригований SOC")
-    lines.append("            icon: mdi:battery-heart-variant")
-    lines.append("          - type: tile")
-    lines.append(f"            entity: {_e('pv_surplus')}")
-    lines.append("            name: Надлишок PV")
-    lines.append("            icon: mdi:flash")
-    lines.append("          - type: tile")
-    lines.append(f"            entity: {_e('grid_voltage')}")
-    lines.append("            name: Напруга мережі")
-    lines.append("            icon: mdi:sine-wave")
-    # Gauges
+    if _e("grid_available"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('grid_available')}")
+        lines.append("            name: Мережа")
+        lines.append("            icon: mdi:transmission-tower")
+    if _e("working_mode"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('working_mode')}")
+        lines.append("            name: Режим")
+        lines.append("            icon: mdi:state-machine")
+    if _e("battery_soc_corrected"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('battery_soc_corrected')}")
+        lines.append("            name: SOC")
+        lines.append("            icon: mdi:battery-heart-variant")
+    if _e("daily_savings"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('daily_savings')}")
+        lines.append("            name: Економія")
+        lines.append("            icon: mdi:cash-check")
+    if _e("forecast_tomorrow"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('forecast_tomorrow')}")
+        lines.append("            name: Прогноз PV")
+        lines.append("            icon: mdi:solar-power")
+    # ── Gauges row ──
     lines.append("      - type: grid")
     lines.append("        cards:")
-    lines.append("          - type: gauge")
-    lines.append(f"            entity: {_e('battery_soc_corrected')}")
-    lines.append("            name: SOC батареї")
-    lines.append("            min: 0")
-    lines.append("            max: 100")
-    lines.append("            severity:")
-    lines.append("              green: 45")
-    lines.append("              yellow: 25")
-    lines.append("              red: 0")
-    lines.append("          - type: gauge")
-    lines.append(f"            entity: {_e('pv_power')}")
-    lines.append("            name: Потужність PV")
-    lines.append("            min: 0")
-    lines.append("            max: 5000")
-    lines.append("            severity:")
-    lines.append("              green: 1200")
-    lines.append("              yellow: 400")
-    lines.append("              red: 0")
-    lines.append("          - type: gauge")
-    lines.append(f"            entity: {_e('load_power')}")
-    lines.append("            name: Потужність навантаження")
-    lines.append("            min: 0")
-    lines.append("            max: 5000")
-    lines.append("            severity:")
-    lines.append("              green: 0")
-    lines.append("              yellow: 2200")
-    lines.append("              red: 3600")
-    # Charts
+    if _e("battery_soc_corrected"):
+        lines.append("          - type: gauge")
+        lines.append(f"            entity: {_e('battery_soc_corrected')}")
+        lines.append("            name: SOC батареї")
+        lines.append("            min: 0")
+        lines.append("            max: 100")
+        lines.append("            severity:")
+        lines.append("              green: 45")
+        lines.append("              yellow: 25")
+        lines.append("              red: 0")
+    if _e("pv_power"):
+        lines.append("          - type: gauge")
+        lines.append(f"            entity: {_e('pv_power')}")
+        lines.append("            name: PV (W)")
+        lines.append("            min: 0")
+        lines.append("            max: 5000")
+        lines.append("            severity:")
+        lines.append("              green: 1200")
+        lines.append("              yellow: 400")
+        lines.append("              red: 0")
+    if _e("load_power"):
+        lines.append("          - type: gauge")
+        lines.append(f"            entity: {_e('load_power')}")
+        lines.append("            name: Дім (W)")
+        lines.append("            min: 0")
+        lines.append("            max: 5000")
+        lines.append("            severity:")
+        lines.append("              green: 0")
+        lines.append("              yellow: 2200")
+        lines.append("              red: 3600")
+    # ── Energy flow (combined 4-power chart) ──
+    lines.append("      - type: grid")
+    lines.append("        cards:")
     lines.append("          - type: statistics-graph")
-    lines.append("            title: Потік потужності (24г)")
+    lines.append("            title: Енергопотік (24г)")
     lines.append("            chart_type: line")
     lines.append("            period: hour")
     lines.append("            days_to_show: 1")
@@ -219,56 +227,40 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     if _e("load_power"): lines.append(f"              - {_e('load_power')}")
     if _e("grid_power"): lines.append(f"              - {_e('grid_power')}")
     if _e("battery_power"): lines.append(f"              - {_e('battery_power')}")
+    # ── Combined voltage chart ──
+    lines.append("          - type: statistics-graph")
+    lines.append("            title: Напруги (24г)")
+    lines.append("            chart_type: line")
+    lines.append("            period: hour")
+    lines.append("            days_to_show: 1")
+    lines.append("            stat_types: [mean]")
+    lines.append("            entities:")
+    if _e("pv_voltage"): lines.append(f"              - {_e('pv_voltage')}")
+    if _e("grid_voltage"): lines.append(f"              - {_e('grid_voltage')}")
+    if _e("battery_voltage"): lines.append(f"              - {_e('battery_voltage')}")
+    # ── SOC history ──
     lines.append("          - type: history-graph")
-    lines.append("            title: SOC батареї (24г)")
+    lines.append("            title: SOC (24г)")
     lines.append("            hours_to_show: 24")
     lines.append("            refresh_interval: 60")
     lines.append("            entities:")
     if _e("battery_soc"): lines.append(f"              - {_e('battery_soc')}")
     if _e("battery_soc_corrected"): lines.append(f"              - {_e('battery_soc_corrected')}")
-    # ── Energy flow snapshot ──
-    lines.append("          - type: entities")
-    lines.append("            title: Потік енергії (зараз)")
-    lines.append("            show_header_toggle: false")
-    lines.append("            entities:")
-    if _e("pv_power"):
-        lines.append(f"              - entity: {_e('pv_power')}")
-        lines.append("                name: PV →")
-    if _e("load_power"):
-        lines.append(f"              - entity: {_e('load_power')}")
-        lines.append("                name: → Будинок")
-    if _e("battery_power"):
-        lines.append(f"              - entity: {_e('battery_power')}")
-        lines.append("                name: ↔ АКБ")
-    if _e("grid_power"):
-        lines.append(f"              - entity: {_e('grid_power')}")
-        lines.append("                name: ↔ Мережа")
-    # ── Economics tiles ──
-    if _e("daily_savings"):
-        lines.append("          - type: tile")
-        lines.append(f"            entity: {_e('daily_savings')}")
-        lines.append("            name: Економія сьогодні")
-        lines.append("            icon: mdi:cash-check")
-    if _e("forecast_tomorrow"):
-        lines.append("          - type: tile")
-        lines.append(f"            entity: {_e('forecast_tomorrow')}")
-        lines.append("            name: Прогноз PV на завтра")
-        lines.append("            icon: mdi:solar-power")
-    # ── Long-term charts (7d, 30d) ──
-    for period_days, period_label, period_hours in [(7, "7 днів", 168), (30, "30 днів", 720)]:
-        lines.append("          - type: statistics-graph")
-        lines.append(f"            title: PV генерація ({period_label})")
-        lines.append("            chart_type: bar")
-        lines.append("            period: day")
-        lines.append(f"            days_to_show: {period_days}")
-        lines.append("            stat_types: [sum]")
-        lines.append("            entities:")
-        if _e("daily_energy"): lines.append(f"              - {_e('daily_energy')}")
-    # ── Controls ──
+
+    # ═══════════════════════════════════════════════════════════════
+    # View 2: КЕРУВАННЯ — switches, selects, sliders, state
+    # ═══════════════════════════════════════════════════════════════
+    lines.append("  - title: Керування")
+    lines.append("    path: powmr-control")
+    lines.append("    icon: mdi:tune")
+    lines.append("    type: sections")
+    lines.append("    max_columns: 2")
+    lines.append("    sections:")
     lines.append("      - type: grid")
     lines.append("        cards:")
+    # ── Mode control ──
     lines.append("          - type: entities")
-    lines.append("            title: Керування інвертором")
+    lines.append("            title: Режими інвертора")
     lines.append("            show_header_toggle: false")
     lines.append("            entities:")
     if _e("output_priority"):
@@ -286,6 +278,10 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     if _e("backup_mode"):
         lines.append(f"              - entity: {_e('backup_mode')}")
         lines.append("                name: Резервний режим")
+    if _e("eco_mode"):
+        lines.append(f"              - entity: {_e('eco_mode')}")
+        lines.append("                name: ECO режим")
+    # ── Grid control ──
     lines.append("          - type: entities")
     lines.append("            title: Керування мережею")
     lines.append("            show_header_toggle: false")
@@ -296,6 +292,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     if _e("grid_feed_in"):
         lines.append(f"              - entity: {_e('grid_feed_in')}")
         lines.append("                name: Віддача в мережу")
+    # ── Current limits ──
     lines.append("          - type: entities")
     lines.append("            title: Струми та ліміти")
     lines.append("            show_header_toggle: false")
@@ -308,62 +305,27 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         if _e(nk):
             lines.append(f"              - entity: {_e(nk)}")
             lines.append(f"                name: {nl}")
-    # State
+    # ── Live state ──
     lines.append("          - type: entities")
-    lines.append("            title: Поточний стан")
+    lines.append("            title: Поточні показники")
     lines.append("            show_header_toggle: false")
     lines.append("            entities:")
-    for sk, sl in [("grid_available","Мережа доступна"),
-                    ("pv_voltage","Напруга PV"),
-                    ("grid_voltage","Напруга мережі"),
-                    ("battery_voltage","Напруга АКБ"),
-                    ("battery_current","Струм батареї"),
-                    ("ac_output_power","Вихідна потужність AC"),
-                    ("feed_in_power","Віддача в мережу"),
-                    ("grid_import_power","Споживання з мережі"),
-                    ("inverter_temperature","Температура інвертора")]:
+    for sk, sl in [("grid_voltage","Напруга мережі (V)"),
+                    ("pv_voltage","Напруга PV (V)"),
+                    ("battery_voltage","Напруга АКБ (V)"),
+                    ("battery_current","Струм батареї (A)"),
+                    ("pv_surplus","Надлишок PV (W)"),
+                    ("ac_output_power","Вихід AC (W)"),
+                    ("feed_in_power","Віддача в мережу (W)"),
+                    ("grid_import_power","Споживання з мережі (W)"),
+                    ("inverter_temperature","Температура (°C)")]:
         if _e(sk):
             lines.append(f"              - entity: {_e(sk)}")
             lines.append(f"                name: {sl}")
-    # ── View 2: HEMS ──
-    lines.append("  - title: HEMS")
-    lines.append("    path: powmr-hems")
-    lines.append("    icon: mdi:brain")
-    lines.append("    type: sections")
-    lines.append("    max_columns: 3")
-    lines.append("    sections:")
-    lines.append("      - type: grid")
-    lines.append("        cards:")
-    lines.append("          - type: markdown")
-    lines.append("            content: |")
-    lines.append("              # HEMS — Розумне керування енергією")
-    lines.append("          - type: entities")
-    lines.append("            title: Режими")
-    lines.append("            show_header_toggle: false")
-    lines.append("            entities:")
-    if _e("smart_mode"):
-        lines.append(f"              - entity: {_e('smart_mode')}")
-        lines.append("                name: Режим HEMS")
-    if _e("hems_auto_mode"):
-        lines.append(f"              - entity: {_e('hems_auto_mode')}")
-        lines.append("                name: Авто-режим")
-    if _e("eco_mode"):
-        lines.append(f"              - entity: {_e('eco_mode')}")
-        lines.append("                name: ECO режим")
-    lines.append("          - type: entities")
-    lines.append("            title: Батарея")
-    lines.append("            show_header_toggle: false")
-    lines.append("            entities:")
-    for bk, bl in [("battery_soc","SOC (інвертор)"),
-                    ("battery_soc_corrected","SOC (скоригований)"),
-                    ("battery_voltage","Напруга АКБ"),
-                    ("battery_current","Струм АКБ"),
-                    ("battery_charge_current","Струм заряду"),
-                    ("battery_discharge_current","Струм розряду")]:
-        if _e(bk):
-            lines.append(f"              - entity: {_e(bk)}")
-            lines.append(f"                name: {bl}")
-    # ── View 3: Історія ──
+
+    # ═══════════════════════════════════════════════════════════════
+    # View 3: ІСТОРІЯ — long-term charts, combined graphs
+    # ═══════════════════════════════════════════════════════════════
     lines.append("  - title: Історія")
     lines.append("    path: powmr-history")
     lines.append("    icon: mdi:chart-line")
@@ -389,22 +351,64 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     lines.append("            entities:")
     if _e("pv_power"): lines.append(f"              - {_e('pv_power')}")
     lines.append("          - type: statistics-graph")
-    lines.append("            title: Потужність навантаження (7 днів)")
+    lines.append("            title: PV + Навантаження (7 днів)")
     lines.append("            chart_type: line")
     lines.append("            period: hour")
     lines.append("            days_to_show: 7")
     lines.append("            stat_types: [mean]")
     lines.append("            entities:")
+    if _e("pv_power"): lines.append(f"              - {_e('pv_power')}")
     if _e("load_power"): lines.append(f"              - {_e('load_power')}")
     lines.append("          - type: statistics-graph")
-    lines.append("            title: SOC батареї (7 днів)")
+    lines.append("            title: SOC + Напруга АКБ (7 днів)")
     lines.append("            chart_type: line")
     lines.append("            period: hour")
     lines.append("            days_to_show: 7")
     lines.append("            stat_types: [mean]")
     lines.append("            entities:")
     if _e("battery_soc_corrected"): lines.append(f"              - {_e('battery_soc_corrected')}")
-    # Monthly savings
+    if _e("battery_voltage"): lines.append(f"              - {_e('battery_voltage')}")
+
+    # ═══════════════════════════════════════════════════════════════
+    # View 4: ЕКОНОМІКА — forecast, savings, tariffs
+    # ═══════════════════════════════════════════════════════════════
+    lines.append("  - title: Економіка")
+    lines.append("    path: powmr-economics")
+    lines.append("    icon: mdi:cash")
+    lines.append("    type: sections")
+    lines.append("    max_columns: 2")
+    lines.append("    sections:")
+    lines.append("      - type: grid")
+    lines.append("        cards:")
+    lines.append("          - type: markdown")
+    lines.append("            content: |")
+    lines.append("              # Економіка сонячної енергії")
+    lines.append("              Розрахунок економії на основі тарифів та генерації.")
+    if _e("daily_savings"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('daily_savings')}")
+        lines.append("            name: Економія сьогодні")
+        lines.append("            icon: mdi:cash-check")
+    if _e("monthly_savings"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('monthly_savings')}")
+        lines.append("            name: Економія за місяць")
+        lines.append("            icon: mdi:cash-multiple")
+    if _e("forecast_tomorrow"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('forecast_tomorrow')}")
+        lines.append("            name: Прогноз на завтра")
+        lines.append("            icon: mdi:solar-power")
+    if _e("forecast_day_after"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('forecast_day_after')}")
+        lines.append("            name: Прогноз на післязавтра")
+        lines.append("            icon: mdi:solar-power-variant")
+    if _e("learned_ratio"):
+        lines.append("          - type: tile")
+        lines.append(f"            entity: {_e('learned_ratio')}")
+        lines.append("            name: Коефіцієнт PV")
+        lines.append("            icon: mdi:brain")
     lines.append("          - type: statistics-graph")
     lines.append("            title: Економія (30 днів)")
     lines.append("            chart_type: bar")
@@ -413,6 +417,14 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     lines.append("            stat_types: [sum]")
     lines.append("            entities:")
     if _e("daily_savings"): lines.append(f"              - {_e('daily_savings')}")
+    lines.append("          - type: statistics-graph")
+    lines.append("            title: PV генерація (30 днів)")
+    lines.append("            chart_type: bar")
+    lines.append("            period: day")
+    lines.append("            days_to_show: 30")
+    lines.append("            stat_types: [sum]")
+    lines.append("            entities:")
+    if _e("daily_energy"): lines.append(f"              - {_e('daily_energy')}")
 
     dashboard_yaml = "\n".join(lines) + "\n"
 

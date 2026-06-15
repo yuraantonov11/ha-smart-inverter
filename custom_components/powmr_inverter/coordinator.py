@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import InverterApiClient, InverterOfflineError, TokenExpiredError
 from .const import DOMAIN
+from .hems.forecast import ForecastService
 from .hems.soc_correction import get_real_soc
 
 _LOGGER = logging.getLogger(__name__)
@@ -81,7 +82,10 @@ class InverterCoordinator(DataUpdateCoordinator):
         self._monthly_savings_uah: float = 0.0
         self._day_tariff_uah: float = 4.32
         self._night_tariff_uah: float = 2.16
-        # Forecast values (updated by coordinator or template sensors)
+        # Forecast service (activated on first update)
+        self._forecast: ForecastService | None = None
+        self._forecast_last_fetch: datetime | None = None
+        # Public forecast values (read by sensors)
         self.forecast_tomorrow_kwh: float | None = None
         self.forecast_day_after_kwh: float | None = None
         self.forecast_learned_ratio: float = 0.12
@@ -155,6 +159,9 @@ class InverterCoordinator(DataUpdateCoordinator):
 
         # ── Daily energy & savings tracking ──────────────────────
         self._accumulate_daily_energy(now, raw)
+
+        # ── Forecast refresh (every 15 min) ─────────────────────
+        await self._maybe_refresh_forecast(now)
 
         return {
             **raw,
@@ -346,3 +353,40 @@ class InverterCoordinator(DataUpdateCoordinator):
     @property
     def monthly_savings_uah(self) -> float:
         return max(0.0, self._monthly_savings_uah + self._daily_savings_uah)
+
+    # ── Forecast ─────────────────────────────────────────────────────
+
+    async def _maybe_refresh_forecast(self, now: datetime) -> None:
+        """Fetch solar forecast every 15 minutes and update ratio daily at 21:00."""
+        if self._forecast is None:
+            # Lazy-init with site coordinates (Kyiv defaults)
+            lat = float(self._entry.options.get("site_latitude", 50.45))
+            lon = float(self._entry.options.get("site_longitude", 30.52))
+            self._forecast = ForecastService(latitude=lat, longitude=lon)
+
+        # Refresh forecast every 15 minutes
+        if self._forecast_last_fetch is None or \
+           (now - self._forecast_last_fetch).total_seconds() > 900:
+            try:
+                daily = await self._forecast.get_daily_forecasts(days=2)
+                dates = sorted(daily.keys())
+                if len(dates) >= 1:
+                    self.forecast_tomorrow_kwh = daily[dates[0]].energy_kwh
+                if len(dates) >= 2:
+                    self.forecast_day_after_kwh = daily[dates[1]].energy_kwh
+                self.forecast_learned_ratio = self._forecast.learned_ratio
+                self._forecast_last_fetch = now
+                _LOGGER.debug(
+                    "Forecast: tomorrow=%.1f kWh, day2=%.1f kWh, ratio=%.4f",
+                    self.forecast_tomorrow_kwh or 0,
+                    self.forecast_day_after_kwh or 0,
+                    self.forecast_learned_ratio,
+                )
+            except Exception as exc:
+                _LOGGER.warning("Forecast fetch failed: %s", exc)
+
+        # Update learned ratio at 21:00 daily if we have enough PV data
+        if now.hour == 21 and now.minute < 1 and self._daily_pv_kwh > 0.1:
+            # Estimate radiation from pv_power and ratio
+            estimated_radiation = self._daily_pv_kwh / max(self.forecast_learned_ratio, 0.01)
+            self._forecast.update_ratio(self._daily_pv_kwh, estimated_radiation)
