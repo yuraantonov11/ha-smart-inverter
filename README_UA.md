@@ -1,4 +1,4 @@
-# Smart Solar Inverter — Home Assistant Integration
+# Smart Solar Inverter — інтеграція Home Assistant
 
 [![HACS Default](https://img.shields.io/badge/HACS-Default-orange.svg)](https://hacs.xyz)
 [![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-smart-inverter)](https://github.com/yuraantonov11/ha-smart-inverter/releases)
@@ -6,11 +6,13 @@
 [![License](https://img.shields.io/github/license/yuraantonov11/ha-smart-inverter)](LICENSE)
 [![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=powmr_inverter)
 
-> 🇺🇦 [Українська версія](README_UA.md) | 🇬🇧 English
+> 🇬🇧 [English version](README.md) | 🇺🇦 Українська
+[![License](https://img.shields.io/github/license/yuraantonov11/ha-smart-inverter)](LICENSE)
+[![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=powmr_inverter)
 
-Custom integration for **solar inverters** with battery storage and HEMS (Home Energy Management System). Real-time monitoring, intelligent automation, and self-learning solar forecast — all within Home Assistant.
+Custom integration for **solar inverters** with battery storage and HEMS (Home Energy Management System) control. Real-time monitoring, intelligent automation, and self-learning solar forecast — all within Home Assistant.
 
-Supports inverters using the `solar.siseli.com` cloud platform (PowMr, SmartESS, Easun, and other brands with ECO/MAX-730 Wi‑Fi modules). Architecture is designed for future expansion to other data sources.
+Supports inverters using the `solar.siseli.com` cloud platform (PowMr, SmartESS, Easun, and other brands with ECO/MAX-730 Wi-Fi modules). Architecture is designed for future expansion to other data sources.
 
 ## ✨ Features
 
@@ -34,22 +36,26 @@ Supports inverters using the `solar.siseli.com` cloud platform (PowMr, SmartESS,
 ### ☀️ Self-learning Solar Forecast
 No panel specs needed. The algorithm learns from your actual PV data + sun position + weather — automatically accounting for shading, tilt, and degradation.
 
-### 🎨 Animated Energy Flow (built-in)
-The integration bundles the **k-flow-card** — a real-time animated power flow diagram. No HACS frontend installs, no manual resource registration. It just works out of the box.
+### 🇺🇦 Ukrainian localization
+Full Ukrainian translation of all entities, states, and configuration UI.
 
 ---
 
 ## 📦 Installation
 
-### HACS (recommended)
+### HACS (рекомендовано)
 
 1. **HACS → Integrations → ⋮ → Custom repositories**
 2. URL: `https://github.com/yuraantonov11/ha-smart-inverter`, Type: **Integration**
-3. Click **Add**
-4. Find **"Smart Solar Inverter"** in HACS → Install
-5. Restart Home Assistant
+3. Натиснути **Add**
+4. Знайти **"Smart Solar Inverter"** в HACS → Install
+5. Перезавантажити Home Assistant
 6. **Settings → Devices & Services → Add Integration → Smart Solar Inverter**
-7. Enter your `solar.siseli.com` email and password
+7. Ввести email + пароль від `solar.siseli.com`
+
+### 🎨 Анімований потік енергії (вбудовано)
+
+Інтеграція містить **k-flow-card** — анімовану діаграму потоків енергії в реальному часі. Жодних ручних встановлень HACS, жодної реєстрації ресурсів. Працює одразу після встановлення.
 
 ### Manual
 
@@ -61,26 +67,26 @@ git clone https://github.com/yuraantonov11/ha-smart-inverter.git powmr_inverter
 
 ---
 
-## 📡 Data Sources
+## 📡 Звідки беруться дані
 
-| Data | Source | Update Interval |
-|------|--------|-----------------|
-| ⚡ PV, grid, battery, load power | `solar.siseli.com` API | Every 5 s |
-| 🔋 SOC, voltages, currents, temperature | `solar.siseli.com` API | Every 5 s |
-| ☀️ Generation forecast (tomorrow/day after) | **Open-Meteo** × PV coefficient | Every 15 min |
-| 🧠 PV coefficient (self-learning) | Actual ÷ calculated irradiance | Daily at 21:00 |
-| 💰 Savings (UAH) | Battery discharge × tariff − grid import × tariff | Every 5 s |
-| 🌙 Night tariff | **Set by you** (Options → Night tariff) | — |
-| ☀️ Day tariff | **Set by you** (Options → Day tariff) | — |
-| 📍 Coordinates | **Set by you** (Options → Latitude/Longitude) | — |
+| Дані | Джерело | Оновлення |
+|------|---------|-----------|
+| ⚡ Потужність PV, мережа, АКБ, дім | `solar.siseli.com` API | Кожні 5 сек |
+| 🔋 SOC, напруги, струми, температура | `solar.siseli.com` API | Кожні 5 сек |
+| ☀️ Прогноз генерації (завтра/післязавтра) | **Open-Meteo** × коефіцієнт PV | Кожні 15 хв |
+| 🧠 Коефіцієнт PV (самонавчання) | Факт ÷ розрахункова радіація | Щодня о 21:00 |
+| 💰 Економія (грн) | Розряд АКБ × денний тариф − заряд × нічний | Кожні 5 сек |
+| 🌙 Нічний тариф | **Ви вказуєте** (Options → Night tariff) | — |
+| ☀️ Денний тариф | **Ви вказуєте** (Options → Day tariff) | — |
+| 📍 Координати | **Ви вказуєте** (Options → Latitude/Longitude) | — |
 
-> If you don't have a multi-zone tariff — set both tariffs to the same value.
+> Якщо немає нічного тарифу — встановіть обидва тарифи однаковими.
 
-### Time-of-Day Tariff Zones
-- **Day**: 07:00–23:00 (default 4.32 UAH/kWh)
-- **Night**: 23:00–07:00 (default 2.16 UAH/kWh)
+### Dashboard & Automations
 
-Savings are calculated with the correct time-of-day rate: battery discharge at night saves at the night rate, not the day rate.
+The `homeassistant/` folder contains ready-to-use YAML packages:
+- `powmr_native_package.yaml` — template sensors, 14+ automations
+- `powmr_dashboard.yaml` — Lovelace dashboard (Power + HEMS views)
 
 ---
 
