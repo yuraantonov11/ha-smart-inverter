@@ -492,7 +492,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     _LOGGER.info("Dashboard regenerated (%d entities, hash=%s)", len(eid), new_hash)
     hass.data[DOMAIN][entry.entry_id]["dash_hash"] = new_hash
 
-    # Register in lovelace
+    # Register in lovelace (auto-add to sidebar)
     await _register_lovelace_dashboard(hass, dash_file)
 
 
@@ -520,7 +520,25 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, yaml_path: str) -> N
     except Exception:
         pass
 
-    # Register via websocket API
+    # Register via websocket API - use the internal lovelace component
+    try:
+        from homeassistant.components import lovelace
+        # Get the lovelace instance
+        if hasattr(lovelace, 'dashboards') and 'lovelace' in lovelace.dashboards:
+            dash = lovelace.dashboards['lovelace']
+            if hasattr(dash, 'async_register_built_in_dashboard'):
+                await dash.async_register_built_in_dashboard(
+                    "powmr-energy",
+                    "Smart Solar",
+                    yaml_path,
+                    True,  # show in sidebar
+                )
+                _LOGGER.info("Dashboard powmr-energy auto-registered in sidebar")
+                return
+    except Exception as exc:
+        _LOGGER.debug("Could not auto-register via lovelace component: %s", exc)
+
+    # Fallback: use websocket command directly
     try:
         await hass.services.async_call(
             "lovelace",
@@ -532,7 +550,7 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, yaml_path: str) -> N
         pass
 
     _LOGGER.info(
-        "Dashboard YAML ready at %s. To activate: "
+        "Dashboard YAML ready at %s. If not auto-registered: "
         "Settings → Dashboards → Add Dashboard → 'Smart Solar' → Create",
         yaml_path,
     )
