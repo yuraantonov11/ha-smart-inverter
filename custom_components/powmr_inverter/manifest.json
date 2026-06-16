@@ -2,7 +2,8 @@
   "domain": "powmr_inverter",
   "name": "Smart Solar Inverter",
   "after_dependencies": [
-    "energy"
+    "energy",
+    "lovelace"
   ],
   "codeowners": [
     "@yuraantonov11"
@@ -16,5 +17,5 @@
     "aiohttp>=3.9.0",
     "cryptography"
   ],
-  "version": "1.7.7"
+  "version": "1.7.8"
 }
