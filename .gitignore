@@ -32,3 +32,5 @@ push_release*.log
 windows/Output/*.exe
 windows/Output/*.msix
 windows/Output/*.zip
+
+custom_components/powmr_inverter/.dev

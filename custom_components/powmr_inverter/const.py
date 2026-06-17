@@ -29,6 +29,14 @@ MIN_REQUEST_INTERVAL_MS = 1000
 CONF_EMAIL = "email"
 CONF_PASSWORD = "password"
 
+# ─── Dev mode ────────────────────────────────────────────────────────────────
+
+import os as _os
+
+DEV_MODE_FILE = _os.path.join(_os.path.dirname(__file__), ".dev")
+DEV_MODE: bool = _os.path.exists(DEV_MODE_FILE)
+
+
 # ─── Select / Control constants ─────────────────────────────────────────────
 
 OUTPUT_USB = "0"

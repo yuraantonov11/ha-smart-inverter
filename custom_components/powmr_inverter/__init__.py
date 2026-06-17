@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
 from .api import InverterApiClient
-from .const import DOMAIN
+from .const import DEV_MODE, DOMAIN
 from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -26,6 +26,9 @@ PLATFORMS: list[Platform] = [
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    if DEV_MODE:
+        _LOGGER.setLevel(logging.DEBUG)
+        _LOGGER.warning('⚠️ DEV MODE ACTIVE — debug logging enabled')
     """Set up Smart Solar Inverter from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
