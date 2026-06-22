@@ -287,6 +287,25 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     lines.append("            entities:")
     if _e("battery_soc"): lines.append(f"              - {_e('battery_soc')}")
     if _e("battery_soc_corrected"): lines.append(f"              - {_e('battery_soc_corrected')}")
+    # ── HEMS diagnostics ──
+    lines.append("      - type: grid")
+    lines.append("        cards:")
+    lines.append("          - type: entities")
+    lines.append("            title: HEMS Стан")
+    lines.append("            show_header_toggle: false")
+    lines.append("            entities:")
+    if _e("hems_last_reason"):
+        lines.append(f"              - entity: {_e('hems_last_reason')}")
+        lines.append("                name: Причина рішення")
+    if _e("hems_last_output_cmd"):
+        lines.append(f"              - entity: {_e('hems_last_output_cmd')}")
+        lines.append("                name: Команда виходу")
+    if _e("hems_last_charger_cmd"):
+        lines.append(f"              - entity: {_e('hems_last_charger_cmd')}")
+        lines.append("                name: Команда заряду")
+    if _e("hems_auto_mode"):
+        lines.append(f"              - entity: {_e('hems_auto_mode')}")
+        lines.append("                name: HEMS авто-режим")
 
     # ═══════════════════════════════════════════════════════════════
     # View 2: КЕРУВАННЯ — switches, selects, sliders, state
