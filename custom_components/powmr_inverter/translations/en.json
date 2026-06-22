@@ -27,7 +27,13 @@
           "tariff_day": "Day tariff (UAH/kWh)",
           "tariff_night": "Night tariff (UAH/kWh)",
           "site_latitude": "Latitude",
-          "site_longitude": "Longitude"
+          "site_longitude": "Longitude",
+          "auto_storm_by_forecast": "Auto-Storm by weather forecast",
+          "battery_capacity_ah": "Battery capacity (Ah)",
+          "pv_total_capacity_w": "Total PV capacity (W)",
+          "inverter_max_power_w": "Inverter max power (W)",
+          "night_start_hour": "Night start hour (0-23)",
+          "day_start_hour": "Day start hour (0-23)"
         }
       }
     },
@@ -63,7 +69,10 @@
       "forecast_day_after": { "name": "PV Forecast Day After" },
       "learned_ratio": { "name": "Learned PV Ratio" },
       "daily_savings": { "name": "Daily Savings" },
-      "monthly_savings": { "name": "Monthly Savings" }
+      "monthly_savings": { "name": "Monthly Savings" },
+      "hems_last_reason": { "name": "HEMS Decision Reason" },
+      "hems_last_output_cmd": { "name": "HEMS Output Command" },
+      "hems_last_charger_cmd": { "name": "HEMS Charger Command" }
     },
     "select": {
       "output_priority": { "name": "Output Priority" },

@@ -1,4 +1,4 @@
-"""HEMS modules package — SOC correction, forecasts, tariff logic."""
+"""HEMS modules package — SOC correction, forecasts, tariff logic, engine."""
 
 from .soc_correction import get_real_soc, voltage_to_soc
 

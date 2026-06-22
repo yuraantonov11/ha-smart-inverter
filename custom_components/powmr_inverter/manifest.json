@@ -17,5 +17,5 @@
     "aiohttp>=3.9.0",
     "cryptography"
   ],
-  "version": "1.7.8"
+  "version": "1.8.0"
 }

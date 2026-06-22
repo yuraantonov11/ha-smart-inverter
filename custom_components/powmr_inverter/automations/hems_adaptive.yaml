@@ -1,19 +1,16 @@
 # ============================================================================
-# HEMS Adaptive Mode Automation
+# HEMS Adaptive Mode — Monitoring Automation
 # ============================================================================
-# Runs every 30 seconds when smart mode is "Adaptive".
-# Implements the same logic as HemsAlgorithmService in the Flutter app:
-#   - Safety floor (SOC ≤ 22% → USB + SNU)
-#   - Manual override detection
-#   - Night window (23:00–07:00 → USB)
-#   - PV surplus (≥250W + SOC ≥ 30% → SBU + OSO)
-#   - Anti-flapping (dwell time, dedup)
+# The main HEMS decision engine now runs inside the coordinator (Python).
+# This automation provides monitoring and logging of HEMS decisions.
 #
-# Requires: Inverter Inverter custom integration + input helpers
+# The coordinator evaluates every 5 seconds and applies control commands
+# directly via the API. This automation adds supplementary logging and
+# notification when significant state changes occur.
 # ============================================================================
 
-alias: "HEMS — Adaptive Mode"
-description: "Real-time PV surplus + forecast-driven inverter control"
+alias: "HEMS — Adaptive Mode Monitor"
+description: "Logs HEMS decisions and sends notifications on mode changes"
 mode: single
 max_exceeded: silent
 
@@ -23,115 +20,27 @@ trigger:
 
 condition:
   - condition: state
-    entity_id: select.inverter_smart_mode
-    state: "Adaptive"
-  - condition: state
-    entity_id: switch.inverter_hems_auto_mode
+    entity_id: switch.powmr_inverter_hems_auto_mode
     state: "on"
 
 action:
   - variables:
-      soc: "{{ states('sensor.inverter_battery_soc_corrected') | float(50) }}"
-      pv: "{{ states('sensor.inverter_pv_power') | float(0) }}"
-      load: "{{ states('sensor.inverter_load_power') | float(0) }}"
-      grid_v: "{{ states('sensor.inverter_grid_voltage') | float(230) }}"
-      hour: "{{ now().hour }}"
-      surplus: "{{ (states('sensor.inverter_pv_power') | float(0)) - (states('sensor.inverter_load_power') | float(0)) }}"
-      reserve_soc: "{{ states('input_number.hems_reserve_soc') | float(20) }}"
-      pv_threshold: "{{ states('input_number.hems_pv_surplus_w') | float(250) }}"
-      current_output: "{{ state_attr('select.inverter_output_priority', 'option') }}"
-      current_charger: "{{ state_attr('select.inverter_charger_priority', 'option') }}"
+      soc: "{{ states('sensor.powmr_inverter_battery_soc_corrected') | float(50) }}"
+      pv: "{{ states('sensor.powmr_inverter_pv_power') | float(0) }}"
+      load: "{{ states('sensor.powmr_inverter_load_power') | float(0) }}"
+      surplus: "{{ pv - load }}"
+      current_output: "{{ state_attr('select.powmr_inverter_output_priority', 'option') }}"
+      current_charger: "{{ state_attr('select.powmr_inverter_charger_priority', 'option') }}"
 
-  # ── Safety floor: SOC ≤ reserve + 2% ──
+  # Log current HEMS state every 5 minutes (when minute is 0 or 5 or 10...)
   - if:
       - condition: template
-        value_template: "{{ soc <= (reserve_soc + 2) }}"
+        value_template: "{{ now().minute % 5 == 0 and now().second < 30 }}"
     then:
-      - if:
-          - condition: template
-            value_template: "{{ current_output != 'USB (Grid First)' }}"
-        then:
-          - service: select.select_option
-            target:
-              entity_id: select.inverter_output_priority
-            data:
-              option: "USB (Grid First)"
-      - if:
-          - condition: template
-            value_template: "{{ current_charger != 'SNU (Solar + Utility)' }}"
-        then:
-          - service: select.select_option
-            target:
-              entity_id: select.inverter_charger_priority
-            data:
-              option: "SNU (Solar + Utility)"
-      - stop: "Safety floor — low SOC protection"
-
-  # ── Manual override ──
-  - if:
-      - condition: state
-        entity_id: input_boolean.hems_manual_override
-        state: "on"
-    then:
-      - stop: "Manual override active"
-
-  # ── Night window (23:00–07:00) ──
-  - if:
-      - condition: template
-        value_template: "{{ hour >= 23 or hour < 7 }}"
-    then:
-      - if:
-          - condition: template
-            value_template: "{{ current_output != 'USB (Grid First)' }}"
-        then:
-          - service: select.select_option
-            target:
-              entity_id: select.inverter_output_priority
-            data:
-              option: "USB (Grid First)"
-      - stop: "Night window — grid priority"
-
-  # ── PV surplus: free solar energy ──
-  - if:
-      - condition: template
-        value_template: "{{ surplus >= pv_threshold and soc >= 30 }}"
-    then:
-      - if:
-          - condition: template
-            value_template: "{{ current_output != 'SBU (Solar/Battery First)' }}"
-        then:
-          - service: select.select_option
-            target:
-              entity_id: select.inverter_output_priority
-            data:
-              option: "SBU (Solar/Battery First)"
-      - if:
-          - condition: template
-            value_template: "{{ current_charger != 'OSO (Solar Only)' }}"
-        then:
-          - service: select.select_option
-            target:
-              entity_id: select.inverter_charger_priority
-            data:
-              option: "OSO (Solar Only)"
-      - stop: "PV surplus — solar priority"
-
-  # ── Default: not enough sun → grid charge ──
-  - if:
-      - condition: template
-        value_template: "{{ current_output != 'USB (Grid First)' }}"
-    then:
-      - service: select.select_option
-        target:
-          entity_id: select.inverter_output_priority
+      - service: logbook.log
         data:
-          option: "USB (Grid First)"
-  - if:
-      - condition: template
-        value_template: "{{ current_charger != 'SNU (Solar + Utility)' }}"
-    then:
-      - service: select.select_option
-        target:
-          entity_id: select.inverter_charger_priority
-        data:
-          option: "SNU (Solar + Utility)"
+          name: "HEMS Status"
+          message: >-
+            SOC={{ soc }}% PV={{ pv }}W Load={{ load }}W Surplus={{ surplus }}W
+            Output={{ current_output }} Charger={{ current_charger }}
+          domain: powmr_inverter

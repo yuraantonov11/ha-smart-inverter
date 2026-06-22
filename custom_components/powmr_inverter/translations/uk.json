@@ -27,7 +27,13 @@
           "tariff_day": "Денний тариф (грн/кВт·год)",
           "tariff_night": "Нічний тариф (грн/кВт·год)",
           "site_latitude": "Широта",
-          "site_longitude": "Довгота"
+          "site_longitude": "Довгота",
+          "auto_storm_by_forecast": "Авто-шторм за прогнозом погоди",
+          "battery_capacity_ah": "Ємність батареї (А·год)",
+          "pv_total_capacity_w": "Загальна потужність PV (Вт)",
+          "inverter_max_power_w": "Макс. потужність інвертора (Вт)",
+          "night_start_hour": "Початок ночі (0-23)",
+          "day_start_hour": "Початок дня (0-23)"
         }
       }
     },
@@ -63,7 +69,10 @@
       "forecast_day_after": { "name": "Прогноз PV на післязавтра" },
       "learned_ratio": { "name": "Коефіцієнт PV (самонавчання)" },
       "daily_savings": { "name": "Економія за день" },
-      "monthly_savings": { "name": "Економія за місяць" }
+      "monthly_savings": { "name": "Економія за місяць" },
+      "hems_last_reason": { "name": "Причина рішення HEMS" },
+      "hems_last_output_cmd": { "name": "Команда виходу HEMS" },
+      "hems_last_charger_cmd": { "name": "Команда заряду HEMS" }
     },
     "select": {
       "output_priority": { "name": "Пріоритет виходу" },

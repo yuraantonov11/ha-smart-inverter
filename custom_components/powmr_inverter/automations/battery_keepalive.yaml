@@ -1,56 +1,69 @@
 # ============================================================================
 # Battery Keepalive Automation
 # ============================================================================
-# Performs a brief charge/discharge cycle every 2 hours to prevent
-# battery degradation from prolonged inactivity.
-# Mirrors the keepalive logic from HemsAlgorithmService.
+# Performs a brief discharge cycle every 2 hours to prevent
+# battery BMS from entering sleep mode due to prolonged inactivity.
+#
+# KEY FIX: Switches OUTPUT priority to SBU (forces battery discharge)
+# rather than just toggling charger. This matches the original siseli-app
+# behavior where _batteryKeepalive() switches output to SBU for 90 seconds
+# then back to USB.
+#
+# When on USB mode with no battery activity for 2+ hours:
+#   1. Switch output to SBU → battery discharges briefly (wakes BMS)
+#   2. Wait 90 seconds
+#   3. Switch output back to USB → resume normal operation
 # ============================================================================
 
 alias: "Battery Keepalive"
-description: "Periodic brief battery activity to prevent degradation"
+description: "Brief discharge cycle to prevent BMS sleep — switches OUTPUT to SBU"
 mode: single
 
 trigger:
   - platform: time_pattern
-    hours: "*"
-    minutes: "0"
-    seconds: "0"
+    minutes: "/30"
 
 condition:
   - condition: state
-    entity_id: switch.inverter_hems_auto_mode
+    entity_id: switch.powmr_inverter_hems_auto_mode
     state: "on"
   - condition: template
     value_template: >
-      {% set soc = states('sensor.inverter_battery_soc_corrected') | float(50) %}
+      {% set soc = states('sensor.powmr_inverter_battery_soc_corrected') | float(50) %}
       {{ soc > 22 }}
+  # Only run if output is currently USB (grid priority) — that's when battery sleeps
+  - condition: template
+    value_template: >
+      {{ state_attr('select.powmr_inverter_output_priority', 'option') == 'USB (Grid First)' }}
 
 action:
   - variables:
-      battery_power: "{{ states('sensor.inverter_battery_power') | float(0) }}"
+      battery_power: "{{ states('sensor.powmr_inverter_battery_power') | float(0) }}"
       # Battery inactive if |power| < 50W
       inactive: "{{ (battery_power | abs) < 50 }}"
-      current_charger: "{{ state_attr('select.inverter_charger_priority', 'option') }}"
+      current_output: "{{ state_attr('select.powmr_inverter_output_priority', 'option') }}"
 
   - if:
       - condition: template
         value_template: "{{ inactive }}"
     then:
-      # Brief toggle: switch charger to SNU for 90 seconds, then back
+      # Switch OUTPUT priority to SBU — forces battery to discharge briefly
+      # This wakes the BMS from sleep mode
       - service: select.select_option
         target:
-          entity_id: select.inverter_charger_priority
+          entity_id: select.powmr_inverter_output_priority
         data:
-          option: "SNU (Solar + Utility)"
+          option: "SBU (Solar/Battery First)"
       - delay:
           seconds: 90
+      # Restore original output priority
       - service: select.select_option
         target:
-          entity_id: select.inverter_charger_priority
+          entity_id: select.powmr_inverter_output_priority
         data:
-          option: "{{ current_charger }}"
+          option: "{{ current_output }}"
       - service: logbook.log
         data:
           name: "Battery Keepalive"
-          message: "Keepalive cycle completed (90 sec charge)"
-          domain: Inverter_inverter
+          message: "Keepalive cycle completed — output SBU→USB (90 sec discharge to wake BMS)"
+          domain: powmr_inverter

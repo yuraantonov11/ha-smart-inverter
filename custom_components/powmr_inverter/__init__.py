@@ -497,60 +497,76 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
 
 
 async def _register_lovelace_dashboard(hass: HomeAssistant, yaml_path: str) -> None:
-    """Auto-register the YAML dashboard via lovelace storage.
+    """Auto-register the YAML dashboard via lovelace_dashboards storage.
 
-    Uses the websocket command to add the dashboard entry directly —
-    no manual configuration.yaml editing needed by the user.
+    Writes directly to .storage/lovelace_dashboards so the dashboard
+    appears in sidebar automatically. No manual steps needed.
     """
-    # Check if already registered
+    import json
+    import os
+
+    DASHBOARD_URL = "powmr-energy"
+    DASHBOARD_TITLE = "Smart Solar Енергопанель"
+    storage_path = os.path.join(hass.config.config_dir, ".storage", "lovelace_dashboards")
+
+    # Step 1: Check if already registered
     try:
-        import json, os
-        storage_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.dashboards")
         if os.path.exists(storage_path):
             def _check():
                 with open(storage_path, "r") as f:
                     data = json.loads(f.read())
-                for entry in data.get("data", {}).get("dashboards", []):
-                    if entry.get("url_path") == "powmr-energy":
+                for entry in data.get("data", {}).get("items", []):
+                    if entry.get("url_path") == DASHBOARD_URL:
                         return True
                 return False
             if await hass.async_add_executor_job(_check):
-                _LOGGER.info("Dashboard powmr-energy already registered, skipping")
-                return
-    except Exception:
-        pass
-
-    # Register via websocket API - use the internal lovelace component
-    try:
-        from homeassistant.components import lovelace
-        # Get the lovelace instance
-        if hasattr(lovelace, 'dashboards') and 'lovelace' in lovelace.dashboards:
-            dash = lovelace.dashboards['lovelace']
-            if hasattr(dash, 'async_register_built_in_dashboard'):
-                await dash.async_register_built_in_dashboard(
-                    "powmr-energy",
-                    "Smart Solar",
-                    yaml_path,
-                    True,  # show in sidebar
-                )
-                _LOGGER.info("Dashboard powmr-energy auto-registered in sidebar")
+                _LOGGER.debug("Dashboard %s already registered", DASHBOARD_URL)
                 return
     except Exception as exc:
-        _LOGGER.debug("Could not auto-register via lovelace component: %s", exc)
+        _LOGGER.debug("Dashboard check failed: %s", exc)
 
-    # Fallback: use websocket command directly
+    # Step 2: Register by appending to lovelace_dashboards storage
     try:
-        await hass.services.async_call(
-            "lovelace",
-            "reload_resources",
-            {},
-            blocking=False,
-        )
-    except Exception:
-        pass
+        def _register():
+            with open(storage_path, "r") as f:
+                data = json.loads(f.read())
 
-    _LOGGER.info(
-        "Dashboard YAML ready at %s. If not auto-registered: "
-        "Settings → Dashboards → Add Dashboard → 'Smart Solar' → Create",
-        yaml_path,
-    )
+            items = data.get("data", {}).get("items", [])
+            for entry in items:
+                if entry.get("url_path") == DASHBOARD_URL:
+                    return True  # already there
+
+            items.append({
+                "id": "powmr_energy",
+                "icon": "mdi:solar-power",
+                "title": DASHBOARD_TITLE,
+                "show_in_sidebar": True,
+                "require_admin": False,
+                "mode": "storage",
+                "url_path": DASHBOARD_URL,
+            })
+            data["data"]["items"] = items
+
+            with open(storage_path, "w") as f:
+                json.dump(data, f, indent=2)
+            return True
+
+        result = await hass.async_add_executor_job(_register)
+        if result:
+            _LOGGER.info("✅ Dashboard '%s' auto-registered in sidebar", DASHBOARD_TITLE)
+            # Refresh lovelace so sidebar updates immediately
+            try:
+                await hass.services.async_call(
+                    "lovelace", "reload_resources", {}, blocking=False,
+                )
+            except Exception:
+                pass
+        else:
+            _LOGGER.debug("Dashboard already registered (concurrent)")
+
+    except Exception as exc:
+        _LOGGER.warning(
+            "Dashboard auto-register failed: %s. "
+            "Manual: Settings → Dashboards → Add Dashboard → '%s' → YAML → %s",
+            exc, DASHBOARD_TITLE, yaml_path,
+        )

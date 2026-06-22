@@ -226,6 +226,45 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                         vol.Coerce(float),
                         vol.Range(min=-180.0, max=180.0),
                     ),
+                    vol.Optional(
+                        "auto_storm_by_forecast",
+                        default=current.get("auto_storm_by_forecast", False),
+                    ): bool,
+                    vol.Optional(
+                        "battery_capacity_ah",
+                        default=current.get("battery_capacity_ah", 230.0),
+                    ): vol.All(
+                        vol.Coerce(float),
+                        vol.Range(min=10.0, max=2000.0),
+                    ),
+                    vol.Optional(
+                        "pv_total_capacity_w",
+                        default=current.get("pv_total_capacity_w", 3000.0),
+                    ): vol.All(
+                        vol.Coerce(float),
+                        vol.Range(min=100.0, max=50000.0),
+                    ),
+                    vol.Optional(
+                        "inverter_max_power_w",
+                        default=current.get("inverter_max_power_w", 5000.0),
+                    ): vol.All(
+                        vol.Coerce(float),
+                        vol.Range(min=500.0, max=50000.0),
+                    ),
+                    vol.Optional(
+                        "night_start_hour",
+                        default=current.get("night_start_hour", 23),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(min=0, max=23),
+                    ),
+                    vol.Optional(
+                        "day_start_hour",
+                        default=current.get("day_start_hour", 7),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(min=0, max=23),
+                    ),
                 }
             ),
             errors=errors,

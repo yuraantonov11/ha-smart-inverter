@@ -283,6 +283,10 @@ async def async_setup_entry(
     entities.append(LearnedRatioSensor(coordinator))
     entities.append(DailySavingsSensor(coordinator))
     entities.append(MonthlySavingsSensor(coordinator))
+    # HEMS diagnostics
+    entities.append(HemsReasonSensor(coordinator))
+    entities.append(HemsOutputCmdSensor(coordinator))
+    entities.append(HemsChargerCmdSensor(coordinator))
 
     async_add_entities(entities)
 
@@ -486,3 +490,57 @@ class MonthlySavingsSensor(InverterSensor):
     @property
     def native_value(self) -> float:
         return self.coordinator.monthly_savings_uah
+
+
+class HemsReasonSensor(InverterSensor):
+    """Sensor: last HEMS engine decision reason."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="hems_last_reason",
+                translation_key="hems_last_reason",
+                icon="mdi:brain",
+            ),
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.hems_last_reason or None
+
+
+class HemsOutputCmdSensor(InverterSensor):
+    """Sensor: last HEMS output priority command."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="hems_last_output_cmd",
+                translation_key="hems_last_output_cmd",
+                icon="mdi:export",
+            ),
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.hems_last_output_cmd or None
+
+
+class HemsChargerCmdSensor(InverterSensor):
+    """Sensor: last HEMS charger priority command."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="hems_last_charger_cmd",
+                translation_key="hems_last_charger_cmd",
+                icon="mdi:battery-charging",
+            ),
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        return self.coordinator.hems_last_charger_cmd or None
