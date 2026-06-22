@@ -143,6 +143,7 @@ class InverterCoordinator(DataUpdateCoordinator):
         self.forecast_day_after_kwh: float | None = None
         self.forecast_learned_ratio: float = 0.12
         self.radiation_now_wm2: float | None = None
+        self.hourly_forecast_today: list[float] = []  # 24 hourly power values (W) for sparkline
 
         # Storm risk tracking
         self._storm_risk_score: float = 0.0
@@ -597,17 +598,21 @@ class InverterCoordinator(DataUpdateCoordinator):
         elif grid_w < -10:
             self._daily_grid_export_kwh += abs(grid_w) * dt_h
 
-        if battery_w > 10:
+        # battery_w > 0 = charging, < 0 = discharging (solar.siseli.com API convention)
+        if battery_w < -10:
+            discharge_w = abs(battery_w)
             if daytime:
-                self._daily_battery_discharge_day_kwh += battery_w * dt_h
+                self._daily_battery_discharge_day_kwh += discharge_w * dt_h
             else:
-                self._daily_battery_discharge_night_kwh += battery_w * dt_h
+                self._daily_battery_discharge_night_kwh += discharge_w * dt_h
 
+        # Savings = value of battery energy that displaced grid import.
+        # When battery discharges, it powers the load instead of the grid.
+        # Grid import still happens when battery is depleted or in SNU mode,
+        # but that doesn't reduce the value of battery discharge.
         self._daily_savings_uah = round(
             self._daily_battery_discharge_day_kwh * self._day_tariff_uah
-            + self._daily_battery_discharge_night_kwh * self._night_tariff_uah
-            - self._daily_grid_import_day_kwh * self._day_tariff_uah
-            - self._daily_grid_import_night_kwh * self._night_tariff_uah,
+            + self._daily_battery_discharge_night_kwh * self._night_tariff_uah,
             2,
         )
 
@@ -681,6 +686,16 @@ class InverterCoordinator(DataUpdateCoordinator):
                 if len(dates) >= 2:
                     self.forecast_day_after_kwh = daily[dates[1]].energy_kwh
                 self.forecast_learned_ratio = self._forecast.learned_ratio
+
+                # Store hourly forecast for today (sparkline)
+                hourly = await self._forecast.get_hourly_forecast()
+                today_str = now.strftime("%Y-%m-%d")
+                today_hours = [h["power_w"] for h in hourly if h["time"].startswith(today_str)]
+                # Pad to 24 if needed
+                if len(today_hours) < 24:
+                    today_hours.extend([0.0] * (24 - len(today_hours)))
+                self.hourly_forecast_today = today_hours[:24]
+
                 self._forecast_last_fetch = now
                 _LOGGER.debug(
                     "Forecast: tomorrow=%.1f kWh, day2=%.1f kWh, ratio=%.4f",

@@ -411,6 +411,18 @@ class ForecastTomorrowSensor(InverterSensor):
     def native_value(self) -> float | None:
         return self.coordinator.forecast_tomorrow_kwh
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose hourly forecast for sparkline rendering."""
+        hourly = self.coordinator.hourly_forecast_today
+        if not hourly:
+            return None
+        return {
+            "hourly_forecast_w": hourly,
+            "peak_power_w": max(hourly) if hourly else 0,
+            "total_kwh": round(sum(hourly) / 1000.0, 2),
+        }
+
 
 class ForecastDayAfterSensor(InverterSensor):
     """Sensor: forecasted PV energy for day after tomorrow (kWh)."""

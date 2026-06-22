@@ -85,16 +85,9 @@ views:
               - sensor.smart_solar_inverter_battery_soc
               - sensor.smart_solar_inverter_battery_soc_corrected
               - sensor.smart_solar_inverter_battery_charge_current
-          - type: statistics-graph
-            title: Прогноз vs Факт генерації (24г)
-            chart_type: line
-            period: hour
-            days_to_show: 1
-            stat_types:
-              - mean
-            entities:
-              - sensor.powmr_smart_inverter
-              - sensor.powmr_solar_generation_forecast
+          - type: custom:forecast-card
+            entity: sensor.smart_solar_inverter_forecast_tomorrow
+            title: ☀️ Прогноз генерації (24г)
       - type: grid
         cards:
           - type: entities
@@ -153,6 +146,18 @@ views:
                 name: Віддача в мережу
               - entity: sensor.smart_solar_inverter_grid_import_power
                 name: Споживання з мережі
+          - type: entities
+            title: 💰 Економіка
+            show_header_toggle: false
+            entities:
+              - entity: sensor.smart_solar_inverter_daily_savings
+                name: Економія сьогодні (₴)
+              - entity: sensor.smart_solar_inverter_monthly_savings
+                name: Економія місяць (₴)
+              - entity: sensor.smart_solar_inverter_forecast_tomorrow
+                name: Прогноз завтра (kWh)
+              - entity: sensor.smart_solar_inverter_learned_ratio
+                name: Коеф. конверсії PV
           - type: entities
             title: Прогноз сонячної генерації
             show_header_toggle: false

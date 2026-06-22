@@ -620,6 +620,7 @@ class KFlowCardEditor extends HTMLElement {
       picker('today_pv',        'Today PV Gen'),
       picker('today_batt_chg',  'Today Batt Charge'),
       picker('today_load',      'Today Load'),
+      picker('daily_savings',   'Daily Savings (UAH)'),
       picker('consump',         'House Consumption'),
     ]));
 
@@ -707,6 +708,7 @@ class KFlowCard extends HTMLElement {
       today_pv: 'sensor.goodwe_today_s_pv_generation',
       today_batt_chg: 'sensor.goodwe_today_battery_charge',
       today_load: 'sensor.goodwe_today_load',
+      daily_savings: 'sensor.powmr_inverter_daily_savings',
       battery_soc: 'sensor.jk_soc',
       battery_power: 'sensor.jk_power',
       battery_current: 'sensor.jk_current',
@@ -1098,8 +1100,9 @@ class KFlowCard extends HTMLElement {
         <div style="flex:1;display:flex;align-items:center;gap:4px"><span style="font-size:.42rem;color:#8b949e;letter-spacing:1px;text-transform:uppercase">Pwr</span><div style="flex:1;background:#21262d;border-radius:20px;height:9px;overflow:hidden;position:relative"><div id="pwrBar" style="position:absolute;inset:0;right:auto;width:0%;border-radius:20px;background:#3fb950;transition:width .4s,background .4s"></div></div></div>
       </div>
       <div class="dv"></div>
-      <div style="display:flex;justify-content:center;margin-top:10px">
+      <div style="display:flex;justify-content:center;gap:8px;margin-top:10px">
         <div class="pvi" style="flex:1;max-width:200px"><div class="ico">☀️</div><div class="lbl">Today PV</div><div class="val yw" id="invTodayPv">-- kWh</div></div>
+        <div class="pvi" style="flex:1;max-width:200px"><div class="ico">💰</div><div class="lbl">Savings</div><div class="val" id="invDailySavings" style="color:#4ade80">-- ₴</div></div>
       </div>
     </div>`;
   }
@@ -1383,6 +1386,19 @@ class KFlowCard extends HTMLElement {
     setText('invTodayBattChg', _todayBattChgRaw !== null ? todayBattChg.toFixed(2) + ' kWh' : '-- kWh');
     setText('invTodayBattDis', battDis1Raw      !== null ? battDis1.toFixed(2)     + ' kWh' : '-- kWh');
     setText('invTodayLoad',    _todayLoadRaw    !== null ? todayLoad.toFixed(2)    + ' kWh' : '-- kWh');
+    // Daily savings
+    const savingsRaw = this._val(this.config.daily_savings);
+    const savingsVal = savingsRaw !== null && !isNaN(savingsRaw) ? parseFloat(savingsRaw) : null;
+    const savingsEl = getEl('invDailySavings');
+    if (savingsEl) {
+      if (savingsVal !== null) {
+        savingsEl.textContent = savingsVal.toFixed(2) + ' ₴';
+        savingsEl.style.color = savingsVal > 0 ? '#4ade80' : '#8b949e';
+      } else {
+        savingsEl.textContent = '-- ₴';
+        savingsEl.style.color = '#8b949e';
+      }
+    }
     // ── Remaining Ah + kWh ──
     // Each battery uses its OWN Ah capacity; battery2_full_ah defaults to fullAh if not set
     const fullAh2 = capUnit === 'ah'

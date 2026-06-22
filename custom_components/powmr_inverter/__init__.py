@@ -134,6 +134,11 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         os.makedirs(www_dir, exist_ok=True)
         shutil.copy2(js_src, os.path.join(www_dir, "k-flow-card.js"))
         _LOGGER.info("Installed k-flow-card.js → www/")
+        # Forecast sparkline card
+        fc_src = os.path.join(src_dir, "forecast-card.js")
+        if os.path.exists(fc_src):
+            shutil.copy2(fc_src, os.path.join(www_dir, "forecast-card.js"))
+            _LOGGER.info("Installed forecast-card.js → www/")
         # Icon PNGs → both primary AND legacy path (safety net for cached JS)
         for fname in ("grid-icon.png", "home-icon.png", "ev-charger-icon.png"):
             src = os.path.join(src_dir, fname)
@@ -153,8 +158,11 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
     try:
         from homeassistant.components.frontend import add_extra_js_url
         # Bump the cache-buster on every release so browsers pick up the new JS
-        add_extra_js_url(hass, f"{resource_url}?v=1.7.1")
-        _LOGGER.info("Flow card module registered")
+        add_extra_js_url(hass, f"{resource_url}?v=1.8.1")
+        # Forecast sparkline card
+        fc_url = "/local/community/powmr-inverter/forecast-card.js"
+        add_extra_js_url(hass, f"{fc_url}?v=1.8.1")
+        _LOGGER.info("Flow card + forecast card modules registered")
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
 
@@ -252,6 +260,8 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         lines.append("        battery_voltage: " + _e("battery_voltage"))
     if _e("daily_energy"):
         lines.append("        today_pv: " + _e("daily_energy"))
+    if _e("daily_savings"):
+        lines.append("        daily_savings: " + _e("daily_savings"))
     lines.append("        sun: sun.sun")
     lines.append("        _show_battery: true")
     # ── Energy flow chart (combined 4-power graph) ──
@@ -306,6 +316,13 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     if _e("hems_auto_mode"):
         lines.append(f"              - entity: {_e('hems_auto_mode')}")
         lines.append("                name: HEMS авто-режим")
+    # ── Forecast sparkline ──
+    if _e("forecast_tomorrow"):
+        lines.append("      - type: grid")
+        lines.append("        cards:")
+        lines.append("          - type: custom:forecast-card")
+        lines.append(f"            entity: {_e('forecast_tomorrow')}")
+        lines.append("            title: ☀️ Прогноз генерації (24г)")
 
     # ═══════════════════════════════════════════════════════════════
     # View 2: КЕРУВАННЯ — switches, selects, sliders, state
