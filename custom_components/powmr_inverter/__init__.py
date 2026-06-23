@@ -158,10 +158,10 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
     try:
         from homeassistant.components.frontend import add_extra_js_url
         # Bump the cache-buster on every release so browsers pick up the new JS
-        add_extra_js_url(hass, f"{resource_url}?v=1.8.1")
+        add_extra_js_url(hass, f"{resource_url}?v=1.8.2")
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
-        add_extra_js_url(hass, f"{fc_url}?v=1.8.1")
+        add_extra_js_url(hass, f"{fc_url}?v=1.8.2")
         _LOGGER.info("Flow card + forecast card modules registered")
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
@@ -174,6 +174,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     actual entity IDs on this system — works out-of-the-box for every user.
     """
     import os, json as _json
+    import hashlib
 
     from homeassistant.helpers import entity_registry as er
 
@@ -505,75 +506,67 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
 
     dashboard_yaml = "\n".join(lines) + "\n"
 
-    # Write to disk (always overwrite to reflect correct entity IDs)
-    dash_dir = os.path.join(hass.config.config_dir, "dashboards")
-    dash_file = os.path.join(dash_dir, "powmr_dashboard.yaml")
-
     # Store a hash so we only rewrite when the dashboard template changed
-    import hashlib
     new_hash = hashlib.md5(dashboard_yaml.encode()).hexdigest()[:8]
     old_hash = hass.data[DOMAIN][entry.entry_id].get("dash_hash", "")
 
-    if new_hash == old_hash:
-        _LOGGER.debug("Dashboard unchanged (hash=%s), skipping rewrite", new_hash)
-        await _register_lovelace_dashboard(hass, dash_file)
-        return
+    if new_hash != old_hash:
+        hass.data[DOMAIN][entry.entry_id]["dash_hash"] = new_hash
+        _LOGGER.info("Dashboard content regenerated (%d entities, hash=%s)", len(eid), new_hash)
 
-    def _write() -> None:
-        os.makedirs(dash_dir, exist_ok=True)
-        with open(dash_file, "w", encoding="utf-8") as f:
-            f.write(dashboard_yaml)
-
-    await hass.async_add_executor_job(_write)
-    _LOGGER.info("Dashboard regenerated (%d entities, hash=%s)", len(eid), new_hash)
-    hass.data[DOMAIN][entry.entry_id]["dash_hash"] = new_hash
-
-    # Register in lovelace (auto-add to sidebar)
-    await _register_lovelace_dashboard(hass, dash_file)
+    # Register in lovelace storage — NO YAML file, avoids LovelaceYAML conflict
+    await _register_lovelace_dashboard(hass, dashboard_yaml)
 
 
-async def _register_lovelace_dashboard(hass: HomeAssistant, yaml_path: str) -> None:
-    """Auto-register the YAML dashboard via lovelace_dashboards storage.
+async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_yaml: str) -> None:
+    """Auto-register the dashboard in storage mode (no YAML file).
 
-    Writes directly to .storage/lovelace_dashboards so the dashboard
-    appears in sidebar automatically. No manual steps needed.
+    Writes dashboard metadata to .storage/lovelace_dashboards
+    and the actual dashboard config to .storage/lovelace_dashboards_powmr_energy.
+    This avoids the conflict with HA's YAML dashboard loader that scans /config/dashboards/.
     """
     import json
     import os
 
     DASHBOARD_URL = "powmr-energy"
     DASHBOARD_TITLE = "Smart Solar Енергопанель"
-    storage_path = os.path.join(hass.config.config_dir, ".storage", "lovelace_dashboards")
+    DASHBOARD_ID = "powmr_energy"
+    config_dir = hass.config.config_dir
+    dashboards_storage = os.path.join(config_dir, ".storage", "lovelace_dashboards")
+    dashboard_content_storage = os.path.join(config_dir, f".storage/lovelace.{DASHBOARD_ID}")
 
     # Step 1: Check if already registered
     try:
-        if os.path.exists(storage_path):
-            def _check():
-                with open(storage_path, "r") as f:
-                    data = json.loads(f.read())
-                for entry in data.get("data", {}).get("items", []):
-                    if entry.get("url_path") == DASHBOARD_URL:
-                        return True
+        def _check():
+            if not os.path.exists(dashboards_storage):
                 return False
-            if await hass.async_add_executor_job(_check):
-                _LOGGER.debug("Dashboard %s already registered", DASHBOARD_URL)
-                return
+            with open(dashboards_storage, "r") as f:
+                data = json.loads(f.read())
+            for item in data.get("data", {}).get("items", []):
+                if item.get("url_path") == DASHBOARD_URL:
+                    return True
+            return False
+        if await hass.async_add_executor_job(_check):
+            # Already registered — just update the content
+            await _update_dashboard_content(hass, dashboard_content_storage, dashboard_yaml)
+            _LOGGER.debug("Dashboard %s already registered, content updated", DASHBOARD_URL)
+            return
     except Exception as exc:
         _LOGGER.debug("Dashboard check failed: %s", exc)
 
-    # Step 2: Register by appending to lovelace_dashboards storage
+    # Step 2: Register metadata
     try:
         def _register():
-            with open(storage_path, "r") as f:
+            with open(dashboards_storage, "r") as f:
                 data = json.loads(f.read())
 
             items = data.get("data", {}).get("items", [])
-            for entry in items:
-                if entry.get("url_path") == DASHBOARD_URL:
-                    return True  # already there
+            for item in items:
+                if item.get("url_path") == DASHBOARD_URL:
+                    return True  # concurrent registration
 
             items.append({
-                "id": "powmr_energy",
+                "id": DASHBOARD_ID,
                 "icon": "mdi:solar-power",
                 "title": DASHBOARD_TITLE,
                 "show_in_sidebar": True,
@@ -583,26 +576,38 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, yaml_path: str) -> N
             })
             data["data"]["items"] = items
 
-            with open(storage_path, "w") as f:
+            with open(dashboards_storage, "w") as f:
                 json.dump(data, f, indent=2)
             return True
 
         result = await hass.async_add_executor_job(_register)
         if result:
-            _LOGGER.info("✅ Dashboard '%s' auto-registered in sidebar", DASHBOARD_TITLE)
-            # Refresh lovelace so sidebar updates immediately
-            try:
-                await hass.services.async_call(
-                    "lovelace", "reload_resources", {}, blocking=False,
-                )
-            except Exception:
-                pass
+            # Step 3: Write dashboard config content
+            await _update_dashboard_content(hass, dashboard_content_storage, dashboard_yaml)
+            _LOGGER.info("✅ Dashboard '%s' auto-registered (storage mode, no YAML)", DASHBOARD_TITLE)
         else:
             _LOGGER.debug("Dashboard already registered (concurrent)")
 
     except Exception as exc:
-        _LOGGER.warning(
-            "Dashboard auto-register failed: %s. "
-            "Manual: Settings → Dashboards → Add Dashboard → '%s' → YAML → %s",
-            exc, DASHBOARD_TITLE, yaml_path,
-        )
+        _LOGGER.warning("Dashboard auto-register failed: %s", exc)
+
+
+async def _update_dashboard_content(
+    hass: HomeAssistant, storage_path: str, dashboard_yaml: str, dashboard_id: str = "powmr_energy"
+) -> None:
+    """Write the dashboard config to storage."""
+    import json
+    import os
+
+    def _write():
+        data = {
+            "key": f"lovelace.{dashboard_id}",
+            "version": 1,
+            "data": {
+                "config": dashboard_yaml,
+            },
+        }
+        with open(storage_path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    await hass.async_add_executor_job(_write)
