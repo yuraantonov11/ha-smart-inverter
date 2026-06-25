@@ -31,6 +31,7 @@ from .const import (
     CHARGER_SNU,
     CHARGER_UTO,
     ENDPOINT_DEVICE_CONFIG,
+    ENDPOINT_DEVICE_CONFIGS_READ,
     ENDPOINT_DEVICE_CONTROL,
     ENDPOINT_DEVICE_LIST,
     ENDPOINT_HISTORY,
@@ -658,12 +659,15 @@ class InverterApiClient:
     async def fetch_device_configs(self) -> dict[str, Any]:
         """Fetch all device configuration settings from the inverter.
 
-        Uses the settings cache endpoint that returns every known config key
-        with its current value, min, max, step, unit, and display name.
+        Uses the async batch-read API:
+          1. POST /apis/remote/device/configs/read  -> returns batchReadId
+          2. GET  /apis/remote/device/configs/read/details?batchReadId=...
+             poll until isFinished=True, then extract configAttributeStates
         """
         if not self.device_sn:
             return {}
 
+        # Step 1: initiate batch read
         await self._apply_rate_limit(ENDPOINT_DEVICE_CONFIGS_READ)
         params = {"deviceId": self.device_sn}
         body = {"id": self.device_sn}
@@ -678,32 +682,67 @@ class InverterApiClient:
             ) as resp:
                 data = await resp.json()
         except aiohttp.ClientError:
-            _LOGGER.warning("Failed to fetch device configs")
+            _LOGGER.warning("Failed to initiate device config batch read")
             return {}
 
-        if data.get("code") == 0 and isinstance(data.get("data"), dict):
-            resp_data = data["data"]
-            # Flutter client extracts configAttributeStates first, then targetConfig
-            config_states = resp_data.get("configAttributeStates")
-            if not isinstance(config_states, dict):
-                config_states = resp_data.get("targetConfig", {})
-            if isinstance(config_states, dict):
-                parsed: dict[str, dict] = {}
-                for key, item in config_states.items():
-                    if not isinstance(item, dict):
-                        continue
-                    parsed[key] = {
-                        "value": item.get("value"),
-                        "min": item.get("min"),
-                        "max": item.get("max"),
-                        "step": item.get("step"),
-                        "unit": item.get("unit"),
-                        "name": item.get("nameDisplay") or item.get("name") or key,
-                    }
-                return parsed
+        code = data.get("code")
+        if code == 70021:
+            _LOGGER.debug("Device config batch read rate-limited, skipping")
+            return {}
+        if code != 0:
+            _LOGGER.warning("Device config batch read failed: code=%s msg=%s",
+                            code, data.get("message"))
+            return {}
 
-        _LOGGER.debug("Device configs fetch returned unexpected shape: %s",
-                       self._describe_data_shape(data.get("data")))
+        batch_id = data.get("data", {}).get("id") or data.get("data", {}).get("deviceId")
+        if not batch_id:
+            _LOGGER.warning("No batchReadId in config read response")
+            return {}
+
+        # Step 2: poll details until finished (max 10 attempts, ~15s total)
+        details_url = "/apis/remote/device/configs/read/details"
+        for attempt in range(10):
+            await asyncio.sleep(1.5)
+            try:
+                detail_headers = self._build_headers("GET", None)
+                async with self._session.get(
+                    details_url,
+                    params={"batchReadId": batch_id},
+                    headers=detail_headers,
+                ) as resp:
+                    detail_data = await resp.json()
+            except aiohttp.ClientError:
+                continue
+
+            if detail_data.get("code") != 0:
+                continue
+
+            resp_payload = detail_data.get("data", {})
+            if not isinstance(resp_payload, dict):
+                continue
+
+            if resp_payload.get("isFinished"):
+                config_states = resp_payload.get("configAttributeStates", {})
+                if isinstance(config_states, dict) and config_states:
+                    parsed: dict[str, dict] = {}
+                    for key, item in config_states.items():
+                        if not isinstance(item, dict):
+                            continue
+                        parsed[key] = {
+                            "value": item.get("value"),
+                            "min": item.get("min"),
+                            "max": item.get("max"),
+                            "step": item.get("step"),
+                            "unit": item.get("unit"),
+                            "name": item.get("nameDisplay") or item.get("name") or key,
+                            "valueDisplay": item.get("valueDisplay"),
+                        }
+                    _LOGGER.info("Device settings loaded: %d keys", len(parsed))
+                    return parsed
+                # isFinished but no states — empty config, still success
+                return {}
+
+        _LOGGER.warning("Device config batch read timed out after polling")
         return {}
 
     async def fetch_history(

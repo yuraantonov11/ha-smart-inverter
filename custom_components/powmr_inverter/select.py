@@ -1,6 +1,7 @@
 """Select entities for Inverter Smart Inverter.
 
-Provides output priority, charger priority, and HEMS mode selection.
+Provides output priority, charger priority, HEMS mode, battery type,
+and AC input range selection.
 """
 
 from __future__ import annotations
@@ -38,12 +39,14 @@ CHARGER_OPTIONS = [
     "UTO (Utility Only)",
 ]
 SMART_MODE_OPTIONS = ["Adaptive", "Arbitrage", "Storm"]
+BATTERY_TYPE_OPTIONS = ["AGM", "FLD", "USE", "LIB", "PYL", "TQF", "GRO", "LIA", "LIC", "FEL"]
+AC_INPUT_RANGE_OPTIONS = ["Appliance", "UPS"]
 
 OUTPUT_VALUE_MAP = {
     "USB (Grid First)": OUTPUT_USB,
     "SBU (Solar/Battery First)": OUTPUT_SBU,
 }
-# Maps API value (numeric string OR text label) → option label
+# Maps API value (numeric string OR text label) -> option label
 OUTPUT_LABEL_MAP: dict[str, str] = {
     "0": "USB (Grid First)",
     "2": "SBU (Solar/Battery First)",
@@ -58,7 +61,7 @@ CHARGER_VALUE_MAP = {
     "OSO (Solar Only)": CHARGER_OSO,
     "UTO (Utility Only)": CHARGER_UTO,
 }
-# Maps API value (numeric string OR text label) → option label
+# Maps API value (numeric string OR text label) -> option label
 CHARGER_LABEL_MAP: dict[str, str] = {
     "0": "CSO (Solar First)",
     "1": "SNU (Solar + Utility)",
@@ -77,6 +80,52 @@ SMART_MODE_VALUE_MAP = {
 }
 SMART_MODE_LABEL_MAP = {v: k for k, v in SMART_MODE_VALUE_MAP.items()}
 
+# Battery type: API numeric value -> option label
+BATTERY_TYPE_VALUE_MAP: dict[str, str] = {
+    "AGM": "0", "FLD": "1", "USE": "2", "LIB": "3",
+    "PYL": "4", "TQF": "5", "GRO": "6", "LIA": "7",
+    "LIC": "8", "FEL": "9",
+}
+BATTERY_TYPE_LABEL_MAP: dict[str, str] = {v: k for k, v in BATTERY_TYPE_VALUE_MAP.items()}
+# Also handle numeric strings from API
+BATTERY_TYPE_LABEL_MAP.update({
+    "0": "AGM", "1": "FLD", "2": "USE", "3": "LIB",
+    "4": "PYL", "5": "TQF", "6": "GRO", "7": "LIA",
+    "8": "LIC", "9": "FEL",
+})
+
+AC_INPUT_RANGE_VALUE_MAP: dict[str, str] = {
+    "Appliance": "0",
+    "UPS": "1",
+}
+AC_INPUT_RANGE_LABEL_MAP: dict[str, str] = {
+    "0": "Appliance",
+    "1": "UPS",
+    "APL": "Appliance",
+}
+
+
+def _setting_str(data: dict | None, key: str) -> str | None:
+    """Read a string setting value from coordinator deviceSettings."""
+    if not data:
+        return None
+    settings = data.get("deviceSettings", {})
+    item = settings.get(key, {})
+    if isinstance(item, dict):
+        return str(item.get("value", ""))
+    return str(item) if item else None
+
+
+def _setting_display(data: dict | None, key: str) -> str | None:
+    """Read the valueDisplay string from coordinator deviceSettings."""
+    if not data:
+        return None
+    settings = data.get("deviceSettings", {})
+    item = settings.get(key, {})
+    if isinstance(item, dict):
+        return item.get("valueDisplay")
+    return None
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -90,6 +139,8 @@ async def async_setup_entry(
         InverterOutputPrioritySelect(coordinator),
         InverterChargerPrioritySelect(coordinator),
         InverterSmartModeSelect(coordinator),
+        InverterBatteryTypeSelect(coordinator),
+        InverterAcInputRangeSelect(coordinator),
     ]
     async_add_entities(entities)
 
@@ -204,3 +255,78 @@ class InverterSmartModeSelect(InverterSelectBase):
         mode = SMART_MODE_VALUE_MAP.get(option, 0)
         self.coordinator.smart_mode = mode
         _LOGGER.info("HEMS smart mode set to %s (%d)", option, mode)
+
+
+class InverterBatteryTypeSelect(InverterSelectBase):
+    """Select entity for battery type."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            SelectEntityDescription(
+                key="battery_type",
+                translation_key="battery_type",
+                icon="mdi:battery",
+            ),
+            BATTERY_TYPE_OPTIONS,
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        # Prefer valueDisplay from API (e.g. "LIB", "LIA" etc.)
+        display = _setting_display(self.coordinator.data, "settingBatteryType")
+        if display:
+            return display
+        val = _setting_str(self.coordinator.data, "settingBatteryType")
+        if val is None:
+            return None
+        return BATTERY_TYPE_LABEL_MAP.get(val, val)
+
+    async def async_select_option(self, option: str) -> None:
+        value = BATTERY_TYPE_VALUE_MAP.get(option)
+        if value is None:
+            # option might be a valueDisplay from the API - try reverse lookup
+            for label, val in BATTERY_TYPE_LABEL_MAP.items():
+                if label == option:
+                    value = val
+                    break
+        if value is None:
+            _LOGGER.error("Unknown battery type option: %s", option)
+            return
+        ok = await self.coordinator.api.set_config_item("settingBatteryType", value)
+        if ok:
+            await self.coordinator.async_request_refresh()
+            _LOGGER.info("Battery type set to %s (%s)", option, value)
+        else:
+            _LOGGER.error("Failed to set battery type to %s", option)
+
+
+class InverterAcInputRangeSelect(InverterSelectBase):
+    """Select entity for AC input range (Appliance/UPS)."""
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            SelectEntityDescription(
+                key="ac_input_range",
+                translation_key="ac_input_range",
+                icon="mdi:power-plug",
+            ),
+            AC_INPUT_RANGE_OPTIONS,
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        val = _setting_str(self.coordinator.data, "acInputRangeSetting")
+        if val is None:
+            return None
+        return AC_INPUT_RANGE_LABEL_MAP.get(val)
+
+    async def async_select_option(self, option: str) -> None:
+        value = AC_INPUT_RANGE_VALUE_MAP.get(option, "0")
+        ok = await self.coordinator.api.set_config_item("acInputRangeSetting", value)
+        if ok:
+            await self.coordinator.async_request_refresh()
+            _LOGGER.info("AC input range set to %s (%s)", option, value)
+        else:
+            _LOGGER.error("Failed to set AC input range to %s", option)

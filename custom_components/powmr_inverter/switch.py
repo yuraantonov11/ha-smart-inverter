@@ -1,4 +1,4 @@
-"""Switch entities for Smart Solar Inverter — HEMS automation toggle."""
+"""Switch entities for Smart Solar Inverter — HEMS automation and system toggles."""
 
 from __future__ import annotations
 
@@ -16,6 +16,50 @@ from .coordinator import InverterCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
+def _setting_int(data: dict | None, key: str) -> int | None:
+    """Read an integer setting value from coordinator deviceSettings."""
+    if not data:
+        return None
+    settings = data.get("deviceSettings", {})
+    item = settings.get(key, {})
+    val = item.get("value") if isinstance(item, dict) else item
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+class _InverterConfigSwitch(CoordinatorEntity, SwitchEntity):
+    """Generic on/off switch backed by a deviceSettings config key."""
+
+    _setting_key: str = ""
+    _config_on_value: str = "1"
+    _config_off_value: str = "0"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_has_entity_name = True
+        self._attr_unique_id = f"{coordinator.api.device_sn}_{self._setting_key}"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def is_on(self) -> bool | None:
+        val = _setting_int(self.coordinator.data, self._setting_key)
+        return bool(val) if val is not None else None
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self.coordinator.api.set_config_item(self._setting_key, self._config_on_value)
+        await self.coordinator.async_request_refresh()
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self.coordinator.api.set_config_item(self._setting_key, self._config_off_value)
+        await self.coordinator.async_request_refresh()
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
@@ -31,6 +75,15 @@ async def async_setup_entry(
         InverterBackupModeSwitch(coordinator),
         InverterBuzzerSwitch(coordinator),
         InverterEcoModeSwitch(coordinator),
+        # New system switches
+        InverterOverLoadRestartSwitch(coordinator),
+        InverterOverTemperatureRestartSwitch(coordinator),
+        InverterLcdBacklightSwitch(coordinator),
+        InverterLedPatternSwitch(coordinator),
+        InverterBuzzerOnGridInterruptSwitch(coordinator),
+        InverterBatteryEqualizationSwitch(coordinator),
+        InverterTransferToBypassSwitch(coordinator),
+        InverterDualOutputSwitch(coordinator),
     ]
     async_add_entities(entities)
 
@@ -64,21 +117,6 @@ class InverterHemsAutoModeSwitch(CoordinatorEntity, SwitchEntity):
         self.coordinator.hems_auto_mode = False
         self.async_write_ha_state()
         _LOGGER.info("HEMS auto mode disabled")
-
-
-def _setting_int(data: dict | None, key: str) -> int | None:
-    """Read an integer setting value from coordinator deviceSettings."""
-    if not data:
-        return None
-    settings = data.get("deviceSettings", {})
-    item = settings.get(key, {})
-    val = item.get("value") if isinstance(item, dict) else item
-    if val is None:
-        return None
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return None
 
 
 class InverterGridChargingSwitch(CoordinatorEntity, SwitchEntity):
@@ -221,3 +259,94 @@ class InverterEcoModeSwitch(CoordinatorEntity, SwitchEntity):
     async def async_turn_off(self, **kwargs) -> None:
         await self.coordinator.api.set_config_item(self._setting_key, "0")
         await self.coordinator.async_request_refresh()
+
+
+# ── New system switches ───────────────────────────────────────────────────
+
+
+class InverterOverLoadRestartSwitch(_InverterConfigSwitch):
+    """Switch: auto-restart after overload."""
+
+    _setting_key = "overLoadRestartSetting"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "overload_restart"
+        self._attr_icon = "mdi:restart"
+
+
+class InverterOverTemperatureRestartSwitch(_InverterConfigSwitch):
+    """Switch: auto-restart after over-temperature."""
+
+    _setting_key = "overTemperatureAutoRestartSetting"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "overtemp_restart"
+        self._attr_icon = "mdi:thermometer-alert"
+
+
+class InverterLcdBacklightSwitch(_InverterConfigSwitch):
+    """Switch: LCD backlight on/off."""
+
+    _setting_key = "lcdBacklightSetting"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "lcd_backlight"
+        self._attr_icon = "mdi:brightness-6"
+
+
+class InverterLedPatternSwitch(_InverterConfigSwitch):
+    """Switch: LED pattern indicator on/off."""
+
+    _setting_key = "rgbOnAndOffControlSetting"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "led_pattern"
+        self._attr_icon = "mdi:led-on"
+
+
+class InverterBuzzerOnGridInterruptSwitch(_InverterConfigSwitch):
+    """Switch: buzzer beep when high-priority power source connects/disconnects."""
+
+    _setting_key = "beepsWhilePrimarySourceInterupt"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "buzzer_grid_interrupt"
+        self._attr_icon = "mdi:bell-ring"
+
+
+class InverterBatteryEqualizationSwitch(_InverterConfigSwitch):
+    """Switch: enable/disable battery equalization."""
+
+    _setting_key = "batteryEqualizationSetting"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "battery_equalization"
+        self._attr_icon = "mdi:battery-sync"
+
+
+class InverterTransferToBypassSwitch(_InverterConfigSwitch):
+    """Switch: transfer to bypass on overload."""
+
+    _setting_key = "transferToBypassFromOverload"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "bypass_on_overload"
+        self._attr_icon = "mdi:swap-horizontal"
+
+
+class InverterDualOutputSwitch(_InverterConfigSwitch):
+    """Switch: dual output mode (smart load)."""
+
+    _setting_key = "cutOffVoltBatteryForSmartMainLoad"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_translation_key = "dual_output"
+        self._attr_icon = "mdi:power-plug-off"

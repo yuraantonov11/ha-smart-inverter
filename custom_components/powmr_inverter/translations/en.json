@@ -43,60 +43,209 @@
   },
   "entity": {
     "sensor": {
-      "pv_power": { "name": "PV Power" },
-      "grid_power": { "name": "Grid Power" },
-      "battery_power": { "name": "Battery Power" },
-      "load_power": { "name": "Load Power" },
-      "battery_soc": { "name": "Battery SOC" },
-      "battery_soc_corrected": { "name": "Battery SOC (Corrected)" },
-      "pv_voltage": { "name": "PV Voltage" },
-      "grid_voltage": { "name": "Grid Voltage" },
-      "battery_voltage": { "name": "Battery Voltage" },
-      "load_percentage": { "name": "Load Percentage" },
-      "working_mode": { "name": "Working Mode" },
-      "daily_energy": { "name": "Daily PV Energy" },
-      "total_energy": { "name": "Total PV Energy" },
-      "co2_saved": { "name": "CO2 Saved" },
-      "pv_surplus": { "name": "PV Surplus" },
-      "battery_current": { "name": "Battery Current" },
-      "ac_output_power": { "name": "AC Output Power" },
-      "feed_in_power": { "name": "Grid Feed-in Power" },
-      "grid_import_power": { "name": "Grid Import Power" },
-      "battery_charge_current": { "name": "Battery Charge Current" },
-      "battery_discharge_current": { "name": "Battery Discharge Current" },
-      "inverter_temperature": { "name": "Inverter Temperature" },
-      "forecast_tomorrow": { "name": "PV Forecast Tomorrow" },
-      "forecast_day_after": { "name": "PV Forecast Day After" },
-      "learned_ratio": { "name": "Learned PV Ratio" },
-      "daily_savings": { "name": "Daily Savings" },
-      "monthly_savings": { "name": "Monthly Savings" },
-      "hems_last_reason": { "name": "HEMS Decision Reason" },
-      "hems_last_output_cmd": { "name": "HEMS Output Command" },
-      "hems_last_charger_cmd": { "name": "HEMS Charger Command" }
+      "pv_power": {
+        "name": "PV Power"
+      },
+      "grid_power": {
+        "name": "Grid Power"
+      },
+      "battery_power": {
+        "name": "Battery Power"
+      },
+      "load_power": {
+        "name": "Load Power"
+      },
+      "battery_soc": {
+        "name": "Battery SOC"
+      },
+      "battery_soc_corrected": {
+        "name": "Battery SOC (Corrected)"
+      },
+      "pv_voltage": {
+        "name": "PV Voltage"
+      },
+      "grid_voltage": {
+        "name": "Grid Voltage"
+      },
+      "battery_voltage": {
+        "name": "Battery Voltage"
+      },
+      "load_percentage": {
+        "name": "Load Percentage"
+      },
+      "working_mode": {
+        "name": "Working Mode"
+      },
+      "daily_energy": {
+        "name": "Daily PV Energy"
+      },
+      "total_energy": {
+        "name": "Total PV Energy"
+      },
+      "co2_saved": {
+        "name": "CO2 Saved"
+      },
+      "pv_surplus": {
+        "name": "PV Surplus"
+      },
+      "battery_current": {
+        "name": "Battery Current"
+      },
+      "ac_output_power": {
+        "name": "AC Output Power"
+      },
+      "feed_in_power": {
+        "name": "Grid Feed-in Power"
+      },
+      "grid_import_power": {
+        "name": "Grid Import Power"
+      },
+      "battery_charge_current": {
+        "name": "Battery Charge Current"
+      },
+      "battery_discharge_current": {
+        "name": "Battery Discharge Current"
+      },
+      "inverter_temperature": {
+        "name": "Inverter Temperature"
+      },
+      "forecast_tomorrow": {
+        "name": "PV Forecast Tomorrow"
+      },
+      "forecast_day_after": {
+        "name": "PV Forecast Day After"
+      },
+      "learned_ratio": {
+        "name": "Learned PV Ratio"
+      },
+      "daily_savings": {
+        "name": "Daily Savings"
+      },
+      "monthly_savings": {
+        "name": "Monthly Savings"
+      },
+      "hems_last_reason": {
+        "name": "HEMS Decision Reason"
+      },
+      "hems_last_output_cmd": {
+        "name": "HEMS Output Command"
+      },
+      "hems_last_charger_cmd": {
+        "name": "HEMS Charger Command"
+      }
     },
     "select": {
-      "output_priority": { "name": "Output Priority" },
-      "charger_priority": { "name": "Charger Priority" },
-      "smart_mode": { "name": "HEMS Smart Mode" }
+      "output_priority": {
+        "name": "Output Priority"
+      },
+      "charger_priority": {
+        "name": "Charger Priority"
+      },
+      "smart_mode": {
+        "name": "HEMS Smart Mode"
+      },
+      "battery_type": {
+        "name": "Battery Type"
+      },
+      "ac_input_range": {
+        "name": "AC Input Range"
+      }
     },
     "number": {
-      "max_charging_current": { "name": "Max Charging Current" },
-      "max_utility_charging_current": { "name": "Max Utility Charging Current" },
-      "battery_charge_limit": { "name": "Battery Charge Limit" },
-      "battery_discharge_limit": { "name": "Battery Discharge Limit" },
-      "grid_charge_power_limit": { "name": "Grid Charge Power Limit" }
+      "max_charging_current": {
+        "name": "Max Charging Current"
+      },
+      "max_utility_charging_current": {
+        "name": "Max Utility Charging Current"
+      },
+      "battery_charge_limit": {
+        "name": "Battery Charge Limit"
+      },
+      "battery_discharge_limit": {
+        "name": "Battery Discharge Limit"
+      },
+      "grid_charge_power_limit": {
+        "name": "Grid Charge Power Limit"
+      },
+      "bulk_charging_voltage": {
+        "name": "Bulk Charging Voltage"
+      },
+      "float_charging_voltage": {
+        "name": "Float Charging Voltage"
+      },
+      "low_battery_cutoff_voltage": {
+        "name": "Low Battery Cutoff Voltage"
+      },
+      "equalization_voltage": {
+        "name": "Equalization Voltage"
+      },
+      "equalization_time": {
+        "name": "Equalization Time"
+      },
+      "equalization_interval": {
+        "name": "Equalization Interval"
+      },
+      "sbu_return_to_grid_voltage": {
+        "name": "SBU Return to Grid Voltage"
+      },
+      "sbu_return_to_battery_voltage": {
+        "name": "SBU Return to Battery Voltage"
+      },
+      "grid_tie_current": {
+        "name": "Grid-Tie Current"
+      }
     },
     "switch": {
-      "hems_auto_mode": { "name": "HEMS Auto Mode" },
-      "grid_charging": { "name": "Grid Charging" },
-      "grid_feed_in": { "name": "Grid Feed-In" },
-      "backup_mode": { "name": "Backup Mode (SBU)" },
-      "buzzer": { "name": "Buzzer" },
-      "eco_mode": { "name": "ECO Mode" }
+      "hems_auto_mode": {
+        "name": "HEMS Auto Mode"
+      },
+      "grid_charging": {
+        "name": "Grid Charging"
+      },
+      "grid_feed_in": {
+        "name": "Grid Feed-In"
+      },
+      "backup_mode": {
+        "name": "Backup Mode (SBU)"
+      },
+      "buzzer": {
+        "name": "Buzzer"
+      },
+      "eco_mode": {
+        "name": "ECO Mode"
+      },
+      "overload_restart": {
+        "name": "Overload Restart"
+      },
+      "overtemp_restart": {
+        "name": "Over-Temperature Restart"
+      },
+      "lcd_backlight": {
+        "name": "LCD Backlight"
+      },
+      "led_pattern": {
+        "name": "LED Pattern"
+      },
+      "buzzer_grid_interrupt": {
+        "name": "Buzzer on Grid Interrupt"
+      },
+      "battery_equalization": {
+        "name": "Battery Equalization"
+      },
+      "bypass_on_overload": {
+        "name": "Transfer to Bypass"
+      },
+      "dual_output": {
+        "name": "Dual Output"
+      }
     },
     "binary_sensor": {
-      "grid_available": { "name": "Grid Available" },
-      "low_battery": { "name": "Low Battery" }
+      "grid_available": {
+        "name": "Grid Available"
+      },
+      "low_battery": {
+        "name": "Low Battery"
+      }
     }
   },
   "services": {

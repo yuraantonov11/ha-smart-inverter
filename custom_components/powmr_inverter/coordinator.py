@@ -108,6 +108,7 @@ class InverterCoordinator(DataUpdateCoordinator):
         self._grid_outage_up_count: int = 0
         self._grid_available: bool = True
         self._grid_initialized: bool = False
+        self._last_config_fetch_at: datetime | None = None
 
         # Battery tracker state
         self._battery_in_low: bool = False
@@ -239,19 +240,23 @@ class InverterCoordinator(DataUpdateCoordinator):
         # ── CO2 update ───────────────────────────────────────────────
         self.api._update_co2()
 
-        # ── Device settings ──────────────────────────────────────────
+        # ── Device settings (cooldown 60s to respect API rate limit) ──
         device_settings = self.data.get("deviceSettings", {}) if self.data else {}
-        if self._consecutive_nulls == 0 and (
-            not device_settings or now.second < 10
-        ):
+        config_fetch_cooldown = (
+            self._last_config_fetch_at is None
+            or (now - self._last_config_fetch_at).total_seconds() > 60
+        )
+        if self._consecutive_nulls == 0 and config_fetch_cooldown:
             try:
-                device_settings = await self.api.fetch_device_configs()
-                keys_found = len(device_settings)
-                if keys_found:
-                    _LOGGER.info("🔧 Device settings loaded: %d keys", keys_found)
+                fetched = await self.api.fetch_device_configs()
+                self._last_config_fetch_at = now
+                if isinstance(fetched, dict) and fetched:
+                    device_settings = fetched
+                    _LOGGER.warning("Device settings loaded: %d keys", len(fetched))
+                else:
+                    _LOGGER.warning("Device settings EMPTY - no data from API")
             except Exception as exc:
-                _LOGGER.debug("Device settings fetch skipped: %s", exc)
-                device_settings = self.data.get("deviceSettings", {}) if self.data else {}
+                _LOGGER.warning("Device settings fetch FAILED: %s", exc)
 
         # ── Daily energy & savings tracking ──────────────────────────
         self._accumulate_daily_energy(now, raw)
