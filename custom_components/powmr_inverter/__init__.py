@@ -13,7 +13,7 @@ from homeassistant.helpers import device_registry as dr
 
 from .api import InverterApiClient
 from .const import DOMAIN
-from .coordinator import InverterCoordinator
+from .coordinator import InverterCoordinator, HistoryCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,13 +50,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             update_interval=timedelta(seconds=5),
         )
 
+        # Create history coordinator (15-min polling)
+        history_coordinator = HistoryCoordinator(
+            hass=hass,
+            api=api,
+            entry=entry,
+        )
+
         # First refresh
         await coordinator.async_config_entry_first_refresh()
+
+        # First refresh history coordinator (background, non-blocking)
+        await history_coordinator.async_config_entry_first_refresh()
 
         # Store coordinator
         hass.data[DOMAIN][entry.entry_id] = {
             "api": api,
             "coordinator": coordinator,
+            "history_coordinator": history_coordinator,
         }
 
         # Register device
@@ -419,6 +430,31 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         history_cards.append({"type": "grid", "cards": [
             _stats("SOC + Напруга АКБ (7 днів)", "line", "hour", 7, ["mean"], soc_ents)
         ]})
+
+    # ── History chart sensors (fetched from API every 15 min) ──
+    daily_power_eid = _e("history_daily_power")
+    if daily_power_eid:
+        history_cards.append({"type": "grid", "cards": [
+            _stats("Потужність PV сьогодні (24г)", "line", "hour", 1, ["mean"], [daily_power_eid])
+        ]})
+
+    monthly_energy_eid = _e("history_monthly_energy")
+    if monthly_energy_eid:
+        history_cards.append({"type": "grid", "cards": [
+            _stats("Енергія PV за місяць", "bar", "day", 31, ["sum"], [monthly_energy_eid])
+        ]})
+
+    yearly_energy_eid = _e("history_yearly_energy")
+    if yearly_energy_eid:
+        history_cards.append({"type": "grid", "cards": [
+            _stats("Енергія PV за рік", "bar", "month", 365, ["sum"], [yearly_energy_eid])
+        ]})
+
+    total_energy_eid = _e("history_total_energy")
+    if total_energy_eid:
+        history_cards.append({"type": "grid", "cards": [_tile(
+            total_energy_eid, "Загальна енергія", "mdi:solar-power-variant"
+        )]})
 
     views.append({
         "title": "Історія",

@@ -132,6 +132,18 @@
       },
       "hems_last_charger_cmd": {
         "name": "HEMS Charger Command"
+      },
+      "history_daily_power": {
+        "name": "Today Hourly Power (kW)"
+      },
+      "history_monthly_energy": {
+        "name": "Monthly PV Energy (kWh)"
+      },
+      "history_yearly_energy": {
+        "name": "Yearly PV Energy (kWh)"
+      },
+      "history_total_energy": {
+        "name": "Total Cumulative Energy (kWh)"
       }
     },
     "select": {

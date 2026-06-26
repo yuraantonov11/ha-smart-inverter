@@ -270,3 +270,6 @@ STORAGE_LAST_CMD_CHARGER_AT = "last_cmd_charger_at"
 STORAGE_LAST_OUTPUT_SWITCH_AT = "last_output_switch_at"
 STORAGE_MANUAL_OVERRIDE_UNTIL = "manual_override_until"
 STORAGE_LAST_BATTERY_ACTIVITY = "last_battery_activity"
+
+# ─── History coordinator ────────────────────────────────────────────────
+HISTORY_POLL_INTERVAL_SEC = 900  # 15 minutes

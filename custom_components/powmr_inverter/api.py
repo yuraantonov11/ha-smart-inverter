@@ -774,6 +774,129 @@ class InverterApiClient:
             return data["data"] if isinstance(data["data"], list) else []
         return []
 
+    # ── History helpers ────────────────────────────────────────────────
+
+    async def fetch_today_hourly_power(self) -> list[dict[str, Any]]:
+        """Fetch hourly PV power for today (24 data points).
+
+        Returns a list of dicts with keys: timestamp, pvPower (W).
+        """
+        from datetime import timezone, timedelta
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        records = await self.fetch_history(today_start, now)
+        if not records:
+            return []
+
+        # Group by hour and take the last record per hour
+        hourly: dict[int, dict] = {}
+        for rec in records:
+            ts = self._parse_timestamp(rec.get("createTime") or rec.get("time") or rec.get("timestamp"))
+            if ts is None:
+                continue
+            hour = ts.hour
+            hourly[hour] = rec
+
+        result = []
+        for h in range(24):
+            if h in hourly:
+                rec = hourly[h]
+                result.append({
+                    "timestamp": today_start.replace(hour=h).isoformat(),
+                    "pvPower": self._parse_double(rec.get("pvPower") or rec.get("pvInputPower") or rec.get("generationPower")),
+                })
+            else:
+                result.append({
+                    "timestamp": today_start.replace(hour=h).isoformat(),
+                    "pvPower": 0.0,
+                })
+        return result
+
+    async def fetch_monthly_daily_energy(self) -> list[dict[str, Any]]:
+        """Fetch daily PV energy for the current month (up to 31 data points).
+
+        Returns a list of dicts with keys: timestamp, pvEnergy (kWh).
+        """
+        from datetime import timezone, timedelta
+        now = datetime.now(timezone.utc)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        records = await self.fetch_history(month_start, now)
+        if not records:
+            return []
+
+        # Group by day and sum energy for each day
+        daily: dict[int, float] = {}
+        for rec in records:
+            ts = self._parse_timestamp(rec.get("createTime") or rec.get("time") or rec.get("timestamp"))
+            if ts is None:
+                continue
+            day = ts.day
+            energy = self._parse_double(rec.get("pvEnergy") or rec.get("generationEnergy") or rec.get("pvGenerated"))
+            daily[day] = daily.get(day, 0.0) + energy
+
+        result = []
+        import calendar
+        days_in_month = calendar.monthrange(now.year, now.month)[1]
+        for d in range(1, days_in_month + 1):
+            result.append({
+                "timestamp": month_start.replace(day=d).isoformat(),
+                "pvEnergy": round(daily.get(d, 0.0), 3),
+            })
+        return result
+
+    async def fetch_yearly_monthly_energy(self) -> list[dict[str, Any]]:
+        """Fetch monthly PV energy for the current year (12 data points).
+
+        Returns a list of dicts with keys: timestamp, pvEnergy (kWh).
+        """
+        from datetime import timezone, timedelta
+        now = datetime.now(timezone.utc)
+        year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        records = await self.fetch_history(year_start, now)
+        if not records:
+            return []
+
+        # Group by month and sum energy
+        monthly: dict[int, float] = {}
+        for rec in records:
+            ts = self._parse_timestamp(rec.get("createTime") or rec.get("time") or rec.get("timestamp"))
+            if ts is None:
+                continue
+            month = ts.month
+            energy = self._parse_double(rec.get("pvEnergy") or rec.get("generationEnergy") or rec.get("pvGenerated"))
+            monthly[month] = monthly.get(month, 0.0) + energy
+
+        result = []
+        for m in range(1, 13):
+            result.append({
+                "timestamp": year_start.replace(month=m).isoformat(),
+                "pvEnergy": round(monthly.get(m, 0.0), 3),
+            })
+        return result
+
+    @staticmethod
+    def _parse_timestamp(value: Any) -> datetime | None:
+        """Parse a timestamp string into a datetime object."""
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value, tz=timezone.utc)
+        if isinstance(value, str):
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S.%f",
+                "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%dT%H:%M:%S.%f%z",
+                "%Y-%m-%dT%H:%M:%S.%fZ",
+            ):
+                try:
+                    return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+        return None
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     def _update_co2(self) -> None:

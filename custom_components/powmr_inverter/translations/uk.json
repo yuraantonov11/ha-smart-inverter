@@ -132,6 +132,18 @@
       },
       "hems_last_charger_cmd": {
         "name": "HEMS Charger Command"
+      },
+      "history_daily_power": {
+        "name": "Потужність PV сьогодні (кВт)"
+      },
+      "history_monthly_energy": {
+        "name": "Енергія PV за місяць (кВт·год)"
+      },
+      "history_yearly_energy": {
+        "name": "Енергія PV за рік (кВт·год)"
+      },
+      "history_total_energy": {
+        "name": "Загальна енергія (кВт·год)"
       }
     },
     "select": {

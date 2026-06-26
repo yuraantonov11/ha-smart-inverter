@@ -21,7 +21,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .api import InverterApiClient, InverterOfflineError, TokenExpiredError
-from .const import DOMAIN
+from .const import DOMAIN, HISTORY_POLL_INTERVAL_SEC
 from .hems.forecast import ForecastService
 from .hems.soc_correction import get_real_soc
 from .hems.engine import HemsEngine, SmartMode, OutputPriority, ChargerPriority, HemsDecision
@@ -714,3 +714,74 @@ class InverterCoordinator(DataUpdateCoordinator):
         if now.hour == 21 and now.minute < 1 and self._daily_pv_kwh > 0.1:
             estimated_radiation = self._daily_pv_kwh / max(self.forecast_learned_ratio, 0.01)
             self._forecast.update_ratio(self._daily_pv_kwh, estimated_radiation)
+
+
+class HistoryCoordinator(DataUpdateCoordinator):
+    """Coordinator that polls historical data from the inverter API every 15 minutes.
+
+    Provides 4 data series for dashboard visualization:
+    - Today hourly PV power (24 points)
+    - Current month daily PV energy (up to 31 points)
+    - Current year monthly PV energy (12 points)
+    - Total cumulative PV energy
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        api: InverterApiClient,
+        entry: ConfigEntry,
+        update_interval: timedelta = timedelta(seconds=HISTORY_POLL_INTERVAL_SEC),
+    ) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=f"{DOMAIN}_history",
+            update_interval=update_interval,
+        )
+        self.api = api
+        self._entry = entry
+
+        # Cached history data
+        self.today_hourly_power: list[dict] = []
+        self.monthly_daily_energy: list[dict] = []
+        self.yearly_monthly_energy: list[dict] = []
+        self.total_energy_kwh: float = 0.0
+
+    async def _async_update_data(self) -> dict[str, Any]:
+        """Fetch historical data from the API."""
+        _LOGGER.debug("HistoryCoordinator: fetching historical data")
+
+        try:
+            # Fetch all 4 data series
+            today_power = await self.api.fetch_today_hourly_power()
+            monthly_energy = await self.api.fetch_monthly_daily_energy()
+            yearly_energy = await self.api.fetch_yearly_monthly_energy()
+
+            # Total energy from the API's daily/total energy stats
+            total_energy = self.api.total_energy
+
+            # Store for sensor access
+            self.today_hourly_power = today_power
+            self.monthly_daily_energy = monthly_energy
+            self.yearly_monthly_energy = yearly_energy
+            self.total_energy_kwh = total_energy
+
+            return {
+                "today_hourly_power": today_power,
+                "monthly_daily_energy": monthly_energy,
+                "yearly_monthly_energy": yearly_energy,
+                "total_energy_kwh": total_energy,
+                "last_updated": datetime.now().isoformat(),
+            }
+
+        except Exception as exc:
+            _LOGGER.warning("HistoryCoordinator: fetch failed: %s", exc)
+            return {
+                "today_hourly_power": self.today_hourly_power,
+                "monthly_daily_energy": self.monthly_daily_energy,
+                "yearly_monthly_energy": self.yearly_monthly_energy,
+                "total_energy_kwh": self.total_energy_kwh,
+                "last_updated": datetime.now().isoformat(),
+                "error": str(exc),
+            }

@@ -32,7 +32,7 @@ from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import InverterCoordinator
+from .coordinator import InverterCoordinator, HistoryCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -287,6 +287,16 @@ async def async_setup_entry(
     entities.append(HemsReasonSensor(coordinator))
     entities.append(HemsOutputCmdSensor(coordinator))
     entities.append(HemsChargerCmdSensor(coordinator))
+
+    # ── History chart sensors (separate coordinator, 15-min polling) ──
+    history_coordinator: HistoryCoordinator | None = hass.data[DOMAIN].get(
+        entry.entry_id, {}
+    ).get("history_coordinator")
+    if history_coordinator is not None:
+        entities.append(DailyPowerHistorySensor(history_coordinator))
+        entities.append(MonthlyEnergyHistorySensor(history_coordinator))
+        entities.append(YearlyEnergyHistorySensor(history_coordinator))
+        entities.append(TotalEnergyHistorySensor(history_coordinator))
 
     async_add_entities(entities)
 
@@ -556,3 +566,196 @@ class HemsChargerCmdSensor(InverterSensor):
     @property
     def native_value(self) -> str | None:
         return self.coordinator.hems_last_charger_cmd or None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# HISTORY CHART SENSORS (use HistoryCoordinator, 15-min polling)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+class DailyPowerHistorySensor(CoordinatorEntity, SensorEntity):
+    """Sensor for today's hourly PV power curve (24 data points).
+
+    Exposes hourly_power and hourly_labels as attributes for charting.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "history_daily_power"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_icon = "mdi:chart-line"
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: HistoryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.api.device_sn}_history_daily_power"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        hourly = self.coordinator.data.get("today_hourly_power", [])
+        if not hourly:
+            return None
+        # Return the latest non-zero value as the "current" power
+        for point in reversed(hourly):
+            if point.get("pvPower", 0) > 0:
+                return round(point["pvPower"] / 1000, 2)
+        return 0.0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.coordinator.data is None:
+            return None
+        hourly = self.coordinator.data.get("today_hourly_power", [])
+        if not hourly:
+            return None
+        timestamps = [p["timestamp"] for p in hourly]
+        values_kw = [round(p["pvPower"] / 1000, 3) for p in hourly]
+        return {
+            "hourly_power_kw": values_kw,
+            "hourly_labels": timestamps,
+            "total_today_kwh": round(sum(values_kw), 2),
+            "last_updated": self.coordinator.data.get("last_updated"),
+        }
+
+
+class MonthlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
+    """Sensor for current month's daily PV energy (up to 31 data points).
+
+    Exposes daily_energy and daily_labels as attributes for charting.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "history_monthly_energy"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:chart-bar"
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: HistoryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.api.device_sn}_history_monthly_energy"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        daily = self.coordinator.data.get("monthly_daily_energy", [])
+        if not daily:
+            return None
+        return round(sum(p["pvEnergy"] for p in daily), 2)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.coordinator.data is None:
+            return None
+        daily = self.coordinator.data.get("monthly_daily_energy", [])
+        if not daily:
+            return None
+        timestamps = [p["timestamp"] for p in daily]
+        values = [round(p["pvEnergy"], 3) for p in daily]
+        return {
+            "daily_energy_kwh": values,
+            "daily_labels": timestamps,
+            "total_month_kwh": round(sum(values), 2),
+            "last_updated": self.coordinator.data.get("last_updated"),
+        }
+
+
+class YearlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
+    """Sensor for current year's monthly PV energy (12 data points).
+
+    Exposes monthly_energy and monthly_labels as attributes for charting.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "history_yearly_energy"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:chart-bar-stacked"
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: HistoryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.api.device_sn}_history_yearly_energy"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        monthly = self.coordinator.data.get("yearly_monthly_energy", [])
+        if not monthly:
+            return None
+        return round(sum(p["pvEnergy"] for p in monthly), 2)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.coordinator.data is None:
+            return None
+        monthly = self.coordinator.data.get("yearly_monthly_energy", [])
+        if not monthly:
+            return None
+        timestamps = [p["timestamp"] for p in monthly]
+        values = [round(p["pvEnergy"], 3) for p in monthly]
+        return {
+            "monthly_energy_kwh": values,
+            "monthly_labels": timestamps,
+            "total_year_kwh": round(sum(values), 2),
+            "last_updated": self.coordinator.data.get("last_updated"),
+        }
+
+
+class TotalEnergyHistorySensor(CoordinatorEntity, SensorEntity):
+    """Sensor for total cumulative PV energy.
+
+    Uses the API's total energy stat (from device list) and exposes
+    cumulative energy data for dashboard visualization.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "history_total_energy"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:solar-power-variant"
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator: HistoryCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.api.device_sn}_history_total_energy"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def native_value(self) -> float | None:
+        if self.coordinator.data is None:
+            return None
+        total = self.coordinator.data.get("total_energy_kwh", 0.0)
+        return total if total > 0 else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self.coordinator.data is None:
+            return None
+        return {
+            "total_energy_kwh": self.coordinator.data.get("total_energy_kwh", 0.0),
+            "daily_energy_kwh": self.coordinator.api.daily_energy,
+            "yearly_energy_kwh": round(
+                sum(p["pvEnergy"] for p in self.coordinator.data.get("yearly_monthly_energy", [])), 2
+            ),
+            "last_updated": self.coordinator.data.get("last_updated"),
+        }
