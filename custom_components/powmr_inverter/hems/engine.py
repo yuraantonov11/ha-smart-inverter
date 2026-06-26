@@ -18,6 +18,20 @@ from .tuning import AdaptiveThresholds, HemsTuningService, HemsTunables
 _LOGGER = logging.getLogger(__name__)
 
 
+# Normalize output/charger display strings to numeric for comparison
+_OUTPUT_DISPLAY_TO_NUM = {"USB": "0", "SBU": "2", "Line Mode": "0", "Battery Mode": "2"}
+_CHARGER_DISPLAY_TO_NUM = {"CSO": "0", "SNU": "1", "OSO": "2", "UTO": "3"}
+
+def _normalize_output(val):
+    if not val:
+        return val
+    return _OUTPUT_DISPLAY_TO_NUM.get(val.strip(), val.strip())
+
+def _normalize_charger(val):
+    if not val:
+        return val
+    return _CHARGER_DISPLAY_TO_NUM.get(val.strip(), val.strip())
+
 class SmartMode(IntEnum):
     ADAPTIVE = 0
     ARBITRAGE = 1
@@ -287,7 +301,9 @@ class HemsEngine:
         """
         now = now or datetime.now()
 
-        if actual_output and self._last_cmd_output and actual_output != self._last_cmd_output:
+        norm_out = _normalize_output(actual_output)
+        norm_last = _normalize_output(self._last_cmd_output)
+        if norm_out and norm_last and norm_out != norm_last:
             if self._last_cmd_output_at and (now - self._last_cmd_output_at).total_seconds() > 30:
                 self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
                 _LOGGER.info(
@@ -296,7 +312,9 @@ class HemsEngine:
                 )
                 return True
 
-        if actual_charger and self._last_cmd_charger and actual_charger != self._last_cmd_charger:
+        norm_chg = _normalize_charger(actual_charger)
+        norm_last_c = _normalize_charger(self._last_cmd_charger)
+        if norm_chg and norm_last_c and norm_chg != norm_last_c:
             if self._last_cmd_charger_at and (now - self._last_cmd_charger_at).total_seconds() > 30:
                 self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
                 _LOGGER.info(
