@@ -420,15 +420,8 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     # ═══════════════════════════════════════════════════════════════
     history_cards: list[dict] = []
 
-    daily_e = _e("daily_energy")
-    if daily_e:
-        history_cards.append({"type": "grid", "cards": [
-            _stats("PV генерація (7 днів)", "bar", "day", 7, ["sum"], [daily_e])
-        ]})
-    if pv:
-        history_cards.append({"type": "grid", "cards": [
-            _stats("Потужність PV (48г)", "line", "hour", 2, ["mean"], [pv])
-        ]})
+    # PV генерація (7 днів) removed — covered by power-history-card monthly
+    # PV power (48h) removed — covered by power-history-card daily
     if pv and load:
         history_cards.append({"type": "grid", "cards": [
             _stats("PV + Навантаження (7 днів)", "line", "hour", 7, ["mean"], [pv, load])
@@ -515,7 +508,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     if ds:
         econ_graphs.append(_stats("Економія (30 днів)", "bar", "day", 30, ["sum"], [ds]))
     if daily_e:
-        econ_graphs.append(_stats("PV генерація (30 днів)", "bar", "day", 30, ["sum"], [daily_e]))
+        # PV generation (30 days) removed — covered by power-history-card monthly
     if econ_graphs:
         econ_cards.append({"type": "grid", "cards": econ_graphs})
 
