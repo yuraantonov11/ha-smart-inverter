@@ -507,8 +507,6 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     ds = _e("daily_savings")
     if ds:
         econ_graphs.append(_stats("Економія (30 днів)", "bar", "day", 30, ["sum"], [ds]))
-    if daily_e:
-        # PV generation (30 days) removed — covered by power-history-card monthly
     if econ_graphs:
         econ_cards.append({"type": "grid", "cards": econ_graphs})
 
