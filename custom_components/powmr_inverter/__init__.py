@@ -180,7 +180,7 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         add_extra_js_url(hass, f"{fc_url}?v=1.8.2")
         # Power history chart card
         ph_url = "/local/community/powmr-inverter/power-history-card.js"
-        add_extra_js_url(hass, f"{ph_url}?v=1.8.8")
+        add_extra_js_url(hass, f"{ph_url}?v=1.8.11")
         _LOGGER.info("Flow card + forecast card + power-history card modules registered")
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
