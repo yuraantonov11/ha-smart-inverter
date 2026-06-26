@@ -827,11 +827,23 @@ class InverterApiClient:
                 url, params=params, data=self._json_compact(body), headers=headers,
             ) as resp:
                 raw_text = await resp.text()
-                _LOGGER.debug(
-                    "Overview %s response: status=%d body=%s",
-                    category, resp.status, raw_text[:500],
-                )
                 data = json.loads(raw_text)
+                # Log full response structure for debugging
+                resp_data = data.get("data", {})
+                if isinstance(resp_data, dict):
+                    props = resp_data.get("properties", [])
+                    _LOGGER.debug(
+                        "Overview %s response: status=%d code=%d props_count=%d props_sample=%s",
+                        category, resp.status, data.get("code", -1),
+                        len(props) if isinstance(props, list) else 0,
+                        json.dumps(props[:2], ensure_ascii=False) if isinstance(props, list) else str(type(props)),
+                    )
+                else:
+                    _LOGGER.debug(
+                        "Overview %s response: status=%d code=%d data_type=%s body=%s",
+                        category, resp.status, data.get("code", -1),
+                        type(resp_data).__name__, raw_text[:800],
+                    )
         except aiohttp.ClientError as exc:
             _LOGGER.warning("Overview fetch failed (%s/%s): %s", category, summary_key, exc)
             return []
@@ -846,12 +858,23 @@ class InverterApiClient:
             )
             return []
 
-        # data.data is the payload — could be a list or dict depending on endpoint
+        # API returns: data = { category: {...}, properties: [{property, timePoints}, ...], hasRealTimePoints }
         payload = data.get("data")
+        if isinstance(payload, dict):
+            properties = payload.get("properties", [])
+            if isinstance(properties, list) and properties:
+                # Find the first property that has timePoints data
+                for prop_group in properties:
+                    time_points = prop_group.get("timePoints", [])
+                    if isinstance(time_points, list) and time_points:
+                        return time_points
+            _LOGGER.debug(
+                "Overview %s: no timePoints found in properties (count=%s)",
+                category, len(properties) if isinstance(properties, list) else "?",
+            )
+            return []
         if isinstance(payload, list):
             return payload
-        if isinstance(payload, dict):
-            return [payload]
         return []
 
     async def fetch_daily_power(self) -> list[dict[str, Any]]:
