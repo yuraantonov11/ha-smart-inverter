@@ -150,6 +150,11 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         if os.path.exists(fc_src):
             shutil.copy2(fc_src, os.path.join(www_dir, "forecast-card.js"))
             _LOGGER.info("Installed forecast-card.js → www/")
+        # Power history chart card (renders API data from attribute arrays)
+        ph_src = os.path.join(src_dir, "power-history-card.js")
+        if os.path.exists(ph_src):
+            shutil.copy2(ph_src, os.path.join(www_dir, "power-history-card.js"))
+            _LOGGER.info("Installed power-history-card.js → www/")
         # Icon PNGs → both primary AND legacy path (safety net for cached JS)
         for fname in ("grid-icon.png", "home-icon.png", "ev-charger-icon.png"):
             src = os.path.join(src_dir, fname)
@@ -173,7 +178,10 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
         add_extra_js_url(hass, f"{fc_url}?v=1.8.2")
-        _LOGGER.info("Flow card + forecast card modules registered")
+        # Power history chart card
+        ph_url = "/local/community/powmr-inverter/power-history-card.js"
+        add_extra_js_url(hass, f"{ph_url}?v=1.8.8")
+        _LOGGER.info("Flow card + forecast card + power-history card modules registered")
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
 
@@ -434,21 +442,39 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     # ── History chart sensors (fetched from API every 15 min) ──
     daily_power_eid = _e("history_daily_power")
     if daily_power_eid:
-        history_cards.append({"type": "grid", "cards": [
-            _stats("Потужність PV сьогодні (24г)", "line", "hour", 1, ["mean"], [daily_power_eid])
-        ]})
+        history_cards.append({"type": "grid", "cards": [{
+            "type": "custom:power-history-card",
+            "entity": daily_power_eid,
+            "attribute": "hourly_power_kw",
+            "labels_attribute": "hourly_labels",
+            "title": "Потужність PV сьогодні (24г)",
+            "chart_type": "bar",
+            "bar_color": "#f5b06a",
+        }]})
 
     monthly_energy_eid = _e("history_monthly_energy")
     if monthly_energy_eid:
-        history_cards.append({"type": "grid", "cards": [
-            _stats("Енергія PV за місяць", "bar", "day", 31, ["sum"], [monthly_energy_eid])
-        ]})
+        history_cards.append({"type": "grid", "cards": [{
+            "type": "custom:power-history-card",
+            "entity": monthly_energy_eid,
+            "attribute": "daily_energy_kwh",
+            "labels_attribute": "daily_labels",
+            "title": "Енергія PV за місяць",
+            "chart_type": "bar",
+            "bar_color": "#2ecc71",
+        }]})
 
     yearly_energy_eid = _e("history_yearly_energy")
     if yearly_energy_eid:
-        history_cards.append({"type": "grid", "cards": [
-            _stats("Енергія PV за рік", "bar", "month", 365, ["sum"], [yearly_energy_eid])
-        ]})
+        history_cards.append({"type": "grid", "cards": [{
+            "type": "custom:power-history-card",
+            "entity": yearly_energy_eid,
+            "attribute": "monthly_energy_kwh",
+            "labels_attribute": "monthly_labels",
+            "title": "Енергія PV за рік",
+            "chart_type": "bar",
+            "bar_color": "#3498db",
+        }]})
 
     total_energy_eid = _e("history_total_energy")
     if total_energy_eid:
