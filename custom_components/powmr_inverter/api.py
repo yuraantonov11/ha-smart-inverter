@@ -36,12 +36,15 @@ from .const import (
     ENDPOINT_DEVICE_LIST,
     ENDPOINT_HISTORY,
     ENDPOINT_LOGIN,
+    ENDPOINT_OVERVIEW_BASE,
     ENDPOINT_REALTIME,
     ENDPOINT_REALTIME_FALLBACK,
     ENCRYPTED_APP_SECRET,
     MIN_REQUEST_INTERVAL_MS,
     OUTPUT_SBU,
     OUTPUT_USB,
+    SUMMARY_KEY_ENERGY,
+    SUMMARY_KEY_POWER,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -774,128 +777,60 @@ class InverterApiClient:
             return data["data"] if isinstance(data["data"], list) else []
         return []
 
-    # ── History helpers ────────────────────────────────────────────────
+    # ── Owner Overview: station-level history charts ───────────────
 
-    async def fetch_today_hourly_power(self) -> list[dict[str, Any]]:
-        """Fetch hourly PV power for today (24 data points).
+    async def _fetch_overview(self, category: str, summary_key: str) -> list[dict[str, Any]]:
+        """Fetch owner overview data (GET with query params).
 
-        Returns a list of dicts with keys: timestamp, pvPower (W).
+        GET /apis/ownerOverView/station/stateAttributeSummary/category/{category}
+            ?summaryCategoryKey={summary_key}
         """
-        from datetime import timezone, timedelta
-        now = datetime.now(timezone.utc)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        records = await self.fetch_history(today_start, now)
-        if not records:
+        if not self.current_station_id:
+            _LOGGER.warning("No station_id, cannot fetch overview")
             return []
 
-        # Group by hour and take the last record per hour
-        hourly: dict[int, dict] = {}
-        for rec in records:
-            ts = self._parse_timestamp(rec.get("createTime") or rec.get("time") or rec.get("timestamp"))
-            if ts is None:
-                continue
-            hour = ts.hour
-            hourly[hour] = rec
+        await self._apply_rate_limit(ENDPOINT_OVERVIEW_BASE)
+        params = {"summaryCategoryKey": summary_key}
+        url = f"{ENDPOINT_OVERVIEW_BASE}/{category}"
 
-        result = []
-        for h in range(24):
-            if h in hourly:
-                rec = hourly[h]
-                result.append({
-                    "timestamp": today_start.replace(hour=h).isoformat(),
-                    "pvPower": self._parse_double(rec.get("pvPower") or rec.get("pvInputPower") or rec.get("generationPower")),
-                })
-            else:
-                result.append({
-                    "timestamp": today_start.replace(hour=h).isoformat(),
-                    "pvPower": 0.0,
-                })
-        return result
-
-    async def fetch_monthly_daily_energy(self) -> list[dict[str, Any]]:
-        """Fetch daily PV energy for the current month (up to 31 data points).
-
-        Returns a list of dicts with keys: timestamp, pvEnergy (kWh).
-        """
-        from datetime import timezone, timedelta
-        now = datetime.now(timezone.utc)
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        records = await self.fetch_history(month_start, now)
-        if not records:
+        try:
+            detail_headers = self._build_headers("GET", None)
+            async with self._session.get(
+                url, params=params, headers=detail_headers,
+            ) as resp:
+                data = await resp.json()
+        except aiohttp.ClientError as exc:
+            _LOGGER.warning("Overview fetch failed (%s/%s): %s", category, summary_key, exc)
             return []
 
-        # Group by day and sum energy for each day
-        daily: dict[int, float] = {}
-        for rec in records:
-            ts = self._parse_timestamp(rec.get("createTime") or rec.get("time") or rec.get("timestamp"))
-            if ts is None:
-                continue
-            day = ts.day
-            energy = self._parse_double(rec.get("pvEnergy") or rec.get("generationEnergy") or rec.get("pvGenerated"))
-            daily[day] = daily.get(day, 0.0) + energy
-
-        result = []
-        import calendar
-        days_in_month = calendar.monthrange(now.year, now.month)[1]
-        for d in range(1, days_in_month + 1):
-            result.append({
-                "timestamp": month_start.replace(day=d).isoformat(),
-                "pvEnergy": round(daily.get(d, 0.0), 3),
-            })
-        return result
-
-    async def fetch_yearly_monthly_energy(self) -> list[dict[str, Any]]:
-        """Fetch monthly PV energy for the current year (12 data points).
-
-        Returns a list of dicts with keys: timestamp, pvEnergy (kWh).
-        """
-        from datetime import timezone, timedelta
-        now = datetime.now(timezone.utc)
-        year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
-        records = await self.fetch_history(year_start, now)
-        if not records:
+        if data.get("code") != 0:
+            _LOGGER.warning("Overview error (%s): code=%s msg=%s", category, data.get("code"), data.get("message"))
             return []
 
-        # Group by month and sum energy
-        monthly: dict[int, float] = {}
-        for rec in records:
-            ts = self._parse_timestamp(rec.get("createTime") or rec.get("time") or rec.get("timestamp"))
-            if ts is None:
-                continue
-            month = ts.month
-            energy = self._parse_double(rec.get("pvEnergy") or rec.get("generationEnergy") or rec.get("pvGenerated"))
-            monthly[month] = monthly.get(month, 0.0) + energy
+        # data.data is the payload — could be a list or dict depending on endpoint
+        payload = data.get("data")
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            return [payload]
+        return []
 
-        result = []
-        for m in range(1, 13):
-            result.append({
-                "timestamp": year_start.replace(month=m).isoformat(),
-                "pvEnergy": round(monthly.get(m, 0.0), 3),
-            })
-        return result
+    async def fetch_daily_power(self) -> list[dict[str, Any]]:
+        """Fetch hourly PV power for today (Daily Power chart, kW)."""
+        return await self._fetch_overview("daily", SUMMARY_KEY_POWER)
 
-    @staticmethod
-    def _parse_timestamp(value: Any) -> datetime | None:
-        """Parse a timestamp string into a datetime object."""
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            return datetime.fromtimestamp(value, tz=timezone.utc)
-        if isinstance(value, str):
-            for fmt in (
-                "%Y-%m-%d %H:%M:%S",
-                "%Y-%m-%dT%H:%M:%S",
-                "%Y-%m-%dT%H:%M:%S.%f",
-                "%Y-%m-%dT%H:%M:%SZ",
-                "%Y-%m-%dT%H:%M:%S%z",
-                "%Y-%m-%dT%H:%M:%S.%f%z",
-                "%Y-%m-%dT%H:%M:%S.%fZ",
-            ):
-                try:
-                    return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
-                except ValueError:
-                    continue
-        return None
+    async def fetch_monthly_energy(self) -> list[dict[str, Any]]:
+        """Fetch daily PV energy for current month (Monthly Energy chart, kWh)."""
+        return await self._fetch_overview("monthly", SUMMARY_KEY_ENERGY)
+
+    async def fetch_yearly_energy(self) -> list[dict[str, Any]]:
+        """Fetch monthly PV energy for current year (Yearly Energy chart, kWh)."""
+        return await self._fetch_overview("yearly", SUMMARY_KEY_ENERGY)
+
+    async def fetch_total_energy(self) -> dict[str, Any]:
+        """Fetch total cumulative PV energy (Total Energy, kWh)."""
+        result = await self._fetch_overview("total", SUMMARY_KEY_ENERGY)
+        return result[0] if result else {}
 
     # ── Helpers ────────────────────────────────────────────────────────
 

@@ -753,25 +753,37 @@ class HistoryCoordinator(DataUpdateCoordinator):
         _LOGGER.debug("HistoryCoordinator: fetching historical data")
 
         try:
-            # Fetch all 4 data series
-            today_power = await self.api.fetch_today_hourly_power()
-            monthly_energy = await self.api.fetch_monthly_daily_energy()
-            yearly_energy = await self.api.fetch_yearly_monthly_energy()
+            # Fetch all 4 data series from ownerOverView endpoints
+            today_power = await self.api.fetch_daily_power()
+            monthly_energy = await self.api.fetch_monthly_energy()
+            yearly_energy = await self.api.fetch_yearly_energy()
+            total_data = await self.api.fetch_total_energy()
 
-            # Total energy from the API's daily/total energy stats
-            total_energy = self.api.total_energy
+            _LOGGER.info(
+                "HistoryCoordinator: daily=%d monthly=%d yearly=%d total_keys=%s",
+                len(today_power), len(monthly_energy), len(yearly_energy),
+                list(total_data.keys()) if isinstance(total_data, dict) else type(total_data).__name__,
+            )
+            if today_power:
+                _LOGGER.info("Daily sample: %s", today_power[0])
+            if monthly_energy:
+                _LOGGER.info("Monthly sample: %s", monthly_energy[0])
+
+            total_kwh = total_data.get("value") or total_data.get("totalEnergy") or 0.0
+            if isinstance(total_kwh, str):
+                total_kwh = float(total_kwh)
 
             # Store for sensor access
             self.today_hourly_power = today_power
             self.monthly_daily_energy = monthly_energy
             self.yearly_monthly_energy = yearly_energy
-            self.total_energy_kwh = total_energy
+            self.total_energy_kwh = total_kwh
 
             return {
                 "today_hourly_power": today_power,
                 "monthly_daily_energy": monthly_energy,
                 "yearly_monthly_energy": yearly_energy,
-                "total_energy_kwh": total_energy,
+                "total_energy_kwh": total_kwh,
                 "last_updated": datetime.now().isoformat(),
             }
 

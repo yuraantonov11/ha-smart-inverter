@@ -17,6 +17,11 @@ ENDPOINT_DEVICE_CONFIG = "/apis/remote/device/config/write"
 ENDPOINT_DEVICE_CONFIGS_READ = "/apis/remote/device/configs/read"
 ENDPOINT_HISTORY = "/apis/device/history"
 
+# Owner overview endpoints (station-level, GET with query params)
+ENDPOINT_OVERVIEW_BASE = "/apis/ownerOverView/station/stateAttributeSummary/category"
+SUMMARY_KEY_POWER = "pvInverterPowerClass"
+SUMMARY_KEY_ENERGY = "pvInverterElectricityQuantityClass"
+
 # Polling
 DEFAULT_POLL_INTERVAL_SEC = 5
 MIN_POLL_INTERVAL_SEC = 3

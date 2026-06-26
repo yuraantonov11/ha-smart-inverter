@@ -594,6 +594,27 @@ class DailyPowerHistorySensor(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
         }
 
+    @staticmethod
+    def _extract_power(record: dict) -> float:
+        """Extract power value from API record, trying common key names."""
+        for key in ("pvPower", "value", "power", "pvInputPower", "generationPower"):
+            v = record.get(key)
+            if v is not None:
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    continue
+        return 0.0
+
+    @staticmethod
+    def _extract_label(record: dict) -> str:
+        """Extract time label from API record."""
+        for key in ("time", "timestamp", "label", "x", "name", "date"):
+            v = record.get(key)
+            if v is not None:
+                return str(v)
+        return ""
+
     @property
     def native_value(self) -> float | None:
         if self.coordinator.data is None:
@@ -601,10 +622,10 @@ class DailyPowerHistorySensor(CoordinatorEntity, SensorEntity):
         hourly = self.coordinator.data.get("today_hourly_power", [])
         if not hourly:
             return None
-        # Return the latest non-zero value as the "current" power
         for point in reversed(hourly):
-            if point.get("pvPower", 0) > 0:
-                return round(point["pvPower"] / 1000, 2)
+            pw = self._extract_power(point)
+            if pw > 0:
+                return round(pw / 1000, 2)
         return 0.0
 
     @property
@@ -614,13 +635,14 @@ class DailyPowerHistorySensor(CoordinatorEntity, SensorEntity):
         hourly = self.coordinator.data.get("today_hourly_power", [])
         if not hourly:
             return None
-        timestamps = [p["timestamp"] for p in hourly]
-        values_kw = [round(p["pvPower"] / 1000, 3) for p in hourly]
+        labels = [self._extract_label(p) for p in hourly]
+        values_kw = [round(self._extract_power(p) / 1000, 3) for p in hourly]
         return {
             "hourly_power_kw": values_kw,
-            "hourly_labels": timestamps,
+            "hourly_labels": labels,
             "total_today_kwh": round(sum(values_kw), 2),
             "last_updated": self.coordinator.data.get("last_updated"),
+            "_raw_sample": hourly[:3] if len(hourly) > 3 else hourly,
         }
 
 
@@ -645,6 +667,26 @@ class MonthlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
         }
 
+    @staticmethod
+    def _extract_energy(record: dict) -> float:
+        """Extract energy value from API record."""
+        for key in ("pvEnergy", "value", "energy", "pvGenerated", "y"):
+            v = record.get(key)
+            if v is not None:
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    continue
+        return 0.0
+
+    @staticmethod
+    def _extract_label(record: dict) -> str:
+        for key in ("time", "timestamp", "label", "x", "name", "date"):
+            v = record.get(key)
+            if v is not None:
+                return str(v)
+        return ""
+
     @property
     def native_value(self) -> float | None:
         if self.coordinator.data is None:
@@ -652,7 +694,7 @@ class MonthlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
         daily = self.coordinator.data.get("monthly_daily_energy", [])
         if not daily:
             return None
-        return round(sum(p["pvEnergy"] for p in daily), 2)
+        return round(sum(self._extract_energy(p) for p in daily), 2)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -661,13 +703,14 @@ class MonthlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
         daily = self.coordinator.data.get("monthly_daily_energy", [])
         if not daily:
             return None
-        timestamps = [p["timestamp"] for p in daily]
-        values = [round(p["pvEnergy"], 3) for p in daily]
+        labels = [self._extract_label(p) for p in daily]
+        values = [round(self._extract_energy(p), 3) for p in daily]
         return {
             "daily_energy_kwh": values,
-            "daily_labels": timestamps,
+            "daily_labels": labels,
             "total_month_kwh": round(sum(values), 2),
             "last_updated": self.coordinator.data.get("last_updated"),
+            "_raw_sample": daily[:3] if len(daily) > 3 else daily,
         }
 
 
@@ -692,6 +735,25 @@ class YearlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
             "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
         }
 
+    @staticmethod
+    def _extract_energy(record: dict) -> float:
+        for key in ("pvEnergy", "value", "energy", "pvGenerated", "y"):
+            v = record.get(key)
+            if v is not None:
+                try:
+                    return float(v)
+                except (ValueError, TypeError):
+                    continue
+        return 0.0
+
+    @staticmethod
+    def _extract_label(record: dict) -> str:
+        for key in ("time", "timestamp", "label", "x", "name", "date"):
+            v = record.get(key)
+            if v is not None:
+                return str(v)
+        return ""
+
     @property
     def native_value(self) -> float | None:
         if self.coordinator.data is None:
@@ -699,7 +761,7 @@ class YearlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
         monthly = self.coordinator.data.get("yearly_monthly_energy", [])
         if not monthly:
             return None
-        return round(sum(p["pvEnergy"] for p in monthly), 2)
+        return round(sum(self._extract_energy(p) for p in monthly), 2)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -708,13 +770,14 @@ class YearlyEnergyHistorySensor(CoordinatorEntity, SensorEntity):
         monthly = self.coordinator.data.get("yearly_monthly_energy", [])
         if not monthly:
             return None
-        timestamps = [p["timestamp"] for p in monthly]
-        values = [round(p["pvEnergy"], 3) for p in monthly]
+        labels = [self._extract_label(p) for p in monthly]
+        values = [round(self._extract_energy(p), 3) for p in monthly]
         return {
             "monthly_energy_kwh": values,
-            "monthly_labels": timestamps,
+            "monthly_labels": labels,
             "total_year_kwh": round(sum(values), 2),
             "last_updated": self.coordinator.data.get("last_updated"),
+            "_raw_sample": monthly[:3] if len(monthly) > 3 else monthly,
         }
 
 
@@ -755,7 +818,13 @@ class TotalEnergyHistorySensor(CoordinatorEntity, SensorEntity):
             "total_energy_kwh": self.coordinator.data.get("total_energy_kwh", 0.0),
             "daily_energy_kwh": self.coordinator.api.daily_energy,
             "yearly_energy_kwh": round(
-                sum(p["pvEnergy"] for p in self.coordinator.data.get("yearly_monthly_energy", [])), 2
+                sum(
+                    next(
+                        (float(v) for k, v in p.items() if k in ("pvEnergy", "value", "energy") and v is not None),
+                        0.0,
+                    )
+                    for p in self.coordinator.data.get("yearly_monthly_energy", [])
+                ), 2
             ),
             "last_updated": self.coordinator.data.get("last_updated"),
         }
