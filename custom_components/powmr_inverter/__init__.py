@@ -344,11 +344,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         overview_cards.append({"type": "grid", "cards": [_entities_card("HEMS Стан", hems_rows)]})
 
     # ── Forecast graph (replaces broken forecast-card) ──
-    forecast_eid = _e("forecast_tomorrow")
-    if forecast_eid:
-        overview_cards.append({"type": "grid", "cards": [
-            _stats("Прогноз генерації (24г)", "bar", "hour", 1, ["mean"], [forecast_eid])
-        ]})
+    # Forecast moved to combined generation+forecast chart in History view
 
     views.append({
         "title": "Огляд",
@@ -434,15 +430,30 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
 
     # ── History chart sensors (fetched from API every 15 min) ──
     daily_power_eid = _e("history_daily_power")
+    forecast_eid = _e("forecast_tomorrow")
     if daily_power_eid:
-        history_cards.append({"type": "grid", "cards": [{
-            "type": "custom:power-history-card",
+        series = [{
             "entity": daily_power_eid,
             "attribute": "hourly_power_kw",
             "labels_attribute": "hourly_labels",
-            "title": "Потужність PV сьогодні (24г)",
-            "chart_type": "bar",
-            "bar_color": "#f5b06a",
+            "color": "#f5b06a",
+            "name": "Генерація",
+            "unit_divisor": 1,
+        }]
+        if forecast_eid:
+            series.append({
+                "entity": forecast_eid,
+                "attribute": "hourly_forecast_w",
+                "labels_attribute": "",
+                "color": "#e74c3c",
+                "name": "Прогноз",
+                "unit_divisor": 1000,
+            })
+        history_cards.append({"type": "grid", "cards": [{
+            "type": "custom:power-history-card",
+            "series": series,
+            "title": "Генерація + Прогноз (сьогодні)",
+            "unit": "kW",
         }]})
 
     monthly_energy_eid = _e("history_monthly_energy")
