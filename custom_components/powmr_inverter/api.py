@@ -15,7 +15,7 @@ import json
 import logging
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import aiohttp
@@ -779,11 +779,38 @@ class InverterApiClient:
 
     # ── Owner Overview: station-level history charts ───────────────
 
-    async def _fetch_overview(self, category: str, summary_key: str) -> list[dict[str, Any]]:
-        """Fetch owner overview data (GET with query params).
+    @staticmethod
+    def _overview_time_body(category: str) -> dict[str, str]:
+        """Build the POST body for a given overview category.
 
-        GET /apis/ownerOverView/station/stateAttributeSummary/category/{category}
+        Time formats verified against live solar.siseli.com HAR capture:
+          daily   → "2026-06-26"
+          monthly → "2026-06"
+          yearly  → "2026"
+          total   → ISO 8601 with timezone, e.g. "2026-06-26T20:48:32+03:00"
+        """
+        now = datetime.now(timezone.utc)
+        # Convert to UTC+3 (Europe/Kiev)
+        kiev = timezone(timedelta(hours=3))
+        local = now.astimezone(kiev)
+
+        if category == "daily":
+            return {"time": local.strftime("%Y-%m-%d")}
+        if category == "monthly":
+            return {"time": local.strftime("%Y-%m")}
+        if category == "yearly":
+            return {"time": local.strftime("%Y")}
+        if category == "total":
+            return {"time": local.strftime("%Y-%m-%dT%H:%M:%S+03:00")}
+        # fallback
+        return {"time": local.strftime("%Y-%m-%d")}
+
+    async def _fetch_overview(self, category: str, summary_key: str) -> list[dict[str, Any]]:
+        """Fetch owner overview data (POST with body).
+
+        POST /apis/ownerOverView/station/stateAttributeSummary/category/{category}
             ?summaryCategoryKey={summary_key}
+        Body: {"time": "<formatted time>"}
         """
         if not self.current_station_id:
             _LOGGER.warning("No station_id, cannot fetch overview")
@@ -792,19 +819,31 @@ class InverterApiClient:
         await self._apply_rate_limit(ENDPOINT_OVERVIEW_BASE)
         params = {"summaryCategoryKey": summary_key}
         url = f"{ENDPOINT_OVERVIEW_BASE}/{category}"
+        body = self._overview_time_body(category)
 
         try:
-            detail_headers = self._build_headers("GET", None)
-            async with self._session.get(
-                url, params=params, headers=detail_headers,
+            headers = self._build_headers("POST", body)
+            async with self._session.post(
+                url, params=params, data=self._json_compact(body), headers=headers,
             ) as resp:
-                data = await resp.json()
+                raw_text = await resp.text()
+                _LOGGER.debug(
+                    "Overview %s response: status=%d body=%s",
+                    category, resp.status, raw_text[:500],
+                )
+                data = json.loads(raw_text)
         except aiohttp.ClientError as exc:
             _LOGGER.warning("Overview fetch failed (%s/%s): %s", category, summary_key, exc)
             return []
+        except (ValueError, TypeError) as exc:
+            _LOGGER.warning("Overview JSON parse failed (%s): %s", category, exc)
+            return []
 
         if data.get("code") != 0:
-            _LOGGER.warning("Overview error (%s): code=%s msg=%s", category, data.get("code"), data.get("message"))
+            _LOGGER.warning(
+                "Overview error (%s): code=%s msg=%s",
+                category, data.get("code"), data.get("message"),
+            )
             return []
 
         # data.data is the payload — could be a list or dict depending on endpoint
