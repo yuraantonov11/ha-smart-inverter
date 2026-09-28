@@ -62,6 +62,10 @@ class InverterCoordinator(DataUpdateCoordinator):
         # HEMS state
         self.smart_mode: int = 0  # 0=Adaptive, 1=Arbitrage, 2=Storm
         self.hems_auto_mode: bool = True
+        # Master toggle: if False, integration runs in monitor-only mode.
+        # Reads inverter state but never sends commands to the device.
+        # Configurable via integration options (default: True).
+        self.hems_enabled: bool = entry.options.get("hems_enabled", True)
 
         # ── HEMS Engine ───────────────────────────────────────────────
         tunables = HemsTunables(
@@ -328,6 +332,13 @@ class InverterCoordinator(DataUpdateCoordinator):
 
         # Skip if keepalive in progress
         if self._hems.keepalive.in_progress:
+            return
+
+        # Skip HEMS if disabled (monitor-only mode)
+        if not self.hems_enabled:
+            self.hems_last_reason = "hems_disabled"
+            self.hems_last_output_cmd = None
+            self.hems_last_charger_cmd = None
             return
 
         # Run main HEMS evaluation

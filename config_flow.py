@@ -17,6 +17,7 @@ from .api import InverterApiClient, InverterAuthError
 from .const import (
     CONF_EMAIL,
     CONF_PASSWORD,
+    DEFAULT_HEMS_ENABLED,
     DEFAULT_POLL_INTERVAL_SEC,
     DEFAULT_PV_SURPLUS_ENTER_W,
     DEFAULT_RESERVE_SOC,
@@ -173,6 +174,10 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
+                    vol.Optional(
+                        "hems_enabled",
+                        default=current.get("hems_enabled", DEFAULT_HEMS_ENABLED),
+                    ): bool,
                     vol.Optional(
                         "poll_interval",
                         default=current.get(

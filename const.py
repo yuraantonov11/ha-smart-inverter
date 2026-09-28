@@ -209,6 +209,14 @@ DEFAULT_MIN_MODE_HOLD_MIN = 20
 DEFAULT_MANUAL_OVERRIDE_HOLD_MIN = 30
 DEFAULT_COMMAND_DEDUP_WINDOW_SEC = 300
 
+# Master toggle for HEMS control. If False, the integration runs in
+# monitor-only mode: reads inverter state but never sends commands.
+# Use this when:
+#   - Multiple inverters are paralleled (master/slave config)
+#   - User wants full manual control of inverter settings
+#   - Inverter is controlled by another integration or external system
+DEFAULT_HEMS_ENABLED = True
+
 # LiFePO4 16S constants
 LFP_CELLS = 16
 LFP_IR_PER_CELL_MOHM = 8  # mΩ internal resistance per cell
