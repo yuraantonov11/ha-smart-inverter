@@ -258,6 +258,12 @@
       "low_battery": {
         "name": "Low Battery"
       }
+    },
+    "battery_power_limit": {
+      "name": "Ліміт потужності батареї"
+    },
+    "buzzer_alarm": {
+      "name": "Звукова сигналізація"
     }
   },
   "services": {

@@ -70,11 +70,9 @@ async def async_setup_entry(
 
     entities = [
         InverterHemsAutoModeSwitch(coordinator),
-        InverterGridChargingSwitch(coordinator),
         InverterGridFeedInSwitch(coordinator),
         InverterBackupModeSwitch(coordinator),
         InverterBuzzerSwitch(coordinator),
-        InverterEcoModeSwitch(coordinator),
         # New system switches
         InverterOverLoadRestartSwitch(coordinator),
         InverterOverTemperatureRestartSwitch(coordinator),
@@ -117,34 +115,6 @@ class InverterHemsAutoModeSwitch(CoordinatorEntity, SwitchEntity):
         self.coordinator.hems_auto_mode = False
         self.async_write_ha_state()
         _LOGGER.info("HEMS auto mode disabled")
-
-
-class InverterGridChargingSwitch(CoordinatorEntity, SwitchEntity):
-    """Switch: enable/disable grid (AC) battery charging."""
-
-    def __init__(self, coordinator: InverterCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_has_entity_name = True
-        self._attr_translation_key = "grid_charging"
-        self._attr_unique_id = f"{coordinator.api.device_sn}_grid_charging"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
-        }
-        self._attr_icon = "mdi:transmission-tower-import"
-        self._setting_key = "acChargingSwitch"
-
-    @property
-    def is_on(self) -> bool | None:
-        val = _setting_int(self.coordinator.data, self._setting_key)
-        return bool(val) if val is not None else None
-
-    async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "1")
-        await self.coordinator.async_request_refresh()
-
-    async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "0")
-        await self.coordinator.async_request_refresh()
 
 
 class InverterGridFeedInSwitch(CoordinatorEntity, SwitchEntity):
@@ -212,40 +182,12 @@ class InverterBuzzerSwitch(CoordinatorEntity, SwitchEntity):
         super().__init__(coordinator)
         self._attr_has_entity_name = True
         self._attr_translation_key = "buzzer"
-        self._attr_unique_id = f"{coordinator.api.device_sn}_buzzer"
+        self._attr_unique_id = f"{coordinator.api.device_sn}_buzzer_alarm"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
         }
         self._attr_icon = "mdi:bell-alert"
-        self._setting_key = "buzzerOn"
-
-    @property
-    def is_on(self) -> bool | None:
-        val = _setting_int(self.coordinator.data, self._setting_key)
-        return bool(val) if val is not None else None
-
-    async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "1")
-        await self.coordinator.async_request_refresh()
-
-    async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "0")
-        await self.coordinator.async_request_refresh()
-
-
-class InverterEcoModeSwitch(CoordinatorEntity, SwitchEntity):
-    """Switch: toggle ECO mode on/off."""
-
-    def __init__(self, coordinator: InverterCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_has_entity_name = True
-        self._attr_translation_key = "eco_mode"
-        self._attr_unique_id = f"{coordinator.api.device_sn}_eco_mode"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
-        }
-        self._attr_icon = "mdi:leaf"
-        self._setting_key = "ecoMode"
+        self._setting_key = "buzzerAlarmSetting"
 
     @property
     def is_on(self) -> bool | None:
