@@ -88,6 +88,9 @@ class InverterApiClient:
 
         # Rate limiting
         self._last_request_time: dict[str, float] = {}
+        # Async lock for rate limiting (prevents 5 simultaneous requests
+        # when both InverterCoordinator and HistoryCoordinator share one api)
+        self._rate_limit_lock: asyncio.Lock = asyncio.Lock()
 
         # Offline tracking
         self.last_realtime_offline: bool = False

@@ -22,7 +22,7 @@ class HemsTunables:
     pv_surplus_exit_w: float = 50.0
     min_mode_hold_min: int = 20
     manual_override_hold_min: int = 30
-    command_dedup_window_sec: int = 30
+    command_dedup_window_sec: int = 300
 
 
 @dataclass

@@ -274,6 +274,24 @@ class HemsEngine:
         else:
             return HemsDecision(reason="unknown_mode", skip=True, buzzer_off=buzzer_off)
 
+        # ── Early-skip: if current device state already matches target, ──
+        # no need to send any command at all. Saves 100+ redundant API
+        # calls per hour when HEMS settles on the same mode.
+        if not decision.skip:
+            if (decision.output_priority is not None
+                    and current_output
+                    and _normalize_output(current_output) == _normalize_output(decision.output_priority)):
+                decision.output_priority = None  # skip
+                if decision.reason == "day_default":
+                    decision.reason = "already_in_target"
+
+            if (decision.charger_priority is not None
+                    and current_charger
+                    and _normalize_charger(current_charger) == _normalize_charger(decision.charger_priority)):
+                decision.charger_priority = None  # skip
+                if decision.reason == "day_default":
+                    decision.reason = "already_in_target"
+
         # ── Apply anti-flapping ───────────────────────────────────────
         if not decision.skip:
             decision = self._apply_anti_flapping(decision, now)
