@@ -1,0 +1,46 @@
+# ============================================================================
+# HEMS Adaptive Mode — Monitoring Automation
+# ============================================================================
+# The main HEMS decision engine now runs inside the coordinator (Python).
+# This automation provides monitoring and logging of HEMS decisions.
+#
+# The coordinator evaluates every 5 seconds and applies control commands
+# directly via the API. This automation adds supplementary logging and
+# notification when significant state changes occur.
+# ============================================================================
+
+alias: "HEMS — Adaptive Mode Monitor"
+description: "Logs HEMS decisions and sends notifications on mode changes"
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: time_pattern
+    seconds: "/30"
+
+condition:
+  - condition: state
+    entity_id: switch.powmr_inverter_hems_auto_mode
+    state: "on"
+
+action:
+  - variables:
+      soc: "{{ states('sensor.powmr_inverter_battery_soc_corrected') | float(50) }}"
+      pv: "{{ states('sensor.powmr_inverter_pv_power') | float(0) }}"
+      load: "{{ states('sensor.powmr_inverter_load_power') | float(0) }}"
+      surplus: "{{ pv - load }}"
+      current_output: "{{ state_attr('select.powmr_inverter_output_priority', 'option') }}"
+      current_charger: "{{ state_attr('select.powmr_inverter_charger_priority', 'option') }}"
+
+  # Log current HEMS state every 5 minutes (when minute is 0 or 5 or 10...)
+  - if:
+      - condition: template
+        value_template: "{{ now().minute % 5 == 0 and now().second < 30 }}"
+    then:
+      - service: logbook.log
+        data:
+          name: "HEMS Status"
+          message: >-
+            SOC={{ soc }}% PV={{ pv }}W Load={{ load }}W Surplus={{ surplus }}W
+            Output={{ current_output }} Charger={{ current_charger }}
+          domain: powmr_inverter

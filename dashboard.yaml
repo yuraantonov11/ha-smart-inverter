@@ -1,0 +1,191 @@
+title: Smart Solar Енергопанель
+views:
+  - title: Потужність
+    path: powmr-power
+    icon: mdi:home-lightning-bolt
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: markdown
+            content: |
+              # Smart Solar Inverter
+              Живий потік потужності, стан мережі та батареї в одному місці.
+          - type: tile
+            entity: binary_sensor.smart_solar_inverter_grid_available
+            name: Стан мережі
+            icon: mdi:transmission-tower
+          - type: tile
+            entity: sensor.smart_solar_inverter_working_mode
+            name: Режим роботи
+            icon: mdi:state-machine
+          - type: tile
+            entity: sensor.smart_solar_inverter_battery_soc_corrected
+            name: Скоригований SOC
+            icon: mdi:battery-heart-variant
+          - type: tile
+            entity: sensor.smart_solar_inverter_pv_surplus
+            name: Надлишок PV
+            icon: mdi:battery-heart-variant
+          - type: tile
+            entity: sensor.smart_solar_inverter_pv_surplus
+            name: Надлишок PV
+            icon: mdi:flash
+          - type: tile
+            entity: sensor.smart_solar_inverter_grid_voltage
+            name: Напруга мережі
+            icon: mdi:sine-wave
+      - type: grid
+        cards:
+          - type: gauge
+            entity: sensor.smart_solar_inverter_battery_soc_corrected
+            name: SOC батареї
+            min: 0
+            max: 100
+            severity:
+              green: 45
+              yellow: 25
+              red: 0
+          - type: gauge
+            entity: sensor.smart_solar_inverter_pv_power
+            name: Потужність PV
+            min: 0
+            max: 5000
+            severity:
+              green: 1200
+              yellow: 400
+              red: 0
+          - type: gauge
+            entity: sensor.smart_solar_inverter_load_power
+            name: Потужність навантаження
+            min: 0
+            max: 5000
+            severity:
+              green: 0
+              yellow: 2200
+              red: 3600
+          - type: statistics-graph
+            title: Потік потужності (24г)
+            chart_type: line
+            period: hour
+            days_to_show: 1
+            stat_types:
+              - mean
+            entities:
+              - sensor.smart_solar_inverter_pv_power
+              - sensor.smart_solar_inverter_load_power
+              - sensor.smart_solar_inverter_grid_power
+              - sensor.smart_solar_inverter_battery_power
+          - type: statistics-graph
+            title: SOC та струм батареї (24г)
+            hours_to_show: 24
+            refresh_interval: 60
+            entities:
+              - sensor.smart_solar_inverter_battery_soc
+              - sensor.smart_solar_inverter_battery_soc_corrected
+              - sensor.smart_solar_inverter_battery_charge_current
+          - type: custom:forecast-card
+            entity: sensor.smart_solar_inverter_forecast_tomorrow
+            title: ☀️ Прогноз генерації (24г)
+      - type: grid
+        cards:
+          - type: entities
+            title: Керування інвертором
+            show_header_toggle: false
+            entities:
+              - entity: select.smart_solar_inverter_output_priority
+                name: Пріоритет виходу
+              - entity: select.smart_solar_inverter_charger_priority
+                name: Пріоритет заряджання
+              - entity: select.smart_solar_inverter_smart_mode
+                name: Режим HEMS
+              - entity: switch.smart_solar_inverter_hems_auto_mode
+                name: Авто-режим HEMS
+              - entity: switch.smart_solar_inverter_backup_mode
+                name: Резервний режим
+          - type: entities
+            title: Струми та ліміти
+            show_header_toggle: false
+            entities:
+              - entity: number.smart_solar_inverter_max_charging_current
+                name: Макс. струм заряджання
+              - entity: number.smart_solar_inverter_max_utility_charging_current
+                name: Макс. струм заряду від мережі
+              - entity: number.smart_solar_inverter_battery_charge_limit_percent
+                name: Ліміт заряду АКБ
+              - entity: number.smart_solar_inverter_battery_discharge_limit_percent
+                name: Ліміт розряду АКБ
+              - entity: number.smart_solar_inverter_grid_charge_power_limit
+                name: Макс. потужність заряду (мережа)
+          - type: entities
+            title: Керування мережею
+            show_header_toggle: false
+            entities:
+              - entity: switch.smart_solar_inverter_grid_charging
+                name: Заряд від мережі
+              - entity: switch.smart_solar_inverter_grid_feed_in
+                name: Віддача в мережу
+          - type: entities
+            title: Поточний стан
+            show_header_toggle: false
+            entities:
+              - entity: binary_sensor.smart_solar_inverter_grid_available
+                name: Стан мережі
+              - entity: sensor.smart_solar_inverter_pv_voltage
+                name: Напруга PV
+              - entity: sensor.smart_solar_inverter_grid_voltage
+                name: Напруга мережі
+              - entity: sensor.smart_solar_inverter_battery_voltage
+                name: Напруга АКБ
+              - entity: sensor.smart_solar_inverter_battery_current
+                name: Струм батареї
+              - entity: sensor.smart_solar_inverter_ac_output_power
+                name: Вихідна потужність AC
+              - entity: sensor.smart_solar_inverter_feed_in_power
+                name: Віддача в мережу
+              - entity: sensor.smart_solar_inverter_grid_import_power
+                name: Споживання з мережі
+          - type: entities
+            title: 💰 Економіка
+            show_header_toggle: false
+            entities:
+              - entity: sensor.smart_solar_inverter_daily_savings
+                name: Економія сьогодні (₴)
+              - entity: sensor.smart_solar_inverter_monthly_savings
+                name: Економія місяць (₴)
+              - entity: sensor.smart_solar_inverter_forecast_tomorrow
+                name: Прогноз завтра (kWh)
+              - entity: sensor.smart_solar_inverter_learned_ratio
+                name: Коеф. конверсії PV
+          - type: entities
+            title: Прогноз сонячної генерації
+            show_header_toggle: false
+            entities:
+              - entity: sensor.smart_solar_inverter_pv_power
+                name: PV потужність (зараз)
+              - entity: sensor.smart_solar_inverter_battery_soc_corrected
+                name: SOC батареї
+
+  - title: HEMS
+    path: powmr-hems
+    icon: mdi:brain
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: markdown
+            content: |
+              # Налаштування HEMS
+              Резерв SOC, тарифи та стратегія без редагування YAML.
+          - type: entities
+            title: Стратегія та режими
+            show_header_toggle: false
+            entities:
+              - entity: select.smart_solar_inverter_smart_mode
+                name: Активний режим HEMS
+              - entity: switch.smart_solar_inverter_hems_auto_mode
+                name: Авто-режим HEMS
+              - entity: switch.smart_solar_inverter_eco_mode
+                name: ECO режим

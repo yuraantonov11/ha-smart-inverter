@@ -1,0 +1,52 @@
+# ============================================================================
+# HEMS Storm / Reserve Mode Automation
+# ============================================================================
+# Maintains full battery for grid outage resilience.
+# Charger = SNU (grid can charge), Output = SBU (battery first).
+# ============================================================================
+
+alias: "HEMS — Storm Mode"
+description: "Keep battery charged for grid outage resilience"
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: select.inverter_smart_mode
+    to: "Storm"
+  - platform: time_pattern
+    minutes: "/5"
+
+condition:
+  - condition: state
+    entity_id: select.inverter_smart_mode
+    state: "Storm"
+  - condition: state
+    entity_id: switch.inverter_hems_auto_mode
+    state: "on"
+
+action:
+  - variables:
+      current_output: "{{ state_attr('select.inverter_output_priority', 'option') }}"
+      current_charger: "{{ state_attr('select.inverter_charger_priority', 'option') }}"
+
+  # Keep charger on SNU (grid can top up)
+  - if:
+      - condition: template
+        value_template: "{{ current_charger != 'SNU (Solar + Utility)' }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_charger_priority
+        data:
+          option: "SNU (Solar + Utility)"
+
+  # Keep output on SBU (use battery first, grid as backup)
+  - if:
+      - condition: template
+        value_template: "{{ current_output != 'SBU (Solar/Battery First)' }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.inverter_output_priority
+        data:
+          option: "SBU (Solar/Battery First)"

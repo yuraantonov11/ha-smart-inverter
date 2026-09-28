@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.class
+*.so
+.Python
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.eggs/
+*.egg-info/
+
+# Backup files
+*.bak
+*.backup
+*~
+*.swp
+*.tmp
+
+# Секрети
+**/secrets.yaml
+**/secrets.yml
+*.env
+*.env.*
+*.key
+*.pem
+*.crt
+**/credentials*
+**/.password*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Local dev
+.config_local/
+.local/
+
+# HA specific
+.deps/
+.storage/
+.tts/
+.cloud/
+*.log
+*.log.*
+.homeassistant/
+ha_run.lock
+HA_VERSION

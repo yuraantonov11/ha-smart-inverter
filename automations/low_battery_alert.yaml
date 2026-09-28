@@ -1,0 +1,32 @@
+# ============================================================================
+# Low Battery Alert
+# ============================================================================
+# Sends notification when battery SOC drops below 25%.
+# ============================================================================
+
+alias: "Low Battery Alert"
+description: "Notify when battery SOC drops below critical level"
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: binary_sensor.inverter_low_battery
+    from: "off"
+    to: "on"
+
+action:
+  - variables:
+      soc: "{{ states('sensor.inverter_battery_soc_corrected') | float(0) }}"
+      load: "{{ states('sensor.inverter_load_power') | float(0) }}"
+
+  - service: notify.mobile_app_phone
+    data:
+      title: "🪫 Low Battery Alert!"
+      message: >
+        Battery SOC: {{ soc }}%.
+        Current load: {{ load }}W.
+        Consider reducing consumption or charging from grid.
+      data:
+        push:
+          sound: "default"
+          importance: "high"
