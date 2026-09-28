@@ -85,6 +85,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             sw_version="1.0.0",
         )
 
+        # Cleanup legacy HACS-created device entry (if any).
+        # Older HACS frontend auto-registered a device with
+        # identifiers=("hacs", "1268765881") on install. That duplicates
+        # the device we just created. Find and remove it.
+        # The current code never creates such a device - this is safe.
+        legacy_ids = ("hacs", "1268765881")
+        legacy_device = device_registry.async_get_device(identifiers={legacy_ids})
+        if legacy_device is not None:
+            _LOGGER.info(
+                "Removing legacy HACS-created device entry: %s (id=%s)",
+                legacy_device.name,
+                legacy_device.id,
+            )
+            device_registry.async_remove_device(device_id=legacy_device.id)
+
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
         # Register services
