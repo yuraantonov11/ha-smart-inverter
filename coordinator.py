@@ -635,10 +635,13 @@ class InverterCoordinator(DataUpdateCoordinator):
         # battery_w > 0 = charging, < 0 = discharging (solar.siseli.com API convention)
         if battery_w < -10:
             discharge_w = abs(battery_w)
+            # discharge_w is in W (Watts), dt_h in hours, so the product is Wh.
+            # Divide by 1000 to convert to kWh before storing.
+            discharge_kwh = discharge_w * dt_h / 1000.0
             if daytime:
-                self._daily_battery_discharge_day_kwh += discharge_w * dt_h
+                self._daily_battery_discharge_day_kwh += discharge_kwh
             else:
-                self._daily_battery_discharge_night_kwh += discharge_w * dt_h
+                self._daily_battery_discharge_night_kwh += discharge_kwh
 
         # Savings = value of battery energy that displaced grid import.
         # When battery discharges, it powers the load instead of the grid.
