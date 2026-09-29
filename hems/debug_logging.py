@@ -1,9 +1,9 @@
 """HEMS debug logging utility.
 
 Writes a structured log of every HEMS evaluation cycle to a file the
-user can inspect after the day is over. This is purely diagnostic — the
-production path uses the existing INFO/DEBUG loggers as before, but the
-frequent per-cycle chatter goes here to keep the main log clean.
+user can inspect after the day is over. The production path uses the
+existing INFO/DEBUG loggers as before, but the frequent per-cycle
+chatter goes here to keep the main log clean.
 
 The log file is at /config/powmr_hems_debug.log and rotates daily at
 midnight (HA timezone). Total size budget: keep last 3 days so the log
@@ -15,13 +15,12 @@ import json
 import logging
 import os
 import threading
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 _LOG_PATH = Path("/config/powmr_hems_debug.log")
-_ROTATE_AT = {}  # filename -> date string when we last rotated
+_ROTATE_AT: dict[str, str] = {}  # filename -> date string when we last rotated
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,14 +34,12 @@ def _maybe_rotate() -> None:
     if last is None:
         _ROTATE_AT[str(_LOG_PATH)] = today
         return
-    # Day changed — rename old file with date suffix and start fresh
     try:
         old = _LOG_PATH.with_name(f"powmr_hems_debug.{last}.log")
         if _LOG_PATH.exists() and not old.exists():
             _LOG_PATH.rename(old)
     except OSError as exc:
         _LOGGER.debug("Could not rotate HEMS debug log: %s", exc)
-    # Also expire old logs older than 3 days
     try:
         cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
         for p in _LOG_PATH.parent.glob("powmr_hems_debug.*.log"):
@@ -52,6 +49,12 @@ def _maybe_rotate() -> None:
     except OSError:
         pass
     _ROTATE_AT[str(_LOG_PATH)] = today
+
+
+def _write_line(path: Path, line: str) -> None:
+    """Synchronous file write — run from a worker thread."""
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\\n")
 
 
 def log_evaluation(
@@ -64,15 +67,9 @@ def log_evaluation(
 ) -> None:
     """Append one evaluation to the debug log.
 
-    Async so we don't block the HA event loop on file I/O. The actual
-    write is dispatched to a thread via asyncio.to_thread.
+    The file write runs in a daemon thread so we never block HA''s
+    event loop, even when the log file is large.
     """
-    import asyncio
-try:
-    from homeassistant.core import async_get_running_loop as _get_loop
-    _HAS_LOOP = True
-except ImportError:
-    _HAS_LOOP = False
     try:
         _maybe_rotate()
         payload = {
@@ -102,34 +99,17 @@ except ImportError:
             "skip_reason": skip_reason,
         }
         line = json.dumps(payload, ensure_ascii=False, default=str)
-        # Off-load file I/O to a thread so we never block HA's event loop.
-        # Called from a sync context (HemsEngine.evaluate) so we can't await.
+        # Fire-and-forget thread so the event loop is never blocked.
         threading.Thread(
             target=_write_line, args=(_LOG_PATH, line), daemon=True
         ).start()
-    except Exception as exc:  # never let logging break the HEMS loop
+    except Exception as exc:
+        # Never let logging break the HEMS loop.
         _LOGGER.debug("Failed to write HEMS debug log: %s", exc)
 
 
-def read_recent(limit: int = 200) -> list[dict[str, Any]]:
-    """Return the last `limit` entries (newest first) from the debug log.
-
-    Sync API: the actual file I/O runs in a thread pool so the HA event
-    loop is never blocked when sensor extra_state_attributes calls us.
-    """
-    if not _LOG_PATH.exists():
-        return []
-    try:
-        from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(_read_recent_sync, _LOG_PATH, limit)
-            return fut.result(timeout=1.0)
-    except Exception:
-        return []
-
-
-def _read_recent_sync(path, limit: int) -> list[dict[str, Any]]:
-    """Synchronous reader for asyncio.to_thread."""
+def _read_recent_sync(path: Path, limit: int) -> list[dict[str, Any]]:
+    """Synchronous reader — run from a thread pool."""
     try:
         size = path.stat().st_size
         with path.open("rb") as fh:
@@ -147,13 +127,25 @@ def _read_recent_sync(path, limit: int) -> list[dict[str, Any]]:
         return []
 
 
-def daily_summary(date_str: str | None = None) -> dict[str, int]:
-    """Count decisions, commands sent, and skips for the given day.
+def read_recent(limit: int = 200) -> list[dict[str, Any]]:
+    """Return the last `limit` entries (newest first) from the debug log.
 
-    Used by sensors to show "today we made N decisions, sent M commands,
-    skipped K" — the kind of summary you actually want after watching
-    the dashboard for a day.
+    Sync API: the actual file I/O runs in a thread pool so the HA event
+    loop isn''t blocked when sensor extra_state_attributes calls us.
     """
+    if not _LOG_PATH.exists():
+        return []
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_read_recent_sync, _LOG_PATH, limit)
+            return fut.result(timeout=1.0)
+    except Exception:
+        return []
+
+
+def daily_summary(date_str: str | None = None) -> dict[str, int]:
+    """Count decisions, commands sent, and skips for the given day."""
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
     out = {"decisions": 0, "commands_sent": 0, "skipped": 0}
     if not _LOG_PATH.exists():

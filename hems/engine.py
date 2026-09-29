@@ -705,11 +705,28 @@ class HemsEngine:
                 buzzer_off=buzzer_off,
             )
 
-        # ── Default: not worth draining — stay on grid, keep battery
-        # topped up so it remains as a real backup for outages.
+        # ── Default: don't waste grid energy on a battery that
+        # doesn't need it. If we keep output=USB (load from grid),
+        # the charger should be OSO (solar-only) unless SOC is low
+        # enough that we'd genuinely benefit from topping up. This
+        # eliminates the ~15% round-trip loss when SNU charges from
+        # grid into a near-full battery.
+        if soc >= 90.0:
+            # Battery already topped off — don't waste grid power on it.
+            # Keep it as a real backup reserve.
+            return HemsDecision(
+                output_priority=OutputPriority.USB,
+                charger_priority=ChargerPriority.OSO,
+                reason="day_default",
+                buzzer_off=buzzer_off,
+            )
+
+        # ── SOC healthy but not full — still prefer solar-only charging.
+        # Grid assistance (SNU) only makes sense if we expect to use the
+        # stored energy soon (good evening load forecast).
         return HemsDecision(
             output_priority=OutputPriority.USB,
-            charger_priority=ChargerPriority.SNU,
+            charger_priority=ChargerPriority.OSO,
             reason="day_default",
             buzzer_off=buzzer_off,
         )
@@ -775,10 +792,13 @@ class HemsEngine:
                 buzzer_off=buzzer_off,
             )
 
-        # Condition 5: Default safety → USB
+        # Condition 5: Default safety → USB but with OSO (solar-only
+        # charging). Charging from grid at evening peak rates makes no
+        # sense — we'd pay full price for energy we already have in the
+        # battery (or will get tomorrow from solar).
         return HemsDecision(
             output_priority=OutputPriority.USB,
-            charger_priority=ChargerPriority.SNU,
+            charger_priority=ChargerPriority.OSO,
             reason=_Reason.EVENING_PROTECT,
             buzzer_off=buzzer_off,
         )
