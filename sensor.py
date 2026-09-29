@@ -19,9 +19,11 @@ from homeassistant.components.sensor import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
+    UnitOfApparentPower,
     UnitOfElectricCurrent,
     UnitOfElectricPotential,
     UnitOfEnergy,
+    UnitOfFrequency,
     UnitOfPower,
     UnitOfMass,
     UnitOfTemperature,
@@ -261,6 +263,67 @@ SENSORS: tuple[InverterSensorDescription, ...] = (
     # on the inverter heatsink), which is the only temperature value the
     # POWMR inverter actually reports in latest_state. Earlier radiatorTemperature
     # / invTemperature fallbacks were never returned by this firmware.
+
+    # ── Nominal / rated inverter specs (from API) ─────────────────────
+    InverterSensorDescription(
+        key="nominal_ac_voltage",
+        translation_key="nominal_ac_voltage",
+        device_class=SensorDeviceClass.VOLTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+        suggested_display_precision=0,
+        icon="mdi:flash-triangle-outline",
+        value_fn=lambda d: d.get("nominalAcVoltage"),
+    ),
+    InverterSensorDescription(
+        key="nominal_ac_current",
+        translation_key="nominal_ac_current",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        suggested_display_precision=0,
+        icon="mdi:current-ac",
+        value_fn=lambda d: d.get("nominalAcCurrent"),
+    ),
+    InverterSensorDescription(
+        key="rated_active_power",
+        translation_key="rated_active_power",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        suggested_display_precision=0,
+        icon="mdi:lightning-bolt",
+        value_fn=lambda d: d.get("ratedActivePower"),
+    ),
+    InverterSensorDescription(
+        key="rated_apparent_power",
+        translation_key="rated_apparent_power",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        suggested_display_precision=0,
+        icon="mdi:lightning-bolt-outline",
+        value_fn=lambda d: d.get("acOutputRatingApparentPower"),
+    ),
+    InverterSensorDescription(
+        key="output_apparent_power",
+        translation_key="output_apparent_power",
+        device_class=SensorDeviceClass.APPARENT_POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfApparentPower.VOLT_AMPERE,
+        suggested_display_precision=0,
+        icon="mdi:sine-wave",
+        value_fn=lambda d: d.get("outputApparentPower"),
+    ),
+    InverterSensorDescription(
+        key="output_frequency",
+        translation_key="output_frequency",
+        device_class=SensorDeviceClass.FREQUENCY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfFrequency.HERTZ,
+        suggested_display_precision=1,
+        icon="mdi:sine-wave",
+        value_fn=lambda d: d.get("outputFrequency"),
+    ),
 )
 
 

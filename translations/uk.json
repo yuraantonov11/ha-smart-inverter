@@ -264,6 +264,24 @@
     },
     "buzzer_alarm": {
       "name": "Звукова сигналізація"
+    },
+    "nominal_ac_voltage": {
+      "name": "Номінальна напруга AC"
+    },
+    "nominal_ac_current": {
+      "name": "Номінальний струм AC"
+    },
+    "rated_active_power": {
+      "name": "Номінальна активна потужність"
+    },
+    "rated_apparent_power": {
+      "name": "Номінальна повна потужність"
+    },
+    "output_apparent_power": {
+      "name": "Повна потужність (вихід)"
+    },
+    "output_frequency": {
+      "name": "Частота на виході"
     }
   },
   "services": {

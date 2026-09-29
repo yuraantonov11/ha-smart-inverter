@@ -57,9 +57,6 @@ async def async_setup_entry(
     entities = [
         InverterMaxChargingCurrent(coordinator),
         InverterMaxUtilityChargingCurrent(coordinator),
-        InverterBatteryChargeLimitPercent(coordinator),
-        InverterBatteryDischargeLimitPercent(coordinator),
-        InverterGridChargePowerLimit(coordinator),
         # New voltage entities
         InverterBulkChargingVoltage(coordinator),
         InverterFloatChargingVoltage(coordinator),
@@ -134,110 +131,6 @@ class InverterMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
             self.async_write_ha_state()
 
 
-class InverterBatteryChargeLimitPercent(CoordinatorEntity, NumberEntity):
-    """Number: max battery charging current in Amperes (API: setMaxChargingCurrent).
-
-    The API exposes this as max current in Amps, NOT a percent. Values are
-    typically 10-100A depending on inverter model. The translation_key was
-    previously misleading.
-    """
-
-    def __init__(self, coordinator: InverterCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_has_entity_name = True
-        self._attr_translation_key = "max_charging_current"
-        self._attr_unique_id = f"{coordinator.api.device_sn}_max_charging_current"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
-        }
-        self._attr_native_min_value = 10
-        self._attr_native_max_value = 100
-        self._attr_native_step = 1
-        self._attr_native_unit_of_measurement = "A"
-        self._attr_mode = NumberMode.BOX
-        self._attr_icon = "mdi:battery-plus"
-        self._setting_key = "setMaxChargingCurrent"
-
-    @property
-    def native_value(self) -> float | None:
-        return _setting_number(self.coordinator.data, self._setting_key)
-
-    async def async_set_native_value(self, value: float) -> None:
-        v = int(value)
-        ok = await self.coordinator.api.set_config_item(self._setting_key, str(v))
-        if ok:
-            self.async_write_ha_state()
-
-
-class InverterBatteryDischargeLimitPercent(CoordinatorEntity, NumberEntity):
-    """Number: low-battery cutoff voltage (API: LowBatteryCutOffVoltageSetting).
-
-    The API does NOT expose a discharge-limit percent. It exposes the
-    low-battery cutoff voltage, which determines when the inverter stops
-    drawing from the battery. Range typically 40-52V for 48V systems.
-    """
-
-    def __init__(self, coordinator: InverterCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_has_entity_name = True
-        self._attr_translation_key = "low_battery_cutoff_voltage"
-        self._attr_unique_id = f"{coordinator.api.device_sn}_low_battery_cutoff_voltage"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
-        }
-        self._attr_native_min_value = 40
-        self._attr_native_max_value = 54
-        self._attr_native_step = 0.1
-        self._attr_native_unit_of_measurement = "V"
-        self._attr_mode = NumberMode.BOX
-        self._attr_icon = "mdi:battery-minus"
-        self._setting_key = "LowBatteryCutOffVoltageSetting"
-
-    @property
-    def native_value(self) -> float | None:
-        return _setting_number(self.coordinator.data, self._setting_key)
-
-    async def async_set_native_value(self, value: float) -> None:
-        v = int(value)
-        ok = await self.coordinator.api.set_config_item(self._setting_key, str(v))
-        if ok:
-            self.async_write_ha_state()
-
-
-class InverterGridChargePowerLimit(CoordinatorEntity, NumberEntity):
-    """Number: battery power limiting setting in Watts (API: batteryPowerLimitingSetting).
-
-    This is the inverter own battery-power cap, NOT a generic grid-charge
-    power limit. Range and unit are taken from the inverter firmware.
-    """
-
-    def __init__(self, coordinator: InverterCoordinator) -> None:
-        super().__init__(coordinator)
-        self._attr_has_entity_name = True
-        self._attr_translation_key = "battery_power_limit"
-        self._attr_unique_id = f"{coordinator.api.device_sn}_battery_power_limit"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
-        }
-        self._attr_native_min_value = 0
-        self._attr_native_max_value = 5000
-        self._attr_native_step = 50
-        self._attr_native_unit_of_measurement = "W"
-        self._attr_mode = NumberMode.BOX
-        self._attr_icon = "mdi:flash"
-        self._setting_key = "batteryPowerLimitingSetting"
-
-    @property
-    def native_value(self) -> float | None:
-        return _setting_number(self.coordinator.data, self._setting_key)
-
-    async def async_set_native_value(self, value: float) -> None:
-        v = int(value)
-        ok = await self.coordinator.api.set_config_item(self._setting_key, str(v))
-        if ok:
-            self.async_write_ha_state()
-
-
 # ── New voltage / time entities ────────────────────────────────────────────
 
 
@@ -304,7 +197,7 @@ class InverterLowBatteryCutoffVoltage(_InverterConfigNumber):
 
     def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(coordinator)
-        self._attr_translation_key = "low_low_battery_cutoff_voltage"
+        self._attr_translation_key = "low_battery_cutoff_voltage"
         self._attr_native_min_value = 30.0
         self._attr_native_max_value = 56.0
         self._attr_native_step = 0.1

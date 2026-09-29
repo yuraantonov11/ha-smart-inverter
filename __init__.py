@@ -91,10 +91,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # the device we just created. Find and remove it.
         # The current code never creates such a device - this is safe.
         legacy_ids = ("hacs", "1268765881")
-        # async_get_device is deprecated in 2027.8 — loop to find by identifiers
+        # async_get_device is deprecated in HA 2027.8 (identifiers are no
+        # longer unique across config entries). async_get_device_by_identifier
+        # requires config_entry_id (not what we want — we look across all
+        # entries for the legacy HACS device). Iterate the registry instead
+        # and filter manually. This is the canonical migration path
+        # documented for HA 2027.x.
         legacy_device = None
         for dev in device_registry.devices.values():
-            if any(ident == set([legacy_ids]) or list(ident) == list(legacy_ids) for ident in dev.identifiers):
+            if any(tuple(ident) == legacy_ids for ident in dev.identifiers):
                 legacy_device = dev
                 break
         if legacy_device is not None:

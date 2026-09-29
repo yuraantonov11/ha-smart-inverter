@@ -538,6 +538,16 @@ class InverterApiClient:
         inverter_temp = _val("ntcMaximumTemperature") or _val("radiatorTemperature") or _val("invTemperature") or _val("temperature")
         pv_input_voltage = _val("pvVoltage") or _val("solarVoltage") or _val("pvInputVoltage")
 
+        # Rated/nominal inverter specs (exposed by latest_state API).
+        # Useful for verifying operation within the device envelope and
+        # for power-quality monitoring.
+        nominal_ac_voltage = _val("nominalAcVoltage")
+        nominal_ac_current = _val("nominalAcCurrent")
+        rated_active_power = _val("ratedActivePower")
+        rated_apparent_power = _val("acOutputRatingApparentPower")
+        output_apparent_power = _val("outputApparentPower")
+        output_frequency = _val("outputFrequency")
+
         return {
             "pvPower": pv_power,
             "gridPower": grid_power,
@@ -559,6 +569,12 @@ class InverterApiClient:
             "batteryChargeCurrent": battery_charge_current_sep,
             "batteryDischargeCurrent": battery_discharge_current_sep,
             "inverterTemperature": inverter_temp,
+            "nominalAcVoltage": nominal_ac_voltage,
+            "nominalAcCurrent": nominal_ac_current,
+            "ratedActivePower": rated_active_power,
+            "ratedApparentPower": rated_apparent_power,
+            "outputApparentPower": output_apparent_power,
+            "outputFrequency": output_frequency,
             "rawFields": raw_fields,
             "payload": payload,
         }
