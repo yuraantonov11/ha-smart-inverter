@@ -535,7 +535,7 @@ class InverterApiClient:
         grid_import_power = grid_power  # alias for Energy Dashboard compatibility
         battery_charge_current_sep = _val("batteryChargingCurrent")
         battery_discharge_current_sep = _val("batteryDischargeCurrent")
-        inverter_temp = _val("radiatorTemperature") or _val("invTemperature") or _val("temperature")
+        inverter_temp = _val("ntcMaximumTemperature") or _val("radiatorTemperature") or _val("invTemperature") or _val("temperature")
         pv_input_voltage = _val("pvVoltage") or _val("solarVoltage") or _val("pvInputVoltage")
 
         return {
