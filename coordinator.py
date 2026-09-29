@@ -26,6 +26,7 @@ from .const import DOMAIN, HISTORY_POLL_INTERVAL_SEC
 from .hems.forecast import ForecastService
 from .hems.soc_correction import get_real_soc
 from .hems.engine import HemsEngine, SmartMode, OutputPriority, ChargerPriority, HemsDecision
+from .hems import debug_logging
 from .hems.tuning import HemsTunables, HemsTuningService
 from .hems.storm_risk import evaluate_storm_risk
 from .hems.schedule_rules import ScheduleRulesService
@@ -74,6 +75,11 @@ class InverterCoordinator(DataUpdateCoordinator):
         )
         self._tuning = HemsTuningService(tunables)
         self._hems = HemsEngine(tunables=tunables, tuning=self._tuning)
+        self._hems_debug_day = None  # type: str | None
+        self._hems_debug_decisions = 0
+        self._hems_debug_commands = 0
+        self._hems_debug_skips = 0
+        self._hems_debug_last_decision_ts = None  # type: str | None
 
         # ── Schedule Rules ────────────────────────────────────────────
         self._schedule_rules = ScheduleRulesService()
@@ -372,6 +378,23 @@ class InverterCoordinator(DataUpdateCoordinator):
         self.hems_last_output_cmd = decision.output_priority
         self.hems_last_charger_cmd = decision.charger_priority
         self.hems_buzzer_off = decision.buzzer_off
+
+        # ── Update HEMS daily counters (cheap, no I/O) ─────────────────
+        today = now.strftime("%Y-%m-%d")
+        if self._hems_debug_day != today:
+            self._hems_debug_day = today
+            self._hems_debug_decisions = 0
+            self._hems_debug_commands = 0
+            self._hems_debug_skips = 0
+        self._hems_debug_decisions += 1
+        self._hems_debug_last_decision_ts = now.isoformat(timespec="seconds")
+        if decision.skip:
+            self._hems_debug_skips += 1
+        elif (decision.output_priority is None and decision.charger_priority is None):
+            # Early-skip — current already matches target.
+            self._hems_debug_skips += 1
+        else:
+            self._hems_debug_commands += 1
 
         # Execute command
         if not decision.skip:

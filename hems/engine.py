@@ -14,6 +14,7 @@ from enum import IntEnum
 from typing import Any
 
 from .tuning import AdaptiveThresholds, HemsTuningService, HemsTunables
+from . import debug_logging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -303,6 +304,48 @@ class HemsEngine:
         if decision.charger_priority is not None:
             self._last_cmd_charger = decision.charger_priority
             self._last_cmd_charger_at = now
+
+        # Debug logging: persist every decision to /config/powmr_hems_debug.log
+        # so the user can replay a full day and understand WHY HEMS chose
+        # what it did (or why it skipped). Cheap to keep; rotates daily.
+        try:
+            skip_reason = None
+            applied = None
+            if decision.skip:
+                skip_reason = decision.reason
+            elif (decision.output_priority is None
+                  and decision.charger_priority is None):
+                # Early-skip — current state already matches target.
+                skip_reason = "already_in_target"
+            else:
+                applied = {
+                    "output_priority": decision.output_priority,
+                    "charger_priority": decision.charger_priority,
+                    "buzzer_off": decision.buzzer_off,
+                }
+            debug_logging.log_evaluation(
+                timestamp=now,
+                inputs={
+                    "smart_mode": smart_mode,
+                    "soc": soc,
+                    "pv_power": pv_power,
+                    "load_power": load_power,
+                    "grid_power": grid_power,
+                    "battery_power": battery_power,
+                    "grid_voltage": grid_voltage,
+                    "grid_available": grid_available,
+                    "current_output": current_output,
+                    "current_charger": current_charger,
+                    "reserve_soc": reserve_soc,
+                    "forecast_today_kwh": getattr(self, "_last_forecast_today_kwh", None),
+                    "forecast_tomorrow_kwh": forecast_tomorrow_kwh,
+                },
+                decision=decision,
+                applied=applied,
+                skip_reason=skip_reason,
+            )
+        except Exception:
+            pass  # never let logging break HEMS
 
         return decision
 
@@ -623,7 +666,19 @@ class HemsEngine:
                 buzzer_off=buzzer_off,
             )
 
-        # ── Default: not enough sun → USB + SNU ──────────────────────
+        # ── Default: not enough sun to charge, but battery is healthy
+        # — use SBU so the battery powers the load instead of pulling
+        # everything from the grid. Reserve_SOC is the floor: below it
+        # we drop back to USB to preserve backup capacity.
+        if soc >= max(reserve_soc + 5.0, 30.0):
+            return HemsDecision(
+                output_priority=OutputPriority.SBU,
+                charger_priority=ChargerPriority.OSO,
+                reason="battery_drives_load",
+                buzzer_off=buzzer_off,
+            )
+
+        # ── Default: SOC too low to drain → keep USB + SNU ───────────
         return HemsDecision(
             output_priority=OutputPriority.USB,
             charger_priority=ChargerPriority.SNU,

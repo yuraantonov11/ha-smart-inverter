@@ -35,6 +35,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import InverterCoordinator, HistoryCoordinator
+from .hems import debug_logging
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -354,6 +355,9 @@ async def async_setup_entry(
     entities.append(HemsReasonSensor(coordinator))
     entities.append(HemsOutputCmdSensor(coordinator))
     entities.append(HemsChargerCmdSensor(coordinator))
+    # HEMS observability: daily counters + last-20 timeline
+    entities.append(HemsDailySummarySensor(coordinator))
+    entities.append(HemsRecentDecisionsSensor(coordinator))
 
     # ── History chart sensors (separate coordinator, 15-min polling) ──
     history_coordinator: HistoryCoordinator | None = hass.data[DOMAIN].get(
@@ -895,3 +899,93 @@ class TotalEnergyHistorySensor(CoordinatorEntity, SensorEntity):
             ),
             "last_updated": self.coordinator.data.get("last_updated"),
         }
+
+
+
+# ── HEMS debug/observability sensors ───────────────────────────────────────
+class HemsDailySummarySensor(CoordinatorEntity, SensorEntity):
+    """Per-day rolling summary of HEMS decisions, commands, skips.
+
+    Attributes expose the raw counters and the last evaluation inputs
+    for at-a-glance dashboard debugging. Resets on day rollover via the
+    coordinator's on-day-change handler.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "hems_daily_summary"
+    _attr_icon = "mdi:chart-line-variant"
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.api.device_sn}_hems_daily_summary"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def native_value(self) -> int:
+        return getattr(self.coordinator, "_hems_debug_decisions", 0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        last = debug_logging.read_recent(1)
+        last_dec = last[0] if last else {}
+        decision = last_dec.get("decision", {})
+        return {
+            "decisions_today": getattr(self.coordinator, "_hems_debug_decisions", 0),
+            "commands_sent_today": getattr(self.coordinator, "_hems_debug_commands", 0),
+            "skipped_today": getattr(self.coordinator, "_hems_debug_skips", 0),
+            "last_decision_ts": getattr(self.coordinator, "_hems_debug_last_decision_ts", None),
+            "last_reason": decision.get("reason"),
+            "last_decision_output": decision.get("output_priority"),
+            "last_decision_charger": decision.get("charger_priority"),
+            "last_inputs": {
+                "soc": last_dec.get("soc"),
+                "pv_w": last_dec.get("pv_w"),
+                "load_w": last_dec.get("load_w"),
+                "grid_w": last_dec.get("grid_w"),
+                "batt_w": last_dec.get("batt_w"),
+                "hour": last_dec.get("hour"),
+                "current_output": last_dec.get("current_output"),
+                "current_charger": last_dec.get("current_charger"),
+            },
+            "log_file": "/config/powmr_hems_debug.log",
+        }
+
+
+class HemsRecentDecisionsSensor(CoordinatorEntity, SensorEntity):
+    """Last 20 HEMS decisions for the dashboard timeline view.
+
+    Native value is the count of available entries; attributes carry
+    the parsed JSON so a custom card (or a markdown card) can render
+    them as a table.
+    """
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "hems_recent_decisions"
+    _attr_icon = "mdi:history"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.api.device_sn}_hems_recent_decisions"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def native_value(self) -> int:
+        return len(self._entries())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        entries = self._entries()
+        return {
+            "count": len(entries),
+            "entries": entries,
+            "log_file": "/config/powmr_hems_debug.log",
+        }
+
+    def _entries(self) -> list[dict[str, Any]]:
+        # Cap to 20 — keeps the attribute payload bounded.
+        return debug_logging.read_recent(limit=20)
