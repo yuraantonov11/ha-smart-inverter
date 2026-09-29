@@ -282,6 +282,12 @@
     },
     "output_frequency": {
       "name": "Частота на виході"
+    },
+    "hems_daily_summary": {
+      "name": "HEMS Підсумок за день"
+    },
+    "hems_recent_decisions": {
+      "name": "HEMS Останні рішення"
     }
   },
   "services": {

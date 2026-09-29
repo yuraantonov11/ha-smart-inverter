@@ -666,11 +666,30 @@ class HemsEngine:
                 buzzer_off=buzzer_off,
             )
 
-        # ── Default: not enough sun to charge, but battery is healthy
-        # — use SBU so the battery powers the load instead of pulling
-        # everything from the grid. Reserve_SOC is the floor: below it
-        # we drop back to USB to preserve backup capacity.
-        if soc >= max(reserve_soc + 5.0, 30.0):
+        # ── Default branch: decide SBU vs USB based on whether
+        # running the battery now would actually save anything.
+        #
+        # Round-trip losses through the inverter are ~10-15%. So draining
+        # a fully-charged battery to feed a 700W load for an hour only
+        # makes sense if we expect to recharge it cheaply (sun today /
+        # tonight at off-peak tariff). Otherwise we waste the SOC and pay
+        # to refill it later.
+        #
+        # Rule:
+        #   - PV surplus (PV > load) → SBU+OSO so we store solar in
+        #     the battery as we go. Handled above as SURPLUS_SBU.
+        #   - Good forecast (tomorrow >= 1.0 kWh) → we'll recharge from
+        #     sun, so SBU is fine even on cloudy afternoons.
+        #   - SOC near full (>= 80%) and reasonable load (>150 W):
+        #     draining saves noticeable grid imports → SBU.
+        #   - Otherwise → USB+SNU. Don't touch the battery; let the
+        #     charger top it up at off-peak if the forecast is bad.
+        soc_healthy = soc >= max(reserve_soc + 5.0, 30.0)
+        soc_full = soc >= 80.0
+        good_forecast = forecast_tomorrow_kwh is not None and forecast_tomorrow_kwh >= 1.0
+        load_significant = load_power >= 150.0
+
+        if soc_full and load_significant and (good_forecast or pv_power > 50.0):
             return HemsDecision(
                 output_priority=OutputPriority.SBU,
                 charger_priority=ChargerPriority.OSO,
@@ -678,7 +697,16 @@ class HemsEngine:
                 buzzer_off=buzzer_off,
             )
 
-        # ── Default: SOC too low to drain → keep USB + SNU ───────────
+        if soc_healthy and good_forecast and load_significant:
+            return HemsDecision(
+                output_priority=OutputPriority.SBU,
+                charger_priority=ChargerPriority.OSO,
+                reason="forecast_good_use_battery",
+                buzzer_off=buzzer_off,
+            )
+
+        # ── Default: not worth draining — stay on grid, keep battery
+        # topped up so it remains as a real backup for outages.
         return HemsDecision(
             output_priority=OutputPriority.USB,
             charger_priority=ChargerPriority.SNU,

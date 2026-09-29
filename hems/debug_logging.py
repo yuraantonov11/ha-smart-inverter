@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -63,11 +64,15 @@ def log_evaluation(
 ) -> None:
     """Append one evaluation to the debug log.
 
-    Inputs is a flat dict with all values the engine considered.
-    Decision is a HemsDecision (or any object with .__dict__).
-    Applied describes what was actually sent to the inverter (None if skip).
-    Skip_reason, if set, explains why no action was taken.
+    Async so we don't block the HA event loop on file I/O. The actual
+    write is dispatched to a thread via asyncio.to_thread.
     """
+    import asyncio
+try:
+    from homeassistant.core import async_get_running_loop as _get_loop
+    _HAS_LOOP = True
+except ImportError:
+    _HAS_LOOP = False
     try:
         _maybe_rotate()
         payload = {
@@ -97,20 +102,37 @@ def log_evaluation(
             "skip_reason": skip_reason,
         }
         line = json.dumps(payload, ensure_ascii=False, default=str)
-        with _LOG_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        # Off-load file I/O to a thread so we never block HA's event loop.
+        # Called from a sync context (HemsEngine.evaluate) so we can't await.
+        threading.Thread(
+            target=_write_line, args=(_LOG_PATH, line), daemon=True
+        ).start()
     except Exception as exc:  # never let logging break the HEMS loop
         _LOGGER.debug("Failed to write HEMS debug log: %s", exc)
 
 
 def read_recent(limit: int = 200) -> list[dict[str, Any]]:
-    """Return the last `limit` entries (newest first) from the debug log."""
+    """Return the last `limit` entries (newest first) from the debug log.
+
+    Sync API: the actual file I/O runs in a thread pool so the HA event
+    loop is never blocked when sensor extra_state_attributes calls us.
+    """
     if not _LOG_PATH.exists():
         return []
     try:
-        # Read last ~64 KB then parse, faster than scanning the whole file
-        size = _LOG_PATH.stat().st_size
-        with _LOG_PATH.open("rb") as fh:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            fut = ex.submit(_read_recent_sync, _LOG_PATH, limit)
+            return fut.result(timeout=1.0)
+    except Exception:
+        return []
+
+
+def _read_recent_sync(path, limit: int) -> list[dict[str, Any]]:
+    """Synchronous reader for asyncio.to_thread."""
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
             fh.seek(max(0, size - 65536))
             tail = fh.read().decode("utf-8", errors="replace")
         lines = [ln for ln in tail.splitlines() if ln.strip()]
