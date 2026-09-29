@@ -247,16 +247,10 @@ SENSORS: tuple[InverterSensorDescription, ...] = (
         icon="mdi:battery-minus",
         value_fn=lambda d: d.get("batteryDischargeCurrent"),
     ),
-    InverterSensorDescription(
-        key="inverter_temperature",
-        translation_key="inverter_temperature",
-        device_class=SensorDeviceClass.TEMPERATURE,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
-        suggested_display_precision=1,
-        icon="mdi:thermometer",
-        value_fn=lambda d: d.get("inverterTemperature"),
-    ),
+    # Inverter temperature removed: POWMR API does not expose any temperature
+    # field (verified via runtime debug — no radiatorTemperature/invTemperature/
+    # temperature/machineTemperature/internalTemperature/fanSpeed in latest_state
+    # response). Sensor was permanently 0.0 / unknown.
 )
 
 
