@@ -322,12 +322,6 @@ class InverterCoordinator(DataUpdateCoordinator):
 
         # Check keepalive
         battery_power = raw.get("batteryPower", 0.0)
-        keepalive_decision = self._hems.check_keepalive(battery_power, corrected_soc, now)
-        if keepalive_decision and keepalive_decision.output_priority:
-            await self._execute_hems_command(keepalive_decision)
-            # Schedule keepalive end
-            self._keepalive_timer = now + timedelta(seconds=self._hems.keepalive.DURATION_SEC)
-            return
 
         # Finish keepalive if timer expired
         if self._hems.keepalive.in_progress and self._keepalive_timer and now >= self._keepalive_timer:
