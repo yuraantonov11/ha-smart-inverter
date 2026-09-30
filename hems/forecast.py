@@ -23,6 +23,32 @@ FORECAST_PARAMS = (
     "shortwave_radiation,temperature_2m,weather_code,cloud_cover,"
     "wind_speed_10m,direct_radiation,diffuse_radiation"
 )
+
+# WMO Weather code → HA weather entity mapping (subset of HA's weather conditions)
+# https://open-meteo.com/en/docs (WMO Weather interpretation codes)
+WMO_TO_HA_WEATHER = {
+    0: ("clear-night" if False else "sunny", "☀️", "Ясно"),
+    1: ("partlycloudy", "🌤️", "Переважно ясно"),
+    2: ("partlycloudy", "⛅", "Хмарно з проясненнями"),
+    3: ("cloudy", "☁️", "Хмарно"),
+    45: ("fog", "🌫️", "Туман"),
+    48: ("fog", "🌫️", "Паморозний туман"),
+    51: ("rainy", "🌦️", "Легка мряка"),
+    53: ("rainy", "🌦️", "Мряка"),
+    55: ("rainy", "🌧️", "Сильна мряка"),
+    61: ("rainy", "🌧️", "Слабкий дощ"),
+    63: ("rainy", "🌧️", "Дощ"),
+    65: ("rainy", "🌧️", "Сильний дощ"),
+    71: ("snowy", "🌨️", "Слабкий сніг"),
+    73: ("snowy", "🌨️", "Сніг"),
+    75: ("snowy", "❄️", "Сильний сніг"),
+    80: ("rainy", "🌦️", "Зливи"),
+    81: ("rainy", "🌧️", "Сильні зливи"),
+    82: ("pouring", "⛈️", "Дуже сильні зливи"),
+    95: ("lightning", "⛈️", "Гроза"),
+    96: ("lightning-rainy", "⛈️", "Гроза з градом"),
+    99: ("lightning-rainy", "⛈️", "Сильна гроза з градом"),
+}
 LOCAL_CACHE_TTL_SEC = 60 * 12       # 12 min for hourly data
 DAILY_CACHE_TTL_SEC = 60 * 20       # 20 min for daily aggregates
 MIN_REQUEST_INTERVAL_SEC = 1.0       # Rate limit
@@ -40,11 +66,22 @@ class SolarForecast:
         energy_kwh: float,
         peak_power_w: float,
         hourly_power: list[float] | None = None,
+        hourly_weather: list[int] | None = None,
+        dominant_weather_code: int | None = None,
     ) -> None:
         self.date = date
         self.energy_kwh = energy_kwh
         self.peak_power_w = peak_power_w
         self.hourly_power = hourly_power or []
+        self.hourly_weather = hourly_weather or []
+        # Dominant weather = the code with most hours (rough summary)
+        if hourly_weather:
+            from collections import Counter
+            self.dominant_weather_code = Counter(hourly_weather).most_common(1)[0][0]
+        elif dominant_weather_code is not None:
+            self.dominant_weather_code = dominant_weather_code
+        else:
+            self.dominant_weather_code = None
 
 
 class ForecastService:
@@ -160,11 +197,19 @@ class ForecastService:
         hourly = data.get("hourly", {})
         times = hourly.get("time", [])
         radiations = hourly.get("shortwave_radiation", [])
+        weather_codes = hourly.get("weather_code", [])
 
         result: list[dict[str, Any]] = []
-        for t, rad in zip(times, radiations):
+        for i, t in enumerate(times):
+            rad = radiations[i] if i < len(radiations) else 0
+            wcode = weather_codes[i] if i < len(weather_codes) else None
             power_w = round((rad or 0) * self.learned_ratio)
-            result.append({"time": t, "radiation_wm2": rad or 0, "power_w": power_w})
+            result.append({
+                "time": t,
+                "radiation_wm2": rad or 0,
+                "power_w": power_w,
+                "weather_code": wcode,
+            })
         return result
 
     async def _fetch_daily(self, days: int) -> dict[str, SolarForecast]:
@@ -182,7 +227,8 @@ class ForecastService:
         for date_str, hours in daily.items():
             if len(result) >= days:
                 break
-            energies = [h["power_w"] for h in hours]  # Wh per hour (W * 1h)
+            energies = [h["power_w"] for h in hours]
+            weathers = [h.get("weather_code") for h in hours]
             total_kwh = sum(energies) / 1000.0
             peak_w = max(energies) if energies else 0.0
             result[date_str] = SolarForecast(
@@ -190,6 +236,7 @@ class ForecastService:
                 energy_kwh=round(total_kwh, 2),
                 peak_power_w=round(peak_w),
                 hourly_power=energies,
+                hourly_weather=weathers,
             )
         return result
 

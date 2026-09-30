@@ -156,6 +156,9 @@ class InverterCoordinator(DataUpdateCoordinator):
         self.forecast_learned_ratio: float = 0.12
         self.radiation_now_wm2: float | None = None
         self.hourly_forecast_today: list[float] = []  # 24 hourly power values (W) for sparkline
+        self.hourly_weather_today: list[int | None] = []  # WMO weather codes per hour
+        self.weather_tomorrow_code: int | None = None  # Dominant weather for tomorrow
+        self.weather_day_after_code: int | None = None
 
         # Storm risk tracking
         self._storm_risk_score: float = 0.0
@@ -719,19 +722,28 @@ class InverterCoordinator(DataUpdateCoordinator):
                 daily = await self._forecast.get_daily_forecasts(days=2)
                 dates = sorted(daily.keys())
                 if len(dates) >= 1:
-                    self.forecast_tomorrow_kwh = daily[dates[0]].energy_kwh
+                    fc = daily[dates[0]]
+                    self.forecast_tomorrow_kwh = fc.energy_kwh
+                    self.weather_tomorrow_code = getattr(fc, "dominant_weather_code", None)
                 if len(dates) >= 2:
-                    self.forecast_day_after_kwh = daily[dates[1]].energy_kwh
+                    fc2 = daily[dates[1]]
+                    self.forecast_day_after_kwh = fc2.energy_kwh
+                    self.weather_day_after_code = getattr(fc2, "dominant_weather_code", None)
                 self.forecast_learned_ratio = self._forecast.learned_ratio
 
                 # Store hourly forecast for today (sparkline)
                 hourly = await self._forecast.get_hourly_forecast()
                 today_str = now.strftime("%Y-%m-%d")
                 today_hours = [h["power_w"] for h in hourly if h["time"].startswith(today_str)]
+                today_weather = [
+                    h.get("weather_code") for h in hourly if h["time"].startswith(today_str)
+                ]
                 # Pad to 24 if needed
                 if len(today_hours) < 24:
                     today_hours.extend([0.0] * (24 - len(today_hours)))
+                    today_weather.extend([None] * (24 - len(today_weather)))
                 self.hourly_forecast_today = today_hours[:24]
+                self.hourly_weather_today = today_weather[:24]
 
                 self._forecast_last_fetch = now
                 _LOGGER.debug(

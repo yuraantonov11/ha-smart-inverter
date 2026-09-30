@@ -497,10 +497,55 @@ class ForecastTomorrowSensor(InverterSensor):
         hourly = self.coordinator.hourly_forecast_today
         if not hourly:
             return None
+        # Weather conditions for each hour (WMO codes)
+        weather = list(getattr(self.coordinator, "hourly_weather_today", []) or [])
+        # Pad to 24
+        while len(weather) < 24:
+            weather.append(None)
+
+        # Determine dominant weather for tomorrow (from forecast object)
+        tomorrow_code = getattr(self.coordinator, "weather_tomorrow_code", None)
+        today_code = None
+        from collections import Counter
+        valid_codes = [c for c in weather if c is not None]
+        if valid_codes:
+            today_code = Counter(valid_codes).most_common(1)[0][0]
+
+        # Find dominant hour-by-hour weather
+        hourly_weather = []
+        for c in weather[:24]:
+            if c is None:
+                hourly_weather.append(None)
+            else:
+                info = WMO_WEATHER_MAP.get(c, ("unknown", "❓", "?"))
+                hourly_weather.append({
+                    "code": c,
+                    "ha_state": info[0],
+                    "emoji": info[1],
+                    "label_uk": info[2],
+                })
+
         return {
             "hourly_forecast_w": hourly,
             "peak_power_w": max(hourly) if hourly else 0,
             "total_kwh": round(sum(hourly) / 1000.0, 2),
+            "hourly_weather": hourly_weather,
+            "dominant_today": {
+                "code": today_code,
+                **{
+                    "ha_state": WMO_WEATHER_MAP.get(today_code, ("unknown", "❓", "?"))[0],
+                    "emoji": WMO_WEATHER_MAP.get(today_code, ("unknown", "❓", "?"))[1],
+                    "label_uk": WMO_WEATHER_MAP.get(today_code, ("unknown", "❓", "?"))[2],
+                },
+            } if today_code else None,
+            "forecast_tomorrow": {
+                "code": tomorrow_code,
+                **{
+                    "ha_state": WMO_WEATHER_MAP.get(tomorrow_code, ("unknown", "❓", "?"))[0],
+                    "emoji": WMO_WEATHER_MAP.get(tomorrow_code, ("unknown", "❓", "?"))[1],
+                    "label_uk": WMO_WEATHER_MAP.get(tomorrow_code, ("unknown", "❓", "?"))[2],
+                },
+            } if tomorrow_code else None,
         }
 
 
@@ -899,4 +944,27 @@ class TotalEnergyHistorySensor(CoordinatorEntity, SensorEntity):
             "last_updated": self.coordinator.data.get("last_updated"),
         }
 
-
+# WMO weather code mapping (subset; full list at open-meteo.com/docs)
+WMO_WEATHER_MAP: dict[int, tuple[str, str, str]] = {
+    0: ("sunny", "☀️", "Ясно"),
+    1: ("partlycloudy", "🌤️", "Переважно ясно"),
+    2: ("partlycloudy", "⛅", "Хмарно з проясненнями"),
+    3: ("cloudy", "☁️", "Хмарно"),
+    45: ("fog", "🌫️", "Туман"),
+    48: ("fog", "🌫️", "Паморозний туман"),
+    51: ("rainy", "🌦️", "Легка мряка"),
+    53: ("rainy", "🌦️", "Мряка"),
+    55: ("rainy", "🌧️", "Сильна мряка"),
+    61: ("rainy", "🌧️", "Слабкий дощ"),
+    63: ("rainy", "🌧️", "Дощ"),
+    65: ("rainy", "🌧️", "Сильний дощ"),
+    71: ("snowy", "🌨️", "Слабкий сніг"),
+    73: ("snowy", "🌨️", "Сніг"),
+    75: ("snowy", "❄️", "Сильний сніг"),
+    80: ("rainy", "🌦️", "Зливи"),
+    81: ("rainy", "🌧️", "Сильні зливи"),
+    82: ("pouring", "⛈️", "Дуже сильні зливи"),
+    95: ("lightning", "⛈️", "Гроза"),
+    96: ("lightning-rainy", "⛈️", "Гроза з градом"),
+    99: ("lightning-rainy", "⛈️", "Сильна гроза з градом"),
+}

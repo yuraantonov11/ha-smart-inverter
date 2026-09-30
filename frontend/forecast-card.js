@@ -1,6 +1,7 @@
 // forecast-card.js — Smooth PV forecast sparkline for powmr_inverter
-// Reads hourly forecast from sensor attributes and renders smooth SVG curve.
-// Version: 1.0.0
+// Reads hourly forecast + WMO weather codes from sensor attributes and renders
+// smooth SVG curve with weather icons per hour.
+// Version: 1.1.0
 
 class ForecastCard extends HTMLElement {
   constructor() {
@@ -25,17 +26,32 @@ class ForecastCard extends HTMLElement {
 
     const entity = this._config.entity || 'sensor.smart_solar_inverter_forecast_tomorrow';
     const state = this._hass.states[entity];
-    const title = this._config.title || '☀️ Прогноз генерації (24г)';
+    const title = this._config.title || '🌤️ Прогноз генерації';
 
     // Get hourly data from attributes
     let hourly = [];
     let totalKwh = 0;
     let peakW = 0;
+    let hourlyWeather = [];        // [{code, emoji, label_uk}]
+    let forecastTomorrow = null;   // {code, emoji, label_uk, ha_state}
+    let dominantToday = null;      // same shape
     if (state && state.attributes) {
       hourly = state.attributes.hourly_forecast_w || [];
       totalKwh = state.attributes.total_kwh || 0;
       peakW = state.attributes.peak_power_w || 0;
+      hourlyWeather = state.attributes.hourly_weather || [];
+      forecastTomorrow = state.attributes.forecast_tomorrow || null;
+      dominantToday = state.attributes.dominant_today || null;
     }
+
+    // Header emoji: use tomorrow forecast if set, else today
+    const headerEmoji = (forecastTomorrow && forecastTomorrow.emoji)
+      || (dominantToday && dominantToday.emoji)
+      || "☀️";
+    const headerLabel = (forecastTomorrow && forecastTomorrow.label_uk)
+      || (dominantToday && dominantToday.label_uk)
+      || "Прогноз";
+    const headerTitle = `${headerEmoji} ${title} — ${headerLabel}`;
 
     // Current hour marker
     const now = new Date();
@@ -138,6 +154,7 @@ class ForecastCard extends HTMLElement {
             <path d="${linePath}" fill="none" stroke="#f4d03f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
             <line x1="${curX.toFixed(1)}" y1="0" x2="${curX.toFixed(1)}" y2="${H - 8}" stroke="rgba(255,255,255,0.25)" stroke-width="0.8" stroke-dasharray="2,2"/>
             ${hourLabels}
+            ${this._renderWeatherEmojis(points, hourlyWeather, H, PAD)}
           </svg>
           <div class="stats">
             <div>Пікова: <span class="val">${peakW} W</span></div>
@@ -146,6 +163,20 @@ class ForecastCard extends HTMLElement {
         ` : `<div style="text-align:center;color:#8b949e;padding:20px;font-size:0.75rem;">Завантаження прогнозу...</div>`}
       </div>
     `;
+  }
+
+  _renderWeatherEmojis(points, hourlyWeather, H, PAD) {
+    if (!Array.isArray(hourlyWeather) || hourlyWeather.length === 0) return '';
+    const stepHours = 3;
+    let out = '';
+    for (let h = 0; h < 24; h += stepHours) {
+      const w = hourlyWeather[h];
+      if (!w) continue;
+      const emoji = w.emoji || '❓';
+      const x = points[Math.min(h, points.length - 1)].x;
+      out += `<text x="${x.toFixed(1)}" y="11" text-anchor="middle" font-size="10">${emoji}</text>`;
+    }
+    return out;
   }
 }
 
