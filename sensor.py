@@ -377,6 +377,8 @@ async def async_setup_entry(
     # Add forecast & economics sensors
     entities.append(ForecastTomorrowSensor(coordinator))
     entities.append(ForecastDayAfterSensor(coordinator))
+    entities.append(WeatherYesterdaySensor(coordinator))
+    entities.append(WeatherTomorrowSensor(coordinator))
     entities.append(LearnedRatioSensor(coordinator))
     entities.append(DailySavingsSensor(coordinator))
     entities.append(MonthlySavingsSensor(coordinator))
@@ -498,6 +500,108 @@ class InverterCO2Sensor(InverterSensor):
     @property
     def native_value(self) -> float:
         return self.coordinator.api.co2_reduction
+
+
+class WeatherYesterdaySensor(InverterSensor):
+    """Sensor: weather summary emoji for yesterday.
+
+    Pulls the WMO weather_code for yesterday from the coordinator's
+    daily_historical_weather dict (populated by Open-Meteo Archive API)
+    and exposes the corresponding emoji as native_value plus a label.
+    """
+
+    _attr_icon = "mdi:weather-sunny"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="weather_yesterday",
+                translation_key="weather_yesterday",
+                device_class=None,
+                state_class=None,
+                native_unit_of_measurement=None,
+                icon="mdi:weather-sunny",
+            ),
+        )
+
+    @property
+    def native_value(self) -> str:
+        from datetime import datetime, timedelta
+        daily = getattr(self.coordinator, "daily_historical_weather", {}) or {}
+        yesterday = (datetime.now().date() - timedelta(days=1)).isoformat()
+        code = daily.get(yesterday)
+        if code is None:
+            return "❓"  # question mark
+        return WMO_WEATHER_MAP.get(int(code), ("unknown", "❓", "Невідомо"))[1]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        from datetime import datetime, timedelta
+        daily = getattr(self.coordinator, "daily_historical_weather", {}) or {}
+        yesterday = (datetime.now().date() - timedelta(days=1)).isoformat()
+        code = daily.get(yesterday)
+        if code is None:
+            return None
+        ha_state, emoji, label = WMO_WEATHER_MAP.get(int(code), ("unknown", "?", "?"))
+        return {
+            "date": yesterday,
+            "code": int(code),
+            "ha_state": ha_state,
+            "label_uk": label,
+        }
+
+
+class WeatherTomorrowSensor(InverterSensor):
+    """Sensor: weather summary emoji for tomorrow.
+
+    Reads the forecast_tomorrow attribute exposed by ForecastTomorrowSensor
+    (a {code, emoji, label_uk, ha_state} dict built by the coordinator).
+    """
+
+    _attr_icon = "mdi:weather-sunny"
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            InverterSensorDescription(
+                key="weather_tomorrow",
+                translation_key="weather_tomorrow",
+                device_class=None,
+                state_class=None,
+                native_unit_of_measurement=None,
+                icon="mdi:weather-sunny",
+            ),
+        )
+
+    @property
+    def native_value(self) -> str:
+        # Find ForecastTomorrowSensor and read its attributes.
+        for s in getattr(self, "platform", None) and self.platform.entities.values() or []:
+            key = getattr(getattr(s, "entity_description", None), "key", "")
+            if key == "forecast_tomorrow":
+                attrs = s.extra_state_attributes or {}
+                ft = attrs.get("forecast_tomorrow") or {}
+                if isinstance(ft, dict) and ft.get("emoji"):
+                    return ft["emoji"]
+                break
+        return "❓"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        for s in getattr(self, "platform", None) and self.platform.entities.values() or []:
+            key = getattr(getattr(s, "entity_description", None), "key", "")
+            if key == "forecast_tomorrow":
+                attrs = s.extra_state_attributes or {}
+                ft = attrs.get("forecast_tomorrow") or {}
+                if isinstance(ft, dict):
+                    return {
+                        "code": ft.get("code"),
+                        "ha_state": ft.get("ha_state"),
+                        "label_uk": ft.get("label_uk"),
+                    }
+                break
+        return None
 
 
 class ForecastTomorrowSensor(InverterSensor):
@@ -792,9 +896,40 @@ class DailyPowerHistorySensor(CoordinatorEntity, SensorEntity):
             return None
         labels = [self._extract_label(p) for p in hourly]
         values_kw = [round(self._extract_power(p) / 1000, 3) for p in hourly]
+
+        # Build per-timestamp weather list (emoji) from the forecast sensor.
+        # We piggy-back on sensor.pv_forecast_tomorrow's hourly_weather
+        # attribute (24 dicts {code, emoji, ...}) which already has the
+        # icon computed. Each label here is a 30-min timestamp; we map by
+        # hour-of-day so 00:00 and 00:30 both pull the "00:00" forecast.
+        hourly_weather = []
+        from datetime import datetime as _dt
+
+        # Find the forecast sensor among our known sensors.
+        forecast_emojis: dict[int, str] = {}
+        for s in getattr(self, "platform", None) and self.platform.entities.values() or []:
+            key = getattr(getattr(s, "entity_description", None), "key", "")
+            if key == "forecast_tomorrow":
+                hw = (s.extra_state_attributes or {}).get("hourly_weather", [])
+                if hw:
+                    for i, w in enumerate(hw):
+                        if isinstance(w, dict):
+                            forecast_emojis[i] = w.get("emoji", "")
+                break
+
+        for lbl in labels:
+            emoji = ""
+            try:
+                ts = _dt.strptime(lbl, "%Y-%m-%d %H:%M:%S")
+                emoji = forecast_emojis.get(ts.hour, "")
+            except (ValueError, TypeError):
+                pass
+            hourly_weather.append(emoji)
+
         return {
             "hourly_power_kw": values_kw,
             "hourly_labels": labels,
+            "hourly_weather": hourly_weather,
             "total_today_kwh": round(sum(values_kw), 2),
             "last_updated": self.coordinator.data.get("last_updated"),
             "_raw_sample": hourly[:3] if len(hourly) > 3 else hourly,

@@ -791,6 +791,10 @@ class HistoryCoordinator(DataUpdateCoordinator):
         self.monthly_daily_energy: list[dict] = []
         self.yearly_monthly_energy: list[dict] = []
         self.total_energy_kwh: float = 0.0
+        # Daily historical weather: {date_str: wmo_code} populated from
+        # Open-Meteo Historical API for the history graph overlays.
+        self.daily_historical_weather: dict[str, int] = {}
+        self.daily_weather_count: int = 0
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch historical data from the API."""
@@ -836,6 +840,14 @@ class HistoryCoordinator(DataUpdateCoordinator):
             self.yearly_monthly_energy = yearly_energy
             self.total_energy_kwh = total_kwh
 
+            # Refresh daily historical weather (last 7 days) in the
+            # background so the history graph can show icons.
+            try:
+                self.daily_historical_weather = await self._fetch_historical_weather()
+                self.daily_weather_count = len(self.daily_historical_weather)
+            except Exception as exc:
+                _LOGGER.debug("Historical weather fetch skipped: %s", exc)
+
             return {
                 "today_hourly_power": today_power,
                 "monthly_daily_energy": monthly_energy,
@@ -846,11 +858,45 @@ class HistoryCoordinator(DataUpdateCoordinator):
 
         except Exception as exc:
             _LOGGER.warning("HistoryCoordinator: fetch failed: %s", exc)
-            return {
-                "today_hourly_power": self.today_hourly_power,
-                "monthly_daily_energy": self.monthly_daily_energy,
-                "yearly_monthly_energy": self.yearly_monthly_energy,
-                "total_energy_kwh": self.total_energy_kwh,
-                "last_updated": datetime.now().isoformat(),
-                "error": str(exc),
-            }
+
+    async def _fetch_historical_weather(self) -> dict[str, int]:
+        """Fetch last-7-days WMO weather codes from Open-Meteo Archive API.
+
+        Uses archive-api.open-meteo.com (free, no key) — same coordinates
+        as the forecast service. Returns {YYYY-MM-DD: wmo_code_int}.
+        """
+        from datetime import datetime, timedelta
+        import aiohttp
+
+        if not hasattr(self, "_history_coords") or not self._history_coords:
+            # Fall back to Kiev if we never set real coordinates
+            self._history_coords = (50.4501, 30.5234)
+
+        lat, lon = self._history_coords
+        end = datetime.now().date()
+        start = end - timedelta(days=7)
+        url = (
+            "https://archive-api.open-meteo.com/v1/archive"
+            f"?latitude={lat}&longitude={lon}"
+            f"&start_date={start.isoformat()}&end_date={end.isoformat()}"
+            "&daily=weather_code"
+            "&timezone=auto"
+        )
+
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return {}
+                    data = await resp.json(content_type=None)
+        except Exception as exc:
+            _LOGGER.debug("Open-Meteo archive request failed: %s", exc)
+            return {}
+
+        result: dict[str, int] = {}
+        daily = data.get("daily", {})
+        for date, code in zip(daily.get("time", []), daily.get("weather_code", [])):
+            if code is not None:
+                result[date] = int(code)
+        return result
