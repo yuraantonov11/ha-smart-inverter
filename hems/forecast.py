@@ -183,7 +183,9 @@ class ForecastService:
         params = {
             "latitude": self._latitude,
             "longitude": self._longitude,
-            "hourly": "shortwave_radiation",
+            # Request both shortwave_radiation AND weather_code so we
+            # can show cloud/rain conditions alongside the power curve.
+            "hourly": "shortwave_radiation,weather_code",
             "timezone": "auto",
             "forecast_days": 2,
         }
@@ -231,12 +233,20 @@ class ForecastService:
             weathers = [h.get("weather_code") for h in hours]
             total_kwh = sum(energies) / 1000.0
             peak_w = max(energies) if energies else 0.0
+            # Compute the dominant (most frequent) WMO weather code
+            # so the dashboard can show a single weather icon for the day.
+            dominant_w = None
+            filtered_w = [w for w in weathers if w is not None]
+            if filtered_w:
+                from collections import Counter
+                dominant_w = Counter(filtered_w).most_common(1)[0][0]
             result[date_str] = SolarForecast(
                 date=date_str,
                 energy_kwh=round(total_kwh, 2),
                 peak_power_w=round(peak_w),
                 hourly_power=energies,
                 hourly_weather=weathers,
+                dominant_weather_code=dominant_w,
             )
         return result
 

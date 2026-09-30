@@ -33,6 +33,35 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+# WMO weather codes → (HA weather state, emoji, Ukrainian label)
+# Used to translate the Open-Meteo weather_code values into icons and
+# labels for the forecast card and the weather_condition attribute.
+WMO_WEATHER_MAP = {
+    0: ("sunny", "☀️", "Ясно"),
+    1: ("partlycloudy", "🌤️", "Переважно ясно"),
+    2: ("partlycloudy", "⛅", "Хмарно з проясненнями"),
+    3: ("cloudy", "☁️", "Хмарно"),
+    45: ("fog", "🌫️", "Туман"),
+    48: ("fog", "🌫️", "Паморозний туман"),
+    51: ("rainy", "🌧️", "Легка мрипа"),
+    53: ("rainy", "🌧️", "Мрипа"),
+    55: ("rainy", "🌧️", "Сильна мрипа"),
+    61: ("rainy", "🌧️", "Легкий дощ"),
+    63: ("rainy", "🌧️", "Дощ"),
+    65: ("pouring", "🌧️", "Сильний дощ"),
+    71: ("snowy", "🌨️", "Легкий сніг"),
+    73: ("snowy", "🌨️", "Сніг"),
+    75: ("snowy", "❄️", "Сильний сніг"),
+    77: ("snowy", "❄️", "Снігова крупа"),
+    80: ("rainy", "🌦️", "Короткочасний дощ"),
+    81: ("rainy", "🌦️", "Злива"),
+    82: ("pouring", "🌧️", "Сильна злива"),
+    95: ("lightning", "⛈️", "Гроза"),
+    96: ("lightning-rainy", "⛈️", "Гроза з градом"),
+    99: ("lightning-rainy", "⛈️", "Сильна гроза з градом"),
+}
+
+
 from .const import DOMAIN
 from .coordinator import InverterCoordinator, HistoryCoordinator
 from .hems import debug_logging
@@ -503,11 +532,22 @@ class ForecastTomorrowSensor(InverterSensor):
         while len(weather) < 24:
             weather.append(None)
 
-        # Determine dominant weather for tomorrow (from forecast object)
+        # Determine dominant weather. hourly_weather_today stores raw
+        # WMO weather codes (ints) — sometimes dicts if the coordinator
+        # was updated. Normalize both shapes to a raw int via .get().
         tomorrow_code = getattr(self.coordinator, "weather_tomorrow_code", None)
         today_code = None
         from collections import Counter
-        valid_codes = [c for c in weather if c is not None]
+        valid_codes = []
+        for c in weather:
+            if c is None:
+                continue
+            if isinstance(c, dict):
+                code = c.get("code")
+                if code is not None:
+                    valid_codes.append(code)
+            elif isinstance(c, int):
+                valid_codes.append(c)
         if valid_codes:
             today_code = Counter(valid_codes).most_common(1)[0][0]
 
