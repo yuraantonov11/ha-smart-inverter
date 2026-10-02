@@ -363,6 +363,7 @@ def simulate_24h(
     target_morning: float,
     target_evening: float,
     predictor: ConsumptionPredictor,
+    calibrator=None,
 ) -> list[HourlyPlan]:
     """Roll out 24h of decisions: when to charge, when to discharge.
 
@@ -371,6 +372,7 @@ def simulate_24h(
         - Load forecast (from history)
         - Tariff schedule
         - Battery constraints (SOC min/max, charge/discharge current limits)
+        - Optional real-measurement calibrator (bias-corrected adjust)
 
     Returns:
         List of 24 HourlyPlan, one per hour.
@@ -380,14 +382,24 @@ def simulate_24h(
     plans = []
     now_hour = inputs.now.hour
 
+    # Prefer the real calibrator's bias-corrected adjust over the
+    # legacy PvForecastAdjuster (which only learns from forecast-vs-
+    # forecast samples and stays at ratio=1.0 in cold start).
+    # Falls back to identity / legacy adjuster when no calibrator
+    # is attached, keeping tests that don't pass one happy.
+    if calibrator is not None and hasattr(calibrator, "adjust"):
+        _pv_adjust = calibrator.adjust
+    else:
+        _pv_adjust = PvForecastAdjuster().adjust
+
     for h in range(24):
         # Wrap-around: hour 0 is tomorrow
         delta = (h - now_hour) % 24
         ts = inputs.now + timedelta(hours=delta)
 
         pv_forecast = inputs.hourly_pv[h] if h < len(inputs.hourly_pv) else 0.0
-        # Adjust by historical accuracy
-        pv_forecast = PvForecastAdjuster().adjust(pv_forecast)
+        # Adjust by measured bias when a calibrator is attached.
+        pv_forecast = _pv_adjust(pv_forecast)
 
         load_forecast = predictor.predict(h, ts.weekday())[0]
 
@@ -559,6 +571,16 @@ class PredictiveHemsController:
     def __init__(self):
         self.consumption_predictor = ConsumptionPredictor()
         self.pv_adjuster = PvForecastAdjuster()
+        # Optional real-measurement calibrator wired in by the
+        # coordinator. When set, ``_estimate_confidence`` multiplies
+        # its measured confidence_factor and ``decide()``'s rollout
+        # uses ``calibrator.adjust()`` (bias-corrected, not the
+        # old circular ratio) to refine the hourly PV forecast.
+        # Lives on the instance rather than as a constructor arg
+        # so tests that build ``PredictiveHemsController()`` without
+        # one keep working — the coordinator assigns it after
+        # construction.
+        self.calibrator: "ForecastCalibrator | None" = None
         self.last_plan: DayAheadPlan | None = None
 
     def update_history(self, hourly_load: list[float]) -> None:
@@ -649,12 +671,15 @@ class PredictiveHemsController:
         # 2. Plan day-ahead SOC targets
         target_morning, target_evening = plan_soc_targets(inputs)
 
-        # 3. Simulate 24h
+        # 3. Simulate 24h — pass the real calibrator (when attached)
+        # so hourly PV forecast gets bias-corrected instead of using
+        # the empty PvForecastAdjuster ratio.
         plans = simulate_24h(
             inputs,
             target_morning,
             target_evening,
             self.consumption_predictor,
+            calibrator=getattr(self, "calibrator", None),
         )
 
         # 4. Apply NOW
