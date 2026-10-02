@@ -8,12 +8,13 @@ manual override, anti-flapping, circuit breaker, and all smart modes.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import IntEnum
 from typing import Any
 
-from .tuning import AdaptiveThresholds, HemsTuningService, HemsTunables
+from .tuning import HemsTuningService, HemsTunables
 from . import debug_logging
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,15 +24,45 @@ _LOGGER = logging.getLogger(__name__)
 _OUTPUT_DISPLAY_TO_NUM = {"USB": "0", "SBU": "2", "Line Mode": "0", "Battery Mode": "2"}
 _CHARGER_DISPLAY_TO_NUM = {"CSO": "0", "SNU": "1", "OSO": "2", "UTO": "3"}
 
-def _normalize_output(val):
-    if not val:
-        return val
-    return _OUTPUT_DISPLAY_TO_NUM.get(val.strip(), val.strip())
+def _normalize_setting(value: str | int | None, labels: dict[str, str]) -> str | None:
+    """Accept display labels and numeric API codes at the engine boundary."""
+    if isinstance(value, str):
+        key = value.strip()
+    elif type(value) is int:
+        key = str(value)
+    else:
+        return None
+    return labels.get(key, key)
 
-def _normalize_charger(val):
-    if not val:
-        return val
-    return _CHARGER_DISPLAY_TO_NUM.get(val.strip(), val.strip())
+
+def _normalize_output(value: str | int | None) -> str | None:
+    return _normalize_setting(value, _OUTPUT_DISPLAY_TO_NUM)
+
+
+def _normalize_charger(value: str | int | None) -> str | None:
+    return _normalize_setting(value, _CHARGER_DISPLAY_TO_NUM)
+
+
+def _finite_number(value: Any) -> float | None:
+    """Unknown/nonfinite telemetry must never masquerade as a full battery."""
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _forecast_energy(value: Any) -> float | None:
+    number = _finite_number(value)
+    return number if number is not None and number >= 0 else None
+
+
+def _hint_soc_target(hint: Any, attribute: str) -> float | None:
+    number = _finite_number(getattr(hint, attribute, None))
+    return number if number is not None and 0 <= number <= 100 else None
+
 
 class SmartMode(IntEnum):
     ADAPTIVE = 0
@@ -123,6 +154,8 @@ class HemsEngine:
         self._last_cmd_output_at: datetime | None = None
         self._last_cmd_charger_at: datetime | None = None
         self._last_output_switch_at: datetime | None = None
+        self._pending_commands: set[str] = set()
+        self._pending_output_previous_switch_at: datetime | None = None
         self._manual_override_until: datetime | None = None
         self._last_manual_override_log: datetime | None = None
 
@@ -207,188 +240,55 @@ class HemsEngine:
         The coordinator is responsible for applying (or skipping) the commands.
         """
         now = now or datetime.now()
-        soc = max(0.0, min(100.0, soc))
-        reserve_soc = reserve_soc if reserve_soc is not None else self.tun.reserve_soc
-        min_operating_soc = (
-            min_operating_soc
-            if min_operating_soc is not None
-            else self.tun.min_operating_soc
-        )
+        predictive_mode = self._reset_predictive_state()
+        current_output = _normalize_output(current_output)
+        current_charger = _normalize_charger(current_charger)
+        reserve_soc = self.tun.reserve_soc if reserve_soc is None else reserve_soc
+        min_operating_soc = self.tun.min_operating_soc if min_operating_soc is None else min_operating_soc
+        forecast_tomorrow_kwh = _forecast_energy(forecast_tomorrow_kwh)
+        forecast_day_after_kwh = _forecast_energy(forecast_day_after_kwh)
+        numeric = {key: _finite_number(value) for key, value in {
+            "soc": soc, "pv_power": pv_power, "grid_power": grid_power,
+            "battery_power": battery_power, "load_power": load_power,
+            "grid_voltage": grid_voltage, "reserve_soc": reserve_soc,
+            "min_operating_soc": min_operating_soc,
+        }.items()}
+        inputs = {**numeric, "smart_mode": smart_mode, "grid_available": grid_available,
+                  "current_output": current_output, "current_charger": current_charger,
+                  "forecast_today_kwh": _forecast_energy(getattr(self, "_last_forecast_today_kwh", None)),
+                  "forecast_tomorrow_kwh": forecast_tomorrow_kwh}
+        valid_telemetry = (all(value is not None for value in numeric.values())
+                           and 0 <= numeric["reserve_soc"] <= 100
+                           and 0 <= numeric["min_operating_soc"] <= 100)
+        # Valid samples still refresh history during manual/automatic holds.
+        # Offline or malformed samples must not advance the freshness clock.
+        if is_online and valid_telemetry:
+            soc = max(0.0, min(100.0, numeric["soc"]))
+            pv_power, grid_power = numeric["pv_power"], numeric["grid_power"]
+            battery_power, load_power = numeric["battery_power"], numeric["load_power"]
+            grid_voltage, reserve_soc = numeric["grid_voltage"], numeric["reserve_soc"]
+            min_operating_soc = numeric["min_operating_soc"]
+            inputs["soc"] = soc
+            self._last_realtime_at = now
+            self._track_battery_activity(battery_power, now)
+            self.tuning.update_surplus(pv_power - load_power)
+            self._current_dwell_min = self.tuning.compute_adaptive_dwell()
 
-        # Update tracking
-        self._last_realtime_at = now
-        self._track_battery_activity(battery_power, now)
+        buzzer_off = self.tuning.should_reduce_buzzer(now=now)
+        hold = self._evaluation_hold(hems_auto=hems_auto, smart_mode=smart_mode,
+                                     is_online=is_online, valid_telemetry=valid_telemetry,
+                                     now=now, buzzer_off=buzzer_off)
+        if hold is not None:
+            return self._log_decision(hold, now, inputs)
 
-        # Update adaptive thresholds
-        self.tuning.update_surplus(pv_power - load_power)
-        self._current_dwell_min = self.tuning.compute_adaptive_dwell()
-
-        # Acoustic comfort
-        buzzer_off = self.tuning.should_reduce_buzzer()
-
-        if not hems_auto:
-            return HemsDecision(
-                reason="hems_auto_off", skip=True, buzzer_off=buzzer_off
-            )
-
-        # ── Circuit breaker: block writes during backoff ──────────────
-        if self._blocked_until and now < self._blocked_until:
-            return HemsDecision(reason="circuit_breaker", skip=True, buzzer_off=buzzer_off)
-
-        # ── Manual override hold ──────────────────────────────────────
-        if self._manual_override_until and now < self._manual_override_until:
-            remaining = (self._manual_override_until - now).total_seconds()
-            if now - (self._last_manual_override_log or now) > timedelta(minutes=5):
-                _LOGGER.info("HEMS: manual override hold (%.0fs remaining)", remaining)
-                self._last_manual_override_log = now
-            return HemsDecision(reason=_Reason.MANUAL_OVERRIDE, skip=True, buzzer_off=buzzer_off)
-
-        # ── Emergency: stale data ─────────────────────────────────────
-        if self._last_realtime_at and (now - self._last_realtime_at) > timedelta(minutes=30):
-            if soc < 30 or (now.hour >= 23 or now.hour < 7):
-                _LOGGER.warning("HEMS: stale data >30min, forcing USB (emergency)")
-                return HemsDecision(
-                    output_priority=OutputPriority.USB,
-                    charger_priority=ChargerPriority.SNU,
-                    reason=_Reason.EMERGENCY_STALE,
-                    buzzer_off=buzzer_off,
-                )
-
-        # ── Predictive ML assist (helps all modes) ──────────────
-        # ML doesn't replace the mode — it provides:
-        #  - optimal SOC targets (replaces hard-coded 90%/20%)
-        #  - weather-aware reasoning for the decision
-        #  - explanation of WHY each mode is best right now
-        # Disabled by default (no history), opt-in via config flow
-        #
-        # The single source of truth is `predictive_tuning.predictive_mode`:
-        #   - "off": no hint, no plan
-        #   - "shadow": hint + plan recorded; decisions unchanged
-        #   - "assist": hint can shift night window + evening target
-        #                 but safety floor / manual override / grid outage
-        #                 / stale data remain HARD precedence over ML.
-        predictive_hint = None
-        predictive_plan = None
-        predictive_mode = "off"
-        pt = getattr(self, "predictive_tuning", None)
-        if pt is not None and hasattr(pt, "predictive_mode"):
-            predictive_mode = pt.predictive_mode
-        # Keep legacy booleans in lockstep — coordinator's
-        # ``async_set_predictive_mode`` is the canonical writer;
-        # engine.evaluate() re-syncs at the top of each cycle so a
-        # stale ``_predictive_enabled`` cannot cause divergence.
-        self._predictive_mode = predictive_mode
-        self._predictive_enabled = predictive_mode in ("shadow", "assist")
-        if predictive_mode in ("shadow", "assist"):
-            try:
-                from .predictive import (
-                    PredictiveHemsController,
-                    PlannerInputs as LegacyPlannerInputs,
-                )
-                if not hasattr(self, "_predictive_controller"):
-                    self._predictive_controller = PredictiveHemsController()
-                controller = self._predictive_controller
-                # Build planner inputs via the new telemetry module
-                # for proper bounds + provenance. The telemetry
-                # module expects 24-hour foreground plots and a tariff
-                # schedule; if not yet populated (early startup,
-                # missing forecast, etc.) it returns None, in which
-                # case we DO NOT create a hint at all — that's the
-                # ``missing/stale gate`` the parent review called out:
-                # if any required input is None, hint stays None
-                # rather than silently treating as 0.
-                from .telemetry import build_planner_inputs
-
-                forecast_today = getattr(
-                    self, "_last_forecast_today_kwh", None
-                )
-                hourly_pv = list(
-                    getattr(self, "_hourly_pv_forecast", [])
-                    or []
-                )
-                hourly_radiation = list(
-                    getattr(self, "_hourly_radiation", [])
-                    or []
-                )
-                hourly_weather_codes = list(
-                    getattr(self, "_hourly_weather_codes", [])
-                    or []
-                )
-                tariff_schedule = list(
-                    getattr(self, "_tariff_schedule", [])
-                    or []
-                )
-                consumption_history = list(
-                    getattr(self, "_consumption_history", [])
-                    or []
-                )
-                battery_capacity_kwh = getattr(self, "_battery_capacity_kwh", 4.8)
-
-                # Missing/stale gate: any None or empty required input
-                # blocks the planner. ``forecast_tomorrow_kwh`` already
-                # came in from the coordinator; the rest come from the
-                # coordinator's arrays. Empty tariff_schedule is OK if
-                # the planner can build its own from tarif_day/night.
-                if (
-                    forecast_tomorrow_kwh is None
-                    or forecast_today is None
-                    or not hourly_pv
-                    or not hourly_radiation
-                    or not hourly_weather_codes
-                    or battery_capacity_kwh <= 0
-                ):
-                    self._last_predictive_hint = None
-                    self._last_predictive_plan = None
-                    self._last_predictive_inputs = None
-                    self._last_predictive_mode = predictive_mode
-                else:
-                    pi = build_planner_inputs(
-                        raw={
-                            "gridVoltage": grid_voltage,
-                            "batterySoc": soc,
-                            "pvPower": pv_power,
-                            "loadPower": load_power,
-                            "gridPower": grid_power,
-                            "batteryPower": battery_power,
-                        },
-                        now=now,
-                        smart_mode=smart_mode,
-                        forecast_tomorrow_kwh=forecast_tomorrow_kwh,
-                        forecast_today_kwh=forecast_today,
-                        hourly_pv=hourly_pv,
-                        hourly_radiation=hourly_radiation,
-                        hourly_weather_codes=hourly_weather_codes,
-                        tariff_schedule=tariff_schedule,
-                        consumption_history=consumption_history,
-                        battery_capacity_kwh=battery_capacity_kwh,
-                        grid_available=grid_available,
-                    )
-                    # The legacy predictve module also defines PlannerInputs;
-                    # pass the telemetry one (same fields, plus provenance).
-                    predictive_hint = controller.suggest(pi)  # type: ignore[arg-type]
-                    # ``decide`` produces both an immediate decision
-                    # AND a 24h DayAheadPlan. In assist mode the
-                    # plan is the source for SOC day-ahead plans
-                    # consumed by sensors (see test_predictive_plan).
-                    try:
-                        decision_now, plan = controller.decide(pi)  # type: ignore[arg-type]
-                        predictive_plan = plan
-                    except Exception as exc:
-                        _LOGGER.debug(
-                            "Predictive plan build skipped: %s", exc
-                        )
-                        predictive_plan = None
-                    self._last_predictive_hint = predictive_hint
-                    self._last_predictive_plan = predictive_plan
-                    self._last_predictive_inputs = pi
-                    self._last_predictive_mode = predictive_mode
-            except Exception as exc:
-                _LOGGER.debug("Predictive hint unavailable: %s", exc)
-                predictive_hint = None
-                predictive_plan = None
+        predictive_hint, predictive_plan = self._evaluate_predictive(now, inputs)
 
         # ── Dispatch by smart mode ────────────────────────────────────
-        if smart_mode == SmartMode.ADAPTIVE:
+        if smart_mode in (SmartMode.ADAPTIVE, SmartMode.ARBITRAGE) and soc <= reserve_soc + 2:
+            decision = HemsDecision(output_priority=OutputPriority.USB,
+                                    charger_priority=ChargerPriority.SNU,
+                                    reason=_Reason.RESERVE_PROTECTION, buzzer_off=buzzer_off)
+        elif smart_mode == SmartMode.ADAPTIVE:
             decision = self._evaluate_adaptive(
                 soc=soc,
                 pv_power=pv_power,
@@ -436,78 +336,139 @@ class HemsEngine:
         else:
             return HemsDecision(reason="unknown_mode", skip=True, buzzer_off=buzzer_off)
 
-        # ── Early-skip: if current device state already matches target, ──
-        # no need to send any command at all. Saves 100+ redundant API
-        # calls per hour when HEMS settles on the same mode.
-        if not decision.skip:
-            if (decision.output_priority is not None
-                    and current_output
-                    and _normalize_output(current_output) == _normalize_output(decision.output_priority)):
-                decision.output_priority = None  # skip
-                if decision.reason == "day_default":
-                    decision.reason = "already_in_target"
+        return self._finalize_decision(decision, now, inputs)
 
-            if (decision.charger_priority is not None
-                    and current_charger
-                    and _normalize_charger(current_charger) == _normalize_charger(decision.charger_priority)):
-                decision.charger_priority = None  # skip
-                if decision.reason == "day_default":
-                    decision.reason = "already_in_target"
+    def _reset_predictive_state(self) -> str:
+        """No recommendation survives an Off/hold/error evaluation cycle."""
+        mode = getattr(self.predictive_tuning, "predictive_mode", "off")
+        mode = mode if mode in ("off", "shadow", "assist") else "off"
+        self._predictive_mode = self._last_predictive_mode = mode
+        self._predictive_enabled = mode != "off"
+        self._last_predictive_hint = None
+        self._last_predictive_plan = None
+        self._last_predictive_inputs = None
+        controller = getattr(self, "_predictive_controller", None)
+        if controller is not None:
+            controller.last_plan = None
+        return mode
 
-        # ── Apply anti-flapping ───────────────────────────────────────
-        if not decision.skip:
-            decision = self._apply_anti_flapping(decision, now)
+    def _evaluation_hold(self, *, hems_auto: bool, smart_mode: int, is_online: bool,
+                         valid_telemetry: bool, now: datetime,
+                         buzzer_off: bool) -> HemsDecision | None:
+        """User control and transport holds precede automatic decisions."""
+        reason = None
+        if not hems_auto:
+            reason = "hems_auto_off"
+        elif self._blocked_until and now < self._blocked_until:
+            reason = "circuit_breaker"
+        elif self._manual_override_until and now < self._manual_override_until:
+            if self._last_manual_override_log is None or now - self._last_manual_override_log > timedelta(minutes=5):
+                remaining = (self._manual_override_until - now).total_seconds()
+                _LOGGER.info("HEMS: manual override hold (%.0fs remaining)", remaining)
+                self._last_manual_override_log = now
+            reason = _Reason.MANUAL_OVERRIDE
+        elif smart_mode not in (SmartMode.ADAPTIVE, SmartMode.ARBITRAGE, SmartMode.STORM):
+            reason = "unknown_mode"
+        elif not is_online:
+            stale = self._last_realtime_at and now - self._last_realtime_at > timedelta(minutes=30)
+            reason = _Reason.EMERGENCY_STALE if stale else "inverter_offline"
+        elif not valid_telemetry:
+            reason = "invalid_telemetry"
+        if reason is not None:
+            return HemsDecision(reason=reason, skip=True, buzzer_off=buzzer_off)
+        return None
 
-        # ── Track command history ─────────────────────────────────────
-        if decision.output_priority is not None:
-            self._last_cmd_output = decision.output_priority
-            self._last_cmd_output_at = now
-        if decision.charger_priority is not None:
-            self._last_cmd_charger = decision.charger_priority
-            self._last_cmd_charger_at = now
-
-        # Debug logging: persist every decision to /config/powmr_hems_debug.log
-        # so the user can replay a full day and understand WHY HEMS chose
-        # what it did (or why it skipped). Cheap to keep; rotates daily.
+    def _evaluate_predictive(self, now: datetime, inputs: dict[str, Any]) -> tuple[Any, Any]:
+        """Build current hints/plan; failures leave the baseline engine usable."""
+        if not self._predictive_enabled:
+            return None, None
         try:
-            skip_reason = None
+            from .predictive import PredictiveHemsController
+            from .telemetry import build_planner_inputs
+
+            hourly_pv = list(getattr(self, "_hourly_pv_forecast", []) or [])
+            radiation = list(getattr(self, "_hourly_radiation", []) or [])
+            weather = list(getattr(self, "_hourly_weather_codes", []) or [])
+            capacity = _finite_number(getattr(self, "_battery_capacity_kwh", 4.8))
+            if (inputs["forecast_tomorrow_kwh"] is None or inputs["forecast_today_kwh"] is None
+                    or any(len(series) != 24 for series in (hourly_pv, radiation, weather))
+                    or capacity is None or capacity <= 0):
+                return None, None
+            if not hasattr(self, "_predictive_controller"):
+                self._predictive_controller = PredictiveHemsController()
+            controller = self._predictive_controller
+            pi = build_planner_inputs(
+                raw={"gridVoltage": inputs["grid_voltage"], "batterySoc": inputs["soc"],
+                     "pvPower": inputs["pv_power"], "loadPower": inputs["load_power"],
+                     "gridPower": inputs["grid_power"], "batteryPower": inputs["battery_power"]},
+                now=now, smart_mode=inputs["smart_mode"],
+                forecast_tomorrow_kwh=inputs["forecast_tomorrow_kwh"],
+                forecast_today_kwh=inputs["forecast_today_kwh"],
+                hourly_pv=hourly_pv, hourly_radiation=radiation, hourly_weather_codes=weather,
+                tariff_schedule=list(getattr(self, "_tariff_schedule", []) or []),
+                consumption_history=list(getattr(self, "_consumption_history", []) or []),
+                battery_capacity_kwh=capacity, grid_available=inputs["grid_available"],
+            )
+            hint = controller.suggest(pi)
+            try:
+                _, plan = controller.decide(pi)
+            except Exception as exc:
+                _LOGGER.debug("Predictive plan build skipped: %s", exc)
+                plan = None
+                controller.last_plan = None
+            self._last_predictive_hint = hint
+            self._last_predictive_plan = plan
+            self._last_predictive_inputs = pi
+            return hint, plan
+        except Exception as exc:
+            _LOGGER.debug("Predictive hint unavailable: %s", exc)
+            return None, None
+
+    def _finalize_decision(self, decision: HemsDecision, now: datetime,
+                           inputs: dict[str, Any]) -> HemsDecision:
+        """Filter redundant writes, apply dwell/dedup and record the proposal."""
+        if not decision.skip:
+            for command, current in (("output_priority", inputs["current_output"]),
+                                     ("charger_priority", inputs["current_charger"])):
+                target = getattr(decision, command)
+                if target is not None and target == current:
+                    setattr(decision, command, None)
+                    if decision.reason == "day_default":
+                        decision.reason = "already_in_target"
+            previous_switch_at = self._last_output_switch_at
+            decision = self._apply_anti_flapping(decision, now)
+            if decision.output_priority is not None:
+                self._pending_commands.add("output")
+                self._pending_output_previous_switch_at = previous_switch_at
+                self._last_cmd_output = decision.output_priority
+                self._last_cmd_output_at = now
+            if decision.charger_priority is not None:
+                self._pending_commands.add("charger")
+                self._last_cmd_charger = decision.charger_priority
+                self._last_cmd_charger_at = now
+        return self._log_decision(decision, now, inputs)
+
+    @staticmethod
+    def _log_decision(decision: HemsDecision, now: datetime,
+                      inputs: dict[str, Any]) -> HemsDecision:
+        """Include early holds in the existing trace; logging cannot stop HEMS."""
+        try:
             applied = None
             if decision.skip:
                 skip_reason = decision.reason
-            elif (decision.output_priority is None
-                  and decision.charger_priority is None):
-                # Early-skip — current state already matches target.
+            elif decision.output_priority is None and decision.charger_priority is None:
                 skip_reason = "already_in_target"
             else:
-                applied = {
-                    "output_priority": decision.output_priority,
-                    "charger_priority": decision.charger_priority,
-                    "buzzer_off": decision.buzzer_off,
-                }
-            debug_logging.log_evaluation(
-                timestamp=now,
-                inputs={
-                    "smart_mode": smart_mode,
-                    "soc": soc,
-                    "pv_power": pv_power,
-                    "load_power": load_power,
-                    "grid_power": grid_power,
-                    "battery_power": battery_power,
-                    "grid_voltage": grid_voltage,
-                    "grid_available": grid_available,
-                    "current_output": current_output,
-                    "current_charger": current_charger,
-                    "reserve_soc": reserve_soc,
-                    "forecast_today_kwh": getattr(self, "_last_forecast_today_kwh", None),
-                    "forecast_tomorrow_kwh": forecast_tomorrow_kwh,
-                },
-                decision=decision,
-                applied=applied,
-                skip_reason=skip_reason,
-            )
+                skip_reason = None
+                # Legacy trace field: proposed writes; the coordinator owns
+                # delivery and reports transport success/failure separately.
+                applied = {"output_priority": decision.output_priority,
+                           "charger_priority": decision.charger_priority,
+                           "buzzer_off": decision.buzzer_off}
+            debug_logging.log_evaluation(timestamp=now, inputs=inputs, decision=decision,
+                                         applied=applied, skip_reason=skip_reason)
         except Exception:
-            pass  # never let logging break HEMS
-
+            pass
         return decision
 
     def detect_manual_override(
@@ -558,9 +519,23 @@ class HemsEngine:
         now = now or datetime.now()
         self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
 
-    def report_control_failure(self, now: datetime | None = None) -> None:
-        """Report a control write failure — circuit breaker logic."""
+    def report_control_failure(
+        self, now: datetime | None = None, *,
+        output_failed: bool = True, charger_failed: bool = True,
+    ) -> None:
+        """Back off failed writes without treating them as applied commands.
+
+        Partial success preserves the successful channel. Failed/uncertain
+        writes cannot cause a false manual override or block a retry via dedup.
+        """
         now = now or datetime.now()
+        if output_failed and "output" in self._pending_commands:
+            self._last_cmd_output = self._last_cmd_output_at = None
+            self._last_output_switch_at = self._pending_output_previous_switch_at
+        if charger_failed and "charger" in self._pending_commands:
+            self._last_cmd_charger = self._last_cmd_charger_at = None
+        self._pending_commands.clear()
+        self._pending_output_previous_switch_at = None
         self._consecutive_failures += 1
 
         # Exponential backoff: 5s, 12s, 25s, 45s
@@ -569,7 +544,7 @@ class HemsEngine:
         delay_sec = delays[delay_idx]
 
         self._blocked_until = now + timedelta(seconds=delay_sec)
-        if now - (self._last_blocked_log or now) > timedelta(minutes=2):
+        if self._last_blocked_log is None or now - self._last_blocked_log > timedelta(minutes=2):
             _LOGGER.warning(
                 "HEMS: circuit breaker — %d consecutive failures, blocked for %ds",
                 self._consecutive_failures, delay_sec,
@@ -580,6 +555,8 @@ class HemsEngine:
         """Report a successful control write — reset circuit breaker."""
         self._consecutive_failures = 0
         self._blocked_until = None
+        self._pending_commands.clear()
+        self._pending_output_previous_switch_at = None
 
     def check_keepalive(self, battery_power: float, soc: float, now: datetime | None = None) -> HemsDecision | None:
         """Check if battery keepalive is needed.
@@ -659,7 +636,7 @@ class HemsEngine:
         """Full adaptive mode — ported from Dart executeAdaptiveMode.
 
         Decision flow:
-        0. Safety hard floor: SOC ≤ reserve+2% → USB + SNU
+        0. Safety hard floor handled by evaluate() before mode dispatch
         1. Manual override (already handled above)
         2. Night tariff window: USB always, tariff-aware charging
         3. Daytime: charger OSO, critical recovery, surplus detection
@@ -668,20 +645,6 @@ class HemsEngine:
         hour = now.hour
         is_night = hour >= 23 or hour < 7
         surplus = pv_power - load_power
-
-        # ── Step 0: SAFETY hard floor ────────────────────────────────
-        if soc <= reserve_soc + 2:
-            if current_output != OutputPriority.USB or current_charger != ChargerPriority.SNU:
-                _LOGGER.info(
-                    "HEMS adaptive: safety floor SOC=%.1f%% ≤ reserve+2%% (%.1f%%) → USB+SNU",
-                    soc, reserve_soc + 2,
-                )
-            return HemsDecision(
-                output_priority=OutputPriority.USB,
-                charger_priority=ChargerPriority.SNU,
-                reason=_Reason.RESERVE_PROTECTION,
-                buzzer_off=buzzer_off,
-            )
 
         # ── Step 1: Night window (23:00–07:00) ───────────────────────
         if is_night:
@@ -754,28 +717,11 @@ class HemsEngine:
         if soc >= 80 and pv_power > load_power:
             charger = ChargerPriority.OSO
 
-        # ── Predictive assist: only allowed to PRECHARGE MORE, never
-        # less. If the planner says the night window should be wider
-        # and SOC is below the morning target, keep SNU (the default).
-        # If SOC is already at/above the morning target, the planner
-        # is allowed to drop the charger to OSO so we don't waste
-        # grid power. The reverse direction (force charger ON when
-        # baseline said OSO) is blocked — that's a safety-direction
-        # move and the baseline only backs off when SOC >=80%, which
-        # is already > the morning target in practice.
-        if (
-            predictive_mode == "assist"
-            and predictive_hint is not None
-            and getattr(predictive_hint, "target_soc_morning", None) is not None
-        ):
-            try:
-                morning_target = float(predictive_hint.target_soc_morning)
-            except (TypeError, ValueError):
-                morning_target = None
-            if morning_target is not None and soc >= morning_target:
-                # Battery already at/above ML target → drop charger to
-                # OSO so we don't pull extra grid power at night.
-                charger = ChargerPriority.OSO
+        # Assist can stop grid charging once a valid morning target is met.
+        # The common reserve floor has priority over this optimization.
+        morning_target = _hint_soc_target(predictive_hint, "target_soc_morning")
+        if predictive_mode == "assist" and morning_target is not None and soc >= morning_target:
+            charger = ChargerPriority.OSO
 
         return HemsDecision(
             output_priority=output,
@@ -839,7 +785,7 @@ class HemsEngine:
             )
 
         # ── Realtime surplus detection ───────────────────────────────
-        pv_threshold = self.tuning.compute_adaptive_pv_surplus()
+        pv_threshold = self.tuning.compute_adaptive_pv_surplus(now=now)
 
         if (
             pv_power > 0
@@ -961,10 +907,7 @@ class HemsEngine:
             and _normalize_output(current_output) in (None, '', '0')
             and load_significant
         ):
-            try:
-                evening_target = float(predictive_hint.target_soc_evening)
-            except (TypeError, ValueError):
-                evening_target = None
+            evening_target = _hint_soc_target(predictive_hint, "target_soc_evening")
             if (
                 evening_target is not None
                 and 50.0 <= evening_target <= 90.0
@@ -1080,30 +1023,10 @@ class HemsEngine:
         is_night = hour >= 23 or hour < 7
 
         if is_night:
-            # ── Predictive ASSIST: allow OSO at night when SOC is
-            # already at/above ML's morning target. Baseline always
-            # charges from grid at the cheap tariff — but if SOC is
-            # already full enough, we don't need extra charging. ML
-            # cannot force MORE charging (safety direction)."""
             charger = ChargerPriority.SNU
-            if (
-                predictive_mode == "assist"
-                and predictive_hint is not None
-                and getattr(
-                    predictive_hint, "target_soc_morning", None
-                ) is not None
-            ):
-                try:
-                    morning_target = float(
-                        predictive_hint.target_soc_morning
-                    )
-                except (TypeError, ValueError):
-                    morning_target = None
-                if (
-                    morning_target is not None
-                    and soc >= morning_target
-                ):
-                    charger = ChargerPriority.OSO
+            morning_target = _hint_soc_target(predictive_hint, "target_soc_morning")
+            if predictive_mode == "assist" and morning_target is not None and soc >= morning_target:
+                charger = ChargerPriority.OSO
             return HemsDecision(
                 output_priority=OutputPriority.USB,
                 charger_priority=charger,

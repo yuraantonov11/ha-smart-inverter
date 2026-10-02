@@ -53,7 +53,7 @@ class HemsTuningService:
             self._recent_surplus = self._recent_surplus[-30:]
 
     def compute_adaptive_pv_surplus(
-        self, pv_peak_w: float = 3000.0
+        self, pv_peak_w: float = 3000.0, *, now: datetime | None = None
     ) -> float:
         """Adaptive PV surplus threshold — variance-aware.
 
@@ -63,7 +63,7 @@ class HemsTuningService:
         Variance penalty: up to 1.5× based on stdDev of recent surplus.
         Clamped to [70, 600] W.
         """
-        now = datetime.now()
+        now = now or datetime.now()
         base = pv_peak_w * 0.10  # 10% of peak
 
         # Hour penalty: less reliable solar in early morning / late afternoon
@@ -132,12 +132,12 @@ class HemsTuningService:
 
         return max(15.0, min(35.0, base))
 
-    def should_reduce_buzzer(self) -> bool:
+    def should_reduce_buzzer(self, *, now: datetime | None = None) -> bool:
         """Acoustic comfort — return True if buzzer should be OFF (night).
 
         Ported from Flutter acoustic comfort: night (22:00-07:00) → buzzer OFF.
         """
-        hour = datetime.now().hour
+        hour = (now or datetime.now()).hour
         return hour >= 22 or hour < 7
 
     @staticmethod

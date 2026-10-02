@@ -92,13 +92,16 @@ def test_battery_soh():
 
 
 def test_hems_engine():
+    now = datetime(2026, 6, 22, 12)
     e = HemsEngine()
-    d = e.evaluate(smart_mode=0, hems_auto=True, soc=60.0, pv_power=2000.0, grid_power=0.0, battery_power=0.0, load_power=500.0, grid_voltage=230.0, grid_available=True, current_output="0", current_charger="1")
+    d = e.evaluate(smart_mode=0, hems_auto=True, soc=60.0, pv_power=2000.0, grid_power=0.0, battery_power=0.0, load_power=500.0, grid_voltage=230.0, grid_available=True, current_output="0", current_charger="1", now=now)
     assert d.output_priority == "2" and d.reason == "surplus_enter_sbu"
 
     e2 = HemsEngine()
-    d = e2.evaluate(smart_mode=0, hems_auto=True, soc=15.0, pv_power=0.0, grid_power=0.0, battery_power=0.0, load_power=500.0, grid_voltage=230.0, grid_available=True, current_output="0", current_charger="1")
-    assert d.output_priority == "0" and d.charger_priority == "1"
+    d = e2.evaluate(smart_mode=0, hems_auto=True, soc=15.0, pv_power=0.0, grid_power=0.0, battery_power=0.0, load_power=500.0, grid_voltage=230.0, grid_available=True, current_output="0", current_charger="1", now=now)
+    # Already in USB+SNU: retain protection without redundant writes.
+    assert d.output_priority is None and d.charger_priority is None
+    assert d.reason == "reserve_soc_protection" and not d.skip
 
     e3 = HemsEngine()
     d = e3.evaluate(smart_mode=2, hems_auto=True, soc=60.0, pv_power=2000.0, grid_power=0.0, battery_power=0.0, load_power=500.0, grid_voltage=230.0, grid_available=True)
