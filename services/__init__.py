@@ -64,6 +64,23 @@ _MODE_VALUE = {
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register Inverter custom services."""
 
+    async def handle_auto_check_assist(call: ServiceCall) -> None:
+        """Read-only readiness diagnostic; never enables Assist or writes API."""
+        requested = call.data.get("entry_id")
+        entries = hass.config_entries.async_entries(DOMAIN)
+        selected = [entry for entry in entries if requested is None or entry.entry_id == requested]
+        if not selected:
+            raise ValueError("No matching inverter config entry")
+        for entry in selected:
+            data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+            if data is not None:
+                data["coordinator"].check_assist_ready()
+
+    hass.services.async_register(
+        DOMAIN, "auto_check_assist", handle_auto_check_assist,
+        schema=vol.Schema({vol.Optional("entry_id"): str}),
+    )
+
     async def _get_api(call: ServiceCall):
         """Get API client from first config entry."""
         entries = hass.config_entries.async_entries(DOMAIN)

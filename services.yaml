@@ -1,6 +1,16 @@
 # Inverter Smart Inverter — Custom Services
 # These can be called from automations, scripts, or developer tools.
 
+auto_check_assist:
+  name: "Check Assist Readiness"
+  description: "Log measured PV forecast readiness without changing inverter modes."
+  fields:
+    entry_id:
+      name: "Config Entry ID"
+      description: "Optional integration entry ID; omit to check all loaded inverters."
+      selector:
+        text:
+
 set_output_priority:
   name: "Set Output Priority"
   description: "Set inverter output source priority."

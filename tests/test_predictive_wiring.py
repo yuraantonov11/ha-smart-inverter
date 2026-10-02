@@ -574,6 +574,11 @@ def test_debug_logging_no_config_dir():
                 applied={"output_priority": "2", "charger_priority": "2"},
                 skip_reason=None,
             )
+            # Complete asynchronous file writes before Windows deletes tmpdir.
+            import threading
+            for worker in threading.enumerate():
+                if getattr(worker, "_target", None) is debug_logging._write_line:
+                    worker.join(timeout=2)
         # Now flip to a path with a missing parent directory.
         debug_logging.set_log_path("/nonexistent_dir_x/powmr_hems_debug.log")
         debug_logging.log_evaluation(
