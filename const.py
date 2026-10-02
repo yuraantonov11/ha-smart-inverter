@@ -286,3 +286,12 @@ STORAGE_LAST_BATTERY_ACTIVITY = "last_battery_activity"
 
 # ─── History coordinator ────────────────────────────────────────────────
 HISTORY_POLL_INTERVAL_SEC = 900  # 15 minutes
+
+# ── Predictive ML Assist (helps all modes) ───────────
+CONF_PREDICTIVE_ASSIST = "predictive_assist"
+DEFAULT_PREDICTIVE_ASSIST = False  # opt-in, off by default until enough history
+PREDICTIVE_MIN_HISTORY_DAYS = 3   # require 3 days of data before enabling
+
+# Predictive mode options (single source of truth for the Select entity)
+PREDICTIVE_MODES = ("off", "shadow", "assist")
+PREDICTIVE_MODE_DEFAULT = "off"

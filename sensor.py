@@ -389,6 +389,10 @@ async def async_setup_entry(
     # HEMS observability: daily counters + last-20 timeline
     # HEMS observability sensors removed — HA 2026.9 beta refuses to register SensorEntity classes with unknown translation_keys. Use /config/powmr_hems_debug.log directly (see dashboard panel).
 
+    # ── Predictive ML sensors ─────────────────────────────────
+    entities.append(PredictiveHintSensor(coordinator, entry))
+    entities.append(PredictiveDayAheadSensor(coordinator, entry))
+
     # ── History chart sensors (separate coordinator, 15-min polling) ──
     history_coordinator: HistoryCoordinator | None = hass.data[DOMAIN].get(
         entry.entry_id, {}
@@ -632,9 +636,13 @@ class ForecastTomorrowSensor(InverterSensor):
             return None
         # Weather conditions for each hour (WMO codes)
         weather = list(getattr(self.coordinator, "hourly_weather_today", []) or [])
+        # Solar radiation in W/m² for each hour (drives the forecast)
+        radiation = list(getattr(self.coordinator, "hourly_radiation_today", []) or [])
         # Pad to 24
         while len(weather) < 24:
             weather.append(None)
+        while len(radiation) < 24:
+            radiation.append(0)
 
         # Determine dominant weather. hourly_weather_today stores raw
         # WMO weather codes (ints) — sometimes dicts if the coordinator
@@ -671,6 +679,8 @@ class ForecastTomorrowSensor(InverterSensor):
 
         return {
             "hourly_forecast_w": hourly,
+            "hourly_radiation_wm2": radiation[:24],
+            "peak_radiation_wm2": max(radiation) if radiation else 0,
             "peak_power_w": max(hourly) if hourly else 0,
             "total_kwh": round(sum(hourly) / 1000.0, 2),
             "hourly_weather": hourly_weather,
@@ -1118,6 +1128,101 @@ class TotalEnergyHistorySensor(CoordinatorEntity, SensorEntity):
             ),
             "last_updated": self.coordinator.data.get("last_updated"),
         }
+
+
+
+class PredictiveHintSensor(CoordinatorEntity, SensorEntity):
+    """ML hint that augments the active mode (Adaptive/Arbitrage/Storm).
+
+    Shows what ML SUGGESTS as optimal SOC targets and night-charge window.
+    The active mode still makes the final decision - this is just guidance.
+    """
+    _attr_name = "Predictive Hint"
+    _attr_icon = "mdi:brain"
+    _attr_should_poll = False
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_predictive_hint"
+        self._entry = entry
+
+    @property
+    def native_value(self) -> str:
+        hems = getattr(self.coordinator, "_hems", None)
+        if hems is None:
+            return "unavailable"
+        hint = getattr(hems, "_last_predictive_hint", None)
+        if hint is None:
+            return "disabled"
+        return f"conf={hint.confidence}"
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        hems = getattr(self.coordinator, "_hems", None)
+        if hems is None:
+            return {}
+        hint = getattr(hems, "_last_predictive_hint", None)
+        if hint is None:
+            return {"enabled": False}
+        return {
+            "enabled": True,
+            "reason": hint.reason,
+            "target_morning_soc": round(hint.target_soc_morning, 1),
+            "target_evening_soc": round(hint.target_soc_evening, 1),
+            "night_charge_window": f"{hint.night_charge_start_hour}-{hint.night_charge_end_hour}",
+            "storm_preemption": hint.storm_preemption,
+            "storm_reason": hint.storm_reason,
+            "confidence": round(hint.confidence, 2),
+        }
+
+
+class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
+    """24h Predictive ML plan.
+
+    Shows what ML would do if it had full control.
+    """
+    _attr_name = "Predictive Day-Ahead"
+    _attr_icon = "mdi:calendar-clock"
+    _attr_should_poll = False
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_predictive_plan"
+        self._entry = entry
+
+    @property
+    def native_value(self) -> int:
+        plan = getattr(self.coordinator, "_last_predictive_plan", None)
+        if plan is None:
+            return 0
+        return len(plan.hourly)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        plan = getattr(self.coordinator, "_last_predictive_plan", None)
+        if plan is None:
+            return {}
+        return {
+            "generated_at": plan.generated_at.isoformat(),
+            "expected_pv_kwh": round(plan.expected_pv_kwh, 2),
+            "expected_load_kwh": round(plan.expected_load_kwh, 2),
+            "plan": [
+                {
+                    "hour": p.hour,
+                    "pv_w": round(p.pv_w, 0),
+                    "load_w": round(p.load_w, 0),
+                    "soc_pred": round(p.soc_pred, 1),
+                    "output": p.output,
+                    "charger": p.charger,
+                    "reason": p.reason,
+                }
+                for p in plan.hourly
+            ],
+        }
+
+
+
+
 
 # WMO weather code mapping (subset; full list at open-meteo.com/docs)
 WMO_WEATHER_MAP: dict[int, tuple[str, str, str]] = {

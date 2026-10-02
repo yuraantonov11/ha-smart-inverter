@@ -5,9 +5,12 @@ user can inspect after the day is over. The production path uses the
 existing INFO/DEBUG loggers as before, but the frequent per-cycle
 chatter goes here to keep the main log clean.
 
-The log file is at /config/powmr_hems_debug.log and rotates daily at
-midnight (HA timezone). Total size budget: keep last 3 days so the log
-never grows without bound.
+The log file lives in ``HEMS_DEBUG_LOG_DIR`` (``/config`` on a real HA
+install) and rotates daily at midnight. When the directory does not
+exist — e.g. in unit tests running outside HA — we silently disable
+file writes so the test thread does not crash on ``FileNotFoundError``.
+Tests that need to assert log content should use ``set_log_path`` /
+``reset_log_path`` to redirect the file to a tmpdir.
 """
 from __future__ import annotations
 
@@ -19,10 +22,29 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-_LOG_PATH = Path("/config/powmr_hems_debug.log")
-_ROTATE_AT: dict[str, str] = {}  # filename -> date string when we last rotated
+# Public seam so tests can monkeypatch the log directory without
+# touching ``/config``. Default matches Home Assistant's config dir.
+_LOG_PATH: Path = Path(
+    os.environ.get(
+        "POWMR_DEBUG_LOG_DIR",
+        "/config",
+    )
+) / "powmr_hems_debug.log"
+_ROTATE_AT: dict[str, str] = {}  # path -> date string we last rotated
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def set_log_path(path: Path | str) -> None:
+    """Override the log file path. Used by tests via monkeypatch."""
+    global _LOG_PATH
+    _LOG_PATH = Path(path)
+
+
+def reset_log_path() -> None:
+    """Restore the default log path (``/config/powmr_hems_debug.log``)."""
+    global _LOG_PATH
+    _LOG_PATH = Path("/config") / "powmr_hems_debug.log"
 
 
 def _maybe_rotate() -> None:
@@ -52,9 +74,25 @@ def _maybe_rotate() -> None:
 
 
 def _write_line(path: Path, line: str) -> None:
-    """Synchronous file write — run from a worker thread."""
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(line + "\\n")
+    """Synchronous file write — run from a worker thread.
+
+    If the parent directory does not exist (e.g. unit tests run
+    outside a Home Assistant install) the write is skipped silently.
+    This prevents the FileNotFoundError spam that polluted earlier
+    test runs without hiding real errors — the debug logger only
+    runs when the engine makes a decision, and tests should use
+    ``set_log_path`` to redirect to a tmpdir when they want to
+    assert log content.
+    """
+    try:
+        if not path.parent.exists():
+            return
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        # Directory disappeared mid-test, perms issue, etc. Skip —
+        # never block the HEMS loop on logging.
+        pass
 
 
 def log_evaluation(

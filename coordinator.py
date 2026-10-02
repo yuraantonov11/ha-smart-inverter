@@ -27,7 +27,7 @@ from .hems.forecast import ForecastService
 from .hems.soc_correction import get_real_soc
 from .hems.engine import HemsEngine, SmartMode, OutputPriority, ChargerPriority, HemsDecision
 from .hems import debug_logging
-from .hems.tuning import HemsTunables, HemsTuningService
+from .hems.tuning import HemsTunables, HemsTuningService, PredictiveTuning
 from .hems.storm_risk import evaluate_storm_risk
 from .hems.schedule_rules import ScheduleRulesService
 from .hems.demand_forecast import DemandForecastService
@@ -75,6 +75,39 @@ class InverterCoordinator(DataUpdateCoordinator):
         )
         self._tuning = HemsTuningService(tunables)
         self._hems = HemsEngine(tunables=tunables, tuning=self._tuning)
+        # Wire predictive_mode / predictive_tuning from entry options
+        # onto the engine. The engine evaluates on this attribute
+        # each cycle; the switch/select entities update it through
+        # ``async_set_predictive_mode`` (see below) so persistence
+        # flows through ``entry.options`` and survives reload.
+        self._predictive_tuning = PredictiveTuning(
+            predictive_mode=str(
+                entry.options.get("predictive_mode", "off")
+            ),
+            predictive_enabled=bool(
+                entry.options.get("predictive_mode", "") in ("shadow", "assist")
+            ),
+            battery_reserve_pct=float(
+                entry.options.get("reserve_soc", 20.0)
+            ),
+        )
+        self._hems.predictive_tuning = self._predictive_tuning
+        # Back-compat shim — many tests/old switch.py still read
+        # ``_predictive_enabled``. Keep in lockstep with mode.
+        self._hems._predictive_enabled = (
+            self._predictive_tuning.predictive_mode in ("shadow", "assist")
+        )
+        # Battery capacity in kWh — coordinator owns the input. Derive
+        # from Ah × nominal V (51.2V for typical LiFePO4) so the
+        # planner sees a real number, not the previous hardcoded 4.8.
+        try:
+            self._battery_capacity_kwh: float = (
+                float(entry.options.get("battery_capacity_ah", 230.0))
+                * 51.2
+                / 1000.0
+            )
+        except (TypeError, ValueError):
+            self._battery_capacity_kwh = 4.8
         self._hems_debug_day = None  # type: str | None
         self._hems_debug_decisions = 0
         self._hems_debug_commands = 0
@@ -153,10 +186,15 @@ class InverterCoordinator(DataUpdateCoordinator):
         self._forecast_last_fetch: datetime | None = None
         self.forecast_tomorrow_kwh: float | None = None
         self.forecast_day_after_kwh: float | None = None
+        self._forecast_today_kwh: float | None = None
+        # Hourly load matrix [days][24] from the recorder (see history_builder)
+        self._load_matrix: list[list[float]] = []
+        self._load_matrix_at: datetime | None = None
         self.forecast_learned_ratio: float = 0.12
         self.radiation_now_wm2: float | None = None
         self.hourly_forecast_today: list[float] = []  # 24 hourly power values (W) for sparkline
         self.hourly_weather_today: list[int | None] = []  # WMO weather codes per hour
+        self.hourly_radiation_today: list[float] = []  # Solar radiation W/m² per hour
         self.weather_tomorrow_code: int | None = None  # Dominant weather for tomorrow
         self.weather_day_after_code: int | None = None
 
@@ -190,6 +228,42 @@ class InverterCoordinator(DataUpdateCoordinator):
     def hems_engine(self) -> HemsEngine:
         """Expose HEMS engine for external callers (services, manual override)."""
         return self._hems
+
+    # ═══════════════════════════════════════════════════════════════════
+    # PREDICTIVE OPTION WIRING
+    # ═══════════════════════════════════════════════════════════════════
+
+    def async_set_predictive_mode(self, mode: str) -> None:
+        """Update predictive mode on the engine + persist via options.
+
+        Single canonical writer for ``predictive_tuning.predictive_mode``.
+        Called by the switch (``InverterPredictiveAssistSwitch``)
+        and the new select entity. Updates:
+          1. ``self._predictive_tuning.predictive_mode`` (engine reads from here)
+          2. ``self._hems.predictive_tuning`` (same object — kept for clarity)
+          3. ``self._hems._predictive_enabled`` (legacy compat)
+          4. ``entry.options["predictive_mode"]`` (persistence across reload)
+        """
+        if mode not in ("off", "shadow", "assist"):
+            mode = "off"
+        self._predictive_tuning.predictive_mode = mode
+        self._hems.predictive_tuning = self._predictive_tuning
+        self._hems._predictive_mode = mode
+        self._hems._predictive_enabled = mode in ("shadow", "assist")
+        # Persist on the config entry so reload keeps the mode.
+        try:
+            new_opts = dict(self._entry.options)
+            new_opts["predictive_mode"] = mode
+            self.hass.config_entries.async_update_entry(
+                self._entry, options=new_opts
+            )
+        except Exception as exc:
+            _LOGGER.debug("persist predictive_mode failed: %s", exc)
+
+    @property
+    def predictive_mode(self) -> str:
+        """Current predictive mode (single source of truth)."""
+        return self._predictive_tuning.predictive_mode
 
     # ═══════════════════════════════════════════════════════════════════
     # MAIN UPDATE LOOP
@@ -348,6 +422,28 @@ class InverterCoordinator(DataUpdateCoordinator):
         pv_power = raw.get("pvPower", 0.0)
         grid_power = raw.get("gridPower", 0.0)
         load_power = raw.get("loadPower", 0.0)
+
+        # ── Feed planner-required arrays into the engine ────────────
+        # The engine reads these attributes when predictive is
+        # shadow/assist. Empty/missing → planner stays None (missing
+        # data gate, not silent zero).
+        self._hems._last_forecast_today_kwh = (
+            getattr(self, "_forecast_today_kwh", None)
+        )
+        self._hems._hourly_pv_forecast = list(
+            getattr(self, "hourly_forecast_today", []) or []
+        )
+        self._hems._hourly_radiation = list(
+            getattr(self, "hourly_radiation_today", []) or []
+        )
+        self._hems._hourly_weather_codes = list(
+            getattr(self, "hourly_weather_today", []) or []
+        )
+        # Build 24h tariff schedule from coordinator tariffs
+        self._hems._tariff_schedule = self._build_tariff_schedule()
+        await self._maybe_refresh_load_history(datetime.now())
+        self._hems._consumption_history = list(self._load_matrix)
+        self._hems._battery_capacity_kwh = self._battery_capacity_kwh
 
         decision = self._hems.evaluate(
             smart_mode=effective_mode,
@@ -528,6 +624,68 @@ class InverterCoordinator(DataUpdateCoordinator):
             "gridAvailable": True, "gridTransition": "none",
             "online": False, "lastUpdated": now.isoformat(),
         }
+
+    async def _maybe_refresh_load_history(self, now: datetime) -> None:
+        """Load hourly load-power history from the HA recorder (max once/hour).
+
+        Failure keeps the previous matrix (possibly empty) — the planner's
+        missing-data gate then lowers confidence instead of using fake zeros.
+        """
+        last = self._load_matrix_at
+        if last is not None and (now - last) < timedelta(hours=1):
+            return
+        self._load_matrix_at = now
+        try:
+            from homeassistant.components.recorder import statistics as rec_stats
+            from homeassistant.util import dt as dt_util
+            from .hems.history_builder import build_hourly_load_matrix
+
+            ent = "sensor.garazh_smart_solar_inverter_load_power"
+            start = dt_util.utcnow() - timedelta(days=9)
+            stats = await self.hass.async_add_executor_job(
+                rec_stats.statistics_during_period,
+                self.hass, start, None, {ent}, "hour", None, {"mean"},
+            )
+            rows = stats.get(ent, [])
+            samples = []
+            for r in rows:
+                mean = r.get("mean")
+                ts = r.get("start")
+                if mean is None or ts is None:
+                    continue
+                if isinstance(ts, (int, float)):
+                    ts = dt_util.utc_from_timestamp(ts)
+                samples.append((dt_util.as_local(ts).replace(tzinfo=None), mean))
+            self._load_matrix = build_hourly_load_matrix(
+                samples, dt_util.as_local(dt_util.utcnow()).replace(tzinfo=None), days=7
+            )
+            _LOGGER.info("Load history refreshed: %d full days", len(self._load_matrix))
+        except Exception as exc:  # never break HEMS because of history
+            _LOGGER.warning("Load history refresh failed: %s", exc)
+            # retry in ~5 min instead of waiting a full hour
+            self._load_matrix_at = now - timedelta(minutes=55)
+
+    def _build_tariff_schedule(self) -> list[float]:
+        """Build a 24-hour tariff schedule from day/night tariffs.
+
+        The planner uses this to decide when to charge (cheap) vs
+        discharge (expensive). When the user hasn't supplied
+        separate day/night rates via options we still produce a
+        sensible schedule so the planner has SOMETHING to look at.
+        """
+        try:
+            day = float(self._day_tariff_uah)
+            night = float(self._night_tariff_uah)
+        except (TypeError, ValueError):
+            return [0.0] * 24
+        # Ukraine TOU: night 23-07, day otherwise
+        out: list[float] = []
+        for h in range(24):
+            if h >= 23 or h < 7:
+                out.append(night)
+            else:
+                out.append(day)
+        return out
 
     def _evaluate_grid(self, grid_voltage: float) -> tuple[bool, str]:
         """Evaluate grid availability with hysteresis."""
@@ -738,12 +896,25 @@ class InverterCoordinator(DataUpdateCoordinator):
                 today_weather = [
                     h.get("weather_code") for h in hourly if h["time"].startswith(today_str)
                 ]
+                today_radiation = [
+                    h.get("radiation_wm2", 0) for h in hourly if h["time"].startswith(today_str)
+                ]
                 # Pad to 24 if needed
                 if len(today_hours) < 24:
                     today_hours.extend([0.0] * (24 - len(today_hours)))
                     today_weather.extend([None] * (24 - len(today_weather)))
+                    today_radiation.extend([0.0] * (24 - len(today_radiation)))
                 self.hourly_forecast_today = today_hours[:24]
                 self.hourly_weather_today = today_weather[:24]
+                self.hourly_radiation_today = today_radiation[:24]
+                # Derive today's energy total — sum of hourly PV (W) /
+                # 1000 = kWh (each hour contributes 1 kWh per 1 kW).
+                try:
+                    self._forecast_today_kwh = (
+                        sum(today_hours[:24]) / 1000.0
+                    )
+                except Exception:
+                    self._forecast_today_kwh = None
 
                 self._forecast_last_fetch = now
                 _LOGGER.debug(

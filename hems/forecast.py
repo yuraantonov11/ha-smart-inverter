@@ -67,6 +67,9 @@ class SolarForecast:
         peak_power_w: float,
         hourly_power: list[float] | None = None,
         hourly_weather: list[int] | None = None,
+        hourly_radiation_wm2: list[float] | None = None,
+        hourly_cloud_cover: list[float | None] | None = None,
+        hourly_temperature: list[float | None] | None = None,
         dominant_weather_code: int | None = None,
     ) -> None:
         self.date = date
@@ -74,6 +77,9 @@ class SolarForecast:
         self.peak_power_w = peak_power_w
         self.hourly_power = hourly_power or []
         self.hourly_weather = hourly_weather or []
+        self.hourly_radiation_wm2 = hourly_radiation_wm2 or []
+        self.hourly_cloud_cover = hourly_cloud_cover or []
+        self.hourly_temperature = hourly_temperature or []
         # Dominant weather = the code with most hours (rough summary)
         if hourly_weather:
             from collections import Counter
@@ -185,7 +191,7 @@ class ForecastService:
             "longitude": self._longitude,
             # Request both shortwave_radiation AND weather_code so we
             # can show cloud/rain conditions alongside the power curve.
-            "hourly": "shortwave_radiation,weather_code",
+            "hourly": "shortwave_radiation,weather_code,cloud_cover,temperature_2m",
             "timezone": "auto",
             "forecast_days": 2,
         }
@@ -200,17 +206,23 @@ class ForecastService:
         times = hourly.get("time", [])
         radiations = hourly.get("shortwave_radiation", [])
         weather_codes = hourly.get("weather_code", [])
+        cloud_covers = hourly.get("cloud_cover", [])
+        temperatures = hourly.get("temperature_2m", [])
 
         result: list[dict[str, Any]] = []
         for i, t in enumerate(times):
             rad = radiations[i] if i < len(radiations) else 0
             wcode = weather_codes[i] if i < len(weather_codes) else None
+            cc = cloud_covers[i] if i < len(cloud_covers) else None
+            temp = temperatures[i] if i < len(temperatures) else None
             power_w = round((rad or 0) * self.learned_ratio)
             result.append({
                 "time": t,
                 "radiation_wm2": rad or 0,
                 "power_w": power_w,
                 "weather_code": wcode,
+                "cloud_cover": cc,
+                "temperature": temp,
             })
         return result
 
@@ -231,6 +243,9 @@ class ForecastService:
                 break
             energies = [h["power_w"] for h in hours]
             weathers = [h.get("weather_code") for h in hours]
+            radiations = [h.get("radiation_wm2", 0) for h in hours]
+            clouds = [h.get("cloud_cover") for h in hours]
+            temps = [h.get("temperature") for h in hours]
             total_kwh = sum(energies) / 1000.0
             peak_w = max(energies) if energies else 0.0
             # Compute the dominant (most frequent) WMO weather code
@@ -246,6 +261,9 @@ class ForecastService:
                 peak_power_w=round(peak_w),
                 hourly_power=energies,
                 hourly_weather=weathers,
+                hourly_radiation_wm2=radiations,
+                hourly_cloud_cover=clouds,
+                hourly_temperature=temps,
                 dominant_weather_code=dominant_w,
             )
         return result

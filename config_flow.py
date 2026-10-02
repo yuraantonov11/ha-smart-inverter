@@ -24,6 +24,8 @@ from .const import (
     DOMAIN,
     MAX_POLL_INTERVAL_SEC,
     MIN_POLL_INTERVAL_SEC,
+    PREDICTIVE_MODES,
+    PREDICTIVE_MODE_DEFAULT,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -270,6 +272,11 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                         vol.Coerce(int),
                         vol.Range(min=0, max=23),
                     ),
+                    # ── Predictive ML mode (persistent across reload) ──
+                    vol.Optional(
+                        "predictive_mode",
+                        default=current.get("predictive_mode", PREDICTIVE_MODE_DEFAULT),
+                    ): vol.In(list(PREDICTIVE_MODES)),
                 }
             ),
             errors=errors,

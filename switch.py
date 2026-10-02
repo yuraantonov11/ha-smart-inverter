@@ -70,6 +70,7 @@ async def async_setup_entry(
 
     entities = [
         InverterHemsAutoModeSwitch(coordinator),
+        InverterPredictiveAssistSwitch(coordinator),
         InverterGridFeedInSwitch(coordinator),
         InverterBackupModeSwitch(coordinator),
         InverterBuzzerSwitch(coordinator),
@@ -292,3 +293,70 @@ class InverterDualOutputSwitch(_InverterConfigSwitch):
         super().__init__(coordinator)
         self._attr_translation_key = "dual_output"
         self._attr_icon = "mdi:power-plug-off"
+
+class InverterPredictiveAssistSwitch(CoordinatorEntity, SwitchEntity):
+    """Switch to enable/disable Predictive ML assist for HEMS.
+
+    When ON, ML augments all HEMS modes (Adaptive/Arbitrage/Storm) with:
+    - optimal SOC targets (morning/evening)
+    - smart night-charge window (skip if tomorrow is sunny)
+    - storm preemption (auto-enter STORM if forecast alerts)
+    - reasoning for each decision
+
+    When OFF (default), HEMS uses hardcoded thresholds (90/20, fixed 23-7 window).
+    Requires at least 3 days of consumption history to be effective.
+
+    Persistence: turning the switch on/off goes through the
+    coordinator's ``async_set_predictive_mode`` which writes the
+    SAME ``entry.options["predictive_mode"]`` field as the select
+    entity (off / shadow / assist). Reload restores the value
+    because the coordinator reads ``predictive_mode`` from
+    ``entry.options`` at startup.
+    """
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_name = "HEMS Predictive Assist"
+        self._attr_icon = "mdi:brain"
+        self._attr_unique_id = f"{coordinator.api.device_sn}_hems_predictive_assist"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")},
+        }
+
+    @property
+    def is_on(self) -> bool:
+        # Mirror the actual mode from the coordinator — single
+        # source of truth. Avoids the old disconnect where
+        # ``_predictive_enabled`` drifted from ``predictive_mode``.
+        try:
+            return self.coordinator.predictive_mode in ("shadow", "assist")
+        except Exception:
+            return False
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        hems = getattr(self.coordinator, "_hems", None)
+        if hems is None:
+            return {"status": "hems_not_ready"}
+        attrs: dict = {"mode": self.coordinator.predictive_mode}
+        hint = getattr(hems, "_last_predictive_hint", None)
+        if hint is not None:
+            try:
+                attrs["confidence"] = round(float(hint.confidence), 2)
+                attrs["target_morning_soc"] = round(float(hint.target_soc_morning), 1)
+                attrs["target_evening_soc"] = round(float(hint.target_soc_evening), 1)
+            except (TypeError, ValueError):
+                pass
+        return attrs
+
+    async def async_turn_on(self, **kwargs) -> None:
+        # legacy behaviour kept — but routed through the
+        # canonical writer so predictive_mode stays in sync.
+        self.coordinator.async_set_predictive_mode("assist")
+        self.async_write_ha_state()
+        _LOGGER.info("HEMS Predictive Assist ENABLED (assist)")
+
+    async def async_turn_off(self, **kwargs) -> None:
+        self.coordinator.async_set_predictive_mode("off")
+        self.async_write_ha_state()
+        _LOGGER.info("HEMS Predictive Assist DISABLED (off)")

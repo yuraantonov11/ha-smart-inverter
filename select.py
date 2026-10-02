@@ -41,6 +41,7 @@ CHARGER_OPTIONS = [
 SMART_MODE_OPTIONS = ["Adaptive", "Arbitrage", "Storm"]
 BATTERY_TYPE_OPTIONS = ["AGM", "FLD", "USE", "LIB", "PYL", "TQF", "GRO", "LIA", "LIC", "FEL"]
 AC_INPUT_RANGE_OPTIONS = ["Appliance", "UPS"]
+PREDICTIVE_MODE_OPTIONS = ["Off", "Shadow", "Assist"]
 
 OUTPUT_VALUE_MAP = {
     "USB (Grid First)": OUTPUT_USB,
@@ -104,6 +105,17 @@ AC_INPUT_RANGE_LABEL_MAP: dict[str, str] = {
     "APL": "Appliance",
 }
 
+# Predictive mode maps one-to-one (string keys) — stored as
+# ``entry.options["predictive_mode"]`` so it persists across reload.
+PREDICTIVE_MODE_VALUE_MAP: dict[str, str] = {
+    "Off": "off",
+    "Shadow": "shadow",
+    "Assist": "assist",
+}
+PREDICTIVE_MODE_LABEL_MAP: dict[str, str] = {
+    v: k for k, v in PREDICTIVE_MODE_VALUE_MAP.items()
+}
+
 
 def _setting_str(data: dict | None, key: str) -> str | None:
     """Read a string setting value from coordinator deviceSettings."""
@@ -141,6 +153,7 @@ async def async_setup_entry(
         InverterSmartModeSelect(coordinator),
         InverterBatteryTypeSelect(coordinator),
         InverterAcInputRangeSelect(coordinator),
+        InverterPredictiveModeSelect(coordinator),
     ]
     async_add_entities(entities)
 
@@ -330,3 +343,65 @@ class InverterAcInputRangeSelect(InverterSelectBase):
             _LOGGER.info("AC input range set to %s (%s)", option, value)
         else:
             _LOGGER.error("Failed to set AC input range to %s", option)
+
+
+class InverterPredictiveModeSelect(InverterSelectBase):
+    """Select entity for Predictive ML planner mode.
+
+    Modes:
+        Off    — planner dormant. No hint, no plan. Default.
+        Shadow — planner records hint + plan, decisions unchanged.
+        Assist — planner hint can shift night charger / evening SOC.
+
+    Persistence: the value is written to ``entry.options["predictive_mode"]``
+    through ``coordinator.async_set_predictive_mode``, the SAME field
+    the options flow / coordinator init / switch entity all read. Reload
+    restores the selected mode.
+    """
+
+    def __init__(self, coordinator: InverterCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            SelectEntityDescription(
+                key="predictive_mode",
+                translation_key="predictive_mode",
+                icon="mdi:brain",
+            ),
+            PREDICTIVE_MODE_OPTIONS,
+        )
+
+    @property
+    def current_option(self) -> str | None:
+        try:
+            mode = self.coordinator.predictive_mode
+        except Exception:
+            return "Off"
+        return PREDICTIVE_MODE_LABEL_MAP.get(mode, "Off")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        hems = getattr(self.coordinator, "_hems", None)
+        if hems is None:
+            return {"status": "hems_not_ready"}
+        attrs: dict = {"mode": self.coordinator.predictive_mode}
+        hint = getattr(hems, "_last_predictive_hint", None)
+        if hint is not None:
+            try:
+                attrs["confidence"] = round(float(hint.confidence), 2)
+                attrs["target_morning_soc"] = round(
+                    float(hint.target_soc_morning), 1
+                )
+                attrs["target_evening_soc"] = round(
+                    float(hint.target_soc_evening), 1
+                )
+            except (TypeError, ValueError):
+                pass
+        return attrs
+
+    async def async_select_option(self, option: str) -> None:
+        value = PREDICTIVE_MODE_VALUE_MAP.get(option, "off")
+        # Single canonical writer — updates engine + persists
+        # entry.options["predictive_mode"] so reload preserves it.
+        self.coordinator.async_set_predictive_mode(value)
+        self.async_write_ha_state()
+        _LOGGER.info("Predictive mode set to %s (%s)", option, value)

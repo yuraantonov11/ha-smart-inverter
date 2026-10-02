@@ -148,3 +148,43 @@ class HemsTuningService:
         avg = sum(values) / len(values)
         variance = sum((v - avg) ** 2 for v in values) / len(values)
         return math.sqrt(variance)
+
+
+@dataclass(slots=True)
+class PredictiveTuning:
+    """Configuration for Predictive ML planner.
+
+    The ``predictive_mode`` is the single source of truth for
+    predictive behaviour. Modes:
+        - "off": predictive planner is dormant; sensor reports "off".
+        - "shadow": planner computes hint + plan, writes to public
+          attributes, but never overrides the panel's existing baseline
+          decision. Default when user just wants observability.
+        - "assist": planner hint can shift the night-charge window and
+          evening SOC target, but safety floors (reserve+2, manual override,
+          grid outage, stale-data safety) remain absolute.
+    """
+    predictive_mode: str = "off"            # off / shadow / assist
+    predictive_enabled: bool = False        # legacy flag kept for back-compat
+    predictive_replan_interval_min: int = 15
+    predictive_history_days: int = 7
+    night_charge_start_hour: int = 23
+    night_charge_end_hour: int = 7
+    battery_reserve_pct: float = 20.0
+    enable_consumption_predictor: bool = True
+    enable_pv_calibration: bool = True
+    enable_storm_preemption: bool = True
+    enable_tariff_arbitrage: bool = True
+    day_ahead_target_min_soc: float = 30.0
+    day_ahead_target_max_soc: float = 90.0
+
+    def as_dict(self) -> dict:
+        return {
+            "mode": self.predictive_mode,
+            "replan_interval_min": self.predictive_replan_interval_min,
+            "history_days": self.predictive_history_days,
+            "night_charge_window": f"{self.night_charge_start_hour}-{self.night_charge_end_hour}",
+            "battery_reserve_pct": self.battery_reserve_pct,
+            "target_min_soc": self.day_ahead_target_min_soc,
+            "target_max_soc": self.day_ahead_target_max_soc,
+        }

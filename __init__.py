@@ -87,28 +87,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Cleanup legacy HACS-created device entry (if any).
         # Older HACS frontend auto-registered a device with
-        # identifiers=("hacs", "1268765881") on install. That duplicates
-        # the device we just created. Find and remove it.
-        # The current code never creates such a device - this is safe.
-        legacy_ids = ("hacs", "1268765881")
-        # async_get_device is deprecated in HA 2027.8 (identifiers are no
-        # longer unique across config entries). async_get_device_by_identifier
-        # requires config_entry_id (not what we want — we look across all
-        # entries for the legacy HACS device). Iterate the registry instead
-        # and filter manually. This is the canonical migration path
-        # documented for HA 2027.x.
-        legacy_device = None
-        for dev in device_registry.devices.values():
-            if any(tuple(ident) == legacy_ids for ident in dev.identifiers):
-                legacy_device = dev
-                break
-        if legacy_device is not None:
-            _LOGGER.info(
-                "Removing legacy HACS-created device entry: %s (id=%s)",
-                legacy_device.name,
-                legacy_device.id,
+        # identifiers=("hacs", "1268765881") on install.
+        # In HA 2026.9+, device_registry.devices is a read-only collection
+        # (not a dict). Use async_get_device_id_by_identifier() to look
+        # up devices by their config-entry-scoped identifier.
+        try:
+            from homeassistant.helpers.device_registry import (
+                async_get_device_id_by_identifier,
             )
-            device_registry.async_remove_device(device_id=legacy_device.id)
+            legacy_id = async_get_device_id_by_identifier(
+                hass,
+                ("hacs", "1268765881"),
+                config_entry_id=entry.entry_id,
+            )
+            if legacy_id is not None:
+                _LOGGER.info(
+                    "Removing legacy HACS-created device entry (id=%s)", legacy_id
+                )
+                device_registry.async_remove_device(device_id=legacy_id)
+        except (ImportError, ValueError, KeyError) as exc:
+            # ImportError: helper not in older HA
+            # ValueError/KeyError: no matching device found
+            _LOGGER.debug("Legacy HACS device check: %s", exc)
 
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -122,14 +122,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _install_flow_card(hass)
             _FRONTEND_REGISTERED = True
 
-        # ── Auto-install dashboard on first setup ─────────────────
-        await _auto_install_dashboard(hass, entry)
+        # ── Auto-install dashboard only if it doesn't exist yet ────
+        # Skip if user has already customized the dashboard config in
+        # storage — otherwise our default layout would overwrite their
+        # changes every time we reload. This respects user agency and
+        # keeps customisations stable across integration updates.
+        import os
+        dashboard_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.powmr_energy")
+        if not os.path.exists(dashboard_path):
+            _LOGGER.info("Auto-installing dashboard (first setup)")
+            await _auto_install_dashboard(hass, entry)
+        else:
+            _LOGGER.debug("Dashboard already exists, skipping auto-install to preserve user edits")
 
         return True
 
-    except Exception as exc:
-        _LOGGER.error("Failed to set up inverter integration: %s", exc)
-        await api.close()
+    except Exception:
+        _LOGGER.error("CRITICAL: Failed to set up inverter integration", exc_info=True)
+        try:
+            await api.close()
+        except Exception:
+            pass
         return False
 
 
@@ -325,6 +338,24 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     if status_grid_cards:
         overview_cards.append({"type": "grid", "cards": status_grid_cards})
 
+    # ── Weather summary tiles (template sensors) ──
+    # These come from templates.yaml — see installation docs.
+    weather_tiles: list[dict] = []
+    for tk, nm, ic in [
+        ("pv_weather_yesterday", "Погода вчора", "mdi:weather-sunny"),
+        ("pv_weather_tomorrow", "Погода завтра", "mdi:weather-sunny"),
+        ("pv_weather_history_7d", "Погода (7 днів)", "mdi:weather-partly-cloudy"),
+    ]:
+        weather_eid = f"sensor.{tk}"
+        weather_tiles.append({
+            "type": "tile",
+            "entity": weather_eid,
+            "name": nm,
+            "icon": ic,
+        })
+    if weather_tiles:
+        overview_cards.append({"type": "grid", "cards": weather_tiles})
+
     # ── k-flow-card (must be inside a grid section!) ──
     flow_cfg: dict = {"type": "custom:k-flow-card", "inverter_name": "PowMr"}
     for cfg_key, entity_key in [
@@ -459,50 +490,38 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         history_cards.append({"type": "grid", "cards": [
             _stats("PV + Навантаження (7 днів)", "line", "hour", 7, ["mean"], [pv, load])
         ]})
-    soc_ents = [x for x in [_e("battery_soc_corrected"), batt_v] if x]
-    if soc_ents:
+    # SOC + voltage: skip if entities don't have valid measurements.
+    # Many users don't have corrected_soc sensor, and orphan entities
+    # produce broken statistics-graph ("Статистичних даних не знайдено").
+    # If real SOC sensor is added in future, restore this block.
+    if False and soc_ents:
         history_cards.append({"type": "grid", "cards": [
             _stats("SOC + Напруга АКБ (7 днів)", "line", "hour", 7, ["mean"], soc_ents)
         ]})
 
     # ── History chart sensors (fetched from API every 15 min) ──
+    # Use HA built-in statistics-graph for tooltip support (HA 2026.9
+    # beta has scoped-custom-element-registry conflicts that prevent
+    # power-history-card's custom elements from loading reliably).
+    # pv_forecast_hourly_w is a template sensor (in templates.yaml)
+    # that returns the current hour's forecast power in Watts — matches
+    # the W units of ac_output_power so they plot on the same Y axis.
     daily_power_eid = _e("history_daily_power")
     forecast_eid = _e("forecast_tomorrow")
-    if daily_power_eid:
-        # Generation: area chart (smooth curve + filled area)
-        # Forecast: smooth line, no fill — readable curve per user request
-        series = [{
-            "entity": daily_power_eid,
-            "attribute": "hourly_power_kw",
-            "labels_attribute": "hourly_labels",
-            "color": "#f5b06a",
-            "name": "Генерація",
-            "unit_divisor": 1,
-            "chart_type": "area",
-            "fill": True,
-        }]
-        if forecast_eid:
-            series.append({
-                "entity": forecast_eid,
-                "attribute": "hourly_forecast_w",
-                "labels_attribute": "",
-                "color": "#e74c3c",
-                "name": "Прогноз",
-                "unit_divisor": 1000,
-                "chart_type": "line",
-                "fill": False,
-            })
-        history_cards.append({"type": "grid", "cards": [{
-            "type": "custom:power-history-card",
-            "series": series,
-            "title": "Генерація + Прогноз (сьогодні)",
-            "unit": "kW",
-            # Align both series to a 24-hour X axis: generation's 18 half-hour
-            # values are resampled to 24 hourly slots (rest zero — future),
-            # forecast's 24 hourly values are kept as-is.
-            "x_points": 24,
-            "align": "hourly",
-        }]})
+    forecast_hourly_w = "sensor.pv_forecast_hourly_w"
+    # Prefer the real-time AC output sensor — its history has actual
+    # values (vs daily_power_kw which stays at 0.0 most of the day
+    # because HA recorder skips no-change writes).
+    ac_power_eid = _e("ac_output_power") or daily_power_eid
+    if ac_power_eid:
+        # Real PV generation + forecast on the same 24h window
+        ents = [ac_power_eid]
+        if forecast_hourly_w:
+            ents.append(forecast_hourly_w)
+        history_cards.append({"type": "grid", "cards": [
+            _stats("⚡ Генерація + Прогноз (24г) — наводь для деталей",
+                   "line", "hour", 1, ["mean"], ents)
+        ]})
 
     monthly_energy_eid = _e("history_monthly_energy")
     if monthly_energy_eid:
