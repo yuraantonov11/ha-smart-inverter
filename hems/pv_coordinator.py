@@ -6,13 +6,14 @@ in executor jobs. Kept as a mixin so real wiring can be tested without HA.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .history_builder import build_hourly_load_matrix
 from .predictive import PredictiveHemsController, normalize_night_window
-from .pv_learning import (PvLearningState, complete_hourly_days, daily_energy_deltas,
+from .pv_learning import (PvLearningState, RealForecastPairs, finite, complete_hourly_days, daily_energy_deltas,
                           day_bounds, timestamp, train_station)
 
 _LOGGER = logging.getLogger("custom_components.powmr_inverter.coordinator")
@@ -37,7 +38,7 @@ class PvLearningCoordinatorMixin:
         self._archive_attempt_at = None
         self._pv_state_loaded = False
         self._pv_state_dirty = False
-        self._night_recommendation_at = None
+        self._night_window_last_persist_at = None
         directory = Path(__file__).resolve().parent
         self._pv_state_path = directory / f"pv_fact_pairs_{self._entry.entry_id}.json"
         self._pv_legacy_path = directory / "pv_fact_pairs.json"
@@ -177,10 +178,120 @@ class PvLearningCoordinatorMixin:
                          model["sample_count"], model["gain"], model["validation"])
 
     async def _maybe_record_pv_pairs(self, now):
-        await self._ensure_pv_state_loaded()
-        if self._pv_learning.match(self._pv_actual, self._pv_local_now()):
-            self._pv_state_dirty = True
+        await self._save_real_forecast_pair(now)
         await self._save_pv_state()
+
+    async def _save_real_forecast_pair(self, now):
+        """Persist issued forecasts and completed facts, then publish evidence.
+
+        Missing midnight statistics are retried at the next history refresh.
+        A failed disk write cannot acknowledge a pair or consume its retry.
+        """
+        await self._ensure_pv_state_loaded()
+        local_now = self._pv_local_now()
+        state = self._pv_learning
+        if not hasattr(self, "_real_pairs_store"):
+            store = RealForecastPairs(state.identity)
+            entry = getattr(self, "_entry", None)
+            entry_id = entry.entry_id if entry else self._pv_state_path.stem
+            self._real_pairs_path = self._pv_state_path.parent / entry_id / "real_forecast_pairs.json"
+            try:
+                loaded = await self.hass.async_add_executor_job(store.load, self._real_pairs_path)
+                if not loaded:
+                    store.migrate(state)
+                store.prune(local_now.date())
+            except Exception as exc:
+                _LOGGER.warning("Real forecast journal restore failed: %s", exc)
+                return  # do not overwrite a corrupt/unrelated journal
+            self._real_pairs_store = store
+            self._real_pairs_dirty = True
+            self._real_pair_signature = None
+        store = self._real_pairs_store
+        # Snapshot values come from the raw station forecast, before bias adjustment.
+        raw = getattr(self, "_raw_forecast_kwh", {})
+        forecasts = tuple(raw.get((local_now.date()+timedelta(days=d)).isoformat(),
+                              getattr(self, attr, None) if not raw else None)
+                          for d, attr in ((1, "forecast_tomorrow_kwh"), (2, "forecast_day_after_kwh")))
+        signature = (local_now.date(), self._pv_matrix_at, forecasts, tuple(state.snapshots))
+        if self._real_pair_signature == signature and not self._real_pairs_dirty:
+            return
+        previous = deepcopy(store.pairs)
+        store.migrate(state)
+        for offset, value in enumerate(forecasts, 1):
+            store.snapshot((local_now.date()+timedelta(days=offset)).isoformat(), value, local_now)
+        actual = dict(self._pv_actual)
+        pending = [d for d, p in store.pairs.items() if not p["used"] and d < local_now.date().isoformat()]
+        if pending:
+            # HA daily sum is cumulative and its buckets use UTC days. The
+            # complete hourly facts are the coverage check and the local/DST
+            # fallback; never turn a bare cumulative sum into a day's energy.
+            try:
+                from homeassistant.components.recorder import statistics as rec_stats
+                ent = self._history_entity("daily_energy_api", "sensor.garazh_smart_solar_inverter_daily_pv_energy")
+                start, _ = day_bounds(min(pending), self._site_timezone)
+                _, end = day_bounds(max(pending), self._site_timezone)
+                stats = await self.hass.async_add_executor_job(
+                    rec_stats.statistics_during_period, self.hass, start-timedelta(days=1), end,
+                    {ent}, "day", None, {"sum"})
+                metadata = await self.hass.async_add_executor_job(rec_stats.get_metadata, self.hass, {ent})
+                raw_meta = metadata.get(ent)
+                meta = raw_meta[1] if isinstance(raw_meta, tuple) else raw_meta
+                scale = {"Wh": .001, "kWh": 1., "MWh": 1000.}.get(
+                    meta.get("unit_of_measurement") if isinstance(meta, dict) and meta.get("has_sum") else None)
+                endpoints = {}
+                if scale is not None:
+                    for row in stats.get(ent, []):
+                        value = finite(row.get("sum"))
+                        if value is not None:
+                            endpoints[timestamp(row["start"])+timedelta(days=1)] = value*scale
+                    for day in pending:
+                        first, last = day_bounds(day, self._site_timezone)
+                        if first in endpoints and last in endpoints and day in actual:
+                            delta = finite(endpoints[last]-endpoints[first], high=500)
+                            if delta is not None and abs(delta-actual[day]) < .001:
+                                actual[day] = delta
+            except Exception as exc:
+                _LOGGER.debug("Daily PV sums unavailable; complete local-day facts retained: %s", exc)
+        captured = store.match(actual, local_now)
+        store.prune(local_now.date())
+        changed = store.pairs != previous or self._real_pairs_dirty
+        if changed:
+            try:
+                await self.hass.async_add_executor_job(store.save, self._real_pairs_path)
+            except Exception as exc:
+                store.pairs = previous
+                self._real_pairs_dirty = True
+                _LOGGER.warning("Real forecast journal persist failed: %s", exc)
+                return
+            store.publish(state)
+            self._pv_state_dirty = True
+            self._real_pairs_dirty = False
+            for pair in captured:
+                _LOGGER.info("Real pair captured: date=%s fc=%.3fkWh ac=%.3fkWh delta=%+.3fkWh",
+                             pair["date"], pair["forecast_kwh"], pair["actual_kwh"],
+                             pair["actual_kwh"]-pair["forecast_kwh"])
+        self._last_real_pair_date = local_now.date()
+        self._real_pair_signature = signature
+        self._adjust_daily_forecasts()
+
+    def _adjust_daily_forecasts(self):
+        """Correct fresh raw daily forecasts in the calibrator's kWh unit."""
+        raw = getattr(self, "_raw_forecast_kwh", None)
+        if raw is None:
+            return
+        m = self._pv_calibrator.metrics()
+        for offset, attr in ((1, "forecast_tomorrow_kwh"), (2, "forecast_day_after_kwh")):
+            day = (self._pv_local_now().date()+timedelta(days=offset)).isoformat()
+            before = finite(raw.get(day), high=500)
+            if before is None:
+                setattr(self, attr, None)
+                continue
+            after = (self._pv_calibrator.adjust(before)
+                     if abs(m.bias_w) > .1 * before else before)
+            if after != before and getattr(self, attr, None) != after:
+                _LOGGER.info("Forecast adjusted: bias=%+.3f kWh fc_before=%.3f fc_after=%.3f mae=%.3f",
+                             m.bias_w, before, after, m.mae_w)
+            setattr(self, attr, after)
 
     def _log_pv_calibrator_state(self, now):
         if self._pv_calibrator_log_at and now - self._pv_calibrator_log_at < timedelta(hours=1):
@@ -210,14 +321,22 @@ class PvLearningCoordinatorMixin:
         if hint is None or plan is None or getattr(plan, "generated_at", None) != now:
             return
         value = {"start_hour": hint.night_charge_start_hour, "end_hour": hint.night_charge_end_hour}
+        if any(type(h) is not int or not 0 <= h <= 23 for h in value.values()) or value["start_hour"] == value["end_hour"]:
+            return
         if self._entry.options.get("night_charge_window_recommended") == value:
             return
-        if self._night_recommendation_at and now - self._night_recommendation_at < timedelta(hours=1):
+        last = getattr(self, "_night_window_last_persist_at", None)
+        if last and now - last < timedelta(hours=1):
             return
         options = dict(self._entry.options)
         options["night_charge_window_recommended"] = value
-        self.hass.config_entries.async_update_entry(self._entry, options=options)
-        self._night_recommendation_at = now
+        try:
+            self.hass.config_entries.async_update_entry(self._entry, options=options)
+        except Exception as exc:
+            _LOGGER.warning("Night recommendation persist failed: %s", exc)
+            return
+        self._night_window_last_persist_at = now
+        _LOGGER.info("night_charge_window_recommended: start=%d end=%d", value["start_hour"], value["end_hour"])
 
     async def _maybe_refresh_forecast(self, now):
         from .forecast import ForecastService
@@ -250,6 +369,8 @@ class PvLearningCoordinatorMixin:
             fc, fc2 = complete.get(tomorrow), complete.get(after)
             self.forecast_tomorrow_kwh = fc.energy_kwh if fc else None
             self.forecast_day_after_kwh = fc2.energy_kwh if fc2 else None
+            self._raw_forecast_kwh = {tomorrow: self.forecast_tomorrow_kwh, after: self.forecast_day_after_kwh}
+            self._adjust_daily_forecasts()
             self.weather_tomorrow_code = fc.dominant_weather_code if fc else None
             self.weather_day_after_code = fc2.dominant_weather_code if fc2 else None
             today = local_now.date().isoformat()
@@ -268,6 +389,7 @@ class PvLearningCoordinatorMixin:
             self.forecast_tomorrow_kwh = None
             self.forecast_day_after_kwh = None
             self._forecast_today_kwh = None
+            self._raw_forecast_kwh = {}
             self.hourly_forecast_today = []
             self.hourly_weather_today = []
             self.hourly_radiation_today = []

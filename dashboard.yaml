@@ -158,6 +158,18 @@ views:
                 name: Прогноз завтра (kWh)
               - entity: sensor.smart_solar_inverter_learned_ratio
                 name: Коеф. конверсії PV
+          - type: statistics-graph
+            title: Економія · денна накопичена оцінка за 24 години
+            chart_type: line
+            period: hour
+            days_to_show: 1
+            stat_types:
+              - mean
+            entities:
+              - entity: sensor.smart_solar_inverter_daily_savings
+                name: Денний накопичений показник (UAH)
+          - type: markdown
+            content: Погодинне середнє накопиченої оцінки економії за добу. Показник скидається опівночі та після перезапуску інтеграції.
           - type: entities
             title: Прогноз сонячної генерації
             show_header_toggle: false

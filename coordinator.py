@@ -426,7 +426,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         await self._maybe_refresh_load_history(now)
         await self._maybe_refresh_pv_history(now)
-        await self._maybe_record_pv_pairs(now)
+        await self._save_real_forecast_pair(now)
+        await self._save_pv_state()
         self._log_pv_calibrator_state(now)
 
         # ── Feed planner-required arrays into the engine ────────────
