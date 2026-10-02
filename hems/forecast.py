@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import aiohttp
+from .pv_learning import complete_hourly_days, finite
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,10 +102,12 @@ class ForecastService:
         latitude: float = 50.45,
         longitude: float = 30.52,
         pv_capacity_w: float = 3000.0,
+        timezone_name: str = "UTC",
     ) -> None:
         self._latitude = latitude
         self._longitude = longitude
         self._pv_capacity_w = pv_capacity_w
+        self.timezone_name = timezone_name
         self._session: aiohttp.ClientSession | None = None
 
         # Learned conversion ratio (W of PV per W/m² of radiation)
@@ -131,7 +136,7 @@ class ForecastService:
     # ── Public API ──────────────────────────────────────────────────────
 
     async def get_hourly_forecast(self) -> list[dict[str, Any]]:
-        """Return list of {time, radiation_wm2, power_w} for next 48 hours."""
+        """Return hourly weather and station power for three local calendar days."""
         now = time.monotonic()
         if self._hourly_cache and (now - self._hourly_cache[0]) < LOCAL_CACHE_TTL_SEC:
             return self._hourly_cache[1]
@@ -175,10 +180,52 @@ class ForecastService:
         self._ratio_samples.append(raw_ratio)
         # Exponential moving average (α=0.3)
         self.learned_ratio = 0.7 * self.learned_ratio + 0.3 * raw_ratio
+        self._hourly_cache = None
+        self._daily_cache = None
         _LOGGER.info(
             "Updated learned PV ratio: %.4f (from %.2f kWh / %.2f kWh/m²)",
             self.learned_ratio, actual_pv_kwh, radiation_kwh_m2,
         )
+
+    def set_station_gain(self, gain: float) -> bool:
+        """Use independently trained station gain for every forecast consumer."""
+        if not math.isfinite(gain) or gain <= 0:
+            return False
+        if self.learned_ratio == gain:
+            return False
+        self.learned_ratio = gain
+        self._hourly_cache = None
+        self._daily_cache = None
+        return True
+
+    async def get_archive_radiation(self, start_day, end_day) -> dict[str, float]:
+        """Complete local daily radiation in kWh/m², from independent archive.
+
+        Fetch UTC hours (unambiguous at DST). Include both edge UTC dates,
+        then group by HA timezone. One bounded request avoids blocking the
+        initial coordinator refresh on four sequential monthly requests.
+        """
+        from .pv_learning import day_bounds
+        tz = ZoneInfo(self.timezone_name)
+        first, _ = day_bounds(start_day, tz)
+        _, last = day_bounds(end_day, tz)
+        stop = (last - timedelta(seconds=1)).date()
+        session = await self._ensure_session()
+        await self._rate_limit()
+        params = {"latitude": self._latitude, "longitude": self._longitude,
+                  "start_date": first.date().isoformat(), "end_date": stop.isoformat(),
+                  "hourly": "shortwave_radiation", "timezone": "UTC", "timeformat": "unixtime"}
+        async with session.get("https://archive-api.open-meteo.com/v1/archive", params=params) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+        hourly = data.get("hourly", {})
+        times, values = hourly.get("time", []), hourly.get("shortwave_radiation", [])
+        if not times or len(times) != len(values):
+            raise ValueError("Archive radiation response is incomplete")
+        rows = [{"start": ts, "mean": value} for ts, value in zip(times, values)]
+        daily = complete_hourly_days(rows, tz, end_day + timedelta(days=1), ceiling=2000)
+        return {day: value for day, value in daily.items()
+                if start_day.isoformat() <= day <= end_day.isoformat()}
 
     # ── Internal ────────────────────────────────────────────────────────
 
@@ -192,11 +239,13 @@ class ForecastService:
             # Request both shortwave_radiation AND weather_code so we
             # can show cloud/rain conditions alongside the power curve.
             "hourly": "shortwave_radiation,weather_code,cloud_cover,temperature_2m",
-            "timezone": "auto",
-            "forecast_days": 2,
+            "timezone": self.timezone_name,
+            "timeformat": "unixtime",
+            "forecast_days": 3,
         }
         try:
             async with session.get(OPEN_METEO_BASE, params=params) as resp:
+                resp.raise_for_status()
                 data = await resp.json()
         except Exception as exc:
             _LOGGER.error("Open-Meteo hourly request failed: %s", exc)
@@ -215,10 +264,15 @@ class ForecastService:
             wcode = weather_codes[i] if i < len(weather_codes) else None
             cc = cloud_covers[i] if i < len(cloud_covers) else None
             temp = temperatures[i] if i < len(temperatures) else None
-            power_w = round((rad or 0) * self.learned_ratio)
+            radiation = finite(rad, high=2000)
+            if radiation is None:
+                continue  # unknown radiation is not a measured zero
+            local_time = datetime.fromtimestamp(t, timezone.utc).astimezone(ZoneInfo(self.timezone_name))
+            power_w = round(min(20000.0, max(0.0, radiation * self.learned_ratio)))
             result.append({
-                "time": t,
-                "radiation_wm2": rad or 0,
+                "time": local_time.strftime("%Y-%m-%dT%H:00"),
+                "timestamp": t,
+                "radiation_wm2": radiation,
                 "power_w": power_w,
                 "weather_code": wcode,
                 "cloud_cover": cc,

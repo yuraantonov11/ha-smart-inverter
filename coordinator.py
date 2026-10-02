@@ -32,12 +32,12 @@ from .hems.storm_risk import evaluate_storm_risk
 from .hems.schedule_rules import ScheduleRulesService
 from .hems.demand_forecast import DemandForecastService
 from .hems.battery_soh import BatterySoH
-from .hems.forecast_calibration import ForecastCalibrator
+from .hems.pv_coordinator import PvLearningCoordinatorMixin
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class InverterCoordinator(DataUpdateCoordinator):
+class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     """Coordinator that polls Inverter API and computes derived values.
 
     Now includes the full HEMS engine for intelligent control.
@@ -191,32 +191,7 @@ class InverterCoordinator(DataUpdateCoordinator):
         # Hourly load matrix [days][24] from the recorder (see history_builder)
         self._load_matrix: list[list[float]] = []
         self._load_matrix_at: datetime | None = None
-        # Hourly PV matrix [days][24] from the recorder — backs the
-        # ForecastCalibrator. Same pattern as load history, refreshed
-        # at most once/hour from sensor.garazh_smart_solar_inverter_pv_power.
-        self._pv_matrix: list[list[float]] = []
-        self._pv_matrix_at: datetime | None = None
-        # Real, measured forecast accuracy. Replaces the hardcoded
-        # 0.12 ratio that the old ``forecast.py`` learned from its
-        # own output (circular). Updated once/hour from real
-        # forecast↔actual day-pair comparisons.
-        self._pv_calibrator: ForecastCalibrator = ForecastCalibrator()
-        self._pv_calibrator_log_at: datetime | None = None
-        # Path for the (forecast, actual) kWh pair file. Lives in
-        # the integration dir so it survives HA restarts but does
-        # NOT touch the recorder or HA storage. The calibrator's
-        # own bounded buffer is the source of truth at runtime;
-        # this file is the seed on reload.
-        try:
-            from pathlib import Path
-            _pairs_dir = Path(__file__).resolve().parent / "hems"
-            self._pv_fact_pairs_file = str(_pairs_dir / "pv_fact_pairs.json")
-        except Exception:
-            self._pv_fact_pairs_file = "hems/pv_fact_pairs.json"
-        self._last_pv_pair_check_date: str | None = None
-        # Restore calibrator state from disk if a previous run left any.
-        self._load_pv_fact_pairs()
-        self.forecast_learned_ratio: float = self._derive_learned_ratio_from_calibrator()
+        self._init_pv_learning()
         self.radiation_now_wm2: float | None = None
         self.hourly_forecast_today: list[float] = []  # 24 hourly power values (W) for sparkline
         self.hourly_weather_today: list[int | None] = []  # WMO weather codes per hour
@@ -449,6 +424,11 @@ class InverterCoordinator(DataUpdateCoordinator):
         grid_power = raw.get("gridPower", 0.0)
         load_power = raw.get("loadPower", 0.0)
 
+        await self._maybe_refresh_load_history(now)
+        await self._maybe_refresh_pv_history(now)
+        await self._maybe_record_pv_pairs(now)
+        self._log_pv_calibrator_state(now)
+
         # ── Feed planner-required arrays into the engine ────────────
         # The engine reads these attributes when predictive is
         # shadow/assist. Empty/missing → planner stays None (missing
@@ -467,29 +447,9 @@ class InverterCoordinator(DataUpdateCoordinator):
         )
         # Build 24h tariff schedule from coordinator tariffs
         self._hems._tariff_schedule = self._build_tariff_schedule()
-        await self._maybe_refresh_load_history(datetime.now())
         self._hems._consumption_history = list(self._load_matrix)
-        # Real PV measurement → real forecast accuracy. Refresh
-        # the PV matrix the same way (≤1/hour, executor job) and
-        # feed the calibrator with yesterday-vs-yesterday data so
-        # the planner's confidence_factor is grounded in observed
-        # generation, not in the old circular self-learned ratio.
-        await self._maybe_refresh_pv_history(datetime.now())
-        await self._maybe_record_pv_pairs(now)
-        self._log_pv_calibrator_state(now)
-        # Make the calibrator reachable from the predictive
-        # controller's ``_estimate_confidence`` (which already reads
-        # ``self.calibrator``) and from ``simulate_24h`` (which we
-        # wired to prefer the calibrator's bias-corrected adjust()
-        # over the empty PvForecastAdjuster ratio of 1.0).
-        if hasattr(self._hems, "_predictive_controller"):
-            try:
-                self._hems._predictive_controller.calibrator = (
-                    self._pv_calibrator
-                )
-            except Exception:
-                pass
         self._hems._battery_capacity_kwh = self._battery_capacity_kwh
+        self._configure_night_window()
 
         decision = self._hems.evaluate(
             smart_mode=effective_mode,
@@ -512,6 +472,7 @@ class InverterCoordinator(DataUpdateCoordinator):
             is_online=True,
         )
 
+        self._persist_night_recommendation(now)
         # Store diagnostics
         self.hems_last_reason = decision.reason
         self.hems_last_output_cmd = decision.output_priority
@@ -686,8 +647,8 @@ class InverterCoordinator(DataUpdateCoordinator):
             from homeassistant.util import dt as dt_util
             from .hems.history_builder import build_hourly_load_matrix
 
-            ent = "sensor.garazh_smart_solar_inverter_load_power"
-            start = dt_util.utcnow() - timedelta(days=9)
+            ent = self._history_entity("load_power", "sensor.garazh_smart_solar_inverter_load_power")
+            start = dt_util.utcnow() - timedelta(days=120)
             stats = await self.hass.async_add_executor_job(
                 rec_stats.statistics_during_period,
                 self.hass, start, None, {ent}, "hour", None, {"mean"},
@@ -703,251 +664,12 @@ class InverterCoordinator(DataUpdateCoordinator):
                     ts = dt_util.utc_from_timestamp(ts)
                 samples.append((dt_util.as_local(ts).replace(tzinfo=None), mean))
             self._load_matrix = build_hourly_load_matrix(
-                samples, dt_util.as_local(dt_util.utcnow()).replace(tzinfo=None), days=7
+                samples, dt_util.as_local(dt_util.utcnow()).replace(tzinfo=None), days=self._load_matrix_days
             )
             _LOGGER.info("Load history refreshed: %d full days", len(self._load_matrix))
         except Exception as exc:  # never break HEMS because of history
             _LOGGER.warning("Load history refresh failed: %s", exc)
-            # retry in ~5 min instead of waiting a full hour
-            self._load_matrix_at = now - timedelta(minutes=55)
-
-    async def _maybe_refresh_pv_history(self, now: datetime) -> None:
-        """Load hourly PV-power history from the HA recorder (max once/hour).
-
-        Uses ``build_hourly_load_matrix`` for the same NaN/None/neg/20kW
-        cleaning we already trust for load. The matrix is what we compare
-        to yesterday's forecast to feed the ``ForecastCalibrator``.
-
-        Failure keeps the previous matrix — the calibrator's existing
-        samples stay valid; we just don't add a new (forecast, actual)
-        pair until the matrix is back.
-        """
-        last = self._pv_matrix_at
-        if last is not None and (now - last) < timedelta(hours=1):
-            return
-        self._pv_matrix_at = now
-        try:
-            from homeassistant.components.recorder import statistics as rec_stats
-            from homeassistant.util import dt as dt_util
-            from .hems.history_builder import build_hourly_load_matrix
-
-            ent = "sensor.garazh_smart_solar_inverter_pv_power"
-            start = dt_util.utcnow() - timedelta(days=9)
-            stats = await self.hass.async_add_executor_job(
-                rec_stats.statistics_during_period,
-                self.hass, start, None, {ent}, "hour", None, {"mean"},
-            )
-            rows = stats.get(ent, [])
-            samples = []
-            for r in rows:
-                mean = r.get("mean")
-                ts = r.get("start")
-                if mean is None or ts is None:
-                    continue
-                if isinstance(ts, (int, float)):
-                    ts = dt_util.utc_from_timestamp(ts)
-                samples.append((dt_util.as_local(ts).replace(tzinfo=None), mean))
-            self._pv_matrix = build_hourly_load_matrix(
-                samples, dt_util.as_local(dt_util.utcnow()).replace(tzinfo=None), days=7
-            )
-            _LOGGER.info(
-                "PV history refreshed: %d full days, %d hourly samples",
-                len(self._pv_matrix),
-                sum(len(r) for r in self._pv_matrix),
-            )
-        except Exception as exc:  # never break HEMS because of history
-            _LOGGER.warning("PV history refresh failed: %s", exc)
-            # retry in ~5 min instead of waiting a full hour
-            self._pv_matrix_at = now - timedelta(minutes=55)
-
-    async def _maybe_record_pv_pairs(self, now: datetime) -> None:
-        """Compare yesterday's forecast vs yesterday's measured PV.
-
-        For each complete past day we have both:
-          - a forecast (sum of hourly_forecast_today row for that date,
-             OR a daily value carried forward from the previous day's fetch)
-          - an actual sum from the PV matrix
-
-        We convert kWh→Wh so the calibrator's W-based metrics apply
-        directly. ``today`` is excluded — incomplete data would skew the
-        bias estimate.
-
-        Runs at most once per calendar day; idempotent across reloads
-        because the calibrator already de-dupes via its bounded buffer
-        and the file-backed persistence layer keys by date.
-        """
-        today_str = now.strftime("%Y-%m-%d")
-        if self._last_pv_pair_check_date == today_str:
-            return
-        if not self._pv_matrix:
-            return  # nothing measured yet
-        # Yesterday is the last row in the matrix (oldest first).
-        yesterday_actual_wh: float | None = None
-        if self._pv_matrix:
-            try:
-                row = self._pv_matrix[-1]
-                # Each cell is mean W for that hour → Wh per hour.
-                yesterday_actual_wh = float(sum(max(0.0, v) for v in row))
-            except Exception:
-                yesterday_actual_wh = None
-        if yesterday_actual_wh is None or yesterday_actual_wh <= 0:
-            return
-        # Yesterday's forecast: prefer stored hourly forecast for
-        # yesterday (sum of W = Wh), fall back to
-        # forecast_day_after_kwh recorded yesterday (now stale by
-        # one day but still a real forecast number, not a delta).
-        yesterday_forecast_wh = self._yesterday_forecast_wh()
-        if yesterday_forecast_wh is None or yesterday_forecast_wh <= 0:
-            return
-        try:
-            before_n = len(self._pv_calibrator)
-            self._pv_calibrator.record(
-                forecast_w=float(yesterday_forecast_wh),
-                actual_w=float(yesterday_actual_wh),
-            )
-            after_n = len(self._pv_calibrator)
-            self.forecast_learned_ratio = (
-                self._derive_learned_ratio_from_calibrator()
-            )
-            self._last_pv_pair_check_date = today_str
-            self._save_pv_fact_pairs()
-            _LOGGER.info(
-                "PV pair recorded: fc=%.0fWh ac=%.0fWh (n %d→%d, ratio=%.3f)",
-                yesterday_forecast_wh,
-                yesterday_actual_wh,
-                before_n,
-                after_n,
-                self.forecast_learned_ratio,
-            )
-        except Exception as exc:
-            _LOGGER.warning("PV pair record failed: %s", exc)
-
-    def _yesterday_forecast_wh(self) -> float | None:
-        """Best-effort yesterday-forecast in Wh.
-
-        Sources, in priority order:
-          1. ``self.hourly_forecast_today`` if its first hour maps to
-             yesterday (we only run this check at ≥00:30, so the
-             hourly forecast by then is fully populated for today).
-          2. ``self._forecast_today_kwh`` if it has been refreshed for
-             today *and* we already passed midnight; at 00:30+ this
-             still represents the day we just finished forecasting,
-             which is yesterday from ``now``'s perspective.
-        """
-        try:
-            hours = list(getattr(self, "hourly_forecast_today", []) or [])
-            if len(hours) >= 24:
-                # Sum of W over 24h = Wh. The hourly forecast for
-                # "today" was generated yesterday; using it here for
-                # yesterday is the right thing — that's the forecast
-                # we held when yesterday started.
-                return float(sum(max(0.0, float(v)) for v in hours[:24]))
-        except Exception:
-            pass
-        try:
-            kwh = self._forecast_today_kwh
-            if kwh is None:
-                return None
-            return float(kwh) * 1000.0
-        except Exception:
-            return None
-
-    def _derive_learned_ratio_from_calibrator(self) -> float:
-        """Compute ``forecast_learned_ratio`` from real measurements.
-
-        Defined as ``actual / forecast`` (clipped, in [0.05, 1.5]).
-        Empty calibrator → 0.12 (the documented cold-start value used
-        by the Economics dashboard's ``learned_pv_ratio`` sensor;
-        the sensor must never disappear, so we keep a sane number
-        even before we have any samples).
-        """
-        try:
-            m = self._pv_calibrator.metrics()
-        except Exception:
-            return 0.12
-        if m.sample_count == 0 or m.bias_w is None:
-            return 0.12
-        # bias = mean(actual - forecast). forecast_mean ≈ bias - bias_w
-        # if we know the kept forecast mean; without it we estimate
-        # ratio from absolute forecast (the most recent one stored).
-        try:
-            samples = self._pv_calibrator.to_list()
-            forecast_mean = (
-                sum(fc for fc, _ in samples) / max(1, len(samples))
-            )
-        except Exception:
-            return 0.12
-        if forecast_mean <= 0:
-            return 0.12
-        # actual_mean = forecast_mean + bias_w
-        actual_mean = forecast_mean + float(m.bias_w)
-        ratio = actual_mean / forecast_mean
-        return float(max(0.05, min(1.5, ratio)))
-
-    def _save_pv_fact_pairs(self) -> None:
-        """Persist the calibrator's sample buffer to JSON on the
-        integration's own ``hems/`` directory so it survives HA
-        restarts but stays out of recorder/HASS storage.
-        """
-        try:
-            import json
-            data = {
-                "version": 1,
-                "samples": self._pv_calibrator.to_list(),
-            }
-            with open(self._pv_fact_pairs_file, "w") as f:
-                json.dump(data, f)
-        except Exception as exc:
-            _LOGGER.debug("PV fact-pairs persist failed: %s", exc)
-
-    def _load_pv_fact_pairs(self) -> None:
-        """Restore the calibrator's sample buffer from JSON.
-
-        Safe to call before the calibrator has been used — empty file
-        or missing file are both treated as "no prior data".
-        """
-        try:
-            import json
-            import os
-            if not os.path.exists(self._pv_fact_pairs_file):
-                return
-            with open(self._pv_fact_pairs_file, "r") as f:
-                raw = f.read()
-            if not raw.strip():
-                return
-            data = json.loads(raw)
-            samples = data.get("samples", [])
-            if isinstance(samples, list) and samples:
-                self._pv_calibrator.load_from_list(samples)
-                _LOGGER.info(
-                    "PV fact-pairs restored: %d prior (forecast, actual) pairs",
-                    len(samples),
-                )
-        except Exception as exc:
-            _LOGGER.debug("PV fact-pairs restore skipped: %s", exc)
-
-    def _log_pv_calibrator_state(self, now: datetime) -> None:
-        """Periodic INFO summary of the calibrator (≤1/hour).
-
-        The parent task spec asks for a single line, no more, so we
-        rate-limit to once an hour and keep the format consistent.
-        """
-        if self._pv_calibrator_log_at is not None and (
-            now - self._pv_calibrator_log_at
-        ) < timedelta(hours=1):
-            return
-        self._pv_calibrator_log_at = now
-        try:
-            m = self._pv_calibrator.metrics()
-        except Exception:
-            return
-        _LOGGER.info(
-            "PV calibrator updated: n=%d bias=%.1fkWh mae=%.1fkWh conf=%.2f",
-            m.sample_count,
-            m.bias_w / 1000.0,
-            m.mae_w / 1000.0,
-            m.confidence_factor,
-        )
+            # Keep the one-hour limit even when recorder is unavailable.
 
     def _build_tariff_schedule(self) -> list[float]:
         """Build a 24-hour tariff schedule from day/night tariffs.
@@ -1151,81 +873,6 @@ class InverterCoordinator(DataUpdateCoordinator):
     def monthly_savings_uah(self) -> float:
         return max(0.0, self._monthly_savings_uah + self._daily_savings_uah)
 
-    async def _maybe_refresh_forecast(self, now: datetime) -> None:
-        """Fetch solar forecast every 15 minutes and update ratio daily at 21:00."""
-        if self._forecast is None:
-            lat = float(self._entry.options.get("site_latitude", 50.45))
-            lon = float(self._entry.options.get("site_longitude", 30.52))
-            self._forecast = ForecastService(latitude=lat, longitude=lon)
-
-        if self._forecast_last_fetch is None or \
-           (now - self._forecast_last_fetch).total_seconds() > 900:
-            try:
-                daily = await self._forecast.get_daily_forecasts(days=2)
-                dates = sorted(daily.keys())
-                if len(dates) >= 1:
-                    fc = daily[dates[0]]
-                    self.forecast_tomorrow_kwh = fc.energy_kwh
-                    self.weather_tomorrow_code = getattr(fc, "dominant_weather_code", None)
-                if len(dates) >= 2:
-                    fc2 = daily[dates[1]]
-                    self.forecast_day_after_kwh = fc2.energy_kwh
-                    self.weather_day_after_code = getattr(fc2, "dominant_weather_code", None)
-                # NOTE: do NOT overwrite ``forecast_learned_ratio``
-                # from ``self._forecast.learned_ratio`` here — that
-                # number is the old circular self-learner (it
-                # estimates its own accuracy). Real calibration now
-                # happens in ``_maybe_record_pv_pairs`` via the
-                # ``ForecastCalibrator``, which compares the Open-
-                # Meteo forecast against actual PV recorder data.
-                # ``forecast_learned_ratio`` is kept populated for
-                # the Economics dashboard's
-                # ``learned_pv_ratio`` sensor (which must never
-                # disappear), so we recompute from the calibrator
-                # only on init and after a new (forecast, actual) pair.
-
-                # Store hourly forecast for today (sparkline)
-                hourly = await self._forecast.get_hourly_forecast()
-                today_str = now.strftime("%Y-%m-%d")
-                today_hours = [h["power_w"] for h in hourly if h["time"].startswith(today_str)]
-                today_weather = [
-                    h.get("weather_code") for h in hourly if h["time"].startswith(today_str)
-                ]
-                today_radiation = [
-                    h.get("radiation_wm2", 0) for h in hourly if h["time"].startswith(today_str)
-                ]
-                # Pad to 24 if needed
-                if len(today_hours) < 24:
-                    today_hours.extend([0.0] * (24 - len(today_hours)))
-                    today_weather.extend([None] * (24 - len(today_weather)))
-                    today_radiation.extend([0.0] * (24 - len(today_radiation)))
-                self.hourly_forecast_today = today_hours[:24]
-                self.hourly_weather_today = today_weather[:24]
-                self.hourly_radiation_today = today_radiation[:24]
-                # Derive today's energy total — sum of hourly PV (W) /
-                # 1000 = kWh (each hour contributes 1 kWh per 1 kW).
-                try:
-                    self._forecast_today_kwh = (
-                        sum(today_hours[:24]) / 1000.0
-                    )
-                except Exception:
-                    self._forecast_today_kwh = None
-
-                self._forecast_last_fetch = now
-                _LOGGER.debug(
-                    "Forecast: tomorrow=%.1f kWh, day2=%.1f kWh, ratio=%.4f",
-                    self.forecast_tomorrow_kwh or 0,
-                    self.forecast_day_after_kwh or 0,
-                    self.forecast_learned_ratio,
-                )
-            except Exception as exc:
-                _LOGGER.warning("Forecast fetch failed: %s", exc)
-
-        # NOTE: the old ``_forecast.update_ratio(daily_pv_kwh,
-        # estimated_radiation)`` circular self-learner was removed.
-        # The accuracy ratio is now driven by ``ForecastCalibrator``
-        # comparing the same Open-Meteo forecast against the actual
-        # hourly PV matrix (see ``_maybe_record_pv_pairs``).
 
 
 class HistoryCoordinator(DataUpdateCoordinator):

@@ -36,8 +36,8 @@ class CalibrationMetrics:
     """
 
     sample_count: int
-    mae_w: float          # mean absolute error in W
-    bias_w: float         # mean (actual - forecast). Negative ⇒ over-forecast.
+    mae_w: float          # W by default; kWh in daily mode (legacy field name)
+    bias_w: float         # same unit; mean(actual - forecast)
     coverage: float       # 0.0-1.0, fraction of valid samples
     confidence_factor: float  # 0.0-1.0, calibrated (not fake)
 
@@ -67,7 +67,10 @@ class ForecastCalibrator:
     MIN_FORECAST_W = 50.0         # ignore samples where forecast < this (low-light noise)
     OUTLIER_SIGMA = 3.0
 
-    def __init__(self, max_samples: int = MAX_SAMPLES) -> None:
+    def __init__(self, max_samples: int = MAX_SAMPLES, *, unit: str = "W") -> None:
+        if unit not in ("W", "kWh"):
+            raise ValueError("unit must be W or kWh")
+        self.unit = unit
         if max_samples < 0:
             max_samples = 0
         self._max = int(max_samples)
@@ -85,11 +88,12 @@ class ForecastCalibrator:
             ac = float(actual_w)
         except (TypeError, ValueError):
             return
-        if math.isnan(fc) or math.isnan(ac):
+        if not math.isfinite(fc) or not math.isfinite(ac):
             return
         if fc < 0 or ac < 0:
             return
-        if fc > 50_000 or ac > 50_000:
+        ceiling = 50_000 if self.unit == "W" else 500
+        if fc > ceiling or ac > ceiling:
             return
         self._samples.append((fc, ac))
         if len(self._samples) > self._max:
@@ -128,7 +132,7 @@ class ForecastCalibrator:
         # Reject low-light + non-finite and NaN/inf already filtered in record()
         valid = [
             (fc, ac) for fc, ac in self._samples
-            if fc >= self.MIN_FORECAST_W and ac >= 0
+            if fc >= (self.MIN_FORECAST_W if self.unit == "W" else 0) and ac >= 0
         ]
         n = len(valid)
         coverage = n / n_total if n_total else 0.0
@@ -143,9 +147,13 @@ class ForecastCalibrator:
         abs_dev = sorted(abs(r - median) for r in residuals)
         mad = abs_dev[n // 2]
         # Robust sigma estimator (Gaussian-consistent): MAD * 1.4826
-        sigma = max(1.0, mad * 1.4826)
+        sigma = max(1.0 if self.unit == "W" else 0.001, mad * 1.4826)
 
         kept = [(fc, ac) for fc, ac in valid if abs((ac - fc) - median) <= self.OUTLIER_SIGMA * sigma]
+        if self.unit == "kWh":
+            # Complete, measured bad forecast days are evidence, not glitches.
+            # Sensor coverage was checked before daily pairs were recorded.
+            kept = valid
         if not kept:
             kept = valid  # never end up with zero samples if we had any
 
@@ -168,11 +176,14 @@ class ForecastCalibrator:
         else:
             rel = max(0.0, 1.0 - (mae / (2.0 * forecast_mean)))
         confidence = round(min(1.0, coverage * rel), 2)
+        if self.unit == "kWh":
+            confidence = round(coverage * min(k / 10.0, 1.0)
+                               * max(0.0, 1.0 - mae / max(forecast_mean, 0.05)) ** 2, 2)
 
         return CalibrationMetrics(
             sample_count=k,
-            mae_w=round(mae, 1),
-            bias_w=round(bias, 1),
+            mae_w=round(mae, 4 if self.unit == "kWh" else 1),
+            bias_w=round(bias, 4 if self.unit == "kWh" else 1),
             coverage=round(coverage, 2),
             confidence_factor=confidence,
         )
@@ -192,7 +203,7 @@ class ForecastCalibrator:
             f = float(forecast_w)
         except (TypeError, ValueError):
             return 0.0
-        if f < 0 or math.isnan(f):
+        if f < 0 or not math.isfinite(f):
             return 0.0
         if len(self._samples) < self.MIN_SAMPLES_FOR_ADJUST:
             return f
@@ -211,7 +222,7 @@ class ForecastCalibrator:
         return [[fc, ac] for fc, ac in self._samples]
 
     def load_from_list(self, raw_list: list[list[float]]) -> None:
-        self._samples.clear()
+        self.reset()
         if not raw_list:
             self._dirty = True
             self._cached = None

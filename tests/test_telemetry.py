@@ -123,7 +123,9 @@ def test_consumption_history_bounds() -> None:
 
     days = [[100.0] * 24 for _ in range(10)]
     pi = _build(consumption_history=days)
-    _check(len(pi.consumption_history) == 7, "history capped at 7 days")
+    _check(len(pi.consumption_history) == 10, "all ten available days retained")
+    pi = _build(consumption_history=[[100.0] * 24 for _ in range(40)])
+    _check(len(pi.consumption_history) == 30, "history capped at thirty days")
     _check(pi.consumption_source.origin == "api", "real history origin=api")
 
     days = [[100.0] * 24, [100.0] * 12]

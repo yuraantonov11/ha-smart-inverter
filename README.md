@@ -9,6 +9,34 @@ Custom integration for **solar inverters** with battery storage and HEMS control
 Currently supports the `solar.siseli.com` cloud platform (Inverter, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
 Architecture is designed to support additional data sources in the future (direct inverter connection, other cloud platforms).
 
+### Station learning and measured forecast accuracy
+
+The coordinator reads up to 120 days of recorder statistics once per hour and
+passes the latest 30 valid load days to the planner. With at least seven complete
+PV days, it learns the station's generation coefficient from actual energy and
+independent Open-Meteo archive radiation, without waiting for new forecast pairs.
+With at least 21 days, archive model validation uses a chronological holdout.
+Archive validation is separate from measured day-ahead forecast accuracy.
+
+Future forecasts are saved before their day begins and matched by local date
+to complete energy measurements. Missing PV hours are not filled for training;
+23/25-hour days and cumulative energy statistics are handled explicitly.
+Real forecast confidence starts at zero and grows with accurate daily evidence.
+The existing learned-PV-ratio sensor exposes the trained station coefficient.
+
+Learning state is stored atomically in `hems/pv_fact_pairs_<entry_id>.json`.
+Legacy undated pairs are backed up to `pv_fact_pairs.json.legacy` and excluded
+from measured accuracy. Keep these runtime files when copying integration code.
+Recorder or weather failures retain the previous station model; missing new
+forecasts remain unknown instead of reusing a previous day's forecast.
+
+Options `night_charge_start_hour` and `night_charge_end_hour` default to 23 and 7.
+Recommendations are stored in `night_charge_window_recommended` as
+`{ "start_hour": 23, "end_hour": 7 }`; `-1/-1` means skip charging.
+`powmr_inverter.auto_check_assist` logs readiness for all loaded inverters or an
+optional `entry_id`. It never enables Assist. Shadow and existing safety controls
+remain under the user's control.
+
 ## ✨ Features
 
 ### Monitoring

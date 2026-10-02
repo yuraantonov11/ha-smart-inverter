@@ -133,6 +133,7 @@ class PlannerInputs:
 
     # Historical consumption (7 days × 24 hours of W)
     consumption_history: list[list[float]]
+    night_charge_window: tuple[int, int] = (23, 7)
 
     # Weather alerts (will be added in Phase 1F)
     storm_alert: bool = False
@@ -191,8 +192,8 @@ class ConsumptionPredictor:
         if len(hourly_load) != 24:
             return
         self._hist.append(hourly_load)
-        # Keep only 7 days
-        if len(self._hist) > 7:
+        # Keep the same 30-day depth accepted by telemetry/coordinator.
+        if len(self._hist) > 30:
             self._hist.pop(0)
 
     def predict(self, hour: int, day_of_week: int) -> tuple[float, float]:
@@ -372,7 +373,7 @@ def simulate_24h(
         - Load forecast (from history)
         - Tariff schedule
         - Battery constraints (SOC min/max, charge/discharge current limits)
-        - Optional real-measurement calibrator (bias-corrected adjust)
+        - Station-trained PV power; daily calibrator measures confidence only
 
     Returns:
         List of 24 HourlyPlan, one per hour.
@@ -381,16 +382,8 @@ def simulate_24h(
     soc = getattr(inputs, "soc_corrected", inputs.soc)
     plans = []
     now_hour = inputs.now.hour
-
-    # Prefer the real calibrator's bias-corrected adjust over the
-    # legacy PvForecastAdjuster (which only learns from forecast-vs-
-    # forecast samples and stays at ratio=1.0 in cold start).
-    # Falls back to identity / legacy adjuster when no calibrator
-    # is attached, keeping tests that don't pass one happy.
-    if calibrator is not None and hasattr(calibrator, "adjust"):
-        _pv_adjust = calibrator.adjust
-    else:
-        _pv_adjust = PvForecastAdjuster().adjust
+    night_start, night_end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
+    night_duration = (night_end - night_start) % 24
 
     for h in range(24):
         # Wrap-around: hour 0 is tomorrow
@@ -398,19 +391,19 @@ def simulate_24h(
         ts = inputs.now + timedelta(hours=delta)
 
         pv_forecast = inputs.hourly_pv[h] if h < len(inputs.hourly_pv) else 0.0
-        # Adjust by measured bias when a calibrator is attached.
-        pv_forecast = _pv_adjust(pv_forecast)
+        # Coordinator already trained the station forecast. Daily kWh bias
+        # measures accuracy only and must never be added to hourly watts.
 
         load_forecast = predictor.predict(h, ts.weekday())[0]
 
-        tariff = get_tariff(h)
+        tariff = inputs.tariff_schedule[h] if len(inputs.tariff_schedule) == 24 else get_tariff(h)
 
         # SOC bounds
         min_soc = 20.0
         max_soc = 95.0
 
         # Decide output + charger
-        if is_night(h):
+        if (h - night_start) % 24 < night_duration:
             # Night window
             if soc < target_morning:
                 # Need to charge
@@ -468,6 +461,8 @@ def simulate_24h(
         confidence = max(0.3, 1.0 - (delta / 24.0) * 0.6)
         if pv_forecast < 50:
             confidence *= 0.7  # low-PV hours are noisier
+        if calibrator is not None:
+            confidence *= calibrator.metrics().confidence_factor
 
         plans.append(HourlyPlan(
             hour=h,
@@ -539,6 +534,11 @@ def plan_night_charge(
     """
     tomorrow_pv = inputs.forecast_tomorrow_kwh or 0.0
     soc_corrected = getattr(inputs, "soc_corrected", inputs.soc)
+    start, end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
+    duration = (end - start) % 24
+
+    def late_window(hours):
+        return (end - min(hours, duration)) % 24, end
 
     if tomorrow_pv > 3.0:
         # Sunny tomorrow — only charge enough for safety reserve
@@ -546,18 +546,27 @@ def plan_night_charge(
             # Skip night charge entirely
             return -1, -1, "skip_night_charge: tomorrow sunny, SOC≥40%"
         # Partial charge
-        return 5, 7, "partial_night: late charge only"
+        return *late_window(2), "partial_night: late charge only"
 
     if tomorrow_pv > 1.0:
         # Moderate — half-charge
         if soc_corrected >= 60:
             return -1, -1, "skip_night_charge: tomorrow moderate, SOC≥60%"
-        return 3, 7, "half_night_charge"
+        return *late_window(4), "half_night_charge"
 
     # Low PV tomorrow — full charge
     if soc_corrected >= target_morning - 5:
         return -1, -1, "skip_night_charge: already at target"
-    return 23, 7, "full_night_charge"
+    return start, end, "full_night_charge"
+
+
+def normalize_night_window(window):
+    """Empty, non-integer or out-of-range windows use the standard night."""
+    if not isinstance(window, (list, tuple)) or len(window) != 2:
+        return 23, 7
+    if any(type(h) is not int or not 0 <= h <= 23 for h in window) or window[0] == window[1]:
+        return 23, 7
+    return tuple(window)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -571,16 +580,16 @@ class PredictiveHemsController:
     def __init__(self):
         self.consumption_predictor = ConsumptionPredictor()
         self.pv_adjuster = PvForecastAdjuster()
-        # Optional real-measurement calibrator wired in by the
-        # coordinator. When set, ``_estimate_confidence`` multiplies
-        # its measured confidence_factor and ``decide()``'s rollout
-        # uses ``calibrator.adjust()`` (bias-corrected, not the
-        # old circular ratio) to refine the hourly PV forecast.
+        # Daily-energy accuracy calibrator wired by the coordinator.
+        # It scales confidence, never adds a kWh residual to hourly W.
         # Lives on the instance rather than as a constructor arg
         # so tests that build ``PredictiveHemsController()`` without
         # one keep working — the coordinator assigns it after
         # construction.
         self.calibrator: "ForecastCalibrator | None" = None
+        # None preserves explicitly supplied PlannerInputs in standalone use.
+        # Coordinator sets this to entry.options before engine evaluation.
+        self.night_charge_window: tuple[int, int] | None = None
         self.last_plan: DayAheadPlan | None = None
 
     def update_history(self, hourly_load: list[float]) -> None:
@@ -589,6 +598,8 @@ class PredictiveHemsController:
 
     def suggest(self, inputs: PlannerInputs) -> PredictiveHint:
         """Provide a HINT to existing HEMS modes (do not take control)."""
+        if self.night_charge_window is not None:
+            inputs.night_charge_window = normalize_night_window(self.night_charge_window)
         # Day-ahead targets
         target_morning, target_evening = plan_soc_targets(inputs)
 
@@ -661,6 +672,9 @@ class PredictiveHemsController:
         The immediate_decision is what the inverter should do RIGHT NOW.
         The day_ahead_plan shows what we'll do over the next 24h.
         """
+        if self.night_charge_window is not None:
+            inputs.night_charge_window = normalize_night_window(self.night_charge_window)
+        self.consumption_predictor = ConsumptionPredictor(inputs.consumption_history)
         # 1. Storm check (highest priority)
         storm = check_storm_preemption(inputs)
         if storm is not None:
@@ -671,9 +685,7 @@ class PredictiveHemsController:
         # 2. Plan day-ahead SOC targets
         target_morning, target_evening = plan_soc_targets(inputs)
 
-        # 3. Simulate 24h — pass the real calibrator (when attached)
-        # so hourly PV forecast gets bias-corrected instead of using
-        # the empty PvForecastAdjuster ratio.
+        # 3. Simulate the station-trained hourly forecast.
         plans = simulate_24h(
             inputs,
             target_morning,
@@ -711,6 +723,7 @@ class PredictiveHemsController:
             hourly=plans,
             expected_pv_kwh=sum(p.pv_w for p in plans) / 1000.0,
             expected_load_kwh=sum(p.load_w for p in plans) / 1000.0,
+            confidence=self._estimate_confidence(inputs),
         )
 
 

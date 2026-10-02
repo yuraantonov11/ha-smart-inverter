@@ -76,8 +76,9 @@ class PlannerInputs:
     # Tariff schedule (24 values UAH/kWh). Empty = unknown.
     tariff_schedule: list[float] = field(default_factory=list)
 
-    # Historical consumption (most-recent day last; length <= 7).
+    # Historical consumption (most-recent day last; length <= 30).
     consumption_history: list[list[float]] = field(default_factory=list)
+    night_charge_window: tuple[int, int] = (23, 7)
 
     # Provenance (origin strings only — cheap to copy)
     soc_source: TelemetrySource | None = None
@@ -185,6 +186,7 @@ def build_planner_inputs(
     battery_capacity_kwh: float = 4.8,
     grid_available: bool = True,
     max_age_sec: float = 60.0,
+    night_charge_window: tuple[int, int] = (23, 7),
 ) -> PlannerInputs:
     """Build a ``PlannerInputs`` from raw API + already-corrected values.
 
@@ -264,7 +266,7 @@ def build_planner_inputs(
     # ── Consumption history ────────────────────────────────────────
     consumption: list[list[float]] = []
     if consumption_history:
-        for day in consumption_history[-7:]:
+        for day in consumption_history[-30:]:
             if not isinstance(day, list) or len(day) != 24:
                 continue
             clean_day = _sanitize_hourly(day, 0.0, _POWER_MAX_W)
@@ -288,6 +290,7 @@ def build_planner_inputs(
         hourly_weather_codes=hourly_weather,
         tariff_schedule=tariff,
         consumption_history=consumption,
+        night_charge_window=night_charge_window,
         soc_source=TelemetrySource(
             origin="fallback" if soc_fallback else soc_origin,
             stale=False,
