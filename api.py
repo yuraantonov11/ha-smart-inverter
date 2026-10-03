@@ -80,6 +80,7 @@ class InverterApiClient:
         self.device_sn: str | None = None
         self.current_station_id: str | None = None
         self.current_mode: int | None = None
+        self._account_device_count = 0
 
         # Energy stats
         self.daily_energy: float = 0.0
@@ -287,6 +288,7 @@ class InverterApiClient:
 
         if data.get("code") == 0 and data.get("data"):
             devices = data["data"].get("list", [])
+            self._account_device_count = len(devices)
             if devices:
                 dev = devices[0]
                 self.device_sn = str(dev.get("id", ""))
@@ -861,7 +863,7 @@ class InverterApiClient:
         # fallback
         return {"time": local.strftime("%Y-%m-%d")}
 
-    async def _fetch_overview(self, category: str, summary_key: str) -> list[dict[str, Any]]:
+    async def _fetch_overview(self, category: str, summary_key: str, *, month=None, raw_properties=False) -> list[dict[str, Any]]:
         """Fetch owner overview data (POST with body).
 
         POST /apis/ownerOverView/station/stateAttributeSummary/category/{category}
@@ -876,6 +878,10 @@ class InverterApiClient:
         params = {"summaryCategoryKey": summary_key}
         url = f"{ENDPOINT_OVERVIEW_BASE}/{category}"
         body = self._overview_time_body(category)
+        if month is not None:
+            if category != "monthly" or month.day != 1:
+                raise ValueError("Historical overview requires a calendar month")
+            body = {"time": month.strftime("%Y-%m")}
 
         try:
             headers = self._build_headers("POST", body)
@@ -918,6 +924,8 @@ class InverterApiClient:
         payload = data.get("data")
         if isinstance(payload, dict):
             properties = payload.get("properties", [])
+            if raw_properties:
+                return properties if isinstance(properties, list) else []
             if isinstance(properties, list) and properties:
                 # Find the first property that has timePoints data
                 for prop_group in properties:
@@ -940,6 +948,27 @@ class InverterApiClient:
     async def fetch_monthly_energy(self) -> list[dict[str, Any]]:
         """Fetch daily PV energy for current month (Monthly Energy chart, kWh)."""
         return await self._fetch_overview("monthly", SUMMARY_KEY_ENERGY)
+
+    async def fetch_daily_pv_history(self, start, end) -> dict[str, float]:
+        """Bounded historical station energy, only for a single-device account.
+
+        The owner overview has no per-device selector. Do not attribute an
+        account aggregate to one inverter when several devices are present.
+        """
+        from .hems.cloud_history import measured_pv_days
+        if self._account_device_count != 1:
+            _LOGGER.warning("Cloud PV history skipped: account is not unambiguously single-device")
+            return {}
+        if end < start or (end - start).days > 120:
+            raise ValueError("Cloud PV history range must be at most 120 days")
+        month = start.replace(day=1)
+        facts = {}
+        while month <= end:
+            properties = await self._fetch_overview("monthly", SUMMARY_KEY_ENERGY,
+                                                    month=month, raw_properties=True)
+            facts.update(measured_pv_days(properties, start, end))
+            month = (month.replace(day=28) + timedelta(days=4)).replace(day=1)
+        return facts
 
     async def fetch_yearly_energy(self) -> list[dict[str, Any]]:
         """Fetch monthly PV energy for current year (Yearly Energy chart, kWh)."""

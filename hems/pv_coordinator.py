@@ -33,6 +33,8 @@ class PvLearningCoordinatorMixin:
         self._pv_calibrator = self._pv_learning.calibrator
         self._pv_matrix: list[list[float]] = []
         self._pv_actual: dict[str, float] = {}
+        self._cloud_pv_actual = {}
+        self._cloud_history_attempt_at = None
         self._pv_matrix_at = None
         self._pv_calibrator_log_at = None
         self._archive_attempt_at = None
@@ -90,6 +92,7 @@ class PvLearningCoordinatorMixin:
             return
         self._pv_matrix_at = now  # also throttle errors, not five-minute retries
         await self._ensure_pv_state_loaded()
+        await self._maybe_refresh_cloud_pv_history(now)
         try:
             from homeassistant.components.recorder import statistics as rec_stats
             local_now = self._pv_local_now()
@@ -130,9 +133,29 @@ class PvLearningCoordinatorMixin:
                           len(self._pv_matrix), len(self._pv_actual))
         except Exception as exc:
             _LOGGER.warning("PV history refresh failed: %s", exc)
-            return
+        # Prefer independently covered recorder days; cloud fills gaps only.
+        for day, value in getattr(self, "_cloud_pv_actual", {}).items():
+            self._pv_actual.setdefault(day, value)
         await self._maybe_train_pv_station(now)
         await self._maybe_record_pv_pairs(now)
+
+    async def _maybe_refresh_cloud_pv_history(self, now):
+        fetch = getattr(getattr(self, "api", None), "fetch_daily_pv_history", None)
+        if fetch is None:
+            return
+        last = getattr(self, "_cloud_history_attempt_at", None)
+        if last is not None and now - last < timedelta(days=1):
+            return
+        self._cloud_history_attempt_at = now  # also throttle empty/error replies
+        local_now = self._pv_local_now()
+        start = local_now.date() - timedelta(days=120)
+        try:
+            facts = await fetch(start, local_now.date() - timedelta(days=1))
+            if facts:
+                self._cloud_pv_actual = facts
+                _LOGGER.info("Cloud PV history imported: %d measured days; forecast samples unchanged", len(facts))
+        except Exception as exc:
+            _LOGGER.warning("Cloud PV history unavailable; retaining recorder/model: %s", exc)
 
     async def _maybe_train_pv_station(self, now):
         if self._forecast is None or not self._pv_actual:
