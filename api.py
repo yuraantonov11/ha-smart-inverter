@@ -1130,25 +1130,95 @@ class InverterApiClient:
         latest = result[-1]  # most recent cumulative reading
         if not isinstance(latest, dict):
             return {"_raw_value": None}
-        v = latest.get("value") or latest.get("totalEnergy")
+        # T14 follow-up: prefer ``value`` but fall back to
+        # ``totalEnergy`` *only* when ``value`` is genuinely
+        # missing. The previous ``v = latest.get("value") or
+        # latest.get("totalEnergy")`` short-circuit silently
+        # ignored a real ``value=0`` (Python's ``or`` treats 0
+        # as falsy) and the pair check downstream therefore
+        # could not distinguish a real zero from a missing
+        # number. The explicit ``is not None`` comparison
+        # keeps both fields meaningful.
+        v = latest.get("value")
+        if v is None:
+            v = latest.get("totalEnergy")
         if v is None:
             # Fallback: scan all points for a numeric value
             for point in result:
                 if isinstance(point, dict):
-                    v = point.get("value") or point.get("totalEnergy")
-                    if v is not None:
+                    p_v = point.get("value")
+                    if p_v is None:
+                        p_v = point.get("totalEnergy")
+                    if p_v is not None:
+                        v = p_v
                         break
-        try:
-            total = float(v) if v is not None else 0.0
-        except (TypeError, ValueError):
+        # T14 follow-up: if ``v`` is not numeric (e.g. a string
+        # like ``"bad"`` or a dict the cloud accidentally put in
+        # a numeric field), the parse below would silently
+        # collapse it to 0.0 while still returning the
+        # non-numeric ``v`` as ``_raw_value``. The previous
+        # version of the body then surfaced ``{"value": 0,
+        # "totalEnergy": 0, "_raw_value": "bad"}`` — a
+        # placeholder that the coordinator's ``_safe_total``
+        # would accept as a real reading because
+        # ``_raw_value is not None``. We now stamp
+        # ``_raw_value = None`` whenever the parse fails, so
+        # the coordinator's cache gate fires.
+        total_energy_raw: float | None = None
+        if v is None:
             total = 0.0
+            raw_value = None
+        else:
+            try:
+                total = float(v)
+                raw_value = v
+            except (TypeError, ValueError):
+                total = 0.0
+                raw_value = None
+                total_energy_raw = None
+        # Preserve the cloud's ``totalEnergy`` value as well so
+        # ``_safe_total`` can detect a disagreement. The
+        # previous version of the body always stamped the
+        # same ``total`` into both fields, so a payload like
+        # ``{"value": 0, "totalEnergy": 12.5}`` was collapsed
+        # to ``{"value": 0, "totalEnergy": 0}`` and the pair
+        # check (which guards against a half-stale reading)
+        # could not fire. The fix:
+        #   * when ``value`` was extractable and parseable,
+        #     forward the cloud's ``totalEnergy`` if present
+        #     and numeric, otherwise reuse ``total``.
+        #   * when ``value`` was missing or non-numeric, mark
+        #     ``totalEnergy`` as ``None`` so the pair check
+        #     sees a disagreement and falls back.
+        if total_energy_raw is None and v is not None:
+            # Try to read the cloud's totalEnergy so the pair
+            # can be compared. If it's missing or non-numeric,
+            # fall back to ``total`` so the dict still has both
+            # keys (the helper's contract requires them).
+            e_field = latest.get("totalEnergy")
+            if e_field is not None:
+                try:
+                    total_energy_raw = float(e_field)
+                except (TypeError, ValueError):
+                    total_energy_raw = None
+        if total_energy_raw is None:
+            # The cloud's totalEnergy is unusable — surface a
+            # sentinel value ``0.0`` for the dict key (the
+            # helper requires the field to exist), but the
+            # pair will disagree with ``total`` so the cache
+            # gate fires.
+            total_energy_raw = 0.0 if v is not None and raw_value is not None else None
         # ``_raw_value`` is the sentinel: it is None exactly when
         # the API did not surface a real number. A non-None
         # value means the cloud gave us a usable reading,
         # regardless of whether the resulting ``total`` is 0.0
         # (which is itself a valid cumulative reading for a
         # freshly-installed inverter).
-        return {"value": total, "totalEnergy": total, "_raw_value": v}
+        return {
+            "value": total,
+            "totalEnergy": total_energy_raw if total_energy_raw is not None else 0.0,
+            "_raw_value": raw_value,
+        }
 
     # ── Helpers ────────────────────────────────────────────────────────
 
