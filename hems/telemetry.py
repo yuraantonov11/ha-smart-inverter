@@ -70,6 +70,7 @@ class PlannerInputs:
     forecast_today_kwh: float | None = None
     forecast_tomorrow_kwh: float | None = None
     hourly_pv: list[float] = field(default_factory=list)
+    dated_hourly_pv: dict[int, float] | None = None
     hourly_radiation: list[float] = field(default_factory=list)
     hourly_weather_codes: list[int | None] = field(default_factory=list)
 
@@ -179,6 +180,7 @@ def build_planner_inputs(
     forecast_tomorrow_kwh: float | None = None,
     forecast_today_kwh: float | None = None,
     hourly_pv: list[float] | None = None,
+    dated_hourly_pv: dict[int, float] | None = None,
     hourly_radiation: list[float] | None = None,
     hourly_weather_codes: list[int | None] | None = None,
     tariff_schedule: list[float] | None = None,
@@ -286,6 +288,9 @@ def build_planner_inputs(
         forecast_today_kwh=forecast_today_value,
         forecast_tomorrow_kwh=forecast_tomorrow_kwh,
         hourly_pv=hourly_pv_sanitized,
+        dated_hourly_pv=({k: float(v) for k, v in dated_hourly_pv.items()
+                         if type(k) is int and type(v) in (int, float) and 0 <= v <= 20000}
+                        if isinstance(dated_hourly_pv, dict) else ({} if dated_hourly_pv is not None else None)),
         hourly_radiation=hourly_rad_sanitized,
         hourly_weather_codes=hourly_weather,
         tariff_schedule=tariff,

@@ -390,6 +390,15 @@ class HemsEngine:
             radiation = list(getattr(self, "_hourly_radiation", []) or [])
             weather = list(getattr(self, "_hourly_weather_codes", []) or [])
             capacity = _finite_number(getattr(self, "_battery_capacity_kwh", 4.8))
+            forecast_now = getattr(self, "_planner_forecast_now", now)
+            dated_pv = getattr(self, "_dated_hourly_pv_forecast", None)
+            if dated_pv is not None:
+                if not isinstance(forecast_now, datetime) or forecast_now.tzinfo is None:
+                    return None, None
+                first = int(forecast_now.replace(minute=0, second=0, microsecond=0).timestamp())
+                values = [_finite_number(dated_pv.get(first + h*3600)) for h in range(24)]
+                if any(value is None or not 0 <= value <= 20000 for value in values):
+                    return None, None
             if (inputs["forecast_tomorrow_kwh"] is None or inputs["forecast_today_kwh"] is None
                     or any(len(series) != 24 for series in (hourly_pv, radiation, weather))
                     or capacity is None or capacity <= 0):
@@ -401,10 +410,11 @@ class HemsEngine:
                 raw={"gridVoltage": inputs["grid_voltage"], "batterySoc": inputs["soc"],
                      "pvPower": inputs["pv_power"], "loadPower": inputs["load_power"],
                      "gridPower": inputs["grid_power"], "batteryPower": inputs["battery_power"]},
-                now=now, smart_mode=inputs["smart_mode"],
+                now=forecast_now, smart_mode=inputs["smart_mode"],
                 forecast_tomorrow_kwh=inputs["forecast_tomorrow_kwh"],
                 forecast_today_kwh=inputs["forecast_today_kwh"],
                 hourly_pv=hourly_pv, hourly_radiation=radiation, hourly_weather_codes=weather,
+                dated_hourly_pv=dated_pv,
                 tariff_schedule=list(getattr(self, "_tariff_schedule", []) or []),
                 consumption_history=list(getattr(self, "_consumption_history", []) or []),
                 battery_capacity_kwh=capacity, grid_available=inputs["grid_available"],

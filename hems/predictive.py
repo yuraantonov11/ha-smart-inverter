@@ -20,8 +20,9 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .engine import (
@@ -138,6 +139,7 @@ class PlannerInputs:
     # Weather alerts (will be added in Phase 1F)
     storm_alert: bool = False
     storm_hours_away: int | None = None
+    dated_hourly_pv: dict[int, float] | None = None
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -381,7 +383,6 @@ def simulate_24h(
     battery_kwh = inputs.battery_capacity_kwh
     soc = getattr(inputs, "soc_corrected", inputs.soc)
     plans = []
-    now_hour = inputs.now.hour
     night_start, night_end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
     night_duration = (night_end - night_start) % 24
     charge_start, charge_end, charge_reason = plan_night_charge(inputs, target_morning)
@@ -389,12 +390,21 @@ def simulate_24h(
 
     for delta in range(24):
         # Decisions and SOC must roll from NOW, never from midnight.
-        h = (now_hour + delta) % 24
-        ts = inputs.now + timedelta(hours=delta)
-
-        pv_forecast = inputs.hourly_pv[h] if h < len(inputs.hourly_pv) else 0.0
-        # Coordinator already trained the station forecast. Daily kWh bias
-        # measures accuracy only and must never be added to hourly watts.
+        if inputs.now.tzinfo is not None:
+            ts = (inputs.now.astimezone(timezone.utc) + timedelta(hours=delta)).astimezone(inputs.now.tzinfo)
+        else:
+            ts = inputs.now + timedelta(hours=delta)
+        h = ts.hour
+        dated = getattr(inputs, "dated_hourly_pv", None)
+        if dated is not None:
+            key = int(ts.replace(minute=0, second=0, microsecond=0).timestamp())
+            pv_forecast = dated.get(key)
+            if pv_forecast is None or not math.isfinite(pv_forecast) or not 0 <= pv_forecast <= 20000:
+                raise ValueError("Incomplete or invalid dated PV forecast")
+        else:
+            pv_forecast = inputs.hourly_pv[h] if h < len(inputs.hourly_pv) else 0.0
+        # Coordinator distributes daily bias over the station forecast shape.
+        # The planner must not apply that correction a second time.
 
         load_forecast = predictor.predict(h, ts.weekday())[0]
 

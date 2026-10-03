@@ -464,6 +464,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._hems._hourly_pv_forecast = list(
             getattr(self, "hourly_forecast_today", []) or []
         )
+        self._hems._dated_hourly_pv_forecast = dict(getattr(self, "_dated_hourly_pv_forecast", {}) or {})
+        self._hems._planner_forecast_now = self._pv_local_now()
         self._hems._hourly_radiation = list(
             getattr(self, "hourly_radiation_today", []) or []
         )

@@ -1279,6 +1279,7 @@ class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
             "plan": [
                 {
                     "hour": p.hour,
+                    "timestamp": p.timestamp.isoformat(),
                     "pv_w": round(p.pv_w, 0),
                     "load_w": round(p.load_w, 0),
                     "soc_pred": round(p.soc_pred, 1),

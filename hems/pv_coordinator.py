@@ -394,8 +394,10 @@ class PvLearningCoordinatorMixin:
         if raw is None:
             return
         m = self._pv_calibrator.metrics()
-        for offset, attr in ((1, "forecast_tomorrow_kwh"), (2, "forecast_day_after_kwh")):
+        for offset, attr in ((0, "_forecast_today_kwh"), (1, "forecast_tomorrow_kwh"), (2, "forecast_day_after_kwh")):
             day = (self._pv_local_now().date()+timedelta(days=offset)).isoformat()
+            if offset == 0 and day not in raw:
+                continue
             before = finite(raw.get(day), high=500)
             if before is None:
                 setattr(self, attr, None)
@@ -405,10 +407,43 @@ class PvLearningCoordinatorMixin:
                           or self._forecast_model_for_day(datetime.fromisoformat(day).date()) == state.calibration_model)
             after = (self._pv_calibrator.adjust(before)
                      if compatible and abs(m.bias_w) > .1 * before else before)
+            powers = [h["power_w"] for h in getattr(self, "_raw_hourly_forecast", []) if h["time"][:10] == day]
+            if powers and max(powers) > 0:
+                after = min(after, sum(powers)/1000 * 20000/max(powers))
             if after != before and getattr(self, attr, None) != after:
                 _LOGGER.info("Forecast adjusted: bias=%+.3f kWh fc_before=%.3f fc_after=%.3f mae=%.3f",
                              m.bias_w, before, after, m.mae_w)
             setattr(self, attr, after)
+        self._publish_calibrated_hours()
+
+    def _publish_calibrated_hours(self):
+        """Distribute daily bias over its issued shape; never add kWh to W."""
+        rows = getattr(self, "_raw_hourly_forecast", None)
+        if rows is None:
+            return
+        today = self._pv_local_now().date()
+        totals = {(today+timedelta(days=d)).isoformat(): getattr(self, attr, None)
+                  for d, attr in ((0, "_forecast_today_kwh"), (1, "forecast_tomorrow_kwh"), (2, "forecast_day_after_kwh"))}
+        dated = {}
+        buckets = [[] for _ in range(24)]
+        raw_energy = {}
+        for row in rows:
+            day = row["time"][:10]
+            raw_energy[day] = raw_energy.get(day, 0.) + row["power_w"]/1000
+        for row in rows:
+            day = row["time"][:10]
+            before = finite(self._raw_forecast_kwh.get(day), high=500)
+            after = finite(totals.get(day), high=500)
+            if before is None or after is None:
+                continue
+            energy = raw_energy.get(day, 0.)
+            factor = after/energy if energy > 0 else 1.
+            power = round(row["power_w"]*factor, 6)
+            dated[row["timestamp"]] = power
+            if day == today.isoformat():
+                buckets[int(row["time"][11:13])].append(power)
+        self._dated_hourly_pv_forecast = dated
+        self.hourly_forecast_today = [sum(b)/len(b) if b else 0. for b in buckets] if all(buckets) else []
 
     def _log_pv_calibrator_state(self, now):
         if self._pv_calibrator_log_at and now - self._pv_calibrator_log_at < timedelta(hours=1):
@@ -436,7 +471,8 @@ class PvLearningCoordinatorMixin:
     def _persist_night_recommendation(self, now):
         hint = getattr(self._hems, "_last_predictive_hint", None)
         plan = getattr(self._hems, "_last_predictive_plan", None)
-        if hint is None or plan is None or getattr(plan, "generated_at", None) != now:
+        expected = getattr(self._hems, "_planner_forecast_now", now)
+        if hint is None or plan is None or getattr(plan, "generated_at", None) != expected:
             return
         value = {"start_hour": hint.night_charge_start_hour, "end_hour": hint.night_charge_end_hour}
         if any(type(h) is not int or not 0 <= h <= 23 for h in value.values()) or value["start_hour"] == value["end_hour"]:
@@ -493,8 +529,8 @@ class PvLearningCoordinatorMixin:
             fc, fc2 = complete.get(tomorrow), complete.get(after)
             self.forecast_tomorrow_kwh = fc.energy_kwh if fc else None
             self.forecast_day_after_kwh = fc2.energy_kwh if fc2 else None
-            self._raw_forecast_kwh = {tomorrow: self.forecast_tomorrow_kwh, after: self.forecast_day_after_kwh}
-            self._adjust_daily_forecasts()
+            self._raw_forecast_kwh = {d: fc.energy_kwh for d, fc in complete.items()}
+            self._raw_hourly_forecast = [dict(h) for h in hourly if h["time"][:10] in complete]
             self.weather_tomorrow_code = fc.dominant_weather_code if fc else None
             self.weather_day_after_code = fc2.dominant_weather_code if fc2 else None
             today = local_now.date().isoformat()
@@ -507,6 +543,7 @@ class PvLearningCoordinatorMixin:
                     self.hourly_forecast_today.append(sum(h["power_w"] for h in bucket)/max(1,len(bucket)))
                     self.hourly_radiation_today.append(sum(h["radiation_wm2"] for h in bucket)/max(1,len(bucket)))
                     self.hourly_weather_today.append(bucket[0].get("weather_code") if bucket else None)
+            self._adjust_daily_forecasts()
             await self._save_pv_state()
         except Exception as exc:
             # A previous day's chart must not masquerade as today's forecast.
@@ -514,6 +551,8 @@ class PvLearningCoordinatorMixin:
             self.forecast_day_after_kwh = None
             self._forecast_today_kwh = None
             self._raw_forecast_kwh = {}
+            self._raw_hourly_forecast = []
+            self._dated_hourly_pv_forecast = {}
             self.hourly_forecast_today = []
             self.hourly_weather_today = []
             self.hourly_radiation_today = []
