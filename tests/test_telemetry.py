@@ -155,13 +155,19 @@ def test_soc_clamping() -> None:
     pi = _build(raw={"gridVoltage": 230.0, "batterySoc": 150.0,
                       "pvPower": 1000.0, "loadPower": 500.0,
                       "gridPower": 0.0, "batteryPower": 0.0})
-    _check(pi.soc == 100.0, "soc>100 clamped to 100")
-    # Out-of-range SOC falls back to safe value 100% (full battery
-    # assumption prevents unnecessary grid charge at night).
+    # T01 follow-up: out-of-range SOC is now treated as unknown
+    # rather than a friendly clamped 100 %. The previous test
+    # expected a 100 % fallback (which the audit flagged as a
+    # diagnostic leak), so we now assert the unknown state and
+    # the planner-side flag.
+    _check(pi.soc is None, "soc>100 → unknown (no synthetic 100 %)")
+    _check(pi.soc_unknown is True, "soc>100 → soc_unknown flag set")
+    # Out-of-range SOC also marked unknown.
     pi = _build(raw={"gridVoltage": 230.0, "batterySoc": -10.0,
                       "pvPower": 1000.0, "loadPower": 500.0,
                       "gridPower": 0.0, "batteryPower": 0.0})
-    _check(pi.soc == 100.0, "out-of-range soc falls back to safe 100%")
+    _check(pi.soc is None, "out-of-range soc → None")
+    _check(pi.soc_unknown is True, "out-of-range soc → soc_unknown flag set")
     _check(pi.soc_source.origin == "fallback", "out-of-range soc origin=fallback")
 
 

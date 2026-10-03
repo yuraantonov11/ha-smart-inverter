@@ -646,6 +646,14 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             tarif_day=self._day_tariff_uah,
             tarif_night=self._night_tariff_uah,
             is_online=True,
+            # T01 follow-up: forward the unknown-SOC flag so the
+            # planner path sees ``soc_unknown=True`` and refuses
+            # to make a per-hour prediction. The dispatch gate
+            # below already blocks inverter writes; this flag
+            # closes the diagnostic leak that previously made
+            # the planner emit a "fully charged" recommendation
+            # while the meter was unreadable.
+            soc_unknown=soc_unknown,
         )
 
         self._persist_night_recommendation(now)
@@ -1002,6 +1010,31 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         end of every successful run so a restart does not zero out
         the day's running total.
         """
+        # T06 follow-up: check out-of-order *before* we touch any
+        # state. An out-of-order sample must not advance
+        # ``_last_sample_ts`` (which would stretch the next
+        # in-order interval and double-count the integration
+        # window), and must not move ``_last_midnight`` (which
+        # would zero a previous day's contribution if the
+        # out-of-order sample happened to land on the *other*
+        # day from the previous sample). We therefore defer the
+        # midnight rollover to *after* this check.
+        if self._last_sample_ts is not None:
+            elapsed_s = (now - self._last_sample_ts).total_seconds()
+            if elapsed_s < 0:
+                _LOGGER.debug(
+                    "Energy state: out-of-order sample ignored "
+                    "(elapsed_s=%.3f, now=%s, last=%s)",
+                    elapsed_s, now, self._last_sample_ts,
+                )
+                if self._energy_state_dirty:
+                    self._maybe_persist_energy_state(now)
+                return
+
+        # ── Midnight rollover. Done *after* the out-of-order
+        # check so a stray out-of-order sample that crosses
+        # midnight does not zero the previous day. The check
+        # itself runs before any state mutation. ──────────────
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         if self._last_midnight is not None and self._last_midnight != today:
             # Day changed since the previous sample. Decide whether
@@ -1049,11 +1082,11 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             dt_h = 5.0 / 3600.0
         else:
             elapsed_s = (now - self._last_sample_ts).total_seconds()
-            if elapsed_s < 0:
-                # Clock skew / out-of-order sample: treat as 5 s
-                # rather than negative integration.
-                dt_h = 5.0 / 3600.0
-            elif elapsed_s > self._MAX_SAMPLE_GAP_S:
+            # The out-of-order branch above already returned; if
+            # we reach this point ``elapsed_s`` is either non-negative
+            # or we passed the first-sample path. We do not need to
+            # re-check ``elapsed_s < 0`` here.
+            if elapsed_s > self._MAX_SAMPLE_GAP_S:
                 # Offline gap. We do not integrate the stale reading
                 # because the previous sample's power no longer
                 # represents the present. The next valid sample will
@@ -1353,78 +1386,112 @@ class HistoryCoordinator(DataUpdateCoordinator):
     @staticmethod
     def _unwrap_history_results(
         results: list[Any],
-    ) -> tuple[list, list, list, dict]:
+    ) -> tuple[tuple[list, bool], tuple[list, bool], tuple[list, bool], tuple[dict, float]]:
         """T14: convert ``asyncio.gather(return_exceptions=True)``
-        results into four safely-typed slots.
+        results into four safely-typed slots **with a fallback flag**.
+
+        The audit's review point is that the previous version
+        returned ``[]`` (or ``{}``) for a failed endpoint and the
+        caller then wrote that empty value into the coordinator
+        cache, overwriting the last known good series. The chart
+        would show a flat line every time the cloud hiccupped.
+
+        This variant returns a ``(value, is_fallback)`` pair for
+        each slot. The caller (``_async_update_data``) is
+        required to skip the cache write whenever
+        ``is_fallback`` is True: the audit explicitly forbids
+        replacing real data with a placeholder, and a partial
+        failure in one endpoint must not poison the other
+        three.
+
+        The ``total_data`` slot additionally returns the numeric
+        ``total_kwh`` the caller would have computed — an
+        exception in the total endpoint therefore leaves the
+        existing ``self.total_energy_kwh`` untouched instead of
+        zeroing it.
 
         Returns
         -------
-        (today_power, monthly_energy, yearly_energy, total_data)
-            Each slot is either the real value or a safe empty
-            placeholder. Exceptions are logged at warning level and
-            translated to ``[]`` (or ``{}`` for the total slot) so
-            the rest of the cycle can keep producing useful
-            telemetry for the dashboard.
+        ((today_power, today_fallback),
+         (monthly_energy, monthly_fallback),
+         (yearly_energy, yearly_fallback),
+         (total_data, total_kwh))
 
-        The unwrap is *defensive* on three axes:
+        ``is_fallback`` is True for the slot iff the source value
+        was an exception, a wrong type, or the slot was missing
+        from the gather result. Real values — even an empty list
+        from a successful endpoint — keep ``is_fallback=False``.
 
-        1. exception instances → safe empty value (the audit's
-           ``len(...)``/``.get(...)`` crash on an Exception is
-           the original bug);
-        2. wrong types (string, None) for the dict slot → ``{}``;
-        3. short result lists → missing slots default to ``[]`` /
-           ``{}`` rather than raising ``IndexError``.
+        Defensive guarantees (the audit's three axes):
 
-        We deliberately do NOT include the exception text in the
-        returned value. The audit calls out that an error message
-        can carry a URL with a token; that data must not propagate
-        into the public ``data`` dict on the coordinator.
+        1. exception instances → ``([], True)`` / ``({}, 0.0)``;
+        2. wrong types (string, None) for the dict slot → ``({}, 0.0)``;
+        3. short result lists → missing slots default to
+           ``([], True)`` / ``({}, 0.0)`` rather than raising
+           ``IndexError``.
+
+        Exception text is deliberately NOT included in the
+        returned value (the audit calls out that an error message
+        can carry a URL with a token).
         """
-        # Pad to length 4 so the unpack never fails; pad with None
-        # and treat that as "missing".
+        # Pad to length 4 so the unpack never fails; treat missing
+        # slots as "we know nothing" (fallback).
         padded = list(results) + [None] * (4 - len(results))
         today_power_raw, monthly_raw, yearly_raw, total_raw = padded[:4]
 
-        def _safe_list(value: Any, label: str) -> list:
+        def _safe_list(value: Any, label: str) -> tuple[list, bool]:
             if isinstance(value, BaseException):
                 _LOGGER.warning(
                     "HistoryCoordinator: %s endpoint failed: %s",
                     label,
                     type(value).__name__,
                 )
-                return []
+                return [], True
             if isinstance(value, list):
-                return value
+                return value, False
             _LOGGER.warning(
                 "HistoryCoordinator: %s endpoint returned unexpected %s",
                 label,
                 type(value).__name__,
             )
-            return []
+            return [], True
 
-        def _safe_dict(value: Any, label: str) -> dict:
+        def _safe_total(value: Any, label: str) -> tuple[dict, float]:
             if isinstance(value, BaseException):
                 _LOGGER.warning(
                     "HistoryCoordinator: %s endpoint failed: %s",
                     label,
                     type(value).__name__,
                 )
-                return {}
+                return {}, 0.0
             if isinstance(value, dict):
-                return value
+                raw = value.get("value")
+                if raw is None:
+                    raw = value.get("totalEnergy")
+                if isinstance(raw, (int, float)):
+                    try:
+                        total_kwh = float(raw)
+                    except (TypeError, ValueError):
+                        return value, 0.0
+                    return value, total_kwh
+                if isinstance(raw, str):
+                    try:
+                        return value, float(raw)
+                    except ValueError:
+                        return value, 0.0
+                return value, 0.0
             _LOGGER.warning(
                 "HistoryCoordinator: %s endpoint returned unexpected %s",
                 label,
                 type(value).__name__,
             )
-            return {}
+            return {}, 0.0
 
-        return (
-            _safe_list(today_power_raw, "daily"),
-            _safe_list(monthly_raw, "monthly"),
-            _safe_list(yearly_raw, "yearly"),
-            _safe_dict(total_raw, "total"),
-        )
+        today_pair = _safe_list(today_power_raw, "daily")
+        monthly_pair = _safe_list(monthly_raw, "monthly")
+        yearly_pair = _safe_list(yearly_raw, "yearly")
+        total_pair = _safe_total(total_raw, "total")
+        return today_pair, monthly_pair, yearly_pair, total_pair
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch historical data from the API.
@@ -1433,10 +1500,20 @@ class HistoryCoordinator(DataUpdateCoordinator):
         instances in the result list when a coroutine raises. The
         previous code path then called ``len(...)`` and ``.get(...)``
         on those instances, which crashed the whole coordinator and
-        hid the successful series. We now unwrap each result, fall
-        back to the last known good series for the failed endpoint,
-        and log the failure so a single broken endpoint does not
-        take down every chart.
+        hid the successful series.
+
+        The follow-up review pointed out that the *cache write*
+        path was still wrong: the previous version returned ``[]``
+        for a failed endpoint and the caller wrote that empty
+        value into ``self.today_hourly_power``, overwriting the
+        last known good series. The chart would show a flat line
+        every time the cloud hiccupped. The fix is the
+        ``(value, is_fallback)`` return contract on
+        ``_unwrap_history_results``: when ``is_fallback`` is True
+        we keep the previous cached value untouched and only
+        update the diagnostics attributes the dashboard reads.
+        The total slot additionally preserves the previous
+        ``self.total_energy_kwh`` when the total endpoint fails.
         """
         _LOGGER.debug("HistoryCoordinator: fetching historical data")
 
@@ -1449,14 +1526,19 @@ class HistoryCoordinator(DataUpdateCoordinator):
                 return_exceptions=True,
             )
             (
-                today_power,
-                monthly_energy,
-                yearly_energy,
-                total_data,
+                today_pair,
+                monthly_pair,
+                yearly_pair,
+                total_pair,
             ) = self._unwrap_history_results(results)
+            today_power, today_fallback = today_pair
+            monthly_energy, monthly_fallback = monthly_pair
+            yearly_energy, yearly_fallback = yearly_pair
+            total_data, total_kwh = total_pair
 
             _LOGGER.info(
-                "HistoryCoordinator: daily=%d monthly=%d yearly=%d total_keys=%s",
+                "HistoryCoordinator: daily=%d monthly=%d yearly=%d total_keys=%s "
+                "(fallback daily=%s monthly=%s yearly=%s total=%s)",
                 len(today_power) if isinstance(today_power, list) else -1,
                 len(monthly_energy) if isinstance(monthly_energy, list) else -1,
                 len(yearly_energy) if isinstance(yearly_energy, list) else -1,
@@ -1465,34 +1547,34 @@ class HistoryCoordinator(DataUpdateCoordinator):
                     if isinstance(total_data, dict)
                     else type(total_data).__name__
                 ),
+                today_fallback, monthly_fallback, yearly_fallback,
+                not isinstance(total_data, dict) or not total_data,
             )
             if isinstance(today_power, list) and today_power:
                 _LOGGER.info("Daily sample: %s", today_power[0])
             if isinstance(monthly_energy, list) and monthly_energy:
                 _LOGGER.info("Monthly sample: %s", monthly_energy[0])
 
-            total_kwh = 0.0
-            if isinstance(total_data, dict):
-                raw = total_data.get("value")
-                if raw is None:
-                    raw = total_data.get("totalEnergy")
-                if isinstance(raw, (int, float)):
-                    total_kwh = float(raw)
-                elif isinstance(raw, str):
-                    try:
-                        total_kwh = float(raw)
-                    except ValueError:
-                        total_kwh = 0.0
-
-            # Store for sensor access — last known good is preserved
-            # when a particular endpoint failed.
-            if isinstance(today_power, list):
+            # ── T14 follow-up: last-known-good cache writes ────────────
+            # The cache is only updated when the endpoint produced a
+            # real value. A failure leaves the previous data in
+            # place, so a single endpoint hiccup never blanks a
+            # chart. The dashboard still gets a *consistent* view
+            # from the public ``data`` dict, which we always
+            # populate from the (possibly fallback) values we
+            # computed here.
+            if not today_fallback and isinstance(today_power, list):
                 self.today_hourly_power = today_power
-            if isinstance(monthly_energy, list):
+            if not monthly_fallback and isinstance(monthly_energy, list):
                 self.monthly_daily_energy = monthly_energy
-            if isinstance(yearly_energy, list):
+            if not yearly_fallback and isinstance(yearly_energy, list):
                 self.yearly_monthly_energy = yearly_energy
-            self.total_energy_kwh = total_kwh
+            # ``total_data`` is a dict; a fallback is reported as
+            # an empty dict (``{}``). The numeric total_kwh is
+            # already 0.0 in that case, so we skip the cache write
+            # and keep the previous reading instead of zeroing it.
+            if isinstance(total_data, dict) and total_data:
+                self.total_energy_kwh = total_kwh
 
             # Refresh daily historical weather (last 7 days) in the
             # background so the history graph can show icons.

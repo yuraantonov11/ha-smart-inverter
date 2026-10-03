@@ -65,7 +65,11 @@ class PlannerInputs:
     """
 
     now: datetime
-    soc: float
+    # T01 follow-up: ``soc`` is ``None`` whenever the meter is
+    # unreadable. The companion ``soc_unknown`` flag is the
+    # canonical source of truth; ``soc`` is kept for backward
+    # compatibility but should not be relied on by the planner.
+    soc: float | None
     pv_w: float
     load_w: float
     grid_w: float
@@ -199,12 +203,21 @@ def build_planner_inputs(
     grid_available: bool = True,
     max_age_sec: float = 60.0,
     night_charge_window: tuple[int, int] = (23, 7),
+    soc_unknown: bool | None = None,
 ) -> PlannerInputs:
     """Build a ``PlannerInputs`` from raw API + already-corrected values.
 
     Args:
         raw: dict from ``InverterApiClient.fetch_realtime_data()``.
         now: clock to stamp on the inputs (defaults to naive UTC now).
+        soc_unknown: explicit override for the SOC-unknown flag. The
+            function recomputes this from ``corrected_soc`` and
+            ``raw["batterySoc"]`` if it is left as ``None``; an
+            explicit ``True`` forces the unknown state even if the
+            raw payload carries a numeric SOC. This is the path the
+            audit requires: the caller that knows the meter is
+            unreadable must not be re-overridden by a stale numeric
+            value the parser happens to produce.
         smart_mode: 0=Adaptive, 1=Arbitrage, 2=Storm.
         corrected_soc: pre-corrected SOC (after voltage compensation).
             If None, ``raw.get("batterySoc")`` is used with provenance
@@ -226,7 +239,8 @@ def build_planner_inputs(
     # ``soc_unknown=True`` so the coordinator can refuse to send
     # commands while the meter is unreadable.
     soc_value: Any
-    soc_unknown = False
+    if soc_unknown is None:
+        soc_unknown = False
     if corrected_soc is not None:
         soc_value = float(corrected_soc)
         soc_origin = "api"
@@ -256,7 +270,16 @@ def build_planner_inputs(
                 soc_value = None
 
     if soc_unknown:
-        soc = 100.0  # display-only; the engine is told not to act on it
+        # T01 follow-up: do NOT pretend a missing SOC is 100 %. The
+        # previous code path used 100 % as a display-only fallback
+        # for the engine, but the predictive planner read the same
+        # field and treated it as a fully-charged battery. That
+        # diagnostic leak is what the audit calls out: planner
+        # must see ``soc is None`` whenever the meter is unreadable.
+        # The engine is told not to dispatch any command through a
+        # separate ``soc_unknown`` flag on PlannerInputs; legacy
+        # fields that need a numeric value fall back to 100 below.
+        soc = None
         soc_fallback = True
     else:
         soc, soc_fallback = _clamp(soc_value, _SOC_MIN, _SOC_MAX, fallback=100.0)

@@ -1,26 +1,15 @@
-"""T14 regression — partial failure in HistoryCoordinator gather.
+"""T14 — exercise the unwrap helper directly.
 
-The audit showed that ``asyncio.gather(return_exceptions=True)``
-returns the *exception instance* in the result list. The original
-code path then called ``len(...)`` and ``.get(...)`` on those
-instances, which raised ``TypeError`` and ``AttributeError``,
-cascading into a complete history-coordinator failure.
+The previous test (commit 64c4bb6) covered the unwrap helper
+with a single ``(value, is_fallback)`` flag per slot, and
+test_t14_history_lkg_real_path exercises the *cache write*
+contract through a real ``HistoryCoordinator._async_update_data``
+instance. Together they cover both layers: the helper's defensive
+behaviour and the cache's last-known-good preservation.
 
-The new code unwraps each result and falls back to the last known
-good series when an individual endpoint fails. This test runs the
-real body of ``_unwrap_history_results`` against synthetic results
-that include:
-
-  * a successful list,
-  * a list that came back as a list-like but is empty,
-  * an exception instance,
-  * a totally wrong type (e.g. None),
-  * a dict (for the total_energy endpoint),
-  * an exception with a non-trivial ``__str__`` that should NOT
-    leak into the response dict.
-
-Run with:
-    /tmp/powmr-venv/bin/python tests/test_t14_history_partial_failure.py
+This file is intentionally small and isolated; if a refactor
+breaks the helper, this test catches it without depending on
+home-assistant mocks.
 """
 from __future__ import annotations
 
@@ -28,8 +17,6 @@ import ast
 import sys
 import textwrap
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 coord_src = (ROOT / "coordinator.py").read_text(encoding="utf-8")
@@ -37,144 +24,157 @@ lines = coord_src.splitlines(keepends=True)
 tree = ast.parse(coord_src)
 
 
-def _function_src(name: str) -> str:
-    for node in ast.walk(tree):
+def _function_src(name: str, klass: str | None = None) -> str:
+    for cls in ast.walk(tree):
         if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == name
+            isinstance(cls, ast.ClassDef)
+            and (klass is None or cls.name == klass)
         ):
-            start = node.lineno - 1
-            end = node.end_lineno
-            return textwrap.dedent("".join(lines[start:end]))
+            for sub in cls.body:
+                if (
+                    isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and sub.name == name
+                ):
+                    start = sub.lineno - 1
+                    end = sub.end_lineno
+                    return textwrap.dedent("".join(lines[start:end]))
     raise SystemExit(f"{name} not found")
 
 
-unwrap_src = _function_src("_unwrap_history_results")
-ns: dict[str, Any] = {
+unwrap_src = _function_src("_unwrap_history_results", "HistoryCoordinator")
+ns = {
     "__name__": "_t14_isolated",
     "_LOGGER": __import__("logging").getLogger("t14_isolated"),
 }
-exec(unwrap_src, ns)  # noqa: S102 — controlled test code
+exec(unwrap_src, ns)
 _unwrap = ns["_unwrap_history_results"]
 
 
-# ── scenarios from the audit ────────────────────────────────────────────
+# ── helpers ─────────────────────────────────────────────────────────
 
-# 1. All four endpoints succeed.
-class _OkDaily(list):
-    pass
 
-class _OkMonthly(list):
-    pass
+def _unpack(results):
+    """Unpack the new (value, is_fallback)-tuple contract."""
+    td_p, tm_p, ty_p, tot_p = _unwrap(results)
+    return (
+        (td_p[0], td_p[1]),
+        (tm_p[0], tm_p[1]),
+        (ty_p[0], ty_p[1]),
+        (tot_p[0], tot_p[1]),
+    )
 
-class _OkYearly(list):
-    pass
+
+# ── 1. All four endpoints succeed. ──────────────────────────────
+
+class _OkDaily(list): pass
+class _OkMonthly(list): pass
+class _OkYearly(list): pass
 
 daily = _OkDaily([{"time": "00", "value": 1}])
 monthly = _OkMonthly([{"date": "2026-09-01", "value": 2}])
 yearly = _OkYearly([{"month": "2026-09", "value": 3}])
 total = {"value": 4.5, "totalEnergy": 4.5}
 
-td, tm, ty, tt = _unwrap([daily, monthly, yearly, total])
+(td, tdf), (tm, tmf), (ty, tyf), (tot, totk) = _unpack([daily, monthly, yearly, total])
 assert td is daily
 assert tm is monthly
 assert ty is yearly
-assert tt == total
+assert tot == total
+assert tdf is False, "successful daily must NOT be a fallback"
+assert tmf is False
+assert tyf is False
 
-# 2. fetch_daily_power raised.
+
+# ── 2. fetch_daily_power raised. ────────────────────────────────
+
 err = RuntimeError("daily boom")
-td, tm, ty, tt = _unwrap([err, monthly, yearly, total])
-# The unwrap contract: failed endpoint falls back to an empty list
-# (or empty dict for the total endpoint) so downstream len() and
-# .get() succeed without the coordinator crashing.
-assert td == [], f"daily must be empty after failure, got {td!r}"
-assert tm is monthly
-assert ty is yearly
-assert tt == total
+(td, tdf), (tm, tmf), (ty, tyf), (tot, totk) = _unpack([err, monthly, yearly, total])
+assert td == [] and tdf is True, f"failed daily: {td!r} / {tdf!r}"
+assert tm is monthly and tmf is False
+assert ty is yearly and tyf is False
+assert tot == total
+assert totk == 4.5
 
-# 3. ALL endpoints fail — the coordinator must still produce
-#    usable empty structures, not raise.
-results = [
-    RuntimeError("a"),
-    RuntimeError("b"),
-    RuntimeError("c"),
-    RuntimeError("d"),
-]
-td, tm, ty, tt = _unwrap(results)
-assert td == []
-assert tm == []
-assert ty == []
-assert tt == {}
 
-# 4. fetch_total_energy returned None — must be normalised to {}.
-td, tm, ty, tt = _unwrap([daily, monthly, yearly, None])
-assert tt == {}, f"None total must become {{}}, got {tt!r}"
-assert td is daily  # other endpoints intact
+# ── 3. ALL endpoints fail. ────────────────────────────────────
 
-# 5. fetch_total_energy returned a list (mistaken shape) — must be
-#    normalised to {}, not crash on .get().
-td, tm, ty, tt = _unwrap([daily, monthly, yearly, [1, 2, 3]])
-assert tt == {}
+results = [RuntimeError("a"), RuntimeError("b"), RuntimeError("c"), RuntimeError("d")]
+(td, tdf), (tm, tmf), (ty, tyf), (tot, totk) = _unpack(results)
+assert td == [] and tdf is True
+assert tm == [] and tmf is True
+assert ty == [] and tyf is True
+assert tot == {} and totk == 0.0
 
-# 6. fetch_daily_power returned a string (totally wrong type) —
-#    must fall back to [].
-td, tm, ty, tt = _unwrap(["not a list", monthly, yearly, total])
-assert td == []
 
-# 7. The exception's text must NOT leak into the success channels.
-#    The audit's concern is that an error message containing
-#    sensitive data (e.g. a URL with a token) would be returned to
-#    the caller. We verify that the unwrap result does not include
-#    any string from the exception's str() output.
+# ── 4. fetch_total_energy returned None → safe {}. ──────────
+
+(td, _), (tm, _), (ty, _), (tot, totk) = _unpack([daily, monthly, yearly, None])
+assert tot == {} and totk == 0.0
+assert td is daily
+
+# Wrong type for the dict slot.
+(td, _), (tm, _), (ty, _), (tot, totk) = _unpack([daily, monthly, yearly, [1, 2, 3]])
+assert tot == {} and totk == 0.0
+
+# Total dict with no value / totalEnergy field.
+(td, _), (tm, _), (ty, _), (tot, totk) = _unpack([daily, monthly, yearly, {"foo": 1}])
+assert totk == 0.0
+
+
+# ── 5. fetch_daily_power returned a string → safe []. ──────────
+
+(td, tdf), _, _, _ = _unpack(["not a list", monthly, yearly, total])
+assert td == [] and tdf is True
+
+
+# ── 6. Exception text must NOT leak into the success channels.
+
 sensitive = "Authorization=Bearer SECRET_TOKEN_AAA111"
 results = [RuntimeError(sensitive), monthly, yearly, total]
-td, tm, ty, tt = _unwrap(results)
-for label, value in (("daily", td), ("monthly", tm), ("yearly", ty), ("total", tt)):
+(td, _), (tm, _), (ty, _), (tot, _) = _unpack(results)
+for label, value in (("daily", td), ("monthly", tm), ("yearly", ty), ("total", tot)):
     s = str(value)
-    assert "SECRET_TOKEN_AAA111" not in s, (
-        f"{label} leaked sensitive error data: {s!r}"
-    )
+    assert "SECRET_TOKEN_AAA111" not in s, f"{label} leaked sensitive data: {s!r}"
 
-# 8. Indexing the result list beyond its length is a programming
-#    error in production, but it should still be surfaced cleanly.
-#    The unwrap helper must not crash if the list has fewer items
-#    than the four canonical endpoints — defensive defaulting.
+
+# ── 7. Short result list — must not raise IndexError. ───────────
+
 try:
-    td, tm, ty, tt = _unwrap([daily, monthly])  # only 2 endpoints
-    # Default values for the missing ones must be safe.
+    (td, _), (tm, _), (ty, tyf), (tot, _) = _unpack([daily, monthly])  # only 2
     assert td is daily
     assert tm is monthly
-    assert ty == [], "missing yearly must default to []"
-    assert tt == {}, "missing total must default to {}"
+    assert ty == [] and tyf is True
+    assert tot == {} and isinstance(tot, dict)
 except Exception as exc:  # noqa: BLE001
-    raise SystemExit(
-        f"_unwrap_history_results crashed on short list: {exc!r}"
-    )
+    raise SystemExit(f"_unwrap_history_results crashed on short list: {exc!r}")
 
 
-# 9. Exception instance has no __str__ (pathological but possible
-#    if someone raises a non-Exception). Make sure we don't crash.
-class _Bare:
-    pass
+# ── 8. Idempotent: re-running the unwrap is stable. ───────────
 
-
-# We can't pass a non-Exception through the actual asyncio.gather
-# (Python enforces that the awaitable raises BaseException), but
-# we still test the unwrap function directly.
-results = [_Bare(), monthly, yearly, total]
-td, tm, ty, tt = _unwrap(results)
-assert td == []
-assert tm is monthly
-
-
-# 10. Re-running the unwrap with the same instance is idempotent
-#     — the audit calls out "subsequent reloads shouldn't add
-#     duplicates"; we mirror that contract here.
 results = [err, monthly, yearly, total]
-td1, _, _, _ = _unwrap(results)
-td2, _, _, _ = _unwrap(results)
-assert td1 == td2 == []
+td1, _, _, _ = _unpack(results)
+td2, _, _, _ = _unpack(results)
+# ``td1`` and ``td2`` are ``(value, is_fallback)`` tuples.
+# Compare the values directly.
+assert td1[0] == td2[0] == [] and td1[1] == td2[1] is True
 
 
-print("T14 OK — partial failure in HistoryCoordinator does not crash")
+# ── 9. Total dict with value as string parses as float. ────────
+
+(td, _), (tm, _), (ty, _), (tot, totk) = _unpack(
+    [daily, monthly, yearly, {"value": "12.34", "totalEnergy": "12.34"}]
+)
+assert totk == 12.34
+
+
+# ── 10. Total dict with negative value is parsed (callers clamp
+# separately; the helper's job is just to surface a number).
+
+(td, _), (tm, _), (ty, _), (tot, totk) = _unpack(
+    [daily, monthly, yearly, {"value": -5.0, "totalEnergy": -5.0}]
+)
+assert totk == -5.0
+
+
+print("T14 OK — unwrap helper is defensive, sensitive data is masked, partial-failure semantics correct")
 sys.exit(0)

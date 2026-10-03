@@ -1,0 +1,285 @@
+"""T14 follow-up — exercise the *real* ``_async_update_data`` path
+of ``HistoryCoordinator`` rather than the unwrap helper alone.
+
+The previous test (commit 64c4bb6) covered only
+``_unwrap_history_results``. The review point is that the *cache
+write* path was still wrong: the helper returned ``[]`` for a
+failed endpoint and the caller dutifully wrote that empty value
+into ``self.today_hourly_power``, overwriting the last known
+good series. The chart would go flat every time the cloud
+hiccupped, which the helper test was structurally unable to
+detect because it never touched the coordinator's state.
+
+This test extracts the real ``_async_update_data`` body via
+AST and runs it against a minimal stand-in object that
+captures every cache write. The body is a transcription of
+the production code (with comments preserved); if the live
+code changes, this test must be updated to match — that is
+the whole point of the audit's complaint.
+
+Run with:
+    /tmp/powmr-venv/bin/python tests/test_t14_history_lkg_real_path.py
+"""
+from __future__ import annotations
+
+import ast
+import asyncio
+import logging
+import sys
+import textwrap
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+coord_src = (ROOT / "coordinator.py").read_text(encoding="utf-8")
+lines = coord_src.splitlines(keepends=True)
+tree = ast.parse(coord_src)
+
+
+def _function_src(name: str, klass: str | None = None) -> str:
+    """Extract a method body. If ``klass`` is given, only return
+    the function whose parent class matches; otherwise any."""
+    for cls in ast.walk(tree):
+        if (
+            isinstance(cls, ast.ClassDef)
+            and (klass is None or cls.name == klass)
+        ):
+            for sub in cls.body:
+                if (
+                    isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and sub.name == name
+                ):
+                    start = sub.lineno - 1
+                    end = sub.end_lineno
+                    return textwrap.dedent("".join(lines[start:end]))
+    raise SystemExit(f"{name} not found in {klass or 'coordinator.py'}")
+
+
+# Two AST slices are needed:
+#   1. ``_unwrap_history_results`` — the static method that
+#      converts asyncio.gather results into safe slots.
+#   2. ``_async_update_data`` on ``HistoryCoordinator`` (not the
+#      one on ``InverterCoordinator``!) — the body that consumes
+#      the unwrap result and writes to the coordinator cache.
+unwrap_src = _function_src("_unwrap_history_results", "HistoryCoordinator")
+async_update_src = _function_src("_async_update_data", "HistoryCoordinator")
+
+ns: dict[str, Any] = {
+    "__name__": "_t14_lkg_isolated",
+    "_LOGGER": __import__("logging").getLogger("t14_lkg_isolated"),
+    "datetime": __import__("datetime").datetime,
+    "asyncio": __import__("asyncio"),
+}
+exec(unwrap_src, ns)
+exec(async_update_src, ns)
+_unwrap = ns["_unwrap_history_results"]
+_async_update_data = ns["_async_update_data"]
+
+
+# ── Stand-in coordinator — captures every cache write. ───────────
+
+class _StubHistoryCoordinator:
+    """Minimal surface for ``_async_update_data``.
+
+    The body only touches:
+      - self.api.fetch_*  (mocked)
+      - self._unwrap_history_results (the static method on
+        HistoryCoordinator that the body calls; we attach the
+        unwrap function from the isolated namespace as a method)
+      - self.today_hourly_power, .monthly_daily_energy,
+        .yearly_monthly_energy, .total_energy_kwh (cache)
+      - self.daily_historical_weather, .daily_weather_count
+        (refreshed by a separate coroutine; we override
+        ``_fetch_historical_weather`` to a no-op)
+      - self.logger / _LOGGER — we redirect to a captured logger
+    """
+
+    def __init__(self, api):
+        self.api = api
+        self.today_hourly_power: list = []
+        self.monthly_daily_energy: list = []
+        self.yearly_monthly_energy: list = []
+        self.total_energy_kwh: float = 0.0
+        self.daily_historical_weather: dict = {}
+        self.daily_weather_count: int = 0
+        self._history_coords = (50.45, 30.52)
+        # Bind the unwrap helper as a method so ``self._unwrap_history_results``
+        # resolves inside the extracted function body.
+        self._unwrap_history_results = _unwrap
+
+    async def _fetch_historical_weather(self) -> dict:
+        return {}
+
+
+class _MockAPI:
+    def __init__(self, daily, monthly, yearly, total):
+        self._daily = daily
+        self._monthly = monthly
+        self._yearly = yearly
+        self._total = total
+        self.calls: list[str] = []
+
+    async def fetch_daily_power(self):
+        self.calls.append("daily")
+        return self._daily
+
+    async def fetch_monthly_energy(self):
+        self.calls.append("monthly")
+        return self._monthly
+
+    async def fetch_yearly_energy(self):
+        self.calls.append("yearly")
+        return self._yearly
+
+    async def fetch_total_energy(self):
+        self.calls.append("total")
+        return self._total
+
+
+def _run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+# ── 1. ALL endpoints fail: cache must not change. ─────────────────
+
+async def _scenario_all_fail():
+    api = _MockAPI(
+        daily=RuntimeError("d"),
+        monthly=RuntimeError("m"),
+        yearly=RuntimeError("y"),
+        total=RuntimeError("t"),
+    )
+    c = _StubHistoryCoordinator(api)
+    c.today_hourly_power = [{"time": "00", "value": 1.0}]
+    c.monthly_daily_energy = [{"date": "2026-09-01", "value": 2.0}]
+    c.yearly_monthly_energy = [{"month": "2026-09", "value": 3.0}]
+    c.total_energy_kwh = 12345.6
+    await _async_update_data(c)
+    assert c.today_hourly_power == [{"time": "00", "value": 1.0}], (
+        f"daily cache was overwritten after a failed gather: "
+        f"{c.today_hourly_power!r}"
+    )
+    assert c.monthly_daily_energy == [{"date": "2026-09-01", "value": 2.0}], (
+        f"monthly cache overwritten: {c.monthly_daily_energy!r}"
+    )
+    assert c.yearly_monthly_energy == [{"month": "2026-09", "value": 3.0}], (
+        f"yearly cache overwritten: {c.yearly_monthly_energy!r}"
+    )
+    assert c.total_energy_kwh == 12345.6, (
+        f"total was zeroed after a failed total endpoint: "
+        f"{c.total_energy_kwh!r}"
+    )
+
+
+_run(_scenario_all_fail())
+
+
+# ── 2. Only the total endpoint fails: lists update, total kept. ──
+
+async def _scenario_partial_fail():
+    api = _MockAPI(
+        daily=[{"time": "12", "value": 9.0}],
+        monthly=[{"date": "2026-09-30", "value": 8.0}],
+        yearly=[{"month": "2026-09", "value": 7.0}],
+        total=RuntimeError("tot"),
+    )
+    c = _StubHistoryCoordinator(api)
+    c.today_hourly_power = [{"time": "00", "value": 1.0}]
+    c.monthly_daily_energy = [{"date": "2026-09-01", "value": 2.0}]
+    c.yearly_monthly_energy = [{"month": "2026-09", "value": 3.0}]
+    c.total_energy_kwh = 999.99
+    await _async_update_data(c)
+    assert c.today_hourly_power == [{"time": "12", "value": 9.0}], (
+        f"daily cache should have updated: {c.today_hourly_power!r}"
+    )
+    assert c.monthly_daily_energy == [{"date": "2026-09-30", "value": 8.0}]
+    assert c.yearly_monthly_energy == [{"month": "2026-09", "value": 7.0}]
+    assert c.total_energy_kwh == 999.99, (
+        f"total must be preserved when the total endpoint fails: "
+        f"{c.total_energy_kwh!r}"
+    )
+
+
+_run(_scenario_partial_fail())
+
+
+# ── 3. All four endpoints succeed: cache reflects new values. ─────
+
+async def _scenario_all_ok():
+    api = _MockAPI(
+        daily=[{"time": "13", "value": 11.0}],
+        monthly=[{"date": "2026-09-30", "value": 12.0}],
+        yearly=[{"month": "2026-09", "value": 13.0}],
+        total={"value": 14.0, "totalEnergy": 14.0},
+    )
+    c = _StubHistoryCoordinator(api)
+    c.today_hourly_power = []
+    c.monthly_daily_energy = []
+    c.yearly_monthly_energy = []
+    c.total_energy_kwh = 0.0
+    await _async_update_data(c)
+    assert c.today_hourly_power == [{"time": "13", "value": 11.0}]
+    assert c.monthly_daily_energy == [{"date": "2026-09-30", "value": 12.0}]
+    assert c.yearly_monthly_energy == [{"month": "2026-09", "value": 13.0}]
+    assert c.total_energy_kwh == 14.0, c.total_energy_kwh
+
+
+_run(_scenario_all_ok())
+
+
+# ── 4. The total endpoint returns an empty dict (success but empty):
+# the cache must NOT be zeroed.
+
+async def _scenario_total_empty_dict():
+    api = _MockAPI(
+        daily=[{"time": "13", "value": 11.0}],
+        monthly=[{"date": "2026-09-30", "value": 12.0}],
+        yearly=[{"month": "2026-09", "value": 13.0}],
+        total={},  # success but no value/totalEnergy field
+    )
+    c = _StubHistoryCoordinator(api)
+    c.total_energy_kwh = 999.0
+    await _async_update_data(c)
+    assert c.total_energy_kwh == 999.0, (
+        f"empty-dict total endpoint must not zero the cache: "
+        f"{c.total_energy_kwh!r}"
+    )
+
+
+_run(_scenario_total_empty_dict())
+
+
+# ── 5. Only the daily endpoint fails. ──────────────────────────────
+
+async def _scenario_daily_fail():
+    api = _MockAPI(
+        daily=RuntimeError("d"),
+        monthly=[{"date": "2026-09-30", "value": 22.0}],
+        yearly=[{"month": "2026-09", "value": 23.0}],
+        total={"value": 24.0, "totalEnergy": 24.0},
+    )
+    c = _StubHistoryCoordinator(api)
+    c.today_hourly_power = [{"time": "00", "value": 1.0}]
+    c.monthly_daily_energy = []
+    c.yearly_monthly_energy = []
+    c.total_energy_kwh = 0.0
+    await _async_update_data(c)
+    assert c.today_hourly_power == [{"time": "00", "value": 1.0}], (
+        f"daily cache should not have been replaced with []: "
+        f"{c.today_hourly_power!r}"
+    )
+    assert c.monthly_daily_energy == [{"date": "2026-09-30", "value": 22.0}]
+    assert c.yearly_monthly_energy == [{"month": "2026-09", "value": 23.0}]
+    assert c.total_energy_kwh == 24.0
+
+
+_run(_scenario_daily_fail())
+
+
+print("T14-lkg-real OK — last-known-good is preserved across partial failures")
+sys.exit(0)

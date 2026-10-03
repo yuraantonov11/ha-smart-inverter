@@ -382,6 +382,15 @@ def simulate_24h(
     """
     battery_kwh = inputs.battery_capacity_kwh
     soc = getattr(inputs, "soc_corrected", inputs.soc)
+    # T01 follow-up: an unreadable SOC means we cannot ground the
+    # rollout. Returning an empty plan list is the planner-level
+    # signal that there is nothing to suggest. The caller
+    # (``decide``/``suggest``) treats an empty list as "no
+    # predictive recommendation" and falls back to the baseline
+    # engine without making any per-hour claims the user could
+    # otherwise mistake for a confident forecast.
+    if soc is None:
+        return []
     plans = []
     night_start, night_end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
     night_duration = (night_end - night_start) % 24
@@ -556,6 +565,17 @@ def plan_night_charge(
     def late_window(hours):
         return (end - min(hours, duration)) % 24, end
 
+    # T01 follow-up: if the SOC is unknown we cannot decide whether
+    # to skip a night charge. Return the conservative default
+    # (the configured window, full charge) so the baseline engine
+    # remains the source of truth for tonight's behaviour; the
+    # planner simply abstains from saving the user money on a
+    # guess. The audit's "unreadable meter = no recommendations"
+    # rule is the planner-level counterpart of the coordinator's
+    # control-command gate.
+    if soc_corrected is None:
+        return start, end, "soc_unknown: planner abstains, baseline governs"
+
     if tomorrow_pv > 3.0:
         # Sunny tomorrow — only charge enough for safety reserve
         if soc_corrected >= 40:
@@ -720,6 +740,22 @@ class PredictiveHemsController:
             self.consumption_predictor,
             calibrator=getattr(self, "calibrator", None),
         )
+
+        # T01 follow-up: an unreadable SOC means the planner
+        # cannot make a per-hour claim. ``simulate_24h`` already
+        # returned ``[]`` in that case; here we propagate that
+        # decision by abstaining from the "apply NOW" step and
+        # returning a skip with a clear reason. The baseline
+        # engine in the coordinator remains the source of truth
+        # for tonight's behaviour.
+        if not plans:
+            skip = HemsDecision(
+                reason="[ML] soc_unknown: planner abstains",
+                skip=True,
+            )
+            self.last_decision = skip
+            self.last_plan = self._build_plan(inputs, [], reason=skip.reason)
+            return skip, self.last_plan
 
         # 4. Apply NOW
         now_plan = plans[0]

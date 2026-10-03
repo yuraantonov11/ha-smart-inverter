@@ -37,7 +37,16 @@ maybe_persist_src = _function_src("_maybe_persist_energy_state")
 mark_dirty_src = _function_src("_mark_energy_state_dirty")
 restore_src = _function_src("_restore_energy_state")
 
-ns: dict = {"__name__": "_t06_isolated", "datetime": datetime, "Any": Any}
+ns: dict = {
+    "__name__": "_t06_isolated",
+    "datetime": datetime,
+    "Any": Any,
+    # The T06 follow-up added a debug log inside the out-of-order
+    # branch; the function references the module-level
+    # ``_LOGGER``. We don't need it to do anything, but it must
+    # be importable from the isolated namespace.
+    "_LOGGER": __import__("logging").getLogger("t06_isolated"),
+}
 exec(is_daytime_src, ns)
 exec(accumulate_src, ns)
 exec(snapshot_src, ns)
@@ -346,40 +355,134 @@ assert blob["daily_savings_uah"] == 7.50
 # ── T06 follow-up: clock skew (negative elapsed) ────────────────────
 
 # T06.14: a sample with a timestamp earlier than the previous one
-# must not produce a negative integration. We use the offline-gap
-# path: since elapsed_s is negative, we substitute the 5 s
-# baseline. The daily counter therefore grows by exactly 5 s of
-# nominal power, NOT a negative amount.
+# must be *ignored* (the audit's review point). The previous code
+# path treated the skew as a 5 s interval AND rewrote
+# ``_last_sample_ts`` to ``now``, so the *next* in-order sample
+# integrated a stretched window — a 5 s + 5 s double count.
+# The fix drops the out-of-order sample entirely: counters do
+# not grow, and ``_last_sample_ts`` is not touched.
 stub = _make_stub()
 stub._accumulate_daily_energy(
     datetime(2026, 10, 3, 12, 0, 0), {"pvPower": 1000.0}
 )
 prev = stub._daily_pv_kwh
+prev_ts = stub._last_sample_ts
 earlier = datetime(2026, 10, 3, 11, 59, 30)  # 30 s in the past
 stub._accumulate_daily_energy(earlier, {"pvPower": 1000.0})
-# Counter must have grown, not shrunk.
-assert stub._daily_pv_kwh > prev, (
-    f"clock skew caused a negative integration: "
+# Counter must NOT have grown — the out-of-order sample is
+# silently dropped.
+assert stub._daily_pv_kwh == prev, (
+    f"out-of-order sample must not integrate: "
     f"prev={prev}, after={stub._daily_pv_kwh}"
 )
+# ``_last_sample_ts`` must NOT have been rewritten to ``earlier``;
+# doing so would cause the next in-order sample to integrate a
+# stretched window.
+assert stub._last_sample_ts == prev_ts, (
+    f"out-of-order sample must not rewrite _last_sample_ts: "
+    f"prev={prev_ts}, after={stub._last_sample_ts}"
+)
 
-
-# T06.15: 5 s × 1000 W / 1000 = 0.001388… kWh is the expected delta
-# for the negative-elapsed case.
+# T06.15: the next in-order sample integrates against the
+# *genuine* previous timestamp, not the dropped out-of-order
+# one. This is the regression that the audit called out: the
+# double count. With the fix, the increment equals the real
+# elapsed from the *first* sample, not from the dropped one.
 stub = _make_stub()
 stub._accumulate_daily_energy(
     datetime(2026, 10, 3, 12, 0, 0), {"pvPower": 1000.0}
 )
 prev = stub._daily_pv_kwh
+# Out-of-order sample dropped.
 stub._accumulate_daily_energy(
     datetime(2026, 10, 3, 11, 59, 30), {"pvPower": 1000.0}
 )
+# Now the in-order sample 5 s after the *first* one — 5 s elapsed.
+stub._accumulate_daily_energy(
+    datetime(2026, 10, 3, 12, 0, 5), {"pvPower": 1000.0}
+)
 expected_delta = 1000.0 * 5 / 3600 / 1000
 assert abs(stub._daily_pv_kwh - prev - expected_delta) < 1e-9, (
-    f"clock-skew baseline wrong: delta={stub._daily_pv_kwh - prev}, "
+    f"next in-order sample must integrate the real 5 s elapsed, "
+    f"not 10 s: delta={stub._daily_pv_kwh - prev}, "
     f"expected {expected_delta}"
 )
 
 
-print("T06 OK — real elapsed time + restart persistence + throttle + month rollover + clock skew verified")
+# T06.16: out-of-order sample that crosses midnight must NOT
+# trigger a day rollover or zero the daily counters. The
+# audit specifically asked for this regression. The old code
+# path rewrote ``_last_sample_ts`` to ``now``; if the dropped
+# ``now`` happened to be on the *other* day from
+# ``_last_midnight``, a subsequent midnight rollover branch
+# would zero the daily counters based on the *new* ``now``.
+# The fix keeps ``_last_midnight`` and ``_last_sample_ts``
+# untouched on an out-of-order sample, so no spurious rollover
+# fires.
+stub = _make_stub()
+# Establish a baseline at Sep 30 23:59:55.
+stub._accumulate_daily_energy(
+    datetime(2026, 9, 30, 23, 59, 55), {"pvPower": 1000.0}
+)
+# The daily counter now has a small contribution.
+prev_daily = stub._daily_pv_kwh
+prev_midnight = stub._last_midnight
+prev_ts = stub._last_sample_ts
+# Now an out-of-order sample arrives — it claims to be from
+# 30 seconds *earlier* than the previous sample. The earlier
+# code path rewrote ``_last_sample_ts`` to this older
+# timestamp; on the *next* in-order call the elapsed would be
+# ``(Sep 30 23:59:55 → Oct 1 00:00:30) = 35 s`` which crosses
+# midnight and would fire the rollover branch. With the new
+# code, the out-of-order sample is dropped, and
+# ``_last_midnight`` / ``_last_sample_ts`` are unchanged.
+stub._accumulate_daily_energy(
+    datetime(2026, 9, 30, 23, 59, 30), {"pvPower": 1000.0}
+)
+assert stub._daily_pv_kwh == prev_daily, (
+    f"out-of-order sample must not change daily counters: "
+    f"prev={prev_daily}, after={stub._daily_pv_kwh}"
+)
+assert stub._last_midnight == prev_midnight, (
+    f"_last_midnight must not change on out-of-order sample: "
+    f"prev={prev_midnight}, after={stub._last_midnight}"
+)
+assert stub._last_sample_ts == prev_ts, (
+    f"_last_sample_ts must not be rewritten by out-of-order sample: "
+    f"prev={prev_ts}, after={stub._last_sample_ts}"
+)
+
+# The next in-order sample 5 s after the *original* Sep 30
+# timestamp must integrate against the genuine elapsed, NOT
+# against the dropped timestamp.
+stub._accumulate_daily_energy(
+    datetime(2026, 9, 30, 23, 59, 58), {"pvPower": 1000.0}
+)
+# 3 s elapsed (23:59:55 → 23:59:58).
+expected = 1000.0 * 3 / 3600 / 1000
+assert abs(stub._daily_pv_kwh - prev_daily - expected) < 1e-9, (
+    f"next in-order sample must integrate the real 3 s elapsed "
+    f"from the genuine previous timestamp, not the dropped one: "
+    f"delta={stub._daily_pv_kwh - prev_daily}, expected {expected}"
+)
+
+# And an in-order sample that actually crosses midnight still
+# works: 5 s later, the rollover fires exactly once, the Sep 30
+# daily contribution folds into the monthly total, and the
+# next sample integrates against the new ``_last_sample_ts``.
+stub._accumulate_daily_energy(
+    datetime(2026, 10, 1, 0, 0, 0), {"pvPower": 1000.0}
+)
+# We just rolled over. ``_last_midnight`` is now Oct 1, the
+# Sep 30 contribution has flowed into the monthly total, and
+# the daily counters were zeroed. The next sample increments
+# from zero.
+assert stub._last_midnight.month == 10
+assert stub._daily_pv_kwh > 0, (
+    f"after the in-order rollover the daily counter should grow: "
+    f"{stub._daily_pv_kwh}"
+)
+
+
+print("T06 OK — real elapsed time + restart persistence + throttle + month rollover + clock skew + midnight-cross verified")
 sys.exit(0)

@@ -233,6 +233,7 @@ class HemsEngine:
         tarif_night: float = 2.16,
         battery_health_percent: float = 100.0,
         is_online: bool = True,
+        soc_unknown: bool = False,
     ) -> HemsDecision:
         """Run one HEMS evaluation cycle.
 
@@ -256,7 +257,15 @@ class HemsEngine:
         inputs = {**numeric, "smart_mode": smart_mode, "grid_available": grid_available,
                   "current_output": current_output, "current_charger": current_charger,
                   "forecast_today_kwh": _forecast_energy(getattr(self, "_last_forecast_today_kwh", None)),
-                  "forecast_tomorrow_kwh": forecast_tomorrow_kwh}
+                  "forecast_tomorrow_kwh": forecast_tomorrow_kwh,
+                  # T01 follow-up: propagate the unknown-SOC flag
+                  # through to the planner path. The baseline
+                  # engine still uses ``numeric["soc"]`` (set to 100
+                  # when the meter is unreadable) for its own
+                  # control math, but the planner reads
+                  # ``soc_unknown`` from this dict and treats
+                  # ``soc`` as advisory display only.
+                  "soc_unknown": bool(soc_unknown)}
         valid_telemetry = (all(value is not None for value in numeric.values())
                            and 0 <= numeric["reserve_soc"] <= 100
                            and 0 <= numeric["min_operating_soc"] <= 100)
@@ -407,7 +416,15 @@ class HemsEngine:
                 self._predictive_controller = PredictiveHemsController()
             controller = self._predictive_controller
             pi = build_planner_inputs(
-                raw={"gridVoltage": inputs["grid_voltage"], "batterySoc": inputs["soc"],
+                raw={"gridVoltage": inputs["grid_voltage"],
+                     # T01 follow-up: when ``soc_unknown`` is set, do
+                     # NOT pass a synthetic 100 into the planner
+                     # payload. The audit's complaint is exactly
+                     # this: the planner used to see 100 % and act
+                     # on it. We pass ``None`` for the raw field
+                     # and let the explicit ``soc_unknown=True``
+                     # override below carry the truth.
+                     "batterySoc": (None if inputs.get("soc_unknown") else inputs["soc"]),
                      "pvPower": inputs["pv_power"], "loadPower": inputs["load_power"],
                      "gridPower": inputs["grid_power"], "batteryPower": inputs["battery_power"]},
                 now=forecast_now, smart_mode=inputs["smart_mode"],
@@ -418,6 +435,18 @@ class HemsEngine:
                 tariff_schedule=list(getattr(self, "_tariff_schedule", []) or []),
                 consumption_history=list(getattr(self, "_consumption_history", []) or []),
                 battery_capacity_kwh=capacity, grid_available=inputs["grid_available"],
+                # T01 follow-up: propagate the unknown-SOC flag all the
+                # way into PlannerInputs so the predictive controller
+                # sees a coherent ``soc=None / soc_unknown=True``
+                # state instead of the synthetic 100 % fallback that
+                # would otherwise leak into the planner's display
+                # fields and any planning math that reads them.
+                # The baseline engine still uses ``inputs["soc"]``
+                # (=100) for its own non-predictive code paths; the
+                # gate in the coordinator already prevents any
+                # downstream inverter write. This flag is the
+                # diagnostic truth for the planner.
+                soc_unknown=bool(inputs.get("soc_unknown", False)),
             )
             hint = controller.suggest(pi)
             try:
