@@ -44,6 +44,27 @@ def train_hourly_response(power_rows, radiation_rows, tz, today):
     rejected = sorted(d for d, values in hours.items()
                       if any(radiation[t] <= 1 and p > 20 for t, p in values.items()))
     eligible -= set(rejected)
+    available_days = len(eligible)
+    training_reason = "recent_history"
+    ordered = sorted(eligible)
+    # A sustained change in generation must not be diluted by an older regime.
+    # Compare weather-normalized energy, not fixed dates or peak wattages.
+    if len(ordered) >= 8:
+        ratios_by_day = {d: days[d] / archive_days[d] for d in ordered
+                         if archive_days[d] >= .5}
+        if all(d in ratios_by_day for d in ordered[-3:]):
+            older = [ratios_by_day[d] for d in ordered[:-3] if d in ratios_by_day]
+            if len(older) >= 5:
+                baseline = median(older)
+                recent = [ratios_by_day[d] for d in ordered[-3:]]
+                if baseline > 0 and min(recent) > 2 * baseline and median(recent) > 2.5 * baseline:
+                    selected = []
+                    for d in reversed(ordered):
+                        if ratios_by_day.get(d, 0) <= 2 * baseline:
+                            break
+                        selected.append(d)
+                    eligible = set(selected)
+                    training_reason = "sustained_recent_gain_increase"
     if len(eligible) < 2:
         return None
     ratios = [{} for _ in range(24)]
@@ -64,4 +85,5 @@ def train_hourly_response(power_rows, radiation_rows, tz, today):
     return {"gains": gains, "hour_samples": [len(v) for v in ratios],
             "sample_days": len(eligible), "last_day": max(eligible),
             "rejected_days": rejected, "provisional": len(eligible) < 7,
-            "cloud_sample_days": len(eligible & cloud_days)}
+            "cloud_sample_days": len(eligible & cloud_days),
+            "available_days": available_days, "training_reason": training_reason}

@@ -60,6 +60,27 @@ class HourlyResponseTests(unittest.IsolatedAsyncioTestCase):
         old = [{**r, 'start': r['start'] - 30*86400} for r in self.power]
         self.assertIsNone(self.train(old))
 
+    def test_sustained_change_uses_recent_regime_without_fixed_dates(self):
+        power, radiation = [], []
+        for d in range(10):
+            for h in range(24):
+                ts = (self.today - timedelta(days=10-d) + timedelta(hours=h)).timestamp()
+                rad = 500 if 8 <= h <= 17 else 0
+                p = rad * (.8 if d >= 7 else .1)
+                power.append({'start': ts, 'mean': p})
+                radiation.append({'start': ts, 'mean': rad})
+        model = self.train(power, radiation)
+        self.assertEqual(model['available_days'], 10)
+        self.assertEqual(model['sample_days'], 3)
+        self.assertEqual(model['gains'][16], .8)
+        self.assertEqual(model['training_reason'], 'sustained_recent_gain_increase')
+        # A single unusually productive day does not redefine the station.
+        for row in power[:-24]:
+            row['mean'] = 50 if row['mean'] > 0 else 0
+        model = self.train(power, radiation)
+        self.assertEqual(model['sample_days'], 10)
+        self.assertEqual(model['gains'][16], .1)
+
     async def test_common_source_and_cache_invalidation(self):
         f = ForecastService(timezone_name='UTC')
         f._hourly_cache, f._daily_cache = (1, []), (1, {})
