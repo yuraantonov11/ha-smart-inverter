@@ -70,6 +70,11 @@ ns: dict[str, Any] = {
     "_LOGGER": __import__("logging").getLogger("t14_lkg_isolated"),
     "datetime": __import__("datetime").datetime,
     "asyncio": __import__("asyncio"),
+    # T14 follow-up: ``_safe_total`` uses ``math.isfinite`` to
+    # reject non-finite numbers; without ``math`` in the
+    # isolated namespace the function fails before the body
+    # even runs.
+    "math": __import__("math"),
 }
 exec(unwrap_src, ns)
 exec(async_update_src, ns)
@@ -279,6 +284,113 @@ async def _scenario_daily_fail():
 
 
 _run(_scenario_daily_fail())
+
+
+# ── 6. Total endpoint returns a malformed dict (the audit's
+# follow-up). The pair check in ``_safe_total`` rejects a dict
+# with only one of ``value`` / ``totalEnergy``; a transient
+# backend error that returns ``{"value": 0}`` instead of the
+# proper pair must not overwrite the cached total with 0.0.
+# This is the regression the audit specifically called out.
+
+async def _scenario_total_partial_pair():
+    api = _MockAPI(
+        daily=[{"time": "13", "value": 11.0}],
+        monthly=[{"date": "2026-09-30", "value": 12.0}],
+        yearly=[{"month": "2026-09", "value": 13.0}],
+        # Only one of the two required keys. The real API
+        # always returns both. ``value=0`` looks plausible but
+        # is not from the real path.
+        total={"value": 0},
+    )
+    c = _StubHistoryCoordinator(api)
+    c.today_hourly_power = []
+    c.monthly_daily_energy = []
+    c.yearly_monthly_energy = []
+    c.total_energy_kwh = 999.0
+    await _async_update_data(c)
+    # The lists update because the list endpoint is real.
+    assert c.today_hourly_power == [{"time": "13", "value": 11.0}]
+    assert c.monthly_daily_energy == [{"date": "2026-09-30", "value": 12.0}]
+    assert c.yearly_monthly_energy == [{"month": "2026-09", "value": 13.0}]
+    # The total cache is preserved: a ``{"value": 0}`` payload
+    # is rejected because the pair is missing.
+    assert c.total_energy_kwh == 999.0, (
+        f"malformed total (no totalEnergy key) must not overwrite cache: "
+        f"got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_scenario_total_partial_pair())
+
+
+# ── 7. Total endpoint returns a dict whose two keys disagree.
+# ``{"value": 0, "totalEnergy": 50.0}`` is a sign the cloud has
+# a stale value somewhere. The helper rejects it.
+
+async def _scenario_total_disagreeing_pair():
+    api = _MockAPI(
+        daily=[{"time": "13", "value": 11.0}],
+        monthly=[{"date": "2026-09-30", "value": 12.0}],
+        yearly=[{"month": "2026-09", "value": 13.0}],
+        total={"value": 0, "totalEnergy": 50.0},
+    )
+    c = _StubHistoryCoordinator(api)
+    c.total_energy_kwh = 888.0
+    await _async_update_data(c)
+    assert c.total_energy_kwh == 888.0, (
+        f"disagreeing-pair total must not overwrite cache: "
+        f"got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_scenario_total_disagreeing_pair())
+
+
+# ── 8. Total endpoint returns NaN. The helper rejects via
+# ``math.isfinite``; the cached total is preserved.
+
+async def _scenario_total_nan():
+    api = _MockAPI(
+        daily=[{"time": "13", "value": 11.0}],
+        monthly=[{"date": "2026-09-30", "value": 12.0}],
+        yearly=[{"month": "2026-09", "value": 13.0}],
+        total={"value": float("nan"), "totalEnergy": float("nan")},
+    )
+    c = _StubHistoryCoordinator(api)
+    c.total_energy_kwh = 777.0
+    await _async_update_data(c)
+    assert c.total_energy_kwh == 777.0, (
+        f"NaN total must not overwrite cache: got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_scenario_total_nan())
+
+
+# ── 9. Real API path: total endpoint returns a *real* zero
+# (battery truly produced 0 Wh). The pair is intact, so this
+# is a legitimate update; the cache is *correctly* zeroed.
+# This is the dual of scenario 6: a real zero is not a bug.
+
+async def _scenario_total_real_zero():
+    api = _MockAPI(
+        daily=[{"time": "13", "value": 11.0}],
+        monthly=[{"date": "2026-09-30", "value": 12.0}],
+        yearly=[{"month": "2026-09", "value": 13.0}],
+        total={"value": 0.0, "totalEnergy": 0.0},
+    )
+    c = _StubHistoryCoordinator(api)
+    c.total_energy_kwh = 555.0
+    await _async_update_data(c)
+    # A real ``{"value": 0, "totalEnergy": 0}`` is a real
+    # reading: the cache updates to 0.
+    assert c.total_energy_kwh == 0.0, (
+        f"real zero total must update the cache; got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_scenario_total_real_zero())
 
 
 print("T14-lkg-real OK — last-known-good is preserved across partial failures")

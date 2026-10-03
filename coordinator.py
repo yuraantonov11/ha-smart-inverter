@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -657,11 +658,18 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         )
 
         self._persist_night_recommendation(now)
-        # Store diagnostics
+        # Store diagnostics. The audit requires that the
+        # last-cmd attributes do not advertise a decision the
+        # gate refused to dispatch: a user inspecting the
+        # diagnostic sensor must not see "the engine wanted SBU"
+        # when the actual write was suppressed because the SOC
+        # was unreadable. We therefore record the *real* state
+        # here and overwrite the *would-have-been* values below
+        # when the gate fires.
         self.hems_last_reason = decision.reason
         self.hems_last_output_cmd = decision.output_priority
         self.hems_last_charger_cmd = decision.charger_priority
-        self.hems_buzzer_off = decision.buzzer_off
+        self.buzzer_off_candidate = decision.buzzer_off  # noqa: F841
 
         # ── Update HEMS daily counters (cheap, no I/O) ─────────────────
         today = now.strftime("%Y-%m-%d")
@@ -685,7 +693,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # output change, the audit requires us to refuse to write
         # anything to the inverter while the meter is unreadable.
         # We log the suppressed action so a future operator can
-        # see what would have happened, then return without a write.
+        # see what would have happened, and *also* reset the
+        # diagnostic ``hems_last_*`` attributes so the dashboard
+        # does not advertise a decision we did not actually
+        # write. The reason field is left as the engine's reason
+        # — with a ``soc_unknown:`` prefix — so the operator can
+        # still diagnose why nothing happened.
         if soc_unknown:
             if not decision.skip and (
                 decision.output_priority is not None
@@ -703,6 +716,14 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 self._hems_debug_skips += 1
                 if self._hems_debug_commands:
                     self._hems_debug_commands -= 1
+            # Clear the last-cmd diagnostics so the user does
+            # not mistake the engine's recommendation for a
+            # written command. The reason field carries the
+            # ``soc_unknown`` prefix so the absence of a real
+            # dispatch is itself diagnosable.
+            self.hems_last_output_cmd = None
+            self.hems_last_charger_cmd = None
+            self.hems_buzzer_off = False
             return
 
         # Execute command
@@ -1456,36 +1477,61 @@ class HistoryCoordinator(DataUpdateCoordinator):
             )
             return [], True
 
-        def _safe_total(value: Any, label: str) -> tuple[dict, float]:
+        def _safe_total(value: Any, label: str) -> tuple[dict, float, bool]:
+            """Convert the total-energy endpoint's payload.
+
+            Returns ``(value_dict, total_kwh, is_fallback)``. The
+            dict returned to the caller mirrors the input when
+            the input was a real dict; it is the empty ``{}``
+            for every fallback path.
+
+            The audit's review point: a real API response from
+            ``api.fetch_total_energy`` always includes **both**
+            ``value`` and ``totalEnergy`` keys (see
+            ``api.py:fetch_total_energy``). A dict that has
+            only one of them — or a non-dict — is therefore
+            suspect. A transient backend error that returns
+            ``{"value": 0}`` instead of the proper pair would
+            otherwise overwrite the cached total with 0.0. We
+            require the pair to be present and equal; otherwise
+            the slot is treated as a fallback and the cache
+            write is suppressed by the caller.
+            """
             if isinstance(value, BaseException):
                 _LOGGER.warning(
                     "HistoryCoordinator: %s endpoint failed: %s",
                     label,
                     type(value).__name__,
                 )
-                return {}, 0.0
-            if isinstance(value, dict):
-                raw = value.get("value")
-                if raw is None:
-                    raw = value.get("totalEnergy")
-                if isinstance(raw, (int, float)):
-                    try:
-                        total_kwh = float(raw)
-                    except (TypeError, ValueError):
-                        return value, 0.0
-                    return value, total_kwh
-                if isinstance(raw, str):
-                    try:
-                        return value, float(raw)
-                    except ValueError:
-                        return value, 0.0
-                return value, 0.0
-            _LOGGER.warning(
-                "HistoryCoordinator: %s endpoint returned unexpected %s",
-                label,
-                type(value).__name__,
-            )
-            return {}, 0.0
+                return {}, 0.0, True
+            if not isinstance(value, dict):
+                _LOGGER.warning(
+                    "HistoryCoordinator: %s endpoint returned unexpected %s",
+                    label,
+                    type(value).__name__,
+                )
+                return {}, 0.0, True
+            # Real API responses always have both ``value`` and
+            # ``totalEnergy`` and they match. Anything else is a
+            # signal that the payload is malformed and we should
+            # not trust the number on its own.
+            v = value.get("value")
+            e = value.get("totalEnergy")
+            if v is None or e is None:
+                return {}, 0.0, True
+            try:
+                v_f = float(v)
+                e_f = float(e)
+            except (TypeError, ValueError):
+                return {}, 0.0, True
+            if v_f != e_f:
+                # The two fields disagree; the cloud has a stale
+                # value somewhere. Treat as fallback rather than
+                # silently pick one.
+                return {}, 0.0, True
+            if not math.isfinite(v_f):
+                return {}, 0.0, True
+            return value, v_f, False
 
         today_pair = _safe_list(today_power_raw, "daily")
         monthly_pair = _safe_list(monthly_raw, "monthly")
@@ -1534,7 +1580,7 @@ class HistoryCoordinator(DataUpdateCoordinator):
             today_power, today_fallback = today_pair
             monthly_energy, monthly_fallback = monthly_pair
             yearly_energy, yearly_fallback = yearly_pair
-            total_data, total_kwh = total_pair
+            total_data, total_kwh, total_fallback = total_pair
 
             _LOGGER.info(
                 "HistoryCoordinator: daily=%d monthly=%d yearly=%d total_keys=%s "
@@ -1569,11 +1615,17 @@ class HistoryCoordinator(DataUpdateCoordinator):
                 self.monthly_daily_energy = monthly_energy
             if not yearly_fallback and isinstance(yearly_energy, list):
                 self.yearly_monthly_energy = yearly_energy
-            # ``total_data`` is a dict; a fallback is reported as
-            # an empty dict (``{}``). The numeric total_kwh is
-            # already 0.0 in that case, so we skip the cache write
-            # and keep the previous reading instead of zeroing it.
-            if isinstance(total_data, dict) and total_data:
+            # The total endpoint is more subtle: the audit's
+            # follow-up pointed out that ``total_data`` may be a
+            # non-empty dict (``{"value": 0}``) that nonetheless
+            # does not come from the real API path — the field
+            # pairing check in ``_safe_total`` is what tells us
+            # whether to trust the number. Use the explicit
+            # ``total_fallback`` flag rather than the
+            # ``isinstance(..., dict) and total_data`` heuristic
+            # so a malformed ``{"value": 0}`` cannot zero the
+            # cached total.
+            if not total_fallback:
                 self.total_energy_kwh = total_kwh
 
             # Refresh daily historical weather (last 7 days) in the
