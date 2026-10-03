@@ -13,6 +13,8 @@ import hashlib
 import hmac
 import json
 import logging
+import math
+import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -48,6 +50,59 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# T04: well-known secret field names that must never be written to a
+# log line. The set is checked both in JSON objects and inside the
+# raw body (e.g. when a malformed response is dumped at ERROR level).
+_SECRET_KEYS = frozenset(
+    {
+        "accessToken",
+        "refreshToken",
+        "token",
+        "idToken",
+        "password",
+        "passwd",
+        "pwd",
+        "secret",
+        "apiKey",
+        "apikey",
+    }
+)
+
+
+def _redact_secrets(text: str) -> str:
+    """Return ``text`` with well-known secret field values masked.
+
+    Two passes:
+      1. JSON-style ``"key":"value"`` or ``"key": "value"`` — replace
+         the value with ``"***"``. Operates on the regex level so it
+         survives responses that are almost but not quite valid JSON.
+      2. URL-style ``key=value`` (e.g. ``?accessToken=…&…``) — replace
+         the value with ``***``.
+
+    This is intentionally not exhaustive. The goal is to keep token
+    echoes out of HA's diagnostic bundle; a determined attacker who
+    has access to the log file already has full access to the host.
+    """
+    if not text:
+        return text
+    masked = text
+    for key in _SECRET_KEYS:
+        # JSON-ish "key": "value"
+        masked = re.sub(
+            rf'("{re.escape(key)}"\s*:\s*)"[^"]*"',
+            r'\1"***"',
+            masked,
+            flags=re.IGNORECASE,
+        )
+        # URL-ish key=value
+        masked = re.sub(
+            rf'({re.escape(key)}\s*=\s*)([^\s&,";]+)',
+            r'\1***',
+            masked,
+            flags=re.IGNORECASE,
+        )
+    return masked
 
 
 class InverterApiError(Exception):
@@ -229,13 +284,23 @@ class InverterApiClient:
             ) as resp:
                 status = resp.status
                 raw_text = await resp.text()
-                _LOGGER.debug("Login response status=%d body=%s", status, raw_text[:500])
+                # T04: never log raw response body — login responses
+                # can carry accessToken / refreshToken / password echo.
+                # We log a safe summary (status + code/error class)
+                # and a redaction-stripped subset for diagnostics.
+                _LOGGER.debug(
+                    "Login response status=%d length=%d", status, len(raw_text)
+                )
                 try:
                     data = json.loads(raw_text)
                 except (ValueError, TypeError) as json_err:
+                    # On parse failure we still need to log enough to
+                    # diagnose, but we strip the same sensitive fields
+                    # we strip from any auth payload.
+                    sanitized = _redact_secrets(raw_text)
                     _LOGGER.error(
                         "Login JSON parse error: %s. Raw: %s",
-                        json_err, raw_text[:300]
+                        json_err, sanitized[:200],
                     )
                     raise InverterAuthError(
                         f"Invalid API response (status={status})"
@@ -247,9 +312,10 @@ class InverterApiClient:
         code = data.get("code")
         if code != 0:
             msg = data.get("msg", data.get("message", "Unknown error"))
+            # T04: never dump the full data dict on login failure;
+            # it may contain accessToken or refreshToken echoed back.
             _LOGGER.error(
-                "Login failed: code=%s msg=%s data=%s",
-                code, msg, str(data)[:300]
+                "Login failed: code=%s msg=%s", code, msg,
             )
             raise InverterAuthError(msg)
 
@@ -485,6 +551,37 @@ class InverterApiClient:
                 val = self._parse_double(item, default)
             return val * 1000 if kw else val
 
+        def _first_present(
+            _raw_fields: dict,
+            keys: tuple[str, ...],
+            default: float | None = 0.0,
+        ):
+            """Return the first raw field that is present and finite.
+
+            Used to recover a real ``0`` from API payloads: ``_val`` returns
+            the supplied default for absent keys, and ``a or b`` swallows a
+            legitimate 0 because 0 is falsy. T01 fix.
+            """
+            sentinel: Any = object()
+            for key in keys:
+                if key not in _raw_fields:
+                    continue
+                item = _raw_fields[key]
+                if isinstance(item, dict):
+                    raw = item.get("value")
+                else:
+                    raw = item
+                parsed = self._parse_double(raw, sentinel)
+                if parsed is sentinel:
+                    continue
+                try:
+                    if not math.isfinite(float(parsed)):
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                return float(parsed)
+            return default
+
         def _str(key: str, default: str = "") -> str:
             item = raw_fields.get(key, {})
             if isinstance(item, dict):
@@ -555,7 +652,16 @@ class InverterApiClient:
             "gridPower": grid_power,
             "batteryPower": battery_power,
             "loadPower": load_power,
-            "batterySoc": _val("batterySoc", 100.0) or _val("batteryCapacity", 100.0),
+            # T01 fix: a real batterySoc of 0 must NOT be coerced into a
+            # fallback value. Python's ``or`` treats 0 as falsy and would
+            # silently swap it for batteryCapacity (or the default 100),
+            # making a critically-empty battery look full. Use the first
+            # *present and valid* field instead. Missing SOC stays None so
+            # downstream consumers (coordinator / sensors) can mark the
+            # value as unknown rather than fabricate a 100% reading.
+            "batterySoc": _first_present(
+                raw_fields, ("batterySoc", "batteryCapacity"), default=None
+            ),
             "pvVoltage": pv_input_voltage,
             "gridVoltage": _val("gridVoltage") or _val("acInputVoltage"),
             "batteryVoltage": battery_voltage,
@@ -1036,10 +1142,18 @@ class InverterApiClient:
 
     @staticmethod
     def _parse_double(value: Any, default: float = 0.0) -> float:
-        """Safely parse a numeric value (mirrors _parseDouble from Dart)."""
+        """Safely parse a numeric value (mirrors _parseDouble from Dart).
+
+        T03: rejects NaN / +/-Infinity and silently returns ``default``.
+        A non-finite number is never a valid measurement; propagating it
+        would skew averages, fault checks, and the keepalive math.
+        """
         if value is None:
             return default
         try:
-            return float(value)
+            parsed = float(value)
         except (ValueError, TypeError):
             return default
+        if not math.isfinite(parsed):
+            return default
+        return parsed

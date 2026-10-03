@@ -108,12 +108,12 @@ class InverterHemsAutoModeSwitch(CoordinatorEntity, SwitchEntity):
         return self.coordinator.hems_auto_mode
 
     async def async_turn_on(self, **kwargs) -> None:
-        self.coordinator.hems_auto_mode = True
+        self.coordinator.async_set_hems_auto_mode(True)
         self.async_write_ha_state()
         _LOGGER.info("HEMS auto mode enabled")
 
     async def async_turn_off(self, **kwargs) -> None:
-        self.coordinator.hems_auto_mode = False
+        self.coordinator.async_set_hems_auto_mode(False)
         self.async_write_ha_state()
         _LOGGER.info("HEMS auto mode disabled")
 

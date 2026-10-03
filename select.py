@@ -267,7 +267,7 @@ class InverterSmartModeSelect(InverterSelectBase):
 
     async def async_select_option(self, option: str) -> None:
         mode = SMART_MODE_VALUE_MAP.get(option, 0)
-        self.coordinator.smart_mode = mode
+        self.coordinator.async_set_smart_mode(mode)
         _LOGGER.info("HEMS smart mode set to %s (%d)", option, mode)
 
 

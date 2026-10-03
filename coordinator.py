@@ -45,6 +45,18 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     Now includes the full HEMS engine for intelligent control.
     """
 
+    # T06: maximum interval between two consecutive samples. Anything
+    # longer than this is treated as an offline gap and the stale
+    # reading is NOT integrated into the daily counters. The default
+    # of 60 s is far above the documented 5 s fetch cadence but
+    # tolerates brief transient gaps without dropping data.
+    _MAX_SAMPLE_GAP_S: float = 60.0
+
+    # Number of days the daily counters may live in a single persisted
+    # blob. Older days are not needed for current display but we keep
+    # one extra so a mid-day restart can detect rollover properly.
+    _ENERGY_STATE_SCHEMA_VERSION: int = 1
+
     def __init__(
         self,
         hass: HomeAssistant,
@@ -63,9 +75,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._entry = entry
         self._consecutive_nulls = 0
 
-        # HEMS state
-        self.smart_mode: int = 0  # 0=Adaptive, 1=Arbitrage, 2=Storm
-        self.hems_auto_mode: bool = True
+        # HEMS state. T02 fix: user toggles for HEMS auto mode and smart
+        # mode are read from ``entry.options`` so they survive reload. The
+        # defaults below match the previous in-memory behaviour for
+        # entries that don't carry the keys yet.
+        self.smart_mode: int = int(entry.options.get("smart_mode", 0))  # 0=Adaptive, 1=Arbitrage, 2=Storm
+        self.hems_auto_mode: bool = bool(entry.options.get("hems_auto_mode", True))
         # Master toggle: if False, integration runs in monitor-only mode.
         # Reads inverter state but never sends commands to the device.
         # Configurable via integration options (default: True).
@@ -175,7 +190,13 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._load_profile: dict[int, float] = {}
 
         # ── Forecast & Economics ──────────────────────────────────────
+        # T06 fix: counters are restored from ``entry.options`` if a
+        # previous coordinator instance persisted them. The persisted
+        # state is a single JSON blob keyed by ``_energy_state`` so the
+        # option list stays flat. We keep in-memory mirrors here for
+        # hot-path access and rewrite the blob on each successful sample.
         self._last_midnight: datetime | None = None
+        self._last_sample_ts: datetime | None = None
         self._daily_pv_kwh: float = 0.0
         self._daily_grid_import_day_kwh: float = 0.0
         self._daily_grid_import_night_kwh: float = 0.0
@@ -186,6 +207,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._monthly_savings_uah: float = 0.0
         self._day_tariff_uah: float = float(entry.options.get("tariff_day", 4.32))
         self._night_tariff_uah: float = float(entry.options.get("tariff_night", 2.16))
+        self._restore_energy_state(entry.options.get("_energy_state"))
 
         # Forecast service (activated on first update)
         self._forecast: ForecastService | None = None
@@ -283,6 +305,62 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             state.update(applied=False, target_soc=record["target_soc"], override_pending_until=record["until"])
             self.async_update_listeners()
         _LOGGER.info("Predictive feedback: action=%s duration_min=%d target_soc=%s", action, duration_min, new_target_soc)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # T02: persistence for HEMS user toggles
+    # ═══════════════════════════════════════════════════════════════════
+
+    def async_set_hems_auto_mode(self, enabled: bool) -> None:
+        """Toggle HEMS automatic control; persist to ``entry.options``.
+
+        The user-off path here is the one called from the Lovelace switch
+        and the matching HA service. The integration must NOT re-enable
+        HEMS after reload simply because a downstream component queried
+        the option. ``self.hems_auto_mode`` is updated atomically with the
+        persistent value so a partial write can't leave the coordinator
+        in a state that disagrees with the entry.
+        """
+        self.hems_auto_mode = bool(enabled)
+        self._persist_user_option("hems_auto_mode", self.hems_auto_mode)
+
+    def async_set_smart_mode(self, mode: int) -> None:
+        """Change HEMS strategy (Adaptive / Arbitrage / Storm) and persist.
+
+        T02: this is the user choice, distinct from any temporary
+        auto-Storm activation triggered by forecast or grid loss. A
+        later code path that flips ``smart_mode`` for automation must
+        not overwrite the value persisted here.
+        """
+        try:
+            mode_int = int(mode)
+        except (TypeError, ValueError):
+            mode_int = 0
+        if mode_int not in (0, 1, 2):
+            mode_int = 0
+        self.smart_mode = mode_int
+        self._persist_user_option("smart_mode", self.smart_mode)
+
+    def _persist_user_option(self, key: str, value) -> None:
+        """Update a single user-visible option on the config entry.
+
+        Failures are logged at debug level and never raise — caller code
+        that already updated the in-memory attribute must not be undone
+        by a write error. Returning ``False`` here would invite races
+        where the UI claims success while the value is lost; instead we
+        log and keep the in-memory change. The next successful reload
+        will still read the in-memory value because ``_async_update_data``
+        does not overwrite these fields.
+        """
+        if self._entry is None or self.hass is None:
+            return
+        try:
+            new_opts = dict(self._entry.options)
+            new_opts[key] = value
+            self.hass.config_entries.async_update_entry(
+                self._entry, options=new_opts
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("persist user option %s=%s failed: %s", key, value, exc)
 
     # ═══════════════════════════════════════════════════════════════════
     # MAIN UPDATE LOOP
@@ -809,10 +887,29 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         return 7 <= now.hour < 23
 
     def _accumulate_daily_energy(self, now: datetime, raw: dict[str, Any]) -> None:
-        """Integrate 5-second power samples into daily kWh totals."""
+        """Integrate samples into daily kWh totals.
+
+        T05: every counter is in kWh (not Wh).
+        T06: the integration interval is the *real* elapsed time since
+        the previous sample, not a hardcoded 5 s. Gaps larger than
+        ``_MAX_SAMPLE_GAP_S`` are treated as offline: we do not
+        integrate the stale power reading, so a 30-minute outage does
+        not dump 30 minutes of phantom energy into the daily totals.
+        Counters and the last sample timestamp are persisted at the
+        end of every successful run so a restart does not zero out
+        the day's running total.
+        """
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        if self._last_midnight != today:
-            self._last_midnight = today
+        if self._last_midnight is not None and self._last_midnight != today:
+            # Day changed since the previous sample — close out the
+            # previous day's savings into the running monthly total,
+            # then zero the daily counters. We do NOT also reset the
+            # monthly counter on the first day of the month; that
+            # happened on the previous midnight's "now.day == 1" check
+            # if the integration was running that night. If the
+            # integration was offline the whole previous month, the
+            # monthly counter simply carries forward the last known
+            # value, which is preferable to silently dropping data.
             self._monthly_savings_uah += self._daily_savings_uah
             self._daily_pv_kwh = 0.0
             self._daily_grid_import_day_kwh = 0.0
@@ -823,22 +920,48 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             self._daily_savings_uah = 0.0
             if now.day == 1:
                 self._monthly_savings_uah = 0.0
-        dt_h = 5.0 / 3600.0
+        self._last_midnight = today
+
+        # Compute real elapsed time.
+        if self._last_sample_ts is None:
+            # First sample of a fresh coordinator. The audit accepts
+            # using a nominal interval here — there is no previous
+            # measurement to integrate. 5 s matches the documented
+            # fetch cadence.
+            dt_h = 5.0 / 3600.0
+        else:
+            elapsed_s = (now - self._last_sample_ts).total_seconds()
+            if elapsed_s < 0:
+                # Clock skew / out-of-order sample: treat as 5 s
+                # rather than negative integration.
+                dt_h = 5.0 / 3600.0
+            elif elapsed_s > self._MAX_SAMPLE_GAP_S:
+                # Offline gap. We do not integrate the stale reading
+                # because the previous sample's power no longer
+                # represents the present. The next valid sample will
+                # start a fresh interval.
+                self._last_sample_ts = now
+                return
+            else:
+                dt_h = elapsed_s / 3600.0
+        self._last_sample_ts = now
+
         daytime = self._is_daytime(now)
 
         pv_w = raw.get("pvPower", 0.0) or 0.0
         grid_w = raw.get("gridPower", 0.0) or 0.0
         battery_w = raw.get("batteryPower", 0.0) or 0.0
 
-        self._daily_pv_kwh += pv_w * dt_h
+        # T05: convert W·h to kWh before storing.
+        self._daily_pv_kwh += pv_w * dt_h / 1000.0
 
         if grid_w > 10:
             if daytime:
-                self._daily_grid_import_day_kwh += grid_w * dt_h
+                self._daily_grid_import_day_kwh += grid_w * dt_h / 1000.0
             else:
-                self._daily_grid_import_night_kwh += grid_w * dt_h
+                self._daily_grid_import_night_kwh += grid_w * dt_h / 1000.0
         elif grid_w < -10:
-            self._daily_grid_export_kwh += abs(grid_w) * dt_h
+            self._daily_grid_export_kwh += abs(grid_w) * dt_h / 1000.0
 
         # battery_w > 0 = charging, < 0 = discharging (solar.siseli.com API convention)
         if battery_w < -10:
@@ -860,6 +983,114 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             + self._daily_battery_discharge_night_kwh * self._night_tariff_uah,
             2,
         )
+
+        # T06: persist the running state. We do this *after* the
+        # counters are updated, so a crash mid-update only loses the
+        # current interval, not the accumulated day. Persistence
+        # failures are logged at debug level — losing one snapshot of
+        # the running total is preferable to raising out of a hot path.
+        self._persist_energy_state(now)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # T06: persistence helpers for energy counters
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _energy_state_snapshot(self, now: datetime) -> dict[str, Any]:
+        """Return the JSON-serialisable blob that we persist on options."""
+        return {
+            "schema": self._ENERGY_STATE_SCHEMA_VERSION,
+            "now_iso": now.isoformat() if now else None,
+            "last_midnight_iso": (
+                self._last_midnight.isoformat() if self._last_midnight else None
+            ),
+            "last_sample_ts_iso": (
+                self._last_sample_ts.isoformat() if self._last_sample_ts else None
+            ),
+            "daily_pv_kwh": self._daily_pv_kwh,
+            "daily_grid_import_day_kwh": self._daily_grid_import_day_kwh,
+            "daily_grid_import_night_kwh": self._daily_grid_import_night_kwh,
+            "daily_grid_export_kwh": self._daily_grid_export_kwh,
+            "daily_battery_discharge_day_kwh": self._daily_battery_discharge_day_kwh,
+            "daily_battery_discharge_night_kwh": self._daily_battery_discharge_night_kwh,
+            "daily_savings_uah": self._daily_savings_uah,
+            "monthly_savings_uah": self._monthly_savings_uah,
+        }
+
+    def _persist_energy_state(self, now: datetime) -> None:
+        """Write the running counter snapshot to ``entry.options``.
+
+        Failure to persist is logged at debug level only. The audit
+        requires that the *in-memory* counters are the source of
+        truth for the current run, and that a failed write does not
+        raise out of the polling loop. The next successful write
+        overwrites the previous one, so transient HA hiccups are
+        self-healing.
+        """
+        if getattr(self, "_entry", None) is None or getattr(self, "hass", None) is None:
+            return
+        try:
+            blob = self._energy_state_snapshot(now)
+            import json as _json
+            new_opts = dict(self._entry.options)
+            new_opts["_energy_state"] = _json.dumps(blob, ensure_ascii=False)
+            self.hass.config_entries.async_update_entry(
+                self._entry, options=new_opts
+            )
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("persist energy state failed: %s", exc)
+
+    def _restore_energy_state(self, blob: Any) -> None:
+        """Hydrate in-memory counters from a previously persisted blob.
+
+        Malformed or stale blobs are silently ignored — the counters
+        start at zero and the integration accumulates from the next
+        sample. We do not raise, because the integration is allowed
+        to start fresh if its prior state is no longer trustworthy.
+        """
+        if not blob:
+            return
+        import json as _json
+        try:
+            data = _json.loads(blob) if isinstance(blob, str) else blob
+        except (TypeError, ValueError):
+            return
+        if not isinstance(data, dict):
+            return
+        if data.get("schema") != self._ENERGY_STATE_SCHEMA_VERSION:
+            # Older or newer schema — keep current defaults.
+            return
+
+        def _ts(key: str) -> datetime | None:
+            value = data.get(key)
+            if not value:
+                return None
+            try:
+                # ``fromisoformat`` understands both naive and tz-aware
+                # ISO-8601 strings. We keep whatever the saved value
+                # had; the next sample will normalise to naive.
+                return datetime.fromisoformat(value)
+            except (TypeError, ValueError):
+                return None
+
+        self._last_midnight = _ts("last_midnight_iso")
+        self._last_sample_ts = _ts("last_sample_ts_iso")
+        for name in (
+            "daily_pv_kwh",
+            "daily_grid_import_day_kwh",
+            "daily_grid_import_night_kwh",
+            "daily_grid_export_kwh",
+            "daily_battery_discharge_day_kwh",
+            "daily_battery_discharge_night_kwh",
+            "daily_savings_uah",
+            "monthly_savings_uah",
+        ):
+            value = data.get(name)
+            try:
+                if value is None:
+                    continue
+                setattr(self, "_" + name, float(value))
+            except (TypeError, ValueError):
+                continue
 
     # ═══════════════════════════════════════════════════════════════════
     # AUTO HOUSE LOAD RESERVE
@@ -953,20 +1184,20 @@ class HistoryCoordinator(DataUpdateCoordinator):
         self.daily_weather_count: int = 0
 
     async def _async_update_data(self) -> dict[str, Any]:
-        """Fetch historical data from the API."""
+        """Fetch historical data from the API.
+
+        T14: ``asyncio.gather(return_exceptions=True)`` returns exception
+        instances in the result list when a coroutine raises. The
+        previous code path then called ``len(...)`` and ``.get(...)``
+        on those instances, which crashed the whole coordinator and
+        hid the successful series. We now unwrap each result, fall
+        back to the last known good series for the failed endpoint,
+        and log the failure so a single broken endpoint does not
+        take down every chart.
+        """
         _LOGGER.debug("HistoryCoordinator: fetching historical data")
 
         try:
-            # Fetch all 4 data series from ownerOverView endpoints in
-            # parallel. Previously these ran sequentially with a 1s
-            # rate-limit pause between each (≈4s wall time per cycle). With
-            # _apply_rate_limit holding a shared lock, concurrent dispatch
-            # serialises them inside the lock to a single 1s wait — the
-            # four requests still go out one-after-another from the cloud's
-            # point of view, but the wall-clock for the coordinator drops
-            # from ~4s to ~1s + 4*network_rtt (≈ 2-2.5s on a healthy link).
-            # return_exceptions=True so a single failure doesn't poison
-            # the whole batch; downstream logic already handles [] / {}.
             results = await asyncio.gather(
                 self.api.fetch_daily_power(),
                 self.api.fetch_monthly_energy(),
@@ -974,26 +1205,50 @@ class HistoryCoordinator(DataUpdateCoordinator):
                 self.api.fetch_total_energy(),
                 return_exceptions=True,
             )
-            today_power, monthly_energy, yearly_energy, total_data = results
+            (
+                today_power,
+                monthly_energy,
+                yearly_energy,
+                total_data,
+            ) = self._unwrap_history_results(results)
 
             _LOGGER.info(
                 "HistoryCoordinator: daily=%d monthly=%d yearly=%d total_keys=%s",
-                len(today_power), len(monthly_energy), len(yearly_energy),
-                list(total_data.keys()) if isinstance(total_data, dict) else type(total_data).__name__,
+                len(today_power) if isinstance(today_power, list) else -1,
+                len(monthly_energy) if isinstance(monthly_energy, list) else -1,
+                len(yearly_energy) if isinstance(yearly_energy, list) else -1,
+                (
+                    list(total_data.keys())
+                    if isinstance(total_data, dict)
+                    else type(total_data).__name__
+                ),
             )
-            if today_power:
+            if isinstance(today_power, list) and today_power:
                 _LOGGER.info("Daily sample: %s", today_power[0])
-            if monthly_energy:
+            if isinstance(monthly_energy, list) and monthly_energy:
                 _LOGGER.info("Monthly sample: %s", monthly_energy[0])
 
-            total_kwh = total_data.get("value") or total_data.get("totalEnergy") or 0.0
-            if isinstance(total_kwh, str):
-                total_kwh = float(total_kwh)
+            total_kwh = 0.0
+            if isinstance(total_data, dict):
+                raw = total_data.get("value")
+                if raw is None:
+                    raw = total_data.get("totalEnergy")
+                if isinstance(raw, (int, float)):
+                    total_kwh = float(raw)
+                elif isinstance(raw, str):
+                    try:
+                        total_kwh = float(raw)
+                    except ValueError:
+                        total_kwh = 0.0
 
-            # Store for sensor access
-            self.today_hourly_power = today_power
-            self.monthly_daily_energy = monthly_energy
-            self.yearly_monthly_energy = yearly_energy
+            # Store for sensor access — last known good is preserved
+            # when a particular endpoint failed.
+            if isinstance(today_power, list):
+                self.today_hourly_power = today_power
+            if isinstance(monthly_energy, list):
+                self.monthly_daily_energy = monthly_energy
+            if isinstance(yearly_energy, list):
+                self.yearly_monthly_energy = yearly_energy
             self.total_energy_kwh = total_kwh
 
             # Refresh daily historical weather (last 7 days) in the

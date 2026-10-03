@@ -116,7 +116,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         api, coordinator = await _get_api(call)
         mode = call.data["mode"]
         mode_val = _MODE_VALUE.get(mode, 0)
-        coordinator.smart_mode = mode_val
+        coordinator.async_set_smart_mode(mode_val)
         _LOGGER.info("Service: smart mode → %s (%d)", mode, mode_val)
 
     async def handle_force_grid_charge(call: ServiceCall) -> None:
