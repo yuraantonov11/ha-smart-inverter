@@ -33,6 +33,8 @@ class CloudHoursTests(unittest.IsolatedAsyncioTestCase):
         rows = measured_pv_hours(props(points(self.day)), self.day, kyiv_2026())
         self.assertEqual(len(rows), 24)
         self.assertEqual(rows[0]['mean'], 200)
+        self.assertEqual([s['power_w'] for s in rows[0]['samples']], [100,300])
+        self.assertEqual(rows[0]['samples'][1]['time'], '2026-10-02T00:30:00+03:00')
         self.assertEqual(rows[0]['start'], datetime(2026, 10, 1, 21, tzinfo=timezone.utc).timestamp())
         zero = points(self.day)
         for p in zero: p['value'] = 0

@@ -228,7 +228,7 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
         add_extra_js_url(hass, f"{fc_url}?v=1.8.2")
-        add_extra_js_url(hass, "/local/community/powmr-inverter/pv-comparison-card.js?v=1")
+        add_extra_js_url(hass, "/local/community/powmr-inverter/pv-comparison-card.js?v=2")
         # Power history chart card (v3.0: per-series chart_type, smooth curves)
         ph_url = "/local/community/powmr-inverter/power-history-card.js"
         add_extra_js_url(hass, f"{ph_url}?v=1.8.12")
@@ -507,9 +507,10 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     curve_eid = _e("pv_generation_curve")
     forecast_eid = _e("forecast_tomorrow")
     if curve_eid and forecast_eid:
-        history_cards.append({"type": "grid", "cards": [{
+        history_cards.append({"type": "grid", "column_span": 2, "cards": [{
             "type": "custom:pv-comparison-card", "entity": curve_eid,
             "forecast_entity": forecast_eid, "title": "Генерація та прогноз PV",
+            "grid_options": {"columns": "full"},
         }]})
 
     monthly_energy_eid = _e("history_monthly_energy")

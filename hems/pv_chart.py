@@ -32,6 +32,8 @@ def chart_points(records, now):
 def previous_curve(cache, now):
     day = (now.date() - timedelta(days=1)).isoformat()
     rows = cache.days.get(day, []) if cache else []
-    return {'date': day, 'points': [
-        {'time': timestamp(r['start']).astimezone(now.tzinfo).isoformat(), 'power_w': r['mean']}
-        for r in rows]}
+    raw = bool(rows) and all('samples' in r for r in rows)
+    return {'date': day, 'basis': 'cloud_half_hour_samples' if raw else 'hourly_sample_mean',
+            'points': [s for r in rows for s in r['samples']] if raw else [
+                {'time': timestamp(r['start']).astimezone(now.tzinfo).isoformat(), 'power_w': r['mean']}
+                for r in rows]}

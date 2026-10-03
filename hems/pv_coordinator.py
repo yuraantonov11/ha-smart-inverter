@@ -173,7 +173,8 @@ class PvLearningCoordinatorMixin:
             # Newest days first; historical requests use the verified daily API.
             for offset in range(1, 15):
                 day = local_now.date() - timedelta(days=offset)
-                if day.isoformat() in cache.days:
+                if (day.isoformat() in cache.days
+                        and all("samples" in row for row in cache.days[day.isoformat()])):
                     continue
                 rows = await self.api.fetch_hourly_pv_history_day(day, self.hass.config.time_zone)
                 if day.isoformat() in complete_hourly_days(rows, self._site_timezone, local_now.date()):
@@ -187,7 +188,7 @@ class PvLearningCoordinatorMixin:
             _LOGGER.warning("Cloud hourly PV history unavailable; retaining measured recorder history: %s", exc)
 
     async def _maybe_train_hourly_pv(self, now):
-        from .pv_hourly import train_hourly_response
+        from .pv_hourly import train_hourly_response, validate_hourly_response
         rows = getattr(self, "_hourly_pv_rows", [])
         cache = getattr(self, "_cloud_hourly_cache", None)
         if cache and cache.days:
@@ -212,6 +213,9 @@ class PvLearningCoordinatorMixin:
             archive = await self._forecast.get_archive_hourly_radiation(
                 local_now.date() - timedelta(days=14), local_now.date() - timedelta(days=1))
             model = train_hourly_response(rows, archive, self._site_timezone, local_now.date())
+            if model:
+                model["validation"] = validate_hourly_response(rows, archive, self._site_timezone,
+                                                                 local_now.date())
             if self._forecast.set_hourly_response(model):
                 self._forecast_last_fetch = None
                 await self._maybe_refresh_forecast(now)
@@ -219,6 +223,8 @@ class PvLearningCoordinatorMixin:
                 _LOGGER.info("PV hourly response trained: days=%d provisional=%s rejected=%s gains=%s",
                              model["sample_days"], model["provisional"], model["rejected_days"],
                              [round(g, 3) if g is not None else None for g in model["gains"]])
+                if model["validation"]:
+                    _LOGGER.info("PV hourly validation: %s", model["validation"])
         except Exception as exc:
             _LOGGER.warning("PV hourly response unavailable; retaining daily gain: %s", exc)
 

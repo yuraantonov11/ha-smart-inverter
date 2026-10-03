@@ -36,5 +36,14 @@ class PvChartTests(unittest.TestCase):
         self.assertEqual(curve['points'][0]['power_w'],485)
         self.assertEqual(previous_curve(None,self.now)['points'],[])
 
+    def test_raw_previous_peak_is_not_averaged_or_shifted(self):
+        ts=datetime(2026,10,2,16,tzinfo=self.now.tzinfo).timestamp()
+        samples=[{'time':'2026-10-02T16:00:00+03:00','power_w':478},
+                 {'time':'2026-10-02T16:30:00+03:00','power_w':492}]
+        cache=SimpleNamespace(days={'2026-10-02':[{'start':ts,'mean':485,'samples':samples}]})
+        curve=previous_curve(cache,self.now)
+        self.assertEqual(curve['basis'],'cloud_half_hour_samples')
+        self.assertEqual(curve['points'],samples)
+
 
 if __name__=='__main__': unittest.main()

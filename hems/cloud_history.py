@@ -91,7 +91,9 @@ def measured_pv_hours(properties, day, tz):
         half = instant + timedelta(minutes=30)
         if half in samples and instant not in conflicts and half not in conflicts:
             rows.append({"start": instant.timestamp(), "mean": (samples[instant]+samples[half])/2,
-                         "source": "cloud_half_hour_samples"})
+                         "source": "cloud_half_hour_samples", "samples": [
+                             {"time": t.astimezone(tz).isoformat(), "power_w": samples[t]}
+                             for t in (instant, half)]})
     return rows
 
 
@@ -121,6 +123,17 @@ class CloudHourlyHistory:
                         or row.get("source") != "cloud_half_hour_samples"
                         or finite(row.get("mean"), high=20000) is None):
                     raise ValueError("Invalid hourly cloud power")
+                if "samples" in row:
+                    samples = row["samples"]
+                    if not isinstance(samples, list) or len(samples) != 2:
+                        raise ValueError("Invalid raw cloud samples")
+                    for index, sample in enumerate(samples):
+                        if (timestamp(sample["time"]) != instant + timedelta(minutes=30*index)
+                                or isinstance(sample.get("power_w"), bool)
+                                or finite(sample.get("power_w"), high=20000) is None):
+                            raise ValueError("Invalid raw cloud sample time/power")
+                    if abs(sum(s["power_w"] for s in samples)/2 - row["mean"]) > .000001:
+                        raise ValueError("Cloud sample mean mismatch")
         self.days = raw.get("days", {})
 
     def save(self, path):

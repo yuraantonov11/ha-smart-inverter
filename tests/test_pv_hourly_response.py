@@ -13,7 +13,7 @@ try:
 except ImportError:
     sys.modules['aiohttp'] = ModuleType('aiohttp')
 from hems.forecast import ForecastService
-from hems.pv_hourly import train_hourly_response
+from hems.pv_hourly import train_hourly_response, validate_hourly_response
 from hems.pv_coordinator import PvLearningCoordinatorMixin
 
 
@@ -80,6 +80,25 @@ class HourlyResponseTests(unittest.IsolatedAsyncioTestCase):
         model = self.train(power, radiation)
         self.assertEqual(model['sample_days'], 10)
         self.assertEqual(model['gains'][16], .1)
+
+    def test_walk_forward_validates_only_unseen_days_and_no_live_confidence(self):
+        power, radiation = [], []
+        for d in range(8):
+            for h in range(24):
+                ts=(self.today-timedelta(days=8-d)+timedelta(hours=h)).timestamp()
+                rad=500 if 8 <= h <= 17 else 0
+                p=rad*(.1 if h<14 else .9)
+                power.append({'start':ts,'mean':p})
+                radiation.append({'start':ts,'mean':rad})
+        metrics=validate_hourly_response(power,radiation,timezone.utc,self.today.date())
+        self.assertEqual(metrics['test_days'],6)
+        self.assertEqual(metrics['daylight_mae_w'],0)
+        self.assertGreater(metrics['baseline_daylight_mae_w'],0)
+        self.assertFalse(metrics['live_forecast_accuracy'])
+        # The final day changes, but cannot teach its own prediction.
+        for r in power[-24:]:r['mean']*=2
+        metrics=validate_hourly_response(power,radiation,timezone.utc,self.today.date())
+        self.assertGreater(metrics['daylight_mae_w'],0)
 
     async def test_common_source_and_cache_invalidation(self):
         f = ForecastService(timezone_name='UTC')

@@ -87,3 +87,60 @@ def train_hourly_response(power_rows, radiation_rows, tz, today):
             "rejected_days": rejected, "provisional": len(eligible) < 7,
             "cloud_sample_days": len(eligible & cloud_days),
             "available_days": available_days, "training_reason": training_reason}
+
+
+def validate_hourly_response(power_rows, radiation_rows, tz, today):
+    """Walk forward: each tested day is absent from its own training set.
+
+    Archive weather is known after the event. These diagnostics assess station
+    response only, not weather forecast accuracy and not live AI confidence.
+    """
+    days = complete_hourly_days(power_rows, tz, today)
+    archive = complete_hourly_days(radiation_rows, tz, today, ceiling=2000)
+    cutoff = (today - timedelta(days=14)).isoformat()
+    tested = sorted(d for d in days.keys() & archive.keys() if d >= cutoff)
+    power, radiation = {}, {}
+    for target, rows in ((power, power_rows), (radiation, radiation_rows)):
+        for row in rows:
+            try:
+                ts = timestamp(row.get("start"))
+            except (ValueError, TypeError, OverflowError, OSError):
+                continue
+            value = finite(row.get("mean"), high=20000 if target is power else 2000)
+            if value is not None:
+                target[ts] = value
+    errors, baseline_errors, peaks, test_dates = [], [], [], []
+    from datetime import date
+    for day in tested:
+        test_day = date.fromisoformat(day)
+        prior_power = [{"start": t, "mean": v} for t, v in power.items() if t.astimezone(tz).date() < test_day]
+        prior_rad = [{"start": t, "mean": v} for t, v in radiation.items() if t.astimezone(tz).date() < test_day]
+        model = train_hourly_response(prior_power, prior_rad, tz, test_day)
+        if model is None:
+            continue
+        training_days = sorted(d for d in tested if d < day and archive[d] >= .5 and days[d] >= .1)
+        if len(training_days) < 2:
+            continue
+        baseline = median(days[d]/archive[d] for d in training_days)
+        instants = sorted(t for t in power if t.astimezone(tz).date().isoformat() == day and t in radiation)
+        if not instants or any(radiation[t] <= 1 and power[t] > 20 for t in instants):
+            continue
+        predicted = []
+        for ts in instants:
+            gain = model["gains"][ts.astimezone(tz).hour]
+            fc = min(20000, radiation[ts] * (baseline if gain is None else gain))
+            predicted.append(fc)
+            if radiation[ts] >= 20:  # Daylight MAE, not diluted by night zeros.
+                errors.append(abs(fc-power[ts]))
+                baseline_errors.append(abs(min(20000, radiation[ts]*baseline)-power[ts]))
+        actual_peak = max(range(len(instants)), key=lambda i: power[instants[i]])
+        predicted_peak = max(range(len(instants)), key=lambda i: predicted[i])
+        peaks.append(abs((instants[actual_peak]-instants[predicted_peak]).total_seconds())/3600)
+        test_dates.append(day)
+    if not errors:
+        return None
+    return {"source": "archive_weather_walk_forward", "test_days": len(test_dates),
+            "test_dates": test_dates, "daylight_mae_w": round(sum(errors)/len(errors), 2),
+            "baseline_daylight_mae_w": round(sum(baseline_errors)/len(baseline_errors), 2),
+            "mean_peak_time_error_h": round(sum(peaks)/len(peaks), 2),
+            "live_forecast_accuracy": False}
