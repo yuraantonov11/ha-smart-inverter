@@ -426,7 +426,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         await self._maybe_refresh_load_history(now)
         await self._maybe_refresh_pv_history(now)
-        await self._maybe_record_pv_pairs(now)
+        await self._save_real_forecast_pair(now)
+        await self._save_pv_state()
         self._log_pv_calibrator_state(now)
 
         # ── Feed planner-required arrays into the engine ────────────
@@ -503,10 +504,15 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     async def _execute_hems_command(self, decision: HemsDecision) -> None:
         """Execute a HEMS decision by calling the API."""
         success = True
+        # A channel remains failed until its write is acknowledged, including
+        # writes skipped because an earlier API call raised an exception.
+        output_failed = decision.output_priority is not None
+        charger_failed = decision.charger_priority is not None
 
         try:
             if decision.output_priority is not None:
                 ok = await self.api.set_output_priority(decision.output_priority)
+                output_failed = not ok
                 if not ok:
                     success = False
                     _LOGGER.warning("HEMS: failed to set output → %s (%s)", decision.output_priority, decision.reason)
@@ -515,6 +521,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
             if decision.charger_priority is not None:
                 ok = await self.api.set_charger_priority(decision.charger_priority)
+                charger_failed = not ok
                 if not ok:
                     success = False
                     _LOGGER.warning("HEMS: failed to set charger → %s (%s)", decision.charger_priority, decision.reason)
@@ -538,7 +545,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         if success:
             self._hems.report_control_success()
         else:
-            self._hems.report_control_failure(datetime.now())
+            self._hems.report_control_failure(
+                datetime.now(), output_failed=output_failed, charger_failed=charger_failed)
 
     # ═══════════════════════════════════════════════════════════════════
     # STORM RISK

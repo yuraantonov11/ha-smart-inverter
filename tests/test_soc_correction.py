@@ -3,15 +3,18 @@
 Mirrors test/hems_algorithm_test.dart from the Flutter app.
 """
 
-import pytest
+import os
+import sys
+import unittest
 
-from custom_components.Inverter_inverter.hems.soc_correction import (
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from hems.soc_correction import (
     get_real_soc,
     voltage_to_soc,
 )
 
 
-class TestVoltageToSoc:
+class TestVoltageToSoc(unittest.TestCase):
     """Test OCV → SOC lookup table."""
 
     def test_full_battery(self):
@@ -35,7 +38,7 @@ class TestVoltageToSoc:
         assert voltage_to_soc(40.0) == 0.0
 
 
-class TestGetRealSoc:
+class TestGetRealSoc(unittest.TestCase):
     """Test SOC correction logic."""
 
     def test_voltage_invalid_falls_back_to_reported(self):
@@ -76,22 +79,27 @@ class TestGetRealSoc:
     def test_soc_clamped(self):
         """SOC never goes outside 0-100%."""
         assert get_real_soc(150.0, 54.4, 0.0) == 100.0
-        assert get_real_soc(-10.0, 52.0, 0.0) == 0.0
+        assert get_real_soc(-10.0, 5.0, 0.0) == 0.0
+        assert get_real_soc(-10.0, 52.0, 0.0) == 50.0  # valid voltage overrides invalid reported SOC
 
 
-class TestOcvTableConsistency:
+class TestOcvTableConsistency(unittest.TestCase):
     """Ensure the OCV table is monotonically decreasing."""
 
     def test_thresholds_are_descending(self):
-        from custom_components.Inverter_inverter.hems.soc_correction import _OCV_TABLE
+        from hems.soc_correction import _OCV_TABLE
         for i in range(len(_OCV_TABLE) - 1):
             assert _OCV_TABLE[i][0] > _OCV_TABLE[i + 1][0], (
                 f"Threshold {_OCV_TABLE[i][0]} should be > {_OCV_TABLE[i+1][0]}"
             )
 
     def test_soc_values_are_descending(self):
-        from custom_components.Inverter_inverter.hems.soc_correction import _OCV_TABLE
+        from hems.soc_correction import _OCV_TABLE
         for i in range(len(_OCV_TABLE) - 1):
             assert _OCV_TABLE[i][1] > _OCV_TABLE[i + 1][1], (
                 f"SOC {_OCV_TABLE[i][1]} should be > {_OCV_TABLE[i+1][1]}"
             )
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

@@ -140,7 +140,7 @@ class PvLearningState:
 
     def snapshot(self, day, forecast_kwh, now):
         value = finite(forecast_kwh, high=500)
-        if date.fromisoformat(day) <= now.date() or value is None:
+        if date.fromisoformat(day) <= now.date() or value is None or day in self.snapshots:
             return False
         record = {"forecast_kwh": value, "issued_at": now.isoformat()}
         self.snapshots[day] = record
@@ -217,3 +217,99 @@ class PvLearningState:
             model = {**model, "gain": float(model["gain"])}
         self.model, self.archive_checked_day = model, checked
         self.calibrator.load_from_list([[p["forecast_kwh"], p["actual_kwh"]] for p in self.pairs.values()])
+
+
+class RealForecastPairs:
+    """Immutable issued forecasts; this journal owns day-ahead evidence.
+
+    Persist a completed pair before publishing it to the live calibrator.
+    Restarts rebuild the bounded calibrator from dated, used pairs only.
+    """
+
+    def __init__(self, identity):
+        self.identity = dict(identity)
+        self.pairs = {}
+
+    def load(self, path):
+        path = Path(path)
+        if not path.exists():
+            return False
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if raw.get("version") != 1 or raw.get("identity") != self.identity:
+            raise ValueError("Real forecast journal version/site mismatch")
+        validated = {}
+        for row in raw["pairs"]:
+            day = date.fromisoformat(row["date"])
+            issued = datetime.fromisoformat(row["captured_at"])
+            fc, ac = row.get("forecast_kwh"), row.get("actual_kwh")
+            used = row.get("used", False)
+            if (row["date"] != day.isoformat() or issued.tzinfo is None or issued.date() >= day
+                    or finite(fc, high=500) is None
+                    or type(used) is not bool
+                    or (used and finite(ac, high=500) is None)
+                    or (not used and ac is not None)
+                    or row["date"] in validated):
+                raise ValueError("Invalid real forecast pair")
+            validated[row["date"]] = {**row, "forecast_kwh": float(fc),
+                                     "actual_kwh": float(ac) if used else None, "used": used}
+        self.pairs = validated
+        return True
+
+    def migrate(self, state):
+        for day, snap in state.snapshots.items():
+            if day in self.pairs:
+                continue
+            pair = state.pairs.get(day)
+            self.pairs[day] = {"date": day, "forecast_kwh": snap["forecast_kwh"],
+                               "actual_kwh": pair["actual_kwh"] if pair else None,
+                               "captured_at": snap["issued_at"], "used": pair is not None}
+
+    def snapshot(self, day, forecast_kwh, now):
+        value = finite(forecast_kwh, high=500)
+        if now.tzinfo is None or date.fromisoformat(day) <= now.date() or value is None or day in self.pairs:
+            return False
+        self.pairs[day] = {"date": day, "forecast_kwh": value, "actual_kwh": None,
+                           "captured_at": now.isoformat(), "used": False}
+        return True
+
+    def match(self, actual, now):
+        captured = []
+        for day, row in sorted(self.pairs.items()):
+            value = finite(actual.get(day), high=500)
+            if row["used"] or day >= now.date().isoformat() or value is None:
+                continue
+            row.update(actual_kwh=value, used=True)
+            captured.append(dict(row))
+        return captured
+
+    def prune(self, today):
+        cutoff = (today - timedelta(days=90)).isoformat()
+        self.pairs = dict(sorted((d, p) for d, p in self.pairs.items() if d >= cutoff)[-90:])
+
+    def save(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(".json.tmp")
+        raw = {"version": 1, "identity": self.identity, "pairs": list(self.pairs.values())}
+        temp.write_text(json.dumps(raw, allow_nan=False), encoding="utf-8")
+        temp.replace(path)
+
+    def publish(self, state):
+        """Keep the old station-state format compatible without a second matcher."""
+        previous_pairs = state.pairs
+        state.snapshots = {d: {"forecast_kwh": p["forecast_kwh"], "issued_at": p["captured_at"]}
+                           for d, p in self.pairs.items()}
+        state.pairs = {d: {"forecast_kwh": p["forecast_kwh"], "actual_kwh": p["actual_kwh"], "coverage": 1.0}
+                       for d, p in self.pairs.items() if p["used"]}
+        state.pairs = dict(sorted(state.pairs.items())[-30:])
+        previous_samples = [[p["forecast_kwh"], p["actual_kwh"]] for p in previous_pairs.values()]
+        # Normal completion appends each new date exactly once. Restore/pruning
+        # rebuilds the buffer when the authoritative dated journal differs.
+        new = [p for d, p in state.pairs.items() if d not in previous_pairs]
+        expected = (previous_samples + [[p["forecast_kwh"], p["actual_kwh"]] for p in new])[-30:]
+        desired = [[p["forecast_kwh"], p["actual_kwh"]] for p in state.pairs.values()]
+        if state.calibrator.to_list() == previous_samples and expected == desired:
+            for pair in new:
+                state.calibrator.record(forecast_w=pair["forecast_kwh"], actual_w=pair["actual_kwh"])
+        elif state.calibrator.to_list() != desired:
+            state.calibrator.load_from_list(desired)
