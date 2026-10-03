@@ -113,6 +113,7 @@ class ForecastService:
         # Learned conversion ratio (W of PV per W/m² of radiation)
         self.learned_ratio: float = DEFAULT_LEARNED_RATIO
         self._ratio_samples: list[float] = []
+        self.hourly_response: dict | None = None
 
         # Caches
         self._hourly_cache: tuple[float, list[dict[str, Any]]] | None = None
@@ -227,6 +228,34 @@ class ForecastService:
         return {day: value for day, value in daily.items()
                 if start_day.isoformat() <= day <= end_day.isoformat()}
 
+    async def get_archive_hourly_radiation(self, start_day, end_day):
+        """Bounded recent radiation request for the empirical hourly response."""
+        from .pv_learning import day_bounds
+        tz = ZoneInfo(self.timezone_name)
+        first, _ = day_bounds(start_day, tz)
+        _, last = day_bounds(end_day, tz)
+        session = await self._ensure_session()
+        await self._rate_limit()
+        params = {"latitude": self._latitude, "longitude": self._longitude,
+                  "start_date": first.date().isoformat(),
+                  "end_date": (last - timedelta(seconds=1)).date().isoformat(),
+                  "hourly": "shortwave_radiation", "timezone": "UTC", "timeformat": "unixtime"}
+        async with session.get("https://archive-api.open-meteo.com/v1/archive", params=params) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+        hourly = data.get("hourly", {})
+        times, values = hourly.get("time", []), hourly.get("shortwave_radiation", [])
+        if not times or len(times) != len(values):
+            raise ValueError("Incomplete hourly archive radiation")
+        return [{"start": t, "mean": r} for t, r in zip(times, values)]
+
+    def set_hourly_response(self, model):
+        if model == self.hourly_response:
+            return False
+        self.hourly_response = model
+        self._hourly_cache = self._daily_cache = None
+        return True
+
     # ── Internal ────────────────────────────────────────────────────────
 
     async def _fetch_hourly(self) -> list[dict[str, Any]]:
@@ -268,7 +297,14 @@ class ForecastService:
             if radiation is None:
                 continue  # unknown radiation is not a measured zero
             local_time = datetime.fromtimestamp(t, timezone.utc).astimezone(ZoneInfo(self.timezone_name))
-            power_w = round(min(20000.0, max(0.0, radiation * self.learned_ratio)))
+            gain = self.learned_ratio
+            if self.hourly_response:
+                last_day = datetime.fromisoformat(self.hourly_response["last_day"]).date()
+                if 0 <= (local_time.date() - last_day).days <= 14:
+                    learned = self.hourly_response["gains"][local_time.hour]
+                    if learned is not None:
+                        gain = learned
+            power_w = round(min(20000.0, max(0.0, radiation * gain)))
             result.append({
                 "time": local_time.strftime("%Y-%m-%dT%H:00"),
                 "timestamp": t,

@@ -104,6 +104,7 @@ class PvLearningCoordinatorMixin:
                 rec_stats.statistics_during_period,
                 self.hass, start, None, {ent}, "hour", None, {"mean"})
             rows = stats.get(ent, [])
+            self._hourly_pv_rows = rows
             samples = []
             for row in rows:
                 try:
@@ -138,7 +139,32 @@ class PvLearningCoordinatorMixin:
         for day, value in getattr(self, "_cloud_pv_actual", {}).items():
             self._pv_actual.setdefault(day, value)
         await self._maybe_train_pv_station(now)
+        await self._maybe_train_hourly_pv(now)
         await self._maybe_record_pv_pairs(now)
+
+    async def _maybe_train_hourly_pv(self, now):
+        from .pv_hourly import train_hourly_response
+        rows = getattr(self, "_hourly_pv_rows", [])
+        if not rows or self._forecast is None:
+            return
+        last = getattr(self, "_hourly_pv_attempt_at", None)
+        if last is not None and now - last < timedelta(hours=24):
+            return
+        self._hourly_pv_attempt_at = now
+        local_now = self._pv_local_now()
+        try:
+            archive = await self._forecast.get_archive_hourly_radiation(
+                local_now.date() - timedelta(days=14), local_now.date() - timedelta(days=1))
+            model = train_hourly_response(rows, archive, self._site_timezone, local_now.date())
+            if self._forecast.set_hourly_response(model):
+                self._forecast_last_fetch = None
+                await self._maybe_refresh_forecast(now)
+            if model:
+                _LOGGER.info("PV hourly response trained: days=%d provisional=%s rejected=%s gains=%s",
+                             model["sample_days"], model["provisional"], model["rejected_days"],
+                             [round(g, 3) if g is not None else None for g in model["gains"]])
+        except Exception as exc:
+            _LOGGER.warning("PV hourly response unavailable; retaining daily gain: %s", exc)
 
     async def _maybe_refresh_cloud_pv_history(self, now):
         fetch = getattr(getattr(self, "api", None), "fetch_daily_pv_history", None)

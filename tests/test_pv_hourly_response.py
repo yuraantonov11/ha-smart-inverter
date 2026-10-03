@@ -1,0 +1,114 @@
+"""Measured shading, bad telemetry and actual forecast source regression."""
+import asyncio
+import sys
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+try:
+    import aiohttp
+except ImportError:
+    sys.modules['aiohttp'] = ModuleType('aiohttp')
+from hems.forecast import ForecastService
+from hems.pv_hourly import train_hourly_response
+from hems.pv_coordinator import PvLearningCoordinatorMixin
+
+
+class HourlyResponseTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.today = datetime(2026, 10, 3, tzinfo=timezone.utc)
+        self.power, self.radiation = [], []
+        for day in range(2):
+            for hour in range(24):
+                ts = (self.today - timedelta(days=2-day) + timedelta(hours=hour)).timestamp()
+                rad = 500 if 8 <= hour <= 17 else 0
+                power = 50 if 8 <= hour < 14 else 450 if 14 <= hour <= 17 else 0
+                self.power.append({'start': ts, 'mean': power})
+                self.radiation.append({'start': ts, 'mean': rad})
+
+    def train(self, power=None, radiation=None):
+        return train_hourly_response(self.power if power is None else power,
+                                     self.radiation if radiation is None else radiation,
+                                     timezone.utc, self.today.date())
+
+    def test_shading_and_provisional_evidence(self):
+        model = self.train()
+        self.assertEqual(model['gains'][12], .1)
+        self.assertEqual(model['gains'][16], .9)
+        self.assertTrue(model['provisional'])
+        self.assertEqual(model['sample_days'], 2)
+
+    def test_single_day_and_duplicate_not_evidence(self):
+        self.assertIsNone(self.train(self.power[:24] * 2))
+
+    def test_missing_power_or_radiation_not_filled(self):
+        self.assertIsNone(self.train(self.power[:-1]))
+        self.assertIsNone(self.train(radiation=self.radiation[:-1]))
+
+    def test_stuck_night_rejects_day(self):
+        rows = [dict(r) for r in self.power]
+        rows[22]['mean'] = 461
+        self.assertIsNone(self.train(rows))
+
+    def test_nonfinite_and_stale_not_evidence(self):
+        rows = [dict(r) for r in self.power]
+        rows[12]['mean'] = float('nan')
+        self.assertIsNone(self.train(rows))
+        old = [{**r, 'start': r['start'] - 30*86400} for r in self.power]
+        self.assertIsNone(self.train(old))
+
+    async def test_common_source_and_cache_invalidation(self):
+        f = ForecastService(timezone_name='UTC')
+        f._hourly_cache, f._daily_cache = (1, []), (1, {})
+        self.assertTrue(f.set_hourly_response(self.train()))
+        self.assertIsNone(f._hourly_cache)
+        self.assertIsNone(f._daily_cache)
+        data = {'hourly': {'time': [int((self.today + timedelta(hours=h)).timestamp()) for h in (12, 16)],
+                           'shortwave_radiation': [500, 500]}}
+        class Response:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            def raise_for_status(self): pass
+            async def json(self): return data
+        f._ensure_session = AsyncMock(return_value=SimpleNamespace(get=Mock(return_value=Response())))
+        f._rate_limit = AsyncMock()
+        with patch('hems.forecast.ZoneInfo', return_value=timezone.utc):
+            rows = await f._fetch_hourly()
+        self.assertEqual([r['power_w'] for r in rows], [50, 450])
+        f.hourly_response['last_day'] = '2026-09-01'
+        with patch('hems.forecast.ZoneInfo', return_value=timezone.utc):
+            rows = await f._fetch_hourly()
+        self.assertEqual([r['power_w'] for r in rows], [60, 60])
+
+    async def test_coordinator_throttle_and_no_calibration_seed(self):
+        c = PvLearningCoordinatorMixin.__new__(PvLearningCoordinatorMixin)
+        c._hourly_pv_rows = self.power
+        c._site_timezone = timezone.utc
+        c._pv_local_now = lambda: self.today
+        c._forecast = ForecastService(timezone_name='UTC')
+        c._forecast.get_archive_hourly_radiation = AsyncMock(return_value=self.radiation)
+        c._maybe_refresh_forecast = AsyncMock()
+        await c._maybe_train_hourly_pv(self.today)
+        await c._maybe_train_hourly_pv(self.today + timedelta(hours=1))
+        self.assertEqual(c._forecast.get_archive_hourly_radiation.call_count, 1)
+        self.assertEqual(c._maybe_refresh_forecast.call_count, 1)
+        self.assertEqual(c._forecast.hourly_response['sample_days'], 2)
+        # No access to or mutation of live ForecastCalibrator was needed.
+        self.assertFalse(hasattr(c, '_pv_calibrator'))
+
+    async def test_archive_failure_preserves_model(self):
+        c = PvLearningCoordinatorMixin.__new__(PvLearningCoordinatorMixin)
+        c._hourly_pv_rows = self.power
+        c._pv_local_now = lambda: self.today
+        c._forecast = ForecastService(timezone_name='UTC')
+        c._forecast.set_hourly_response(self.train())
+        c._forecast.get_archive_hourly_radiation = AsyncMock(side_effect=RuntimeError('offline'))
+        await c._maybe_train_hourly_pv(self.today)
+        self.assertEqual(c._forecast.hourly_response['sample_days'], 2)
+
+
+if __name__ == '__main__':
+    unittest.main()

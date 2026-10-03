@@ -680,6 +680,9 @@ class ForecastTomorrowSensor(InverterSensor):
 
         return {
             "hourly_forecast_w": hourly,
+            "hourly_forecast_date": self.coordinator._pv_local_now().date().isoformat(),
+            "hourly_forecast_basis": "hourly_mean_power",
+            "hourly_response": getattr(getattr(self.coordinator, "_forecast", None), "hourly_response", None),
             "hourly_radiation_wm2": radiation[:24],
             "peak_radiation_wm2": max(radiation) if radiation else 0,
             "peak_power_w": max(hourly) if hourly else 0,
