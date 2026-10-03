@@ -59,8 +59,11 @@ async def exercise(check):
         ent = 'sensor.garazh_smart_solar_inverter_daily_pv_energy'
         daily_rows = [{'start': datetime(2026, 10, day, tzinfo=timezone.utc).timestamp(), 'sum': total}
                       for day, total in ((1, 100.), (2, 104.))]
+        def metadata(hass, *, statistic_ids):
+            assert statistic_ids == {ent}
+            return {ent: {'has_sum': True, 'unit_of_measurement': 'kWh'}}
         rec.statistics = SimpleNamespace(statistics_during_period=Mock(return_value={ent: daily_rows}),
-                                        get_metadata=Mock(return_value={ent: {'has_sum': True, 'unit_of_measurement': 'kWh'}}))
+                                        get_metadata=Mock(side_effect=metadata))
         with patch.dict(sys.modules, {'homeassistant.components.recorder': rec}), \
                 patch.object(c._pv_calibrator, 'record', wraps=c._pv_calibrator.record) as record:
             await c._save_real_forecast_pair(later)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from copy import deepcopy
+from functools import partial
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -119,7 +120,7 @@ class PvLearningCoordinatorMixin:
                     rec_stats.statistics_during_period,
                     self.hass, start, None, {energy_ent}, "hour", None, {"sum"})
                 metadata = await self.hass.async_add_executor_job(
-                    rec_stats.get_metadata, self.hass, {energy_ent})
+                    partial(rec_stats.get_metadata, statistic_ids={energy_ent}), self.hass)
                 raw_meta = metadata.get(energy_ent)
                 meta = raw_meta[1] if isinstance(raw_meta, tuple) else raw_meta
                 unit = meta.get("unit_of_measurement") if isinstance(meta, dict) and meta.get("has_sum") else None
@@ -256,7 +257,8 @@ class PvLearningCoordinatorMixin:
                 stats = await self.hass.async_add_executor_job(
                     rec_stats.statistics_during_period, self.hass, start-timedelta(days=1), end,
                     {ent}, "day", None, {"sum"})
-                metadata = await self.hass.async_add_executor_job(rec_stats.get_metadata, self.hass, {ent})
+                metadata = await self.hass.async_add_executor_job(
+                    partial(rec_stats.get_metadata, statistic_ids={ent}), self.hass)
                 raw_meta = metadata.get(ent)
                 meta = raw_meta[1] if isinstance(raw_meta, tuple) else raw_meta
                 scale = {"Wh": .001, "kWh": 1., "MWh": 1000.}.get(
