@@ -85,9 +85,10 @@ views:
               - sensor.smart_solar_inverter_battery_soc
               - sensor.smart_solar_inverter_battery_soc_corrected
               - sensor.smart_solar_inverter_battery_charge_current
-          - type: custom:forecast-card
-            entity: sensor.smart_solar_inverter_forecast_tomorrow
-            title: ☀️ Прогноз генерації (24г)
+          - type: custom:pv-comparison-card
+            entity: sensor.smart_solar_inverter_pv_generation_curve
+            forecast_entity: sensor.smart_solar_inverter_forecast_tomorrow
+            title: Генерація та прогноз PV
       - type: grid
         cards:
           - type: entities

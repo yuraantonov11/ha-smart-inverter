@@ -947,7 +947,12 @@ class InverterApiClient:
 
     async def fetch_daily_power(self) -> list[dict[str, Any]]:
         """Fetch hourly PV power for today (Daily Power chart, kW)."""
-        return await self._fetch_overview("daily", SUMMARY_KEY_POWER)
+        properties = await self._fetch_overview("daily", SUMMARY_KEY_POWER, raw_properties=True)
+        for group in properties:
+            prop = group.get("property", {})
+            if prop.get("key") == "generationPower" and prop.get("unit") == "kW":
+                return group.get("timePoints", [])
+        return []
 
     async def fetch_hourly_pv_history_day(self, day, timezone_name):
         """Measured historical half-hour PV samples, aggregated by hour."""

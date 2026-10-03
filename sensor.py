@@ -400,6 +400,7 @@ async def async_setup_entry(
     ).get("history_coordinator")
     if history_coordinator is not None:
         entities.append(DailyPowerHistorySensor(history_coordinator))
+        entities.append(PvGenerationCurveSensor(history_coordinator, coordinator))
         entities.append(MonthlyEnergyHistorySensor(history_coordinator))
         entities.append(YearlyEnergyHistorySensor(history_coordinator))
         entities.append(TotalEnergyHistorySensor(history_coordinator))
@@ -844,6 +845,43 @@ class HemsChargerCmdSensor(InverterSensor):
 # ═══════════════════════════════════════════════════════════════════════
 # HISTORY CHART SENSORS (use HistoryCoordinator, 15-min polling)
 # ═══════════════════════════════════════════════════════════════════════
+
+
+class PvGenerationCurveSensor(CoordinatorEntity, SensorEntity):
+    """Correct W conversion of real cloud points without changing legacy API."""
+    _attr_has_entity_name = True
+    _attr_name = "PV generation curve"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_icon = "mdi:chart-line"
+
+    def __init__(self, coordinator, inverter):
+        super().__init__(coordinator)
+        self._inverter = inverter
+        self._attr_unique_id = f"{coordinator.api.device_sn}_pv_generation_curve"
+        self._attr_device_info = {"identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")}}
+
+    def _points(self):
+        from .hems.pv_chart import chart_points
+        return chart_points((self.coordinator.data or {}).get("today_hourly_power", []),
+                            self._inverter._pv_local_now())
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self.async_on_remove(self._inverter.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self):
+        points = self._points()
+        return points[-1]["power_w"] if points else None
+
+    @property
+    def extra_state_attributes(self):
+        from .hems.pv_chart import previous_curve
+        now = self._inverter._pv_local_now()
+        return {"date": now.date().isoformat(), "points": self._points(),
+                "source": "cloud_api_real_samples", "sample_interval_minutes": 30,
+                "previous_day": previous_curve(getattr(self._inverter, "_cloud_hourly_cache", None), now)}
 
 
 class DailyPowerHistorySensor(CoordinatorEntity, SensorEntity):
