@@ -294,13 +294,15 @@ class InverterApiClient:
                 try:
                     data = json.loads(raw_text)
                 except (ValueError, TypeError) as json_err:
-                    # On parse failure we still need to log enough to
-                    # diagnose, but we strip the same sensitive fields
-                    # we strip from any auth payload.
-                    sanitized = _redact_secrets(raw_text)
+                    # T04 follow-up: never log the response body on
+                    # parse failure either. The exception type and
+                    # length are enough to triage; a sanitised dump
+                    # is still risky because our regex only catches
+                    # well-known field names — a token echoed in an
+                    # unexpected shape would slip through.
                     _LOGGER.error(
-                        "Login JSON parse error: %s. Raw: %s",
-                        json_err, sanitized[:200],
+                        "Login JSON parse error: %s (status=%d, body_len=%d)",
+                        json_err, status, len(raw_text),
                     )
                     raise InverterAuthError(
                         f"Invalid API response (status={status})"

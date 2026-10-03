@@ -17,6 +17,7 @@ treating "no data" as "battery is empty".
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -53,6 +54,14 @@ class PlannerInputs:
     Every field has a matching ``*_source`` so the predictive plan
     sensor can show exactly which fields came from real measurements
     and which were conservative fallbacks.
+
+    ``soc_unknown`` is True iff the SOC was absent or invalid in the
+    raw sample. The engine must treat this as a hard stop for any
+    control command: charging mode, output priority, or backup
+    behaviour. ``soc`` retains the conservative fallback value
+    (so the engine can still compute display numbers) but downstream
+    code is required to consult ``soc_unknown`` before issuing a
+    write. T01 hardening.
     """
 
     now: datetime
@@ -65,6 +74,7 @@ class PlannerInputs:
     grid_v: float
     grid_ok: bool
     smart_mode: int
+    soc_unknown: bool = False
 
     # Forecasts (None = missing — never substitute zero)
     forecast_today_kwh: float | None = None
@@ -208,14 +218,48 @@ def build_planner_inputs(
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
 
     # ── SOC ────────────────────────────────────────────────────────
-    soc_value: float | None
+    # T01 hardening: distinguish a real SOC reading from a missing or
+    # invalid one. The previous code path always fell back to 100%,
+    # which both made a critically-empty battery look full and
+    # leaked a fabricated value into the engine — including any
+    # decision to switch charger / output priority. We now mark
+    # ``soc_unknown=True`` so the coordinator can refuse to send
+    # commands while the meter is unreadable.
+    soc_value: Any
+    soc_unknown = False
     if corrected_soc is not None:
         soc_value = float(corrected_soc)
         soc_origin = "api"
     else:
         soc_value = raw.get("batterySoc")
         soc_origin = "api"
-    soc, soc_fallback = _clamp(soc_value, _SOC_MIN, _SOC_MAX, fallback=100.0)
+
+    if soc_value is None:
+        soc_unknown = True
+        soc_value = None
+    else:
+        try:
+            soc_value = float(soc_value)
+        except (TypeError, ValueError):
+            soc_unknown = True
+            soc_value = None
+        else:
+            if soc_value != soc_value or math.isinf(soc_value):
+                soc_unknown = True
+                soc_value = None
+            elif soc_value < _SOC_MIN or soc_value > _SOC_MAX:
+                soc_unknown = True
+                # Out-of-range readings are NOT used to drive the
+                # engine either. We still keep ``soc`` at the
+                # conservative fallback for display, but it is
+                # explicitly marked unknown.
+                soc_value = None
+
+    if soc_unknown:
+        soc = 100.0  # display-only; the engine is told not to act on it
+        soc_fallback = True
+    else:
+        soc, soc_fallback = _clamp(soc_value, _SOC_MIN, _SOC_MAX, fallback=100.0)
 
     # ── PV power ───────────────────────────────────────────────────
     pv, pv_fallback = _clamp(raw.get("pvPower"), 0.0, _POWER_MAX_W, fallback=0.0)
@@ -277,6 +321,7 @@ def build_planner_inputs(
     return PlannerInputs(
         now=now,
         soc=soc,
+        soc_unknown=soc_unknown,
         pv_w=pv,
         load_w=load,
         grid_w=grid,

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -56,6 +56,16 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     # blob. Older days are not needed for current display but we keep
     # one extra so a mid-day restart can detect rollover properly.
     _ENERGY_STATE_SCHEMA_VERSION: int = 1
+
+    # T06 follow-up: persistence of the energy-state blob is
+    # rate-limited. The default 5 s sample cadence would otherwise
+    # trigger a config_entries.async_update_entry call every cycle,
+    # which is wasteful and races with other option writers (the
+    # predictive persistence, the user-toggle setters, the HEMS
+    # auto-mode toggle). 30 s strikes a balance: the dashboard
+    # never shows a counter older than half a minute, but HA is
+    # not hammered with writes.
+    _ENERGY_PERSIST_MIN_INTERVAL_S: float = 30.0
 
     def __init__(
         self,
@@ -207,6 +217,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._monthly_savings_uah: float = 0.0
         self._day_tariff_uah: float = float(entry.options.get("tariff_day", 4.32))
         self._night_tariff_uah: float = float(entry.options.get("tariff_night", 2.16))
+        # T06 follow-up: throttle write attempts so the per-cycle
+        # 5 s cadence does not hammer ``async_update_entry`` (which
+        # wakes up storage listeners and may race with the other
+        # option writers in this coordinator).
+        self._last_energy_persist_at: datetime | None = None
+        self._energy_state_dirty: bool = False
         self._restore_energy_state(entry.options.get("_energy_state"))
 
         # Forecast service (activated on first update)
@@ -396,10 +412,39 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._consecutive_nulls = 0
 
         # ── Compute corrected SOC ────────────────────────────────────
-        reported_soc = raw.get("batterySoc", 100.0)
+        # T01 hardening: a missing or invalid batterySoc must NOT
+        # collapse to 100 %. The previous code path used
+        # ``raw.get("batterySoc", 100.0)`` which meant a critically
+        # empty battery looked full and a totally missing reading
+        # drove the engine as if the station was at 100 %. We now
+        # treat absence and out-of-range as ``None`` and propagate
+        # that signal all the way to the control command gate.
+        raw_soc = raw.get("batterySoc")
+        if raw_soc is None:
+            reported_soc = None
+            soc_unknown = True
+        else:
+            try:
+                reported_soc = float(raw_soc)
+            except (TypeError, ValueError):
+                reported_soc = None
+                soc_unknown = True
+            else:
+                if (
+                    reported_soc != reported_soc  # NaN
+                    or reported_soc < 0
+                    or reported_soc > 100
+                ):
+                    reported_soc = None
+                    soc_unknown = True
+                else:
+                    soc_unknown = False
         voltage = raw.get("batteryVoltage", 52.0)
         current = raw.get("batteryCurrent", 0.0)
-        corrected_soc = get_real_soc(reported_soc, voltage, current)
+        if reported_soc is None:
+            corrected_soc = None
+        else:
+            corrected_soc = get_real_soc(reported_soc, voltage, current)
 
         # ── Grid outage detection ────────────────────────────────────
         grid_v = raw.get("gridVoltage", 230.0)
@@ -476,9 +521,21 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     # ═══════════════════════════════════════════════════════════════════
 
     async def _run_hems_engine(
-        self, raw: dict[str, Any], corrected_soc: float, now: datetime
+        self, raw: dict[str, Any], corrected_soc: float | None, now: datetime
     ) -> None:
-        """Run the HEMS engine and execute control commands."""
+        """Run the HEMS engine and execute control commands.
+
+        T01 hardening: when the SOC reading is missing or invalid,
+        the engine still runs for diagnostics (so the user sees
+        ``predictive_hint`` with a clear "soc_unknown" reason) but
+        no command is dispatched to the inverter. This is a hard
+        gate — even a Storm pre-emption or user override cannot
+        drive a write while the meter is unreadable.
+        """
+        soc_unknown = corrected_soc is None
+        # Synthetic SOC for engine display only — the gate below makes
+        # sure it never reaches ``_execute_hems_command``.
+        display_soc = 100.0 if soc_unknown else corrected_soc
         current_output = raw.get("outputSourcePriority", "")
         current_charger = raw.get("chargerSourcePriority", "")
         # Detect manual override
@@ -492,7 +549,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._demand_forecast.update_ewma(now, load_power)
 
         # ── Track battery SoH ─────────────────────────────────────────
-        self._battery_soh.track_soc(corrected_soc)
+        if not soc_unknown:
+            self._battery_soh.track_soc(corrected_soc)
 
         # ── Auto-tune house load reserve ──────────────────────────────
         self._maybe_auto_tune_house_reserve(load_power, now)
@@ -504,7 +562,16 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         if self._hems.keepalive.in_progress and self._keepalive_timer and now >= self._keepalive_timer:
             self._hems.invalidate_predictive("keepalive_end")
             finish = self._hems.finish_keepalive(now)
-            await self._execute_hems_command(finish)
+            # T01: never write to the inverter with an unknown SOC,
+            # even to finish a keepalive. The keepalive timer simply
+            # expires without a write; the next valid sample will
+            # resume normal operation.
+            if not soc_unknown:
+                await self._execute_hems_command(finish)
+            else:
+                _LOGGER.warning(
+                    "HEMS: keepalive ended with unknown SOC; command skipped"
+                )
             self._keepalive_timer = None
             return
 
@@ -563,7 +630,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         decision = self._hems.evaluate(
             smart_mode=effective_mode,
             hems_auto=self.hems_auto_mode,
-            soc=corrected_soc,
+            soc=display_soc,  # synthetic 100 % when soc_unknown; gate below blocks writes
             pv_power=pv_power,
             grid_power=grid_power,
             battery_power=battery_power,
@@ -604,6 +671,31 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             self._hems_debug_skips += 1
         else:
             self._hems_debug_commands += 1
+
+        # ── T01 hard gate: no commands while SOC is unknown ────────────
+        # Even if the engine would happily dispatch a charge or
+        # output change, the audit requires us to refuse to write
+        # anything to the inverter while the meter is unreadable.
+        # We log the suppressed action so a future operator can
+        # see what would have happened, then return without a write.
+        if soc_unknown:
+            if not decision.skip and (
+                decision.output_priority is not None
+                or decision.charger_priority is not None
+                or decision.buzzer_off
+            ):
+                _LOGGER.warning(
+                    "HEMS: SOC unknown, command suppressed "
+                    "(would have set output=%s charger=%s buzzer_off=%s reason=%s)",
+                    decision.output_priority,
+                    decision.charger_priority,
+                    decision.buzzer_off,
+                    decision.reason,
+                )
+                self._hems_debug_skips += 1
+                if self._hems_debug_commands:
+                    self._hems_debug_commands -= 1
+            return
 
         # Execute command
         if not decision.skip:
@@ -848,15 +940,26 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         return self._grid_available, transition
 
-    def _track_battery_cycle(self, soc: float) -> bool:
+    def _track_battery_cycle(self, soc: float | None) -> bool:
         """Track low→high SOC transitions for cycle counting.
 
-        Delegates to BatterySoH tracker.
+        Delegates to BatterySoH tracker. T01: a None reading is
+        dropped on the floor — we cannot infer a transition from
+        "we don't know".
         """
+        if soc is None:
+            return False
         return self._battery_soh.track_soc(soc)
 
-    def _add_soc_sample(self, raw: dict, corrected_soc: float) -> None:
-        """Add a sample to the rolling 24h SOC history."""
+    def _add_soc_sample(self, raw: dict, corrected_soc: float | None) -> None:
+        """Add a sample to the rolling 24h SOC history.
+
+        T01: a missing/invalid SOC is NOT recorded. Recording a
+        fabricated value here would bias the calibrator and the
+        storm-risk scorer that consume this history downstream.
+        """
+        if corrected_soc is None:
+            return
         now = datetime.now()
         if self._last_soc_sample_at is not None:
             if (now - self._last_soc_sample_at).total_seconds() < 270:
@@ -901,15 +1004,20 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         """
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         if self._last_midnight is not None and self._last_midnight != today:
-            # Day changed since the previous sample — close out the
-            # previous day's savings into the running monthly total,
-            # then zero the daily counters. We do NOT also reset the
-            # monthly counter on the first day of the month; that
-            # happened on the previous midnight's "now.day == 1" check
-            # if the integration was running that night. If the
-            # integration was offline the whole previous month, the
-            # monthly counter simply carries forward the last known
-            # value, which is preferable to silently dropping data.
+            # Day changed since the previous sample. Decide whether
+            # the *previous* day was the last day of a month, and
+            # act accordingly. We do NOT just check ``now.day == 1``
+            # because the integration may have been offline across
+            # the month boundary (the audit explicitly calls out
+            # the "Sep30 → Oct3 without any Oct1 call" scenario):
+            # in that case the daily savings for Sep30 still live
+            # in ``self._daily_savings_uah`` and must be folded
+            # into the *September* monthly total before the new
+            # month zeroes it. With the old ``if now.day == 1``
+            # check, those savings were silently dropped.
+            previous_was_last_day = (
+                self._last_midnight.month != today.month
+            )
             self._monthly_savings_uah += self._daily_savings_uah
             self._daily_pv_kwh = 0.0
             self._daily_grid_import_day_kwh = 0.0
@@ -918,8 +1026,18 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             self._daily_battery_discharge_day_kwh = 0.0
             self._daily_battery_discharge_night_kwh = 0.0
             self._daily_savings_uah = 0.0
-            if now.day == 1:
+            if previous_was_last_day:
+                # The previous day was the last day of an older
+                # month. The accumulated ``_monthly_savings_uah``
+                # belongs to that month, so we close it out and
+                # start the new one at zero.
                 self._monthly_savings_uah = 0.0
+            # The rollover itself is a high-value state transition;
+            # mark the energy state dirty so the next
+            # ``_maybe_persist_energy_state`` bypasses the throttle
+            # and writes immediately. Without this, a crash in the
+            # throttle window would lose the previous day's total.
+            self._mark_energy_state_dirty()
         self._last_midnight = today
 
         # Compute real elapsed time.
@@ -939,8 +1057,13 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 # Offline gap. We do not integrate the stale reading
                 # because the previous sample's power no longer
                 # represents the present. The next valid sample will
-                # start a fresh interval.
+                # start a fresh interval. We *do* still flush a
+                # pending dirty state from a prior rollover, so a
+                # midnight rollover that was followed by an offline
+                # period does not lose the previous day's totals.
                 self._last_sample_ts = now
+                if self._energy_state_dirty:
+                    self._maybe_persist_energy_state(now)
                 return
             else:
                 dt_h = elapsed_s / 3600.0
@@ -987,9 +1110,10 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # T06: persist the running state. We do this *after* the
         # counters are updated, so a crash mid-update only loses the
         # current interval, not the accumulated day. Persistence
-        # failures are logged at debug level — losing one snapshot of
-        # the running total is preferable to raising out of a hot path.
-        self._persist_energy_state(now)
+        # is rate-limited to avoid hammering ``async_update_entry``
+        # on every 5 s cycle; day/month rollovers set the dirty
+        # flag so the next persist call always goes through.
+        self._maybe_persist_energy_state(now)
 
     # ═══════════════════════════════════════════════════════════════════
     # T06: persistence helpers for energy counters
@@ -1016,18 +1140,30 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             "monthly_savings_uah": self._monthly_savings_uah,
         }
 
-    def _persist_energy_state(self, now: datetime) -> None:
+    def _persist_energy_state(self, now: datetime, *, force: bool = False) -> bool:
         """Write the running counter snapshot to ``entry.options``.
 
-        Failure to persist is logged at debug level only. The audit
-        requires that the *in-memory* counters are the source of
-        truth for the current run, and that a failed write does not
-        raise out of the polling loop. The next successful write
-        overwrites the previous one, so transient HA hiccups are
-        self-healing.
+        T06 follow-up: rate-limited. Without throttling, a 5 s
+        fetch cadence would issue one ``async_update_entry`` call
+        per cycle, which both wakes HA storage listeners and races
+        with the other option writers in this coordinator (the
+        user-toggle setters, the predictive persistence, the HEMS
+        auto-mode toggle). The throttle window is
+        ``_ENERGY_PERSIST_MIN_INTERVAL_S`` (30 s by default). The
+        first persist after a fresh boot always goes through
+        because ``_last_energy_persist_at`` is ``None``.
+
+        Returns True iff an actual write was performed, so the
+        caller can keep an eye on persistence health. Failure is
+        logged at debug level only; the in-memory counters remain
+        the source of truth.
         """
         if getattr(self, "_entry", None) is None or getattr(self, "hass", None) is None:
-            return
+            return False
+        if not force and self._last_energy_persist_at is not None:
+            elapsed = (now - self._last_energy_persist_at).total_seconds()
+            if elapsed < self._ENERGY_PERSIST_MIN_INTERVAL_S:
+                return False
         try:
             blob = self._energy_state_snapshot(now)
             import json as _json
@@ -1036,8 +1172,39 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             self.hass.config_entries.async_update_entry(
                 self._entry, options=new_opts
             )
+            self._last_energy_persist_at = now
+            return True
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("persist energy state failed: %s", exc)
+            return False
+
+    def _mark_energy_state_dirty(self) -> None:
+        """T06 follow-up: mark the energy state as needing a flush.
+
+        Callers (midnight rollover, month rollover, large counter
+        jumps) flip this flag so the next ``_maybe_persist_energy_state``
+        call will write even if the throttle window has not
+        elapsed. Without this, a midnight rollover could sit in
+        memory for up to 30 s before the next sample triggered a
+        write, which means a crash in that window would lose the
+        previous day's total.
+        """
+        self._energy_state_dirty = True
+
+    def _maybe_persist_energy_state(self, now: datetime, *, force: bool = False) -> bool:
+        """Persist the energy state when due.
+
+        Honours the throttle, but bypasses it when ``force=True``
+        or when the dirty flag is set (a midnight rollover or a
+        month rollover has just happened). Returns True if a write
+        actually went through.
+        """
+        if force or self._energy_state_dirty:
+            ok = self._persist_energy_state(now, force=True)
+            if ok:
+                self._energy_state_dirty = False
+            return ok
+        return self._persist_energy_state(now, force=False)
 
     def _restore_energy_state(self, blob: Any) -> None:
         """Hydrate in-memory counters from a previously persisted blob.
@@ -1182,6 +1349,82 @@ class HistoryCoordinator(DataUpdateCoordinator):
         # Open-Meteo Historical API for the history graph overlays.
         self.daily_historical_weather: dict[str, int] = {}
         self.daily_weather_count: int = 0
+
+    @staticmethod
+    def _unwrap_history_results(
+        results: list[Any],
+    ) -> tuple[list, list, list, dict]:
+        """T14: convert ``asyncio.gather(return_exceptions=True)``
+        results into four safely-typed slots.
+
+        Returns
+        -------
+        (today_power, monthly_energy, yearly_energy, total_data)
+            Each slot is either the real value or a safe empty
+            placeholder. Exceptions are logged at warning level and
+            translated to ``[]`` (or ``{}`` for the total slot) so
+            the rest of the cycle can keep producing useful
+            telemetry for the dashboard.
+
+        The unwrap is *defensive* on three axes:
+
+        1. exception instances → safe empty value (the audit's
+           ``len(...)``/``.get(...)`` crash on an Exception is
+           the original bug);
+        2. wrong types (string, None) for the dict slot → ``{}``;
+        3. short result lists → missing slots default to ``[]`` /
+           ``{}`` rather than raising ``IndexError``.
+
+        We deliberately do NOT include the exception text in the
+        returned value. The audit calls out that an error message
+        can carry a URL with a token; that data must not propagate
+        into the public ``data`` dict on the coordinator.
+        """
+        # Pad to length 4 so the unpack never fails; pad with None
+        # and treat that as "missing".
+        padded = list(results) + [None] * (4 - len(results))
+        today_power_raw, monthly_raw, yearly_raw, total_raw = padded[:4]
+
+        def _safe_list(value: Any, label: str) -> list:
+            if isinstance(value, BaseException):
+                _LOGGER.warning(
+                    "HistoryCoordinator: %s endpoint failed: %s",
+                    label,
+                    type(value).__name__,
+                )
+                return []
+            if isinstance(value, list):
+                return value
+            _LOGGER.warning(
+                "HistoryCoordinator: %s endpoint returned unexpected %s",
+                label,
+                type(value).__name__,
+            )
+            return []
+
+        def _safe_dict(value: Any, label: str) -> dict:
+            if isinstance(value, BaseException):
+                _LOGGER.warning(
+                    "HistoryCoordinator: %s endpoint failed: %s",
+                    label,
+                    type(value).__name__,
+                )
+                return {}
+            if isinstance(value, dict):
+                return value
+            _LOGGER.warning(
+                "HistoryCoordinator: %s endpoint returned unexpected %s",
+                label,
+                type(value).__name__,
+            )
+            return {}
+
+        return (
+            _safe_list(today_power_raw, "daily"),
+            _safe_list(monthly_raw, "monthly"),
+            _safe_list(yearly_raw, "yearly"),
+            _safe_dict(total_raw, "total"),
+        )
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch historical data from the API.

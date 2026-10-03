@@ -13,7 +13,7 @@ import sys
 import textwrap
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,10 +67,13 @@ def _make_stub() -> SimpleNamespace:
     s._is_daytime = ns["_is_daytime"]
     # T05 stub: T06 added a real _persist_energy_state call inside
     # _accumulate_daily_energy. We provide a no-op so the energy unit
-    # assertions are isolated from persistence concerns.
-    def _no_persist(*_a, **_k):  # pragma: no cover
-        return None
-    s._persist_energy_state = _no_persist
+    # assertions are isolated from persistence concerns. The
+    # throttle-aware variants (_maybe_persist_energy_state,
+    # _mark_energy_state_dirty) are not exercised here, so a
+    # simple ``lambda *a, **k: None`` is enough.
+    s._persist_energy_state = lambda *a, **k: None
+    s._maybe_persist_energy_state = lambda *a, **k: None
+    s._mark_energy_state_dirty = lambda *a, **k: None
     # _MAX_SAMPLE_GAP_S is the T06 threshold. Setting it to None makes
     # any elapsed gap trigger the "offline" return path, so the test
     # only exercises the unit conversion on its first sample. We set
