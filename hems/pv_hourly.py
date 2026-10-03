@@ -57,6 +57,11 @@ def train_hourly_response(power_rows, radiation_rows, tz, today):
              for values in ratios]
     if not any(g is not None for g in gains):
         return None
+    cloud_days = set()
+    for row in power_rows:
+        if row.get("source") == "cloud_half_hour_samples":
+            cloud_days.add(timestamp(row["start"]).astimezone(tz).date().isoformat())
     return {"gains": gains, "hour_samples": [len(v) for v in ratios],
             "sample_days": len(eligible), "last_day": max(eligible),
-            "rejected_days": rejected, "provisional": len(eligible) < 7}
+            "rejected_days": rejected, "provisional": len(eligible) < 7,
+            "cloud_sample_days": len(eligible & cloud_days)}

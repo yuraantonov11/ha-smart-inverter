@@ -140,11 +140,67 @@ class PvLearningCoordinatorMixin:
             self._pv_actual.setdefault(day, value)
         await self._maybe_train_pv_station(now)
         await self._maybe_train_hourly_pv(now)
+        self._schedule_cloud_hourly_history(now)
         await self._maybe_record_pv_pairs(now)
+
+    def _schedule_cloud_hourly_history(self, now):
+        """Backfill outside the control update; respect API's shared rate limit."""
+        if not hasattr(getattr(self, "api", None), "fetch_hourly_pv_history_day"):
+            return
+        task = getattr(self, "_cloud_hourly_task", None)
+        if task is not None and not task.done():
+            return
+        last = getattr(self, "_cloud_hourly_attempt_at", None)
+        if last is not None and now - last < timedelta(hours=24):
+            return
+        self._cloud_hourly_attempt_at = now
+        self._cloud_hourly_task = self.hass.async_create_task(self._refresh_cloud_hourly_history(now))
+        self._entry.async_on_unload(self._cloud_hourly_task.cancel)
+
+    async def _refresh_cloud_hourly_history(self, now):
+        from .cloud_history import CloudHourlyHistory
+        try:
+            local_now = self._pv_local_now()
+            cache = getattr(self, "_cloud_hourly_cache", None)
+            path = self._pv_state_path.parent / f"cloud_hourly_{self._entry.entry_id}.json"
+            if cache is None:
+                cache = CloudHourlyHistory(self._pv_learning.identity)
+                await self.hass.async_add_executor_job(cache.load, path)
+                self._cloud_hourly_cache = cache
+            start = local_now.date() - timedelta(days=14)
+            cache.days = {d: rows for d, rows in cache.days.items()
+                          if start.isoformat() <= d < local_now.date().isoformat()}
+            # Newest days first; historical requests use the verified daily API.
+            for offset in range(1, 15):
+                day = local_now.date() - timedelta(days=offset)
+                if day.isoformat() in cache.days:
+                    continue
+                rows = await self.api.fetch_hourly_pv_history_day(day, self.hass.config.time_zone)
+                if day.isoformat() in complete_hourly_days(rows, self._site_timezone, local_now.date()):
+                    cache.days[day.isoformat()] = rows
+            await self.hass.async_add_executor_job(cache.save, path)
+            self._hourly_pv_attempt_at = None
+            await self._maybe_train_hourly_pv(now)
+            _LOGGER.info("Cloud hourly PV history imported: days=%d hours=%d source=real_half_hour_samples",
+                         len(cache.days), sum(len(rows) for rows in cache.days.values()))
+        except Exception as exc:
+            _LOGGER.warning("Cloud hourly PV history unavailable; retaining measured recorder history: %s", exc)
 
     async def _maybe_train_hourly_pv(self, now):
         from .pv_hourly import train_hourly_response
         rows = getattr(self, "_hourly_pv_rows", [])
+        cache = getattr(self, "_cloud_hourly_cache", None)
+        if cache and cache.days:
+            cloud_days = set(cache.days)
+            recorder_rows = []
+            for row in rows:
+                try:
+                    if timestamp(row.get("start")).astimezone(self._site_timezone).date().isoformat() not in cloud_days:
+                        recorder_rows.append(row)
+                except (ValueError, TypeError, OverflowError, OSError):
+                    continue
+            rows = recorder_rows
+            rows += [r for day_rows in cache.days.values() for r in day_rows]
         if not rows or self._forecast is None:
             return
         last = getattr(self, "_hourly_pv_attempt_at", None)

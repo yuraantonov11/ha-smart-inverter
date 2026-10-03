@@ -863,7 +863,7 @@ class InverterApiClient:
         # fallback
         return {"time": local.strftime("%Y-%m-%d")}
 
-    async def _fetch_overview(self, category: str, summary_key: str, *, month=None, raw_properties=False) -> list[dict[str, Any]]:
+    async def _fetch_overview(self, category: str, summary_key: str, *, month=None, day=None, raw_properties=False) -> list[dict[str, Any]]:
         """Fetch owner overview data (POST with body).
 
         POST /apis/ownerOverView/station/stateAttributeSummary/category/{category}
@@ -878,6 +878,10 @@ class InverterApiClient:
         params = {"summaryCategoryKey": summary_key}
         url = f"{ENDPOINT_OVERVIEW_BASE}/{category}"
         body = self._overview_time_body(category)
+        if day is not None:
+            if category != "daily" or month is not None:
+                raise ValueError("Historical power overview requires a single day")
+            body = {"time": day.isoformat()}
         if month is not None:
             if category != "monthly" or month.day != 1:
                 raise ValueError("Historical overview requires a calendar month")
@@ -944,6 +948,16 @@ class InverterApiClient:
     async def fetch_daily_power(self) -> list[dict[str, Any]]:
         """Fetch hourly PV power for today (Daily Power chart, kW)."""
         return await self._fetch_overview("daily", SUMMARY_KEY_POWER)
+
+    async def fetch_hourly_pv_history_day(self, day, timezone_name):
+        """Measured historical half-hour PV samples, aggregated by hour."""
+        from zoneinfo import ZoneInfo
+        from .hems.cloud_history import measured_pv_hours
+        if self._account_device_count != 1:
+            return []  # Owner overview cannot identify one of several devices.
+        properties = await self._fetch_overview("daily", SUMMARY_KEY_POWER,
+                                                day=day, raw_properties=True)
+        return measured_pv_hours(properties, day, ZoneInfo(timezone_name))
 
     async def fetch_monthly_energy(self) -> list[dict[str, Any]]:
         """Fetch daily PV energy for current month (Monthly Energy chart, kWh)."""
