@@ -392,6 +392,7 @@ async def async_setup_entry(
     # ── Predictive ML sensors ─────────────────────────────────
     entities.append(PredictiveHintSensor(coordinator, entry))
     entities.append(PredictiveDayAheadSensor(coordinator, entry))
+    entities.append(PredictiveDecisionStateSensor(coordinator, entry))
 
     # ── History chart sensors (separate coordinator, 15-min polling) ──
     history_coordinator: HistoryCoordinator | None = hass.data[DOMAIN].get(
@@ -1176,6 +1177,29 @@ class PredictiveHintSensor(CoordinatorEntity, SensorEntity):
         }
 
 
+class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
+    """Distinguish the AI recommendation from acknowledged control."""
+    _attr_has_entity_name = True
+    _attr_name = "Predictive Decision State"
+    _attr_icon = "mdi:brain"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_predictive_decision_state"
+        self._attr_device_info = {"identifiers": {(DOMAIN, coordinator.api.device_sn or entry.entry_id)}}
+
+    @property
+    def native_value(self):
+        state = self.coordinator._hems.predictive_decision_state
+        if state.get("override_pending_until"):
+            return "override"
+        return "applied" if state.get("applied") else state.get("mode", "Off").lower()
+
+    @property
+    def extra_state_attributes(self):
+        return dict(self.coordinator._hems.predictive_decision_state)
+
+
 class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
     """24h Predictive ML plan.
 
@@ -1192,14 +1216,14 @@ class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> int:
-        plan = getattr(self.coordinator, "_last_predictive_plan", None)
+        plan = getattr(self.coordinator._hems, "_last_predictive_plan", None)
         if plan is None:
             return 0
         return len(plan.hourly)
 
     @property
     def extra_state_attributes(self) -> dict:
-        plan = getattr(self.coordinator, "_last_predictive_plan", None)
+        plan = getattr(self.coordinator._hems, "_last_predictive_plan", None)
         if plan is None:
             return {}
         return {

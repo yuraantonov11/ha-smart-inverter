@@ -14,6 +14,7 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .api import InverterApiClient, InverterAuthError
+from .hems.predictive_control import parse_predictive_options
 from .const import (
     CONF_EMAIL,
     CONF_PASSWORD,
@@ -31,6 +32,15 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 
+def _predictive_schema(current):
+    return {
+        vol.Optional("predictive_default_mode", default=current.get("predictive_default_mode", "Shadow")): vol.In(["Off", "Shadow", "Assist"]),
+        vol.Optional("predictive_night_window_start_hour", default=current.get("predictive_night_window_start_hour", 23)): vol.All(int, vol.Range(min=0, max=23)),
+        vol.Optional("predictive_night_window_end_hour", default=current.get("predictive_night_window_end_hour", 7)): vol.All(int, vol.Range(min=0, max=23)),
+        vol.Optional("predictive_min_confidence_for_assist", default=current.get("predictive_min_confidence_for_assist", 0.2)): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+    }
+
+
 class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Smart Solar Inverter."""
 
@@ -45,6 +55,13 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             email = user_input[CONF_EMAIL]
             password = user_input[CONF_PASSWORD]
+            try:
+                predictive_options = parse_predictive_options(user_input)
+            except ValueError:
+                return self.async_show_form(step_id="user", data_schema=vol.Schema({
+                    vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str,
+                    **_predictive_schema(user_input),
+                }), errors={"base": "invalid_predictive_options"})
 
             # Validate credentials
             api = InverterApiClient(email=email, password=password)
@@ -66,6 +83,7 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                     return self.async_create_entry(
                         title=f"Solar Inverter ({api.device_sn})",
+                        options={**predictive_options, "predictive_mode": predictive_options["predictive_default_mode"].lower()},
                         data={
                             CONF_EMAIL: email,
                             CONF_PASSWORD: password,
@@ -88,6 +106,7 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             type=selector.TextSelectorType.PASSWORD,
                         )
                     ),
+                    **_predictive_schema({}),
                 }
             ),
             errors=errors,
@@ -165,11 +184,17 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            try:
+                parse_predictive_options(user_input)
+            except ValueError:
+                errors["base"] = "invalid_predictive_options"
             poll = user_input.get("poll_interval", DEFAULT_POLL_INTERVAL_SEC)
             if poll < MIN_POLL_INTERVAL_SEC or poll > MAX_POLL_INTERVAL_SEC:
                 errors["poll_interval"] = "invalid_poll_interval"
-            else:
-                return self.async_create_entry(data=user_input)
+            elif not errors:
+                # Keep internal state (feedback, recommendations) when the
+                # form edits only its visible fields.
+                return self.async_create_entry(data={**self.config_entry.options, **user_input})
 
         current = self.config_entry.options
         return self.async_show_form(
@@ -273,6 +298,7 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                         vol.Range(min=0, max=23),
                     ),
                     # ── Predictive ML mode (persistent across reload) ──
+                    **_predictive_schema(current),
                     vol.Optional(
                         "predictive_mode",
                         default=current.get("predictive_mode", PREDICTIVE_MODE_DEFAULT),

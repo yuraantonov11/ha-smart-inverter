@@ -126,6 +126,37 @@ set_battery_charge_limit:
           max: 100
           unit_of_measurement: "%"
 
+predictive_feedback:
+  name: Predictive feedback
+  description: Approve a recommendation, pause control, or set a pending SOC target. Never enables Assist.
+  fields:
+    entry_id:
+      name: Config entry ID
+      selector:
+        text:
+    action:
+      required: true
+      selector:
+        select:
+          options:
+            - approve
+            - reject
+            - modify
+    duration_min:
+      default: 30
+      selector:
+        number:
+          min: 1
+          max: 1440
+          mode: box
+    new_target_soc:
+      description: Required for modify. Pending target during the manual hold.
+      selector:
+        number:
+          min: 20
+          max: 100
+          mode: box
+
 set_grid_charge_power:
   name: "Set Grid Charge Power Limit"
   description: "Set the maximum power drawn from grid for battery charging."

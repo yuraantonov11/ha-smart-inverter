@@ -124,6 +124,12 @@ class ForecastCalibrator:
         self._dirty = False
         return m
 
+    def mean_forecast(self) -> float:
+        """Mean forecast in the calibrator's own unit, for relative bias."""
+        threshold = self.MIN_FORECAST_W if self.unit == "W" else 0
+        values = [fc for fc, _ in self._samples if fc >= threshold]
+        return sum(values) / len(values) if values else 0.0
+
     def _compute(self) -> CalibrationMetrics:
         n_total = len(self._samples)
         if n_total == 0:

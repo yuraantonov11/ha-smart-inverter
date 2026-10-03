@@ -187,6 +187,59 @@ views:
     sections:
       - type: grid
         cards:
+          - type: entities
+            title: AI · рекомендація та виконання
+            show_header_toggle: false
+            entities:
+              - entity: sensor.smart_solar_inverter_predictive_decision_state
+                name: Поточне рішення AI
+              - entity: select.smart_solar_inverter_predictive_target_soc
+                name: Скоригувати SOC · пауза на 30 хв
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: reason
+                name: Причина рекомендації
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: execution_reason
+                name: Причина виконання або блокування
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: confidence
+                name: Впевненість
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: samples
+                name: Реальні пари факт ↔ прогноз
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: applied
+                name: Застосовано
+          - type: horizontal-stack
+            cards:
+              - type: button
+                name: Підтвердити
+                icon: mdi:check
+                tap_action:
+                  action: perform-action
+                  perform_action: powmr_inverter.predictive_feedback
+                  data:
+                    action: approve
+              - type: button
+                name: Скасувати на 30 хв
+                icon: mdi:pause
+                tap_action:
+                  action: perform-action
+                  perform_action: powmr_inverter.predictive_feedback
+                  data:
+                    action: reject
+                    duration_min: 30
+          - type: markdown
+            content: >-
+              Assist вмикається вручну через наявний select прогнозної допомоги.
+              Обери ціль SOC (20–100), щоб скоригувати рекомендацію та поставити
+              HEMS на паузу на 30 хвилин. На час паузи HEMS утримує ручний контроль.
+              Для кількох інверторів у кнопках потрібен entry_id.
           - type: markdown
             content: |
               # Налаштування HEMS

@@ -310,8 +310,9 @@ class PvLearningCoordinatorMixin:
         return ready
 
     def _configure_night_window(self):
-        window = normalize_night_window((self._entry.options.get("night_charge_start_hour", 23),
-                                         self._entry.options.get("night_charge_end_hour", 7)))
+        options = {**getattr(self._entry, "data", {}), **self._entry.options}
+        window = normalize_night_window((options.get("predictive_night_window_start_hour", options.get("night_charge_start_hour", 23)),
+                                         options.get("predictive_night_window_end_hour", options.get("night_charge_end_hour", 7))))
         self.night_charge_start_hour, self.night_charge_end_hour = window
         self._hems._predictive_controller.night_charge_window = window
 
