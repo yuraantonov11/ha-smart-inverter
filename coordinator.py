@@ -669,7 +669,15 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self.hems_last_reason = decision.reason
         self.hems_last_output_cmd = decision.output_priority
         self.hems_last_charger_cmd = decision.charger_priority
-        self.buzzer_off_candidate = decision.buzzer_off  # noqa: F841
+        # ``hems_buzzer_off`` is a sensor-facing attribute the
+        # dashboard reads. It must reflect the *actual* state
+        # rather than the engine's recommendation. We set it
+        # here from the engine's output and reset it on the
+        # gate below when we refuse to write. (The audit's
+        # review caught a previous version that wrote to a
+        # never-read ``buzzer_off_candidate`` attribute,
+        # leaving ``hems_buzzer_off`` permanently stale.)
+        self.hems_buzzer_off = decision.buzzer_off
 
         # ── Update HEMS daily counters (cheap, no I/O) ─────────────────
         today = now.strftime("%Y-%m-%d")
@@ -721,6 +729,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             # written command. The reason field carries the
             # ``soc_unknown`` prefix so the absence of a real
             # dispatch is itself diagnosable.
+            self.hems_last_reason = f"soc_unknown: {decision.reason}"
             self.hems_last_output_cmd = None
             self.hems_last_charger_cmd = None
             self.hems_buzzer_off = False
@@ -1530,6 +1539,19 @@ class HistoryCoordinator(DataUpdateCoordinator):
                 # silently pick one.
                 return {}, 0.0, True
             if not math.isfinite(v_f):
+                return {}, 0.0, True
+            # The audit's follow-up review pointed out that the
+            # API path can return a perfectly-formed pair even
+            # when the underlying data is missing: the
+            # ``_raw_value`` field the API client now stamps onto
+            # the dict carries the raw ``v`` it managed to extract
+            # from the cloud. A real cumulative reading always
+            # has ``_raw_value is not None``; a fallback path
+            # (empty list, missing keys, non-numeric v) sets it
+            # to ``None`` so the helper can distinguish a *real*
+            # 0.0 from a *placeholder* 0.0. We mirror that
+            # contract here.
+            if value.get("_raw_value") is None:
                 return {}, 0.0, True
             return value, v_f, False
 

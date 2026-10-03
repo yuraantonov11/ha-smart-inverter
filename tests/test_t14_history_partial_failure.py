@@ -76,7 +76,12 @@ class _OkYearly(list): pass
 daily = _OkDaily([{"time": "00", "value": 1}])
 monthly = _OkMonthly([{"date": "2026-09-01", "value": 2}])
 yearly = _OkYearly([{"month": "2026-09", "value": 3}])
-total = {"value": 4.5, "totalEnergy": 4.5}
+# T14 follow-up: ``_raw_value`` is the sentinel the API client
+# stamps onto the dict. A real cumulative reading has
+# ``_raw_value`` not None. We pass a numeric ``_raw_value``
+# (the same one the API would have extracted from the cloud)
+# to make the test mirror the production payload.
+total = {"value": 4.5, "totalEnergy": 4.5, "_raw_value": 4.5}
 
 (td, tdf), (tm, tmf), (ty, tyf), (tot, totk, _) = _unpack([daily, monthly, yearly, total])
 assert td is daily
@@ -165,7 +170,8 @@ assert td1[0] == td2[0] == [] and td1[1] == td2[1] is True
 # ── 9. Total dict with value as string parses as float. ────────
 
 (td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
-    [daily, monthly, yearly, {"value": "12.34", "totalEnergy": "12.34"}]
+    [daily, monthly, yearly, {"value": "12.34", "totalEnergy": "12.34",
+                              "_raw_value": "12.34"}]
 )
 assert totk == 12.34
 
@@ -174,7 +180,8 @@ assert totk == 12.34
 # separately; the helper's job is just to surface a number).
 
 (td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
-    [daily, monthly, yearly, {"value": -5.0, "totalEnergy": -5.0}]
+    [daily, monthly, yearly, {"value": -5.0, "totalEnergy": -5.0,
+                              "_raw_value": -5.0}]
 )
 assert totk == -5.0
 
@@ -212,7 +219,8 @@ assert totk == 0.0
 # a stale value; the helper refuses to pick a side.
 
 (td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
-    [daily, monthly, yearly, {"value": 0, "totalEnergy": 50.0}]
+    [daily, monthly, yearly, {"value": 0, "totalEnergy": 50.0,
+                              "_raw_value": 0}]
 )
 assert tot == {}, f"disagreeing pair must be a fallback, got {tot!r}"
 assert totk == 0.0
@@ -222,13 +230,15 @@ assert totk == 0.0
 # NaN and +/-Infinity are not real readings.
 
 (td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
-    [daily, monthly, yearly, {"value": float("nan"), "totalEnergy": float("nan")}]
+    [daily, monthly, yearly, {"value": float("nan"), "totalEnergy": float("nan"),
+                              "_raw_value": float("nan")}]
 )
 assert tot == {}
 assert totk == 0.0
 
 (td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
-    [daily, monthly, yearly, {"value": float("inf"), "totalEnergy": float("inf")}]
+    [daily, monthly, yearly, {"value": float("inf"), "totalEnergy": float("inf"),
+                              "_raw_value": float("inf")}]
 )
 assert tot == {}
 assert totk == 0.0
@@ -238,9 +248,40 @@ assert totk == 0.0
 # not a fallback. The helper surfaces 0.0 with ``is_fallback=False``.
 
 (td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
-    [daily, monthly, yearly, {"value": 0.0, "totalEnergy": 0.0}]
+    [daily, monthly, yearly, {"value": 0.0, "totalEnergy": 0.0,
+                              "_raw_value": 0.0}]
 )
-assert tot == {"value": 0.0, "totalEnergy": 0.0}
+assert tot == {"value": 0.0, "totalEnergy": 0.0, "_raw_value": 0.0}
+assert totk == 0.0
+
+
+# ── 15. The audit's specific follow-up: a transient backend
+# error where the API returns ``{"value": 0, "totalEnergy": 0}``
+# because the underlying data was missing (the API path sets
+# ``_raw_value`` to ``None``). Even though the *pair* is intact
+# and the values are equal, ``_raw_value is None`` must trigger
+# a fallback. This is the regression the audit specifically
+# called out: without the sentinel, the cache would be
+# zeroed over a real 1500 kWh reading.
+
+(td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
+    [daily, monthly, yearly, {"value": 0.0, "totalEnergy": 0.0,
+                              "_raw_value": None}]
+)
+assert tot == {}, f"_raw_value=None must be a fallback, got {tot!r}"
+assert totk == 0.0
+
+
+# ── 16. Missing ``_raw_value`` field is treated as ``None`` —
+# a payload that was not produced by the production API path.
+# This is the *default* defence in depth: even if a future
+# refactor drops the ``_raw_value`` field entirely, the
+# helper reverts to the safe behaviour.
+
+(td, _), (tm, _), (ty, _), (tot, totk, _) = _unpack(
+    [daily, monthly, yearly, {"value": 12.5, "totalEnergy": 12.5}]
+)
+assert tot == {}, f"missing _raw_value must be a fallback, got {tot!r}"
 assert totk == 0.0
 
 

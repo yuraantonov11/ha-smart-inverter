@@ -1110,16 +1110,26 @@ class InverterApiClient:
         API already gives cumulative readings, summing them would multiply
         the true total by however many snapshots exist).
 
-        If the snapshot list is empty, returns {}. If the latest point
+        If the snapshot list is empty, returns ``{}``. If the latest point
         lacks a numeric value, falls back to scanning for one before giving
         up — the cloud occasionally returns the value in an unexpected key.
+
+        The returned dict carries a ``_raw_value`` field that is
+        ``None`` whenever the underlying data was missing or
+        non-numeric (the fallback path was used to surface a 0.0
+        total). Downstream consumers (``HistoryCoordinator.
+        _safe_total``) treat this as the canonical signal that
+        the value is a placeholder and refuse to overwrite the
+        cached total. This avoids the failure mode where a
+        transient backend error returns ``{"value": 0, …}`` and
+        the cache zeroing writes 0 over a real 1500 kWh reading.
         """
         result = await self._fetch_overview("total", SUMMARY_KEY_ENERGY)
         if not result:
-            return {}
+            return {"_raw_value": None}
         latest = result[-1]  # most recent cumulative reading
         if not isinstance(latest, dict):
-            return {}
+            return {"_raw_value": None}
         v = latest.get("value") or latest.get("totalEnergy")
         if v is None:
             # Fallback: scan all points for a numeric value
@@ -1132,7 +1142,13 @@ class InverterApiClient:
             total = float(v) if v is not None else 0.0
         except (TypeError, ValueError):
             total = 0.0
-        return {"value": total, "totalEnergy": total}
+        # ``_raw_value`` is the sentinel: it is None exactly when
+        # the API did not surface a real number. A non-None
+        # value means the cloud gave us a usable reading,
+        # regardless of whether the resulting ``total`` is 0.0
+        # (which is itself a valid cumulative reading for a
+        # freshly-installed inverter).
+        return {"value": total, "totalEnergy": total, "_raw_value": v}
 
     # ── Helpers ────────────────────────────────────────────────────────
 

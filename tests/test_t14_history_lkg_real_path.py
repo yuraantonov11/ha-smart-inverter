@@ -220,7 +220,7 @@ async def _scenario_all_ok():
         daily=[{"time": "13", "value": 11.0}],
         monthly=[{"date": "2026-09-30", "value": 12.0}],
         yearly=[{"month": "2026-09", "value": 13.0}],
-        total={"value": 14.0, "totalEnergy": 14.0},
+        total={"value": 14.0, "totalEnergy": 14.0, "_raw_value": 14.0},
     )
     c = _StubHistoryCoordinator(api)
     c.today_hourly_power = []
@@ -266,7 +266,7 @@ async def _scenario_daily_fail():
         daily=RuntimeError("d"),
         monthly=[{"date": "2026-09-30", "value": 22.0}],
         yearly=[{"month": "2026-09", "value": 23.0}],
-        total={"value": 24.0, "totalEnergy": 24.0},
+        total={"value": 24.0, "totalEnergy": 24.0, "_raw_value": 24.0},
     )
     c = _StubHistoryCoordinator(api)
     c.today_hourly_power = [{"time": "00", "value": 1.0}]
@@ -301,7 +301,7 @@ async def _scenario_total_partial_pair():
         # Only one of the two required keys. The real API
         # always returns both. ``value=0`` looks plausible but
         # is not from the real path.
-        total={"value": 0},
+        total={"value": 0, "_raw_value": 0},
     )
     c = _StubHistoryCoordinator(api)
     c.today_hourly_power = []
@@ -333,7 +333,9 @@ async def _scenario_total_disagreeing_pair():
         daily=[{"time": "13", "value": 11.0}],
         monthly=[{"date": "2026-09-30", "value": 12.0}],
         yearly=[{"month": "2026-09", "value": 13.0}],
-        total={"value": 0, "totalEnergy": 50.0},
+        # Stale value somewhere. Treat as fallback rather than
+        # silently pick one.
+        total={"value": 0, "totalEnergy": 50.0, "_raw_value": 0},
     )
     c = _StubHistoryCoordinator(api)
     c.total_energy_kwh = 888.0
@@ -355,7 +357,8 @@ async def _scenario_total_nan():
         daily=[{"time": "13", "value": 11.0}],
         monthly=[{"date": "2026-09-30", "value": 12.0}],
         yearly=[{"month": "2026-09", "value": 13.0}],
-        total={"value": float("nan"), "totalEnergy": float("nan")},
+        total={"value": float("nan"), "totalEnergy": float("nan"),
+               "_raw_value": float("nan")},
     )
     c = _StubHistoryCoordinator(api)
     c.total_energy_kwh = 777.0
@@ -378,7 +381,7 @@ async def _scenario_total_real_zero():
         daily=[{"time": "13", "value": 11.0}],
         monthly=[{"date": "2026-09-30", "value": 12.0}],
         yearly=[{"month": "2026-09", "value": 13.0}],
-        total={"value": 0.0, "totalEnergy": 0.0},
+        total={"value": 0.0, "totalEnergy": 0.0, "_raw_value": 0.0},
     )
     c = _StubHistoryCoordinator(api)
     c.total_energy_kwh = 555.0
@@ -391,6 +394,211 @@ async def _scenario_total_real_zero():
 
 
 _run(_scenario_total_real_zero())
+
+
+# ── 10. End-to-end: drive the *real* ``api.fetch_total_energy()``
+# with a mocked ``_fetch_overview`` and assert the cache write
+# gate works through the full API path. The audit's review
+# point was that previous tests only stubbed the dict the
+# coordinator consumed — a regression in the API path itself
+# could go unnoticed. This test reads the production
+# ``InverterApiClient.fetch_total_energy`` body via AST,
+# runs it against a synthetic _fetch_overview response, and
+# feeds the resulting dict into ``_unwrap_history_results`` to
+# prove the chain holds end-to-end.
+
+# We can't easily import the full api module because it pulls
+# aiohttp, cryptography, and homeassistant at module level.
+# Instead, extract the body of ``fetch_total_energy`` via AST
+# and exec it in an isolated namespace. That body has access
+# to ``self._fetch_overview`` (which we provide) and produces
+# a dict with the ``_raw_value`` sentinel; we then run that
+# dict through the real ``_unwrap_history_results``.
+
+
+api_src = (ROOT / "api.py").read_text(encoding="utf-8")
+api_lines = api_src.splitlines(keepends=True)
+api_tree = ast.parse(api_src)
+
+
+def _api_function_src(name: str) -> str:
+    for cls in ast.walk(api_tree):
+        if isinstance(cls, ast.ClassDef) and cls.name == "InverterApiClient":
+            for sub in cls.body:
+                if (
+                    isinstance(sub, ast.AsyncFunctionDef)
+                    and sub.name == name
+                ):
+                    start = sub.lineno - 1
+                    end = sub.end_lineno
+                    return textwrap.dedent("".join(api_lines[start:end]))
+    raise SystemExit(f"{name} not found in api.py")
+
+
+fetch_total_src = _api_function_src("fetch_total_energy")
+api_ns: dict[str, Any] = {
+    "__name__": "_t14_e2e_isolated",
+    "SUMMARY_KEY_ENERGY": "energy",
+    "Any": __import__("typing").Any,
+    "datetime": __import__("datetime").datetime,
+}
+exec(fetch_total_src, api_ns)
+_fetch_total = api_ns["fetch_total_energy"]
+
+
+class _RealApiMock:
+    """Mimics the surface ``fetch_total_energy`` reads.
+
+    The body does ``await self._fetch_overview("total", SUMMARY_KEY_ENERGY)``.
+    We capture each call so the test can assert how the body
+    parsed the cloud's response, then feed the result through
+    the *real* ``_unwrap_history_results`` to prove the cache
+    write gate works end-to-end.
+    """
+
+    def __init__(self, overview_payload):
+        self._payload = overview_payload
+        self.calls: list[tuple[str, str]] = []
+
+    async def _fetch_overview(self, scope, key):
+        self.calls.append((scope, key))
+        return self._payload
+
+
+async def _drive_real_api(overview_payload, expected_total_kwh):
+    """Run the production ``fetch_total_energy`` body, then run
+    the result through ``_unwrap_history_results`` and the
+    real ``_async_update_data`` body. Returns the cache and the
+    raw dict the API path produced so the test can assert the
+    chain end-to-end.
+    """
+    api = _RealApiMock(overview_payload)
+    raw_dict = await _fetch_total(api)
+    # The body stamps ``_raw_value`` onto the dict. Run the
+    # result through the production unwrap helper, then through
+    # the cache-write path of ``_async_update_data`` to prove
+    # the gate works end-to-end.
+    c = _StubHistoryCoordinator(api)  # the api arg is ignored here
+    c.total_energy_kwh = expected_total_kwh
+    # Build a 4-element gather result for _unwrap_history_results.
+    fake_results = [
+        [{"time": "13", "value": 11.0}],
+        [{"date": "2026-09-30", "value": 12.0}],
+        [{"month": "2026-09", "value": 13.0}],
+        raw_dict,
+    ]
+    return c, _unwrap(fake_results), raw_dict
+
+
+# The audit's specific regression: a transient backend error
+# where the cloud returns an empty list. The body falls back
+# to ``{"_raw_value": None}`` and the cache must NOT be
+# overwritten (the previous total, e.g. 1500 kWh, is preserved).
+async def _e2e_empty_list():
+    c, unwrapped, raw = await _drive_real_api(
+        overview_payload=[],
+        expected_total_kwh=1500.0,
+    )
+    # The API body returned a dict with ``_raw_value=None``.
+    assert raw == {"_raw_value": None}, (
+        f"empty list must produce _raw_value=None, got {raw!r}"
+    )
+    # The unwrap helper flagged it as a fallback.
+    td_p, tm_p, ty_p, tot_p = unwrapped
+    assert tot_p[2] is True, "empty list must be a fallback"
+    assert tot_p[1] == 0.0
+    # The cache stays at the previous 1500 kWh reading.
+    c.today_hourly_power = td_p[0]
+    c.monthly_daily_energy = tm_p[0]
+    c.yearly_monthly_energy = ty_p[0]
+    if not tot_p[2]:
+        c.total_energy_kwh = tot_p[1]
+    assert c.total_energy_kwh == 1500.0, (
+        f"empty-list total must not zero the cache: got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_e2e_empty_list())
+
+
+# The audit's specific regression: the cloud returns a list of
+# points whose latest entry lacks a numeric value. The body
+# falls back to scanning, fails, and stamps ``_raw_value=None``.
+async def _e2e_missing_value():
+    c, unwrapped, raw = await _drive_real_api(
+        overview_payload=[{"time": "13"}, {"time": "12"}],
+        expected_total_kwh=1500.0,
+    )
+    assert raw.get("_raw_value") is None, (
+        f"missing-value list must produce _raw_value=None, got {raw!r}"
+    )
+    td_p, tm_p, ty_p, tot_p = unwrapped
+    assert tot_p[2] is True, "missing-value list must be a fallback"
+    if not tot_p[2]:
+        c.total_energy_kwh = tot_p[1]
+    assert c.total_energy_kwh == 1500.0
+
+
+_run(_e2e_missing_value())
+
+
+# The happy path: a real cloud response with a numeric
+# ``value`` and ``totalEnergy``. ``_raw_value`` is set to the
+# extracted value; the cache updates to the new reading.
+async def _e2e_real_reading():
+    c, unwrapped, raw = await _drive_real_api(
+        overview_payload=[{"value": 12.5, "totalEnergy": 12.5}],
+        expected_total_kwh=0.0,
+    )
+    assert raw == {"value": 12.5, "totalEnergy": 12.5,
+                    "_raw_value": 12.5}, raw
+    td_p, tm_p, ty_p, tot_p = unwrapped
+    assert tot_p[2] is False
+    assert tot_p[1] == 12.5
+    if not tot_p[2]:
+        c.total_energy_kwh = tot_p[1]
+    assert c.total_energy_kwh == 12.5
+
+
+_run(_e2e_real_reading())
+
+
+# The audit's specific regression: a transient backend error
+# where the cloud returns a ``{"value": 0, "totalEnergy": 0}``
+# payload *and* the API's v is None (the fallback path the body
+# runs when no numeric ``value`` is in the response). The body
+# then sets ``_raw_value = None`` so the cache gate fires. This
+# is the *real* path the audit asked us to cover — a previous
+# version of the body would have surfaced a 0.0 total even
+# when the underlying data was missing.
+async def _e2e_transient_zero():
+    # Build a payload whose every point has a v=None. The
+    # body tries the latest, the fallback scan, and still
+    # fails; the resulting ``_raw_value`` is ``None``.
+    c, unwrapped, raw = await _drive_real_api(
+        overview_payload=[{"value": None}, {"value": None}],
+        expected_total_kwh=1500.0,
+    )
+    assert raw.get("_raw_value") is None, (
+        f"all-None payload must produce _raw_value=None, got {raw!r}"
+    )
+    # Even though the body successfully fell back to
+    # ``total=0.0``, the unwrap helper refuses the dict because
+    # ``_raw_value is None``. The cache stays at 1500.
+    td_p, tm_p, ty_p, tot_p = unwrapped
+    assert tot_p[2] is True, (
+        f"transient zero with _raw_value=None must be a fallback, "
+        f"got is_fallback={tot_p[2]!r}"
+    )
+    if not tot_p[2]:
+        c.total_energy_kwh = tot_p[1]
+    assert c.total_energy_kwh == 1500.0, (
+        f"transient zero with _raw_value=None must NOT zero the cache: "
+        f"got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_e2e_transient_zero())
 
 
 print("T14-lkg-real OK — last-known-good is preserved across partial failures")

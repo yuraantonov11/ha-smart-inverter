@@ -170,6 +170,7 @@ class _StubCoordinator:
         self.hems_last_reason: str | None = None
         self.hems_last_output_cmd: str | None = None
         self.hems_last_charger_cmd: str | None = None
+        self.hems_buzzer_off: bool = False
         self.buzzer_off: bool = False
         # Engine
         self._hems = _StubHems()
@@ -362,6 +363,20 @@ assert c._hems_debug_skips >= 1, (
 # no false state recorded).
 assert c.hems_last_output_cmd is None
 assert c.hems_last_charger_cmd is None
+# hems_buzzer_off is reset to False on the gate fire (the
+# dashboard cannot show a recommendation the gate refused).
+assert c.hems_buzzer_off is False, (
+    f"hems_buzzer_off must be reset on None SOC: "
+    f"got {c.hems_buzzer_off!r}"
+)
+# The reason field carries the ``soc_unknown:`` prefix so the
+# absence of a real dispatch is itself diagnosable. This is
+# the third gap the audit called out.
+assert c.hems_last_reason is not None
+assert c.hems_last_reason.startswith("soc_unknown:"), (
+    f"hems_last_reason must carry the soc_unknown prefix on "
+    f"unknown SOC: got {c.hems_last_reason!r}"
+)
 
 
 # ── 2. NaN SOC ─────────────────────────────────────────────────
@@ -409,6 +424,57 @@ assert len(c.dispatched) == 1, f"real 50 % must dispatch: {c.dispatched!r}"
 
 c = _run(_drive({"batterySoc": 100}))
 assert len(c.dispatched) == 1, f"real 100 % must dispatch: {c.dispatched!r}"
+
+
+# ── 8b. hems_buzzer_off tracks the engine's recommendation
+# when SOC is valid. The audit's review caught a previous
+# version of this code that wrote to a never-read
+# ``buzzer_off_candidate`` attribute, leaving
+# ``hems_buzzer_off`` permanently stale. We drive a real
+# cycle with ``buzzer_off=True`` and assert the attribute
+# reflects the engine's output.
+
+c = _StubCoordinator()
+c._hems.set_evaluate_result(_SpyHemsDecision(
+    skip=False, output_priority="2", charger_priority="1",
+    buzzer_off=True, reason="buzzer_should_be_off",
+))
+_run(_run_hems_engine(
+    c, {"batterySoc": 50, "outputSourcePriority": "2",
+        "chargerSourcePriority": "1"},
+    50, datetime(2026, 10, 3, 12, 0, 0),
+))
+assert c.hems_buzzer_off is True, (
+    f"hems_buzzer_off must reflect the engine output: "
+    f"got {c.hems_buzzer_off!r}"
+)
+
+
+# ── 8c. hems_buzzer_off is reset to False when SOC is
+# unknown, even if the engine wanted buzzer_off=True. The
+# dashboard cannot show a recommendation the gate refused.
+
+c = _StubCoordinator()
+c._hems.set_evaluate_result(_SpyHemsDecision(
+    skip=False, output_priority="2", charger_priority="1",
+    buzzer_off=True, reason="would_have_set_buzzer_off",
+))
+_run(_run_hems_engine(
+    c, {"batterySoc": None, "outputSourcePriority": "2",
+        "chargerSourcePriority": "1"},
+    None, datetime(2026, 10, 3, 12, 0, 0),
+))
+assert c.dispatched == [], "no dispatch on unknown SOC"
+assert c.hems_buzzer_off is False, (
+    f"hems_buzzer_off must be reset on gate fire: "
+    f"got {c.hems_buzzer_off!r}"
+)
+# The reason field carries the soc_unknown prefix so the
+# absence of a real dispatch is itself diagnosable.
+assert c.hems_last_reason.startswith("soc_unknown:"), (
+    f"hems_last_reason must carry soc_unknown prefix: "
+    f"got {c.hems_last_reason!r}"
+)
 
 
 # ── 9. Real SOC but engine decision.skip=True ─────────────────
