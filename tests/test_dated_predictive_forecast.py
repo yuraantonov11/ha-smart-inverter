@@ -100,4 +100,16 @@ engine._dated_hourly_pv_forecast = broken.dated_hourly_pv
 check(engine._evaluate_predictive(now.replace(tzinfo=None),engine_inputs) == (None,None), 'engine rejects incomplete next 24 hours before hint')
 engine._dated_hourly_pv_forecast = {}
 check(engine._evaluate_predictive(now.replace(tzinfo=None),engine_inputs) == (None,None), 'explicit missing dated forecast never falls back to repeated day')
+clean = build_planner_inputs(raw={}, dated_hourly_pv={1:True,2:float('nan'),3:float('inf'),4:-1.,5:20001.,6:10.})
+check(clean.dated_hourly_pv == {6:10.}, 'telemetry excludes invalid dated powers rather than zero filling')
+spring = datetime(2026,3,29,12,tzinfo=tz)
+c._pv_local_now = lambda: spring
+first = datetime(2026,3,29,tzinfo=tz).astimezone(timezone.utc)
+c._raw_hourly_forecast = [{'time':(first+timedelta(hours=i)).astimezone(tz).isoformat(),
+                          'timestamp':int((first+timedelta(hours=i)).timestamp()),'power_w':100.} for i in range(23)]
+c._raw_forecast_kwh = {'2026-03-29':2.3}
+c._forecast_today_kwh = 2.3
+c._publish_calibrated_hours()
+check(len(c.hourly_forecast_today)==24 and len(c._dated_hourly_pv_forecast)==23, 'spring DST keeps chart compatibility and actual 23 dated hours')
+check(abs(sum(c._dated_hourly_pv_forecast.values())/1000-2.3)<.000001, 'spring DST calibrated total uses elapsed hours')
 check.finish()

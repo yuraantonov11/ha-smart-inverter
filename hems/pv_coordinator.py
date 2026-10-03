@@ -443,7 +443,9 @@ class PvLearningCoordinatorMixin:
             if day == today.isoformat():
                 buckets[int(row["time"][11:13])].append(power)
         self._dated_hourly_pv_forecast = dated
-        self.hourly_forecast_today = [sum(b)/len(b) if b else 0. for b in buckets] if all(buckets) else []
+        # A complete spring-DST day has 23 actual hours. The legacy 24-slot
+        # chart may contain an unused slot; the planner uses only dated instants.
+        self.hourly_forecast_today = [sum(b)/len(b) if b else 0. for b in buckets] if today.isoformat() in raw_energy else []
 
     def _log_pv_calibrator_state(self, now):
         if self._pv_calibrator_log_at and now - self._pv_calibrator_log_at < timedelta(hours=1):
