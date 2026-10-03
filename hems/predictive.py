@@ -20,8 +20,9 @@ Architecture:
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .engine import (
@@ -138,6 +139,7 @@ class PlannerInputs:
     # Weather alerts (will be added in Phase 1F)
     storm_alert: bool = False
     storm_hours_away: int | None = None
+    dated_hourly_pv: dict[int, float] | None = None
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -381,18 +383,28 @@ def simulate_24h(
     battery_kwh = inputs.battery_capacity_kwh
     soc = getattr(inputs, "soc_corrected", inputs.soc)
     plans = []
-    now_hour = inputs.now.hour
     night_start, night_end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
     night_duration = (night_end - night_start) % 24
+    charge_start, charge_end, charge_reason = plan_night_charge(inputs, target_morning)
+    charge_duration = (charge_end - charge_start) % 24 if charge_start >= 0 else 0
 
-    for h in range(24):
-        # Wrap-around: hour 0 is tomorrow
-        delta = (h - now_hour) % 24
-        ts = inputs.now + timedelta(hours=delta)
-
-        pv_forecast = inputs.hourly_pv[h] if h < len(inputs.hourly_pv) else 0.0
-        # Coordinator already trained the station forecast. Daily kWh bias
-        # measures accuracy only and must never be added to hourly watts.
+    for delta in range(24):
+        # Decisions and SOC must roll from NOW, never from midnight.
+        if inputs.now.tzinfo is not None:
+            ts = (inputs.now.astimezone(timezone.utc) + timedelta(hours=delta)).astimezone(inputs.now.tzinfo)
+        else:
+            ts = inputs.now + timedelta(hours=delta)
+        h = ts.hour
+        dated = getattr(inputs, "dated_hourly_pv", None)
+        if dated is not None:
+            key = int(ts.replace(minute=0, second=0, microsecond=0).timestamp())
+            pv_forecast = dated.get(key)
+            if pv_forecast is None or not math.isfinite(pv_forecast) or not 0 <= pv_forecast <= 20000:
+                raise ValueError("Incomplete or invalid dated PV forecast")
+        else:
+            pv_forecast = inputs.hourly_pv[h] if h < len(inputs.hourly_pv) else 0.0
+        # Coordinator distributes daily bias over the station forecast shape.
+        # The planner must not apply that correction a second time.
 
         load_forecast = predictor.predict(h, ts.weekday())[0]
 
@@ -405,7 +417,7 @@ def simulate_24h(
         # Decide output + charger
         if (h - night_start) % 24 < night_duration:
             # Night window
-            if soc < target_morning:
+            if soc < target_morning and charge_duration and (h - charge_start) % 24 < charge_duration:
                 # Need to charge
                 output = OutputPriority.USB
                 charger = ChargerPriority.SNU
@@ -414,7 +426,7 @@ def simulate_24h(
                 # Target reached
                 output = OutputPriority.USB
                 charger = ChargerPriority.OSO
-                reason = "night_idle: SOC at target"
+                reason = f"night_idle: {charge_reason}" if soc < target_morning else "night_idle: SOC at target"
         elif 9 <= h <= 16:
             # Daylight window — PV available
             if pv_forecast > load_forecast * 1.2:
@@ -506,6 +518,10 @@ def check_storm_preemption(inputs: PlannerInputs) -> HemsDecision | None:
           or genuine problem); NOT storm preemption if grid_ok=False
           (coordinator already escalated to Storm via grid outage logic).
     """
+    if getattr(inputs, "storm_alert", False):
+        return HemsDecision(output_priority=OutputPriority.USB,
+                            charger_priority=ChargerPriority.SNU,
+                            reason="storm preemption: calibrated PV shortfall; preserve backup")
     if inputs.grid_v < 200.0 and inputs.grid_ok:
         # Low voltage but coordinator still says grid is fine —
         # be conservative, log a hint instead of forcing STORM.
@@ -591,6 +607,8 @@ class PredictiveHemsController:
         # Coordinator sets this to entry.options before engine evaluation.
         self.night_charge_window: tuple[int, int] | None = None
         self.last_plan: DayAheadPlan | None = None
+        self.last_decision: HemsDecision | None = None
+        self.calibrated_storm_alert = False
 
     def update_history(self, hourly_load: list[float]) -> None:
         self.consumption_predictor.add_day(hourly_load)
@@ -598,6 +616,9 @@ class PredictiveHemsController:
 
     def suggest(self, inputs: PlannerInputs) -> PredictiveHint:
         """Provide a HINT to existing HEMS modes (do not take control)."""
+        if self.calibrated_storm_alert:
+            inputs.storm_alert = True
+            inputs.storm_hours_away = None
         if self.night_charge_window is not None:
             inputs.night_charge_window = normalize_night_window(self.night_charge_window)
         # Day-ahead targets
@@ -672,14 +693,20 @@ class PredictiveHemsController:
         The immediate_decision is what the inverter should do RIGHT NOW.
         The day_ahead_plan shows what we'll do over the next 24h.
         """
+        self.last_decision = None
+        if self.calibrated_storm_alert:
+            inputs.storm_alert = True
+            inputs.storm_hours_away = None
         if self.night_charge_window is not None:
             inputs.night_charge_window = normalize_night_window(self.night_charge_window)
         self.consumption_predictor = ConsumptionPredictor(inputs.consumption_history)
         # 1. Storm check (highest priority)
         storm = check_storm_preemption(inputs)
         if storm is not None:
-            # In storm — fall back to safe SBU+OSO mode
+            # Caution always strengthens backup: USB + SNU.
             plan = self._build_plan(inputs, [], reason=storm.reason)
+            self.last_decision = storm
+            self.last_plan = plan
             return storm, plan
 
         # 2. Plan day-ahead SOC targets
@@ -705,6 +732,7 @@ class PredictiveHemsController:
         # 5. Build day-ahead plan
         plan = self._build_plan(inputs, plans)
         self.last_plan = plan
+        self.last_decision = decision
 
         return decision, plan
 

@@ -6,13 +6,18 @@
         "description": "Enter your solar.siseli.com account credentials",
         "data": {
           "email": "Email",
-          "password": "Password"
+          "password": "Password",
+          "predictive_default_mode": "Default predictive mode (new installation)",
+          "predictive_night_window_start_hour": "Predictive night window start (0-23)",
+          "predictive_night_window_end_hour": "Predictive night window end (0-23)",
+          "predictive_min_confidence_for_assist": "Minimum confidence for Assist (safety minimum 0.2)"
         }
       }
     },
     "error": {
       "auth_failed": "Authentication failed. Check your email and password.",
-      "no_device": "No device found for this account."
+      "no_device": "No device found for this account.",
+      "invalid_predictive_options": "Invalid predictive mode, night window or confidence."
     }
   },
   "options": {
@@ -33,12 +38,17 @@
           "pv_total_capacity_w": "Total PV capacity (W)",
           "inverter_max_power_w": "Inverter max power (W)",
           "night_start_hour": "Night start hour (0-23)",
-          "day_start_hour": "Day start hour (0-23)"
+          "day_start_hour": "Day start hour (0-23)",
+          "predictive_default_mode": "Default predictive mode (new installation)",
+          "predictive_night_window_start_hour": "Predictive night window start (0-23)",
+          "predictive_night_window_end_hour": "Predictive night window end (0-23)",
+          "predictive_min_confidence_for_assist": "Minimum confidence for Assist (safety minimum 0.2)"
         }
       }
     },
     "error": {
-      "invalid_poll_interval": "Poll interval must be between 3 and 30 seconds."
+      "invalid_poll_interval": "Poll interval must be between 3 and 30 seconds.",
+      "invalid_predictive_options": "Invalid predictive mode, night window or confidence."
     }
   },
   "entity": {

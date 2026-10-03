@@ -85,9 +85,10 @@ views:
               - sensor.smart_solar_inverter_battery_soc
               - sensor.smart_solar_inverter_battery_soc_corrected
               - sensor.smart_solar_inverter_battery_charge_current
-          - type: custom:forecast-card
-            entity: sensor.smart_solar_inverter_forecast_tomorrow
-            title: ☀️ Прогноз генерації (24г)
+          - type: custom:pv-comparison-card
+            entity: sensor.smart_solar_inverter_pv_generation_curve
+            forecast_entity: sensor.smart_solar_inverter_forecast_tomorrow
+            title: Генерація та прогноз PV
       - type: grid
         cards:
           - type: entities
@@ -187,6 +188,83 @@ views:
     sections:
       - type: grid
         cards:
+          - type: entities
+            title: AI · рекомендація та виконання
+            show_header_toggle: false
+            entities:
+              - entity: sensor.smart_solar_inverter_predictive_decision_state
+                name: Поточне рішення AI
+              - entity: select.smart_solar_inverter_predictive_target_soc
+                name: Скоригувати SOC · пауза на 30 хв
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: reason
+                name: Причина рекомендації
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: execution_reason
+                name: Причина виконання або блокування
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: confidence
+                name: Впевненість
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: samples
+                name: Реальні пари факт ↔ прогноз
+              - type: attribute
+                entity: sensor.smart_solar_inverter_predictive_decision_state
+                attribute: applied
+                name: Застосовано
+          - type: markdown
+            title: AI · навчання і точність
+            content: |
+              {% set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'forecast_calibration') or {} %}
+              **Модель:** {{ {'hourly_response_v1': 'Погодинна модель станції', 'station_gain_v1': 'Добова модель станції'}.get(c.get('forecast_model'), 'ще не визначена') }}
+
+              **Реальні пари поточної моделі:** {{ c.get('samples', 0) }} · **Очікують факту:** {{ c.get('pending_count', 0) }}
+
+              {% if c.get('samples', 0) %}
+              **MAE:** {{ c.get('mae_kwh', 0) }} кВт·год · **Зсув (факт − прогноз):** {{ c.get('bias_kwh', 0) }} кВт·год
+              {% else %}
+              **Точність ще не виміряна:** очікуємо завершених пар цієї моделі.
+              {% endif %}
+
+              Пари інших моделей збережено окремо: {{ c.get('excluded_model_pairs', 0) }}. Архівна перевірка не підвищує live confidence.
+
+              | Дата | Виданий прогноз, кВт·год | Факт, кВт·год | Калібрує поточну модель |
+              | --- | ---: | ---: | --- |
+              {% for p in c.get('recent_pairs', []) %}
+              | {{ p.date }} | {{ p.forecast_kwh }} | {{ p.actual_kwh }} | {{ 'так' if p.used_for_current_model else 'ні' }} |
+              {% endfor %}
+              {% for p in c.get('pending', []) %}
+              | {{ p.date }} | {{ p.forecast_kwh }} | {{ 'очікуємо завершення доби' if p.awaiting == 'completed_day' else 'очікуємо дані API/recorder' }} | очікує |
+              {% endfor %}
+          - type: horizontal-stack
+            cards:
+              - type: button
+                name: Підтвердити
+                icon: mdi:check
+                tap_action:
+                  action: perform-action
+                  perform_action: powmr_inverter.predictive_feedback
+                  data:
+                    action: approve
+              - type: button
+                name: Скасувати на 30 хв
+                icon: mdi:pause
+                tap_action:
+                  action: perform-action
+                  perform_action: powmr_inverter.predictive_feedback
+                  data:
+                    action: reject
+                    duration_min: 30
+          - type: markdown
+            content: >-
+              Assist вмикається вручну через наявний select прогнозної допомоги.
+              Обери ціль SOC (20–100), щоб скоригувати рекомендацію та поставити
+              HEMS на паузу на 30 хвилин. На час паузи HEMS утримує ручний контроль.
+              Для кількох інверторів у кнопках потрібен entry_id.
           - type: markdown
             content: |
               # Налаштування HEMS

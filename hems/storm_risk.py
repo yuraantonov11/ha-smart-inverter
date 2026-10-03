@@ -23,6 +23,14 @@ _HIGH_RISK_THRESHOLD = 0.6
 _CLEAR_THRESHOLD = 0.4
 
 
+def calibrated_storm_risk(calibrator) -> bool:
+    """Measured PV shortfall warrants caution; it does not prove a storm."""
+    metrics = calibrator.metrics()
+    mean = calibrator.mean_forecast()
+    # Bias = actual - forecast: over-prediction has NEGATIVE bias.
+    return metrics.sample_count >= 5 and mean > 0 and -metrics.bias_w / mean > 0.3
+
+
 @dataclass
 class StormRisk:
     """Computed storm risk assessment."""

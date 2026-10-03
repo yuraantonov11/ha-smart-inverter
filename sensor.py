@@ -392,6 +392,7 @@ async def async_setup_entry(
     # ── Predictive ML sensors ─────────────────────────────────
     entities.append(PredictiveHintSensor(coordinator, entry))
     entities.append(PredictiveDayAheadSensor(coordinator, entry))
+    entities.append(PredictiveDecisionStateSensor(coordinator, entry))
 
     # ── History chart sensors (separate coordinator, 15-min polling) ──
     history_coordinator: HistoryCoordinator | None = hass.data[DOMAIN].get(
@@ -399,6 +400,7 @@ async def async_setup_entry(
     ).get("history_coordinator")
     if history_coordinator is not None:
         entities.append(DailyPowerHistorySensor(history_coordinator))
+        entities.append(PvGenerationCurveSensor(history_coordinator, coordinator))
         entities.append(MonthlyEnergyHistorySensor(history_coordinator))
         entities.append(YearlyEnergyHistorySensor(history_coordinator))
         entities.append(TotalEnergyHistorySensor(history_coordinator))
@@ -679,6 +681,9 @@ class ForecastTomorrowSensor(InverterSensor):
 
         return {
             "hourly_forecast_w": hourly,
+            "hourly_forecast_date": self.coordinator._pv_local_now().date().isoformat(),
+            "hourly_forecast_basis": "hourly_mean_power",
+            "hourly_response": getattr(getattr(self.coordinator, "_forecast", None), "hourly_response", None),
             "hourly_radiation_wm2": radiation[:24],
             "peak_radiation_wm2": max(radiation) if radiation else 0,
             "peak_power_w": max(hourly) if hourly else 0,
@@ -840,6 +845,43 @@ class HemsChargerCmdSensor(InverterSensor):
 # ═══════════════════════════════════════════════════════════════════════
 # HISTORY CHART SENSORS (use HistoryCoordinator, 15-min polling)
 # ═══════════════════════════════════════════════════════════════════════
+
+
+class PvGenerationCurveSensor(CoordinatorEntity, SensorEntity):
+    """Correct W conversion of real cloud points without changing legacy API."""
+    _attr_has_entity_name = True
+    _attr_name = "PV generation curve"
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_icon = "mdi:chart-line"
+
+    def __init__(self, coordinator, inverter):
+        super().__init__(coordinator)
+        self._inverter = inverter
+        self._attr_unique_id = f"{coordinator.api.device_sn}_pv_generation_curve"
+        self._attr_device_info = {"identifiers": {(DOMAIN, coordinator.api.device_sn or "unknown")}}
+
+    def _points(self):
+        from .hems.pv_chart import chart_points
+        return chart_points((self.coordinator.data or {}).get("today_hourly_power", []),
+                            self._inverter._pv_local_now())
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        self.async_on_remove(self._inverter.async_add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self):
+        points = self._points()
+        return points[-1]["power_w"] if points else None
+
+    @property
+    def extra_state_attributes(self):
+        from .hems.pv_chart import previous_curve
+        now = self._inverter._pv_local_now()
+        return {"date": now.date().isoformat(), "points": self._points(),
+                "source": "cloud_api_real_samples", "sample_interval_minutes": 30,
+                "previous_day": previous_curve(getattr(self._inverter, "_cloud_hourly_cache", None), now)}
 
 
 class DailyPowerHistorySensor(CoordinatorEntity, SensorEntity):
@@ -1176,6 +1218,34 @@ class PredictiveHintSensor(CoordinatorEntity, SensorEntity):
         }
 
 
+class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
+    """Distinguish the AI recommendation from acknowledged control."""
+    _attr_has_entity_name = True
+    _attr_name = "Predictive Decision State"
+    _attr_icon = "mdi:brain"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_predictive_decision_state"
+        self._attr_device_info = {"identifiers": {(DOMAIN, coordinator.api.device_sn or entry.entry_id)}}
+
+    @property
+    def native_value(self):
+        state = self.coordinator._hems.predictive_decision_state
+        if state.get("override_pending_until"):
+            return "override"
+        return "applied" if state.get("applied") else state.get("mode", "Off").lower()
+
+    @property
+    def extra_state_attributes(self):
+        attributes = dict(self.coordinator._hems.predictive_decision_state)
+        learning = getattr(self.coordinator, "_pv_learning", None)
+        if learning is not None:
+            attributes["forecast_calibration"] = learning.calibration_status(
+                self.coordinator._pv_local_now().date().isoformat())
+        return attributes
+
+
 class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
     """24h Predictive ML plan.
 
@@ -1192,14 +1262,14 @@ class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> int:
-        plan = getattr(self.coordinator, "_last_predictive_plan", None)
+        plan = getattr(self.coordinator._hems, "_last_predictive_plan", None)
         if plan is None:
             return 0
         return len(plan.hourly)
 
     @property
     def extra_state_attributes(self) -> dict:
-        plan = getattr(self.coordinator, "_last_predictive_plan", None)
+        plan = getattr(self.coordinator._hems, "_last_predictive_plan", None)
         if plan is None:
             return {}
         return {
@@ -1209,6 +1279,7 @@ class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
             "plan": [
                 {
                     "hour": p.hour,
+                    "timestamp": p.timestamp.isoformat(),
                     "pv_w": round(p.pv_w, 0),
                     "load_w": round(p.load_w, 0),
                     "soc_pred": round(p.soc_pred, 1),

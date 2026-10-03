@@ -33,6 +33,8 @@ from .hems.schedule_rules import ScheduleRulesService
 from .hems.demand_forecast import DemandForecastService
 from .hems.battery_soh import BatterySoH
 from .hems.pv_coordinator import PvLearningCoordinatorMixin
+from .hems.predictive_control import PredictiveControlEngine, parse_predictive_options, apply_feedback, restore_feedback
+from .hems.storm_risk import calibrated_storm_risk
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -75,7 +77,10 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             pv_surplus_enter_w=float(entry.options.get("pv_surplus_threshold_w", 250.0)),
         )
         self._tuning = HemsTuningService(tunables)
-        self._hems = HemsEngine(tunables=tunables, tuning=self._tuning)
+        self._hems = PredictiveControlEngine(tunables=tunables, tuning=self._tuning)
+        predictive_options = parse_predictive_options({**entry.data, **entry.options})
+        self._hems.predictive_min_confidence = predictive_options["predictive_min_confidence_for_assist"]
+        restore_feedback(self._hems, entry.options.get("predictive_feedback_override", {}), datetime.now())
         # Wire predictive_mode / predictive_tuning from entry options
         # onto the engine. The engine evaluates on this attribute
         # each cycle; the switch/select entities update it through
@@ -83,10 +88,10 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # flows through ``entry.options`` and survives reload.
         self._predictive_tuning = PredictiveTuning(
             predictive_mode=str(
-                entry.options.get("predictive_mode", "off")
+                entry.options.get("predictive_mode", predictive_options["predictive_default_mode"].lower())
             ),
             predictive_enabled=bool(
-                entry.options.get("predictive_mode", "") in ("shadow", "assist")
+                entry.options.get("predictive_mode", predictive_options["predictive_default_mode"].lower()) in ("shadow", "assist")
             ),
             battery_reserve_pct=float(
                 entry.options.get("reserve_soc", 20.0)
@@ -251,6 +256,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._hems.predictive_tuning = self._predictive_tuning
         self._hems._predictive_mode = mode
         self._hems._predictive_enabled = mode in ("shadow", "assist")
+        self._hems.invalidate_predictive("predictive_mode_changed")
         # Persist on the config entry so reload keeps the mode.
         try:
             new_opts = dict(self._entry.options)
@@ -266,6 +272,18 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         """Current predictive mode (single source of truth)."""
         return self._predictive_tuning.predictive_mode
 
+    def async_predictive_feedback(self, action, duration_min=30, new_target_soc=None):
+        """User feedback changes the hold, never the inverter or Assist mode."""
+        record = apply_feedback(self._hems, action, datetime.now(), duration_min, new_target_soc)
+        if record is not None:
+            options = dict(self._entry.options)
+            options["predictive_feedback_override"] = record
+            self.hass.config_entries.async_update_entry(self._entry, options=options)
+            state = self._hems.predictive_decision_state
+            state.update(applied=False, target_soc=record["target_soc"], override_pending_until=record["until"])
+            self.async_update_listeners()
+        _LOGGER.info("Predictive feedback: action=%s duration_min=%d target_soc=%s", action, duration_min, new_target_soc)
+
     # ═══════════════════════════════════════════════════════════════════
     # MAIN UPDATE LOOP
     # ═══════════════════════════════════════════════════════════════════
@@ -273,6 +291,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest data, compute derived values, and run HEMS engine."""
         now = datetime.now()
+        self._hems.invalidate_predictive("awaiting_telemetry")
 
         try:
             raw = await self.api.fetch_realtime_data()
@@ -361,6 +380,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # ═══════════════════════════════════════════════════════════════
         if self.hems_auto_mode:
             await self._run_hems_engine(raw, corrected_soc, now)
+        else:
+            self._hems.invalidate_predictive("hems_auto_off")
 
         return {
             **raw,
@@ -403,6 +424,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         # Finish keepalive if timer expired
         if self._hems.keepalive.in_progress and self._keepalive_timer and now >= self._keepalive_timer:
+            self._hems.invalidate_predictive("keepalive_end")
             finish = self._hems.finish_keepalive(now)
             await self._execute_hems_command(finish)
             self._keepalive_timer = None
@@ -410,10 +432,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         # Skip if keepalive in progress
         if self._hems.keepalive.in_progress:
+            self._hems.invalidate_predictive("keepalive_in_progress")
             return
 
         # Skip HEMS if disabled (monitor-only mode)
         if not self.hems_enabled:
+            self._hems.invalidate_predictive("hems_disabled")
             self.hems_last_reason = "hems_disabled"
             self.hems_last_output_cmd = None
             self.hems_last_charger_cmd = None
@@ -440,6 +464,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._hems._hourly_pv_forecast = list(
             getattr(self, "hourly_forecast_today", []) or []
         )
+        self._hems._dated_hourly_pv_forecast = dict(getattr(self, "_dated_hourly_pv_forecast", {}) or {})
+        self._hems._planner_forecast_now = self._pv_local_now()
         self._hems._hourly_radiation = list(
             getattr(self, "hourly_radiation_today", []) or []
         )
@@ -452,6 +478,10 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._hems._battery_capacity_kwh = self._battery_capacity_kwh
         self._configure_night_window()
 
+        controller = self._hems._predictive_controller
+        self._hems.predictive_min_confidence = parse_predictive_options({**self._entry.data, **self._entry.options})["predictive_min_confidence_for_assist"]
+        controller.calibrated_storm_alert = calibrated_storm_risk(self._pv_calibrator)
+        self._hems.predictive_storm_allowed = bool(self._entry.options.get("auto_storm_by_forecast", False))
         decision = self._hems.evaluate(
             smart_mode=effective_mode,
             hems_auto=self.hems_auto_mode,
@@ -547,6 +577,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         else:
             self._hems.report_control_failure(
                 datetime.now(), output_failed=output_failed, charger_failed=charger_failed)
+        if hasattr(self._hems, "confirm_predictive_delivery"):
+            self._hems.confirm_predictive_delivery(success)
 
     # ═══════════════════════════════════════════════════════════════════
     # STORM RISK
@@ -623,6 +655,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
     def _build_offline_state(self, now: datetime) -> dict[str, Any]:
         """Return a stable offline payload to keep entities available."""
+        self._hems.invalidate_predictive("inverter_offline")
         if self.data is not None:
             fallback = dict(self.data)
             fallback["online"] = False

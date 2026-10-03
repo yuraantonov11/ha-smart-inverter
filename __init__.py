@@ -188,6 +188,9 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         shutil.copy2(js_src, os.path.join(www_dir, "k-flow-card.js"))
         _LOGGER.info("Installed k-flow-card.js → www/")
         # Forecast sparkline card
+        comparison_src = os.path.join(src_dir, "pv-comparison-card.js")
+        if os.path.exists(comparison_src):
+            shutil.copy2(comparison_src, os.path.join(www_dir, "pv-comparison-card.js"))
         fc_src = os.path.join(src_dir, "forecast-card.js")
         if os.path.exists(fc_src):
             shutil.copy2(fc_src, os.path.join(www_dir, "forecast-card.js"))
@@ -225,6 +228,7 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
         add_extra_js_url(hass, f"{fc_url}?v=1.8.2")
+        add_extra_js_url(hass, "/local/community/powmr-inverter/pv-comparison-card.js?v=2")
         # Power history chart card (v3.0: per-series chart_type, smooth curves)
         ph_url = "/local/community/powmr-inverter/power-history-card.js"
         add_extra_js_url(hass, f"{ph_url}?v=1.8.12")
@@ -499,29 +503,15 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
             _stats("SOC + Напруга АКБ (7 днів)", "line", "hour", 7, ["mean"], soc_ents)
         ]})
 
-    # ── History chart sensors (fetched from API every 15 min) ──
-    # Use HA built-in statistics-graph for tooltip support (HA 2026.9
-    # beta has scoped-custom-element-registry conflicts that prevent
-    # power-history-card's custom elements from loading reliably).
-    # pv_forecast_hourly_w is a template sensor (in templates.yaml)
-    # that returns the current hour's forecast power in Watts — matches
-    # the W units of ac_output_power so they plot on the same Y axis.
-    daily_power_eid = _e("history_daily_power")
+    # Timestamped cloud PV and forecast share a local-day W axis.
+    curve_eid = _e("pv_generation_curve")
     forecast_eid = _e("forecast_tomorrow")
-    forecast_hourly_w = "sensor.pv_forecast_hourly_w"
-    # Prefer the real-time AC output sensor — its history has actual
-    # values (vs daily_power_kw which stays at 0.0 most of the day
-    # because HA recorder skips no-change writes).
-    ac_power_eid = _e("ac_output_power") or daily_power_eid
-    if ac_power_eid:
-        # Real PV generation + forecast on the same 24h window
-        ents = [ac_power_eid]
-        if forecast_hourly_w:
-            ents.append(forecast_hourly_w)
-        history_cards.append({"type": "grid", "cards": [
-            _stats("⚡ Генерація + Прогноз (24г) — наводь для деталей",
-                   "line", "hour", 1, ["mean"], ents)
-        ]})
+    if curve_eid and forecast_eid:
+        history_cards.append({"type": "grid", "column_span": 2, "cards": [{
+            "type": "custom:pv-comparison-card", "entity": curve_eid,
+            "forecast_entity": forecast_eid, "title": "Генерація та прогноз PV",
+            "grid_options": {"columns": "full"},
+        }]})
 
     monthly_energy_eid = _e("history_monthly_energy")
     if monthly_energy_eid:

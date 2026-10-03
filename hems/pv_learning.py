@@ -136,13 +136,42 @@ class PvLearningState:
         self.radiation = {}
         self.archive_checked_day = None
         self.model = None
+        self.calibration_model = None
         self.calibrator = ForecastCalibrator(max_samples=30, unit="kWh")
 
-    def snapshot(self, day, forecast_kwh, now):
+    def calibration_pairs(self):
+        """Only forecasts from the active pipeline may correct that pipeline."""
+        return {d: p for d, p in self.pairs.items()
+                if self.calibration_model is None or p.get("forecast_model") == self.calibration_model}
+
+    def set_calibration_model(self, model):
+        if model is not None and (not isinstance(model, str) or not model or len(model) > 64):
+            raise ValueError("Invalid calibration model")
+        self.calibration_model = model
+        desired = [[p["forecast_kwh"], p["actual_kwh"]] for p in self.calibration_pairs().values()]
+        if self.calibrator.to_list() != desired:
+            self.calibrator.load_from_list(desired)
+
+    def calibration_status(self, today):
+        m = self.calibrator.metrics()
+        pending = [{"date": d, **s, "awaiting": "completed_day" if d >= today else "daily_fact"}
+                   for d, s in sorted(self.snapshots.items()) if d not in self.pairs]
+        return {"unit": "kWh", "forecast_model": self.calibration_model,
+                "samples": m.sample_count, "confidence": m.confidence_factor,
+                "mae_kwh": m.mae_w, "bias_kwh": m.bias_w,
+                "excluded_model_pairs": len(self.pairs)-len(self.calibration_pairs()),
+                "pending_count": len(pending), "pending": pending[-7:],
+                "recent_pairs": [{"date": d, **p,
+                                  "used_for_current_model": d in self.calibration_pairs()}
+                                 for d, p in list(self.pairs.items())[-7:]]}
+
+    def snapshot(self, day, forecast_kwh, now, *, forecast_model=None):
         value = finite(forecast_kwh, high=500)
         if date.fromisoformat(day) <= now.date() or value is None or day in self.snapshots:
             return False
         record = {"forecast_kwh": value, "issued_at": now.isoformat()}
+        if forecast_model is not None:
+            record["forecast_model"] = forecast_model
         self.snapshots[day] = record
         self.snapshots = dict(sorted(self.snapshots.items())[-120:])
         return True
@@ -155,17 +184,20 @@ class PvLearningState:
                 continue
             self.pairs[day] = {"forecast_kwh": snapshot["forecast_kwh"],
                                "actual_kwh": value, "coverage": 1.0}
+            if "forecast_model" in snapshot:
+                self.pairs[day]["forecast_model"] = snapshot["forecast_model"]
             count += 1
         self.pairs = dict(sorted(self.pairs.items())[-30:])
         if count:
-            self.calibrator.load_from_list([[p["forecast_kwh"], p["actual_kwh"]] for p in self.pairs.values()])
+            self.set_calibration_model(self.calibration_model)
         return count
 
     def save(self, path):
         path = Path(path)
         raw = {"version": self.VERSION, "unit": "kWh", **self.identity,
                "snapshots": self.snapshots, "pairs": self.pairs, "radiation": self.radiation,
-               "archive_checked_day": self.archive_checked_day, "model": self.model}
+               "archive_checked_day": self.archive_checked_day, "model": self.model,
+               "calibration_model": self.calibration_model}
         temp = path.with_suffix(".json.tmp")
         temp.write_text(json.dumps(raw, allow_nan=False), encoding="utf-8")
         temp.replace(path)
@@ -191,12 +223,17 @@ class PvLearningState:
             issued = datetime.fromisoformat(snap["issued_at"])
             if issued.date() >= d or finite(snap["forecast_kwh"], high=500) is None:
                 raise ValueError("Invalid or retrospective PV snapshot")
+            tag = snap.get("forecast_model")
+            if tag is not None and (not isinstance(tag, str) or not tag or len(tag) > 64):
+                raise ValueError("Invalid snapshot model")
         for day, pair in pairs.items():
             date.fromisoformat(day)
             if day not in snapshots or pair["forecast_kwh"] != snapshots[day]["forecast_kwh"]:
                 raise ValueError("PV pair missing its issued forecast")
             if finite(pair["actual_kwh"], high=500) is None or pair["coverage"] != 1:
                 raise ValueError("Incomplete PV pair")
+            if pair.get("forecast_model") != snapshots[day].get("forecast_model"):
+                raise ValueError("PV pair model differs from issued forecast")
         for day, value in radiation.items():
             date.fromisoformat(day)
             if finite(value, high=30) is None:
@@ -206,6 +243,9 @@ class PvLearningState:
                                   or not 7 <= model.get("sample_count", 0) <= 90):
             raise ValueError("Invalid station model")
         checked = raw.get("archive_checked_day")
+        tag = raw.get("calibration_model")
+        if tag is not None and (not isinstance(tag, str) or not tag or len(tag) > 64):
+            raise ValueError("Invalid calibration model")
         if checked is not None:
             date.fromisoformat(checked)
         self.snapshots = {d: {**s, "forecast_kwh": float(s["forecast_kwh"])}
@@ -216,7 +256,7 @@ class PvLearningState:
         if model is not None:
             model = {**model, "gain": float(model["gain"])}
         self.model, self.archive_checked_day = model, checked
-        self.calibrator.load_from_list([[p["forecast_kwh"], p["actual_kwh"]] for p in self.pairs.values()])
+        self.set_calibration_model(raw.get("calibration_model"))
 
 
 class RealForecastPairs:
@@ -243,11 +283,13 @@ class RealForecastPairs:
             issued = datetime.fromisoformat(row["captured_at"])
             fc, ac = row.get("forecast_kwh"), row.get("actual_kwh")
             used = row.get("used", False)
+            tag = row.get("forecast_model")
             if (row["date"] != day.isoformat() or issued.tzinfo is None or issued.date() >= day
                     or finite(fc, high=500) is None
                     or type(used) is not bool
                     or (used and finite(ac, high=500) is None)
                     or (not used and ac is not None)
+                    or (tag is not None and (not isinstance(tag, str) or not tag or len(tag) > 64))
                     or row["date"] in validated):
                 raise ValueError("Invalid real forecast pair")
             validated[row["date"]] = {**row, "forecast_kwh": float(fc),
@@ -263,13 +305,17 @@ class RealForecastPairs:
             self.pairs[day] = {"date": day, "forecast_kwh": snap["forecast_kwh"],
                                "actual_kwh": pair["actual_kwh"] if pair else None,
                                "captured_at": snap["issued_at"], "used": pair is not None}
+            if "forecast_model" in snap:
+                self.pairs[day]["forecast_model"] = snap["forecast_model"]
 
-    def snapshot(self, day, forecast_kwh, now):
+    def snapshot(self, day, forecast_kwh, now, *, forecast_model=None):
         value = finite(forecast_kwh, high=500)
         if now.tzinfo is None or date.fromisoformat(day) <= now.date() or value is None or day in self.pairs:
             return False
         self.pairs[day] = {"date": day, "forecast_kwh": value, "actual_kwh": None,
                            "captured_at": now.isoformat(), "used": False}
+        if forecast_model is not None:
+            self.pairs[day]["forecast_model"] = forecast_model
         return True
 
     def match(self, actual, now):
@@ -302,12 +348,20 @@ class RealForecastPairs:
         state.pairs = {d: {"forecast_kwh": p["forecast_kwh"], "actual_kwh": p["actual_kwh"], "coverage": 1.0}
                        for d, p in self.pairs.items() if p["used"]}
         state.pairs = dict(sorted(state.pairs.items())[-30:])
+        for d, p in self.pairs.items():
+            if "forecast_model" in p:
+                state.snapshots[d]["forecast_model"] = p["forecast_model"]
+                if d in state.pairs:
+                    state.pairs[d]["forecast_model"] = p["forecast_model"]
+        previous_pairs = {d: p for d, p in previous_pairs.items()
+                          if state.calibration_model is None or p.get("forecast_model") == state.calibration_model}
+        active_pairs = state.calibration_pairs()
         previous_samples = [[p["forecast_kwh"], p["actual_kwh"]] for p in previous_pairs.values()]
         # Normal completion appends each new date exactly once. Restore/pruning
         # rebuilds the buffer when the authoritative dated journal differs.
-        new = [p for d, p in state.pairs.items() if d not in previous_pairs]
+        new = [p for d, p in active_pairs.items() if d not in previous_pairs]
         expected = (previous_samples + [[p["forecast_kwh"], p["actual_kwh"]] for p in new])[-30:]
-        desired = [[p["forecast_kwh"], p["actual_kwh"]] for p in state.pairs.values()]
+        desired = [[p["forecast_kwh"], p["actual_kwh"]] for p in active_pairs.values()]
         if state.calibrator.to_list() == previous_samples and expected == desired:
             for pair in new:
                 state.calibrator.record(forecast_w=pair["forecast_kwh"], actual_w=pair["actual_kwh"])

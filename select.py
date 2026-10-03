@@ -154,6 +154,7 @@ async def async_setup_entry(
         InverterBatteryTypeSelect(coordinator),
         InverterAcInputRangeSelect(coordinator),
         InverterPredictiveModeSelect(coordinator),
+        InverterPredictiveTargetSelect(coordinator, entry),
     ]
     async_add_entities(entities)
 
@@ -343,6 +344,30 @@ class InverterAcInputRangeSelect(InverterSelectBase):
             _LOGGER.info("AC input range set to %s (%s)", option, value)
         else:
             _LOGGER.error("Failed to set AC input range to %s", option)
+
+
+class InverterPredictiveTargetSelect(CoordinatorEntity, SelectEntity):
+    """Set a pending SOC target and pause HEMS for thirty minutes."""
+    _attr_has_entity_name = True
+    _attr_name = "Predictive Target SOC"
+    _attr_icon = "mdi:battery-edit"
+    _attr_options = [str(value) for value in range(20, 101)]
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_predictive_target_soc"
+        self._attr_device_info = {"identifiers": {(DOMAIN, coordinator.api.device_sn or entry.entry_id)}}
+
+    @property
+    def current_option(self):
+        target = self.coordinator._hems._predictive_user_target_soc
+        return str(target) if target is not None else None
+
+    async def async_select_option(self, option):
+        if option not in self._attr_options:
+            raise ValueError("SOC target must be 20..100")
+        self.coordinator.async_predictive_feedback("modify", 30, int(option))
+        self.async_write_ha_state()
 
 
 class InverterPredictiveModeSelect(InverterSelectBase):
