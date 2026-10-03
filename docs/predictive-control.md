@@ -143,3 +143,28 @@ Real pair captured: date=2026-10-03 fc=5.0kWh ac=3.0kWh delta=-2.0kWh
 
 Live-перевірка після встановлення потребує перезапуску HA та перевірки
 свіжих логів і сутностей. Git push сам по собі не встановлює зміни в HA.
+
+## Перевірено після встановлення · 2026-10-03
+
+У живій системі імпортовано 120 виміряних добових PV-фактів. Модель станції
+навчена на 90 днях: gain 0.1315; окрема archive-weather перевірка має
+72 тренувальні й 18 тестових днів, MAE 0.2564 kWh та bias +0.1479 kWh.
+Це метрики історичної моделі, а не live-калібратора наперед виданих прогнозів.
+
+Реальні рядки після фінального рестарту (час Europe/Kyiv):
+
+```text
+2026-10-03 10:14:40 Cloud PV history imported: 120 measured days; forecast samples unchanged
+2026-10-03 10:14:40 PV calibrator updated: n=0 bias=0.000 kWh mae=0.000 conf=0.00
+2026-10-03 10:14:40 Auto-assist blocked: samples=0 confidence=0.00
+2026-10-03 10:15:02 Predictive feedback: action=approve duration_min=30 target_soc=None
+```
+
+Після понад 90 секунд роботи: select залишився Shadow, `applied=false`,
+24-годинний план має 24 точки й починається з поточної години. Свіжих
+помилок powmr не виявлено. Сервіс feedback доступний; approve перевірено
+без зміни режиму. Live-dashboard має вкладку `powmr-ai` із картками AI,
+а графік економії використовує той самий daily_savings, що й денна картка.
+
+Виклик recorder metadata оновлено під keyword-only `statistic_ids`:
+[джерело Home Assistant 2026.10.0b0](https://github.com/home-assistant/core/blob/2026.10.0b0/homeassistant/components/recorder/statistics.py).
