@@ -1238,7 +1238,12 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self):
-        return dict(self.coordinator._hems.predictive_decision_state)
+        attributes = dict(self.coordinator._hems.predictive_decision_state)
+        learning = getattr(self.coordinator, "_pv_learning", None)
+        if learning is not None:
+            attributes["forecast_calibration"] = learning.calibration_status(
+                self.coordinator._pv_local_now().date().isoformat())
+        return attributes
 
 
 class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):

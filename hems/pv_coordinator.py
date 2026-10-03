@@ -324,13 +324,14 @@ class PvLearningCoordinatorMixin:
         forecasts = tuple(raw.get((local_now.date()+timedelta(days=d)).isoformat(),
                               getattr(self, attr, None) if not raw else None)
                           for d, attr in ((1, "forecast_tomorrow_kwh"), (2, "forecast_day_after_kwh")))
-        signature = (local_now.date(), self._pv_matrix_at, forecasts, tuple(state.snapshots))
+        signature = (local_now.date(), self._pv_matrix_at, forecasts, tuple(state.snapshots), state.calibration_model)
         if self._real_pair_signature == signature and not self._real_pairs_dirty:
             return
         previous = deepcopy(store.pairs)
         store.migrate(state)
         for offset, value in enumerate(forecasts, 1):
-            store.snapshot((local_now.date()+timedelta(days=offset)).isoformat(), value, local_now)
+            day = (local_now.date()+timedelta(days=offset)).isoformat()
+            store.snapshot(day, value, local_now, forecast_model=state.calibration_model)
         actual = dict(self._pv_actual)
         pending = [d for d, p in store.pairs.items() if not p["used"] and d < local_now.date().isoformat()]
         if pending:
@@ -399,8 +400,11 @@ class PvLearningCoordinatorMixin:
             if before is None:
                 setattr(self, attr, None)
                 continue
+            state = getattr(self, "_pv_learning", None)
+            compatible = (state is None or state.calibration_model is None
+                          or self._forecast_model_for_day(datetime.fromisoformat(day).date()) == state.calibration_model)
             after = (self._pv_calibrator.adjust(before)
-                     if abs(m.bias_w) > .1 * before else before)
+                     if compatible and abs(m.bias_w) > .1 * before else before)
             if after != before and getattr(self, attr, None) != after:
                 _LOGGER.info("Forecast adjusted: bias=%+.3f kWh fc_before=%.3f fc_after=%.3f mae=%.3f",
                              m.bias_w, before, after, m.mae_w)
@@ -468,6 +472,11 @@ class PvLearningCoordinatorMixin:
             local_now = self._pv_local_now()
             daily = await self._forecast.get_daily_forecasts(days=3)
             hourly = await self._forecast.get_hourly_forecast()
+            model = self._forecast_model_for_day(local_now.date()+timedelta(days=1))
+            if self._pv_learning.calibration_model != model:
+                self._pv_learning.set_calibration_model(model)
+                self._pv_state_dirty = True
+                _LOGGER.info("Forecast calibration model selected: model=%s samples=%d", model, len(self._pv_calibrator))
             complete = {}
             for offset in range(3):
                 day = (local_now.date() + timedelta(days=offset)).isoformat()
@@ -477,7 +486,8 @@ class PvLearningCoordinatorMixin:
                             for h in range(int((end-start).total_seconds()/3600))}
                 if {h.get("timestamp") for h in hours} == expected and day in daily:
                     complete[day] = daily[day]
-                    if self._pv_learning.snapshot(day, daily[day].energy_kwh, local_now):
+                    if self._pv_learning.snapshot(day, daily[day].energy_kwh, local_now,
+                            forecast_model=self._forecast_model_for_day(datetime.fromisoformat(day).date())):
                         self._pv_state_dirty = True
             tomorrow, after = [(local_now.date()+timedelta(days=d)).isoformat() for d in (1, 2)]
             fc, fc2 = complete.get(tomorrow), complete.get(after)
@@ -508,3 +518,10 @@ class PvLearningCoordinatorMixin:
             self.hourly_weather_today = []
             self.hourly_radiation_today = []
             _LOGGER.warning("Forecast fetch failed: %s", exc)
+
+    def _forecast_model_for_day(self, day):
+        """Pipeline family, not daily coefficients that change during training."""
+        response = getattr(getattr(self, "_forecast", None), "hourly_response", None)
+        if response and 0 <= (day-datetime.fromisoformat(response["last_day"]).date()).days <= 14:
+            return "hourly_response_v1"
+        return "station_gain_v1"
