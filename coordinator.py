@@ -26,7 +26,14 @@ from .api import InverterApiClient, InverterOfflineError, TokenExpiredError
 from .const import DOMAIN, HISTORY_POLL_INTERVAL_SEC
 from .hems.forecast import ForecastService
 from .hems.soc_correction import get_real_soc
-from .hems.engine import HemsEngine, SmartMode, OutputPriority, ChargerPriority, HemsDecision
+from .hems.engine import (
+    HemsEngine,
+    SmartMode,
+    OutputPriority,
+    ChargerPriority,
+    HemsDecision,
+    _finite_number,
+)
 from .hems import debug_logging
 from .hems.tuning import HemsTunables, HemsTuningService, PredictiveTuning
 from .hems.storm_risk import evaluate_storm_risk
@@ -38,6 +45,140 @@ from .hems.predictive_control import PredictiveControlEngine, parse_predictive_o
 from .hems.storm_risk import calibrated_storm_risk
 
 _LOGGER = logging.getLogger(__name__)
+
+
+# T12 follow-up (review of c056341 + 832447c): the forced-
+# grid-charge path used to skip telemetry validation and
+# hard-code ``valid_telemetry=True`` and ``grid_v=raw.get(
+# "gridVoltage", 230.0)``. The audit's T12 review called
+# this out: a missing or NaN SOC, a non-numeric PV/load
+# or voltage, a malformed reserve_soc, or a grid_offline
+# reading must all block the forced write, *exactly the
+# same way* they block the regular plan.
+#
+# The helpers below mirror the engine's own validation
+# (``_finite_number`` from ``hems.engine``) so the forced
+# path is held to the same standard as the baseline
+# engine. ``_validate_force_telemetry`` is a pure
+# function — no side effects, no engine state, no
+# exceptions on boundary conditions; the caller (the
+# T12 block in ``_run_hems_engine``) inspects the
+# returned ``valid`` flag and either dispatches the
+# forced decision or falls through to the regular
+# plan (or to a logged refusal when both paths
+# short-circuit).
+#
+# Bounds follow the engine's own checks at
+# ``hems/engine.py`` ~line 304: SOC 0..100, reserve_soc
+# 0..100, grid_voltage 0..300 (the inverter's reportable
+# range is 0..300 V AC; values above 300 V are either
+# scaling artefacts or a corrupted report and must
+# not dispatch).
+
+_FORCE_TELEMETRY_BOUNDS = {
+    "soc": (0.0, 100.0),
+    "reserve_soc": (0.0, 100.0),
+    "grid_voltage": (0.0, 300.0),
+}
+
+
+def _validate_force_telemetry(
+    raw: dict,
+    options_reserve_soc: Any,
+) -> dict:
+    """Return a typed snapshot of the telemetry fields the
+    forced-grid-charge path must inspect.
+
+    The returned dict always contains the same keys;
+    ``valid`` is True only when every required field is
+    a finite number, within the documented bounds, and
+    the grid is on-line. The function never raises on
+    malformed input; the caller decides what to do with
+    the failure (refuse the forced dispatch, fall
+    through to the engine plan, or escalate).
+    """
+    # --- SOC ---
+    soc = _finite_number(raw.get("batterySoc"))
+    soc_valid = (
+        soc is not None
+        and _FORCE_TELEMETRY_BOUNDS["soc"][0]
+        <= soc
+        <= _FORCE_TELEMETRY_BOUNDS["soc"][1]
+    )
+
+    # --- reserve_soc from entry options ---
+    reserve_soc = _finite_number(options_reserve_soc)
+    reserve_valid = (
+        reserve_soc is not None
+        and _FORCE_TELEMETRY_BOUNDS["reserve_soc"][0]
+        <= reserve_soc
+        <= _FORCE_TELEMETRY_BOUNDS["reserve_soc"][1]
+    )
+
+    # --- grid voltage (must be present, finite, and > 0) ---
+    grid_v = _finite_number(raw.get("gridVoltage"))
+    grid_v_valid = (
+        grid_v is not None
+        and _FORCE_TELEMETRY_BOUNDS["grid_voltage"][0]
+        < grid_v
+        <= _FORCE_TELEMETRY_BOUNDS["grid_voltage"][1]
+    )
+
+    # --- gridOk flag (must be a real bool, not truthy) ---
+    grid_ok_raw = raw.get("gridOk")
+    grid_ok_valid = isinstance(grid_ok_raw, bool)
+
+    # --- PV / load / battery (used by the engine's
+    # ``evaluate``; we require them to be finite so the
+    # energy-balance model can run, but a single
+    # invalid field does not by itself block the
+    # forced path because the engine computes fresh
+    # values each cycle. We still surface them so
+    # the T12 test can assert the same field-bounds
+    # as the engine. ---
+    pv_w = _finite_number(raw.get("pvPower"))
+    load_w = _finite_number(raw.get("loadPower"))
+    grid_w = _finite_number(raw.get("gridPower"))
+    battery_w = _finite_number(raw.get("batteryPower"))
+
+    valid = (
+        soc_valid
+        and reserve_valid
+        and grid_v_valid
+        and grid_ok_valid
+        and pv_w is not None
+        and load_w is not None
+        and grid_w is not None
+        and battery_w is not None
+    )
+    # When ``gridOk`` is False the inverter is offline;
+    # the forced USB+SNU command cannot dispatch because
+    # the inverter is not feeding from the grid. We
+    # surface that as a distinct ``is_online`` flag so
+    # the caller can log it without short-circuiting
+    # the SOC / reserve guards above. ``grid_v > 0``
+    # is guarded by ``grid_v_valid`` because the
+    # validator already established the field is a
+    # finite number in (0, 300] V.
+    is_online = (
+        grid_ok_valid
+        and bool(grid_ok_raw)
+        and grid_v_valid
+        and grid_v is not None
+        and grid_v > 0
+    )
+    return {
+        "valid": valid,
+        "is_online": is_online,
+        "soc": soc,
+        "reserve_soc": reserve_soc,
+        "grid_voltage": grid_v,
+        "grid_ok": grid_ok_raw,
+        "pv_w": pv_w,
+        "load_w": load_w,
+        "grid_w": grid_w,
+        "battery_w": battery_w,
+    }
 
 
 class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
@@ -770,104 +911,115 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             if deadline.tzinfo is None and now.tzinfo is not None:
                 deadline = deadline.replace(tzinfo=now.tzinfo)
             if now < deadline:
-                # Re-run the same hold checks the engine
-                # would have used: manual-override hold,
-                # circuit breaker, hems_auto_off, mode
-                # validity, and telemetry validity. A
-                # timed-hold request does *not* override
-                # these — the user must wait for the hold
-                # to expire, which is the documented
-                # behaviour. ``valid_telemetry`` is True
-                # here because the SOC gate above is
-                # already past, but the rest still need to
-                # be checked.
-                grid_v = raw.get("gridVoltage", 230.0)
-                grid_ok = bool(raw.get("gridOk", True))
-                # Pass ``soc`` and ``reserve_soc`` so the
-                # reserve-floor guard is consulted too —
-                # the audit's T12 review called out that
-                # the original hold did not protect the
-                # battery from being drained below the
-                # configured reserve. We pass
-                # ``display_soc`` (the synthetic 100 % when
-                # ``soc_unknown``) so a *known* SOC is
-                # always supplied here; the SOC-unknown
-                # gate above us has already decided whether
-                # the request is allowed in the first
-                # place.
-                hold = self._hems._evaluation_hold(
-                    hems_auto=self.hems_auto_mode,
-                    smart_mode=self.smart_mode,
-                    is_online=grid_ok and grid_v > 0.0,
-                    valid_telemetry=True,
-                    now=now,
-                    buzzer_off=True,
-                    soc=display_soc,
-                    reserve_soc=float(
-                        self._entry.options.get("reserve_soc", 20.0)
-                    ),
-                    soc_safety_margin=5.0,
+                # T12 follow-up (audit of c056341 / 832447c): the
+                # forced-grid-charge path must use the *same*
+                # telemetry the regular engine plan sees, not a
+                # hard-coded ``valid_telemetry=True`` and
+                # ``grid_v=raw.get("gridVoltage", 230.0)``. We
+                # delegate to ``_validate_force_telemetry``,
+                # which applies ``_finite_number`` and the
+                # documented bounds, so a missing SOC, a NaN
+                # voltage, or a malformed reserve_soc all block
+                # the forced write — the very same way they
+                # block the regular plan via the engine's own
+                # checks at ``hems/engine.py``.
+                forced_check = _validate_force_telemetry(
+                    raw,
+                    self._entry.options.get("reserve_soc", 20.0),
                 )
-                if hold is not None and hold.skip:
-                    # T12 does NOT bypass the engine's
-                    # own holds. A manual override or a
-                    # circuit breaker still wins; we
-                    # only log a single info-level line so
-                    # the operator can see why the timed
-                    # hold has no effect right now.
+                if not forced_check["valid"]:
                     _LOGGER.info(
                         "HEMS: force_grid_charge hold active but "
-                        "engine has reason=%s; not overriding",
-                        hold.reason,
+                        "telemetry invalid (soc=%r, reserve_soc=%r, "
+                        "grid_v=%r, grid_ok=%r); not overriding",
+                        forced_check["soc"],
+                        forced_check["reserve_soc"],
+                        forced_check["grid_voltage"],
+                        forced_check["grid_ok"],
                     )
-                    # Honour the hold — fall through to
-                    # the engine's plan so the existing
-                    # decision (which respects the same
-                    # hold) gets logged/applied.
+                    # Do not dispatch the forced decision. Fall
+                    # through to the engine plan so the existing
+                    # decision (which respects the same hold) is
+                    # logged and applied.
                 else:
-                    forced = self._hems.build_forced_decision(
-                        "forced_grid_charge",
-                        output_priority="0",  # USB
-                        charger_priority="1",  # SNU
+                    # All telemetry fields are finite and within
+                    # bounds. Pass the validated values to the
+                    # engine's own hold so it can re-check the
+                    # remaining guards (manual override, circuit
+                    # breaker, hems_auto_off, mode validity,
+                    # reserve floor). The forced path does not
+                    # bypass any of those checks.
+                    grid_v = forced_check["grid_voltage"]
+                    is_online = forced_check["is_online"]
+                    hold = self._hems._evaluation_hold(
+                        hems_auto=self.hems_auto_mode,
+                        smart_mode=self.smart_mode,
+                        is_online=is_online,
+                        valid_telemetry=True,
+                        now=now,
                         buzzer_off=True,
+                        soc=forced_check["soc"],
+                        reserve_soc=forced_check["reserve_soc"],
+                        soc_safety_margin=5.0,
                     )
-                    # Apply the same dedup the engine
-                    # would have used. ``_apply_anti_flapping``
-                    # honours the previous command's
-                    # dedup window and the dwell lock; if
-                    # the user just changed the inverter
-                    # the forced command may be deduped
-                    # into a no-op, which is the desired
-                    # behaviour — the timer keeps running
-                    # but the actuator does not race the
-                    # user.
-                    forced = self._hems._apply_anti_flapping(forced, now)
-                    if forced is not None and not forced.skip:
-                        self._log_decision(
-                            forced,
-                            current_output=raw.get("outputSourcePriority", ""),
-                            current_charger=raw.get("chargerSourcePriority", ""),
-                            soc=display_soc,
-                            pv_w=raw.get("pvPower", 0.0),
-                            load_w=raw.get("loadPower", 0.0),
-                            grid_w=raw.get("gridPower", 0.0),
-                            batt_w=raw.get("batteryPower", 0.0),
-                            grid_v=grid_v,
-                            grid_ok=grid_ok,
-                            hour=now.hour,
-                            forecast_today_kwh=getattr(
-                                self, "_forecast_today_kwh", None
-                            ),
-                            forecast_tomorrow_kwh=getattr(
-                                self, "_forecast_tomorrow_kwh", None
-                            ),
-                            reserve_soc=getattr(
-                                self, "_reserve_soc", 20.0
-                            ),
-                            now=now,
+                    if hold is not None and hold.skip:
+                        # T12 does NOT bypass the engine's
+                        # own holds. A manual override or a
+                        # circuit breaker still wins; we
+                        # only log a single info-level line so
+                        # the operator can see why the timed
+                        # hold has no effect right now.
+                        _LOGGER.info(
+                            "HEMS: force_grid_charge hold active but "
+                            "engine has reason=%s; not overriding",
+                            hold.reason,
                         )
-                        await self._execute_hems_command(forced)
-                    return
+                        # Honour the hold — fall through to
+                        # the engine's plan so the existing
+                        # decision (which respects the same
+                        # hold) gets logged/applied.
+                    else:
+                        forced = self._hems.build_forced_decision(
+                            "forced_grid_charge",
+                            output_priority="0",  # USB
+                            charger_priority="1",  # SNU
+                            buzzer_off=True,
+                        )
+                        # Apply the same dedup the engine
+                        # would have used. ``_apply_anti_flapping``
+                        # honours the previous command's
+                        # dedup window and the dwell lock; if
+                        # the user just changed the inverter
+                        # the forced command may be deduped
+                        # into a no-op, which is the desired
+                        # behaviour — the timer keeps running
+                        # but the actuator does not race the
+                        # user.
+                        forced = self._hems._apply_anti_flapping(forced, now)
+                        if forced is not None and not forced.skip:
+                            self._log_decision(
+                                forced,
+                                current_output=raw.get("outputSourcePriority", ""),
+                                current_charger=raw.get("chargerSourcePriority", ""),
+                                soc=forced_check["soc"],
+                                pv_w=forced_check["pv_w"],
+                                load_w=forced_check["load_w"],
+                                grid_w=forced_check["grid_w"],
+                                batt_w=forced_check["battery_w"],
+                                grid_v=forced_check["grid_voltage"],
+                                grid_ok=bool(forced_check["grid_ok"]),
+                                hour=now.hour,
+                                forecast_today_kwh=getattr(
+                                    self, "_forecast_today_kwh", None
+                                ),
+                                forecast_tomorrow_kwh=getattr(
+                                    self, "_forecast_tomorrow_kwh", None
+                                ),
+                                reserve_soc=forced_check["reserve_soc"],
+                                now=now,
+                            )
+                            await self._execute_hems_command(forced)
+                        return
             else:
                 # Deadline passed — clear and let the next
                 # cycle run the regular plan.

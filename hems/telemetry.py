@@ -91,6 +91,26 @@ class PlannerInputs:
     # Tariff schedule (24 values UAH/kWh). Empty = unknown.
     tariff_schedule: list[float] = field(default_factory=list)
 
+    # Battery reserve floor in percent. The planner
+    # must not let a plan drain the SOC below this
+    # value. T08: previously the planner hard-coded
+    # 20 % here and 15 % in ``plan_soc_targets``,
+    # which silently overrode the user-configured
+    # reserve SOC. The default 20 % matches the legacy
+    # behaviour for callers that do not set the field.
+    # Production callers (coordinator) pass the
+    # ``reserve_soc`` entry option through.
+    reserve_soc: float = 20.0
+
+    # Charge / discharge round-trip efficiency. The
+    # 85 % / 90 % defaults match the existing
+    # ``simulate_24h`` constants; T08 exposes them so
+    # production can override them when battery or
+    # inverter health data justifies a different
+    # round-trip figure.
+    charge_efficiency: float = 0.85
+    discharge_efficiency: float = 0.90
+
     # Historical consumption (most-recent day last; length <= 30).
     consumption_history: list[list[float]] = field(default_factory=list)
     night_charge_window: tuple[int, int] = (23, 7)

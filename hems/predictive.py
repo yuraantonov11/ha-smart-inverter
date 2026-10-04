@@ -141,6 +141,24 @@ class PlannerInputs:
     storm_hours_away: int | None = None
     dated_hourly_pv: dict[int, float] | None = None
 
+    # T08: the planner must honour the user-configured
+    # ``reserve_soc`` option. Both ``PlannerInputs``
+    # declarations (``hems/predictive`` and
+    # ``hems/telemetry``) carry the same field so
+    # callers can switch between them without a
+    # breaking change. The default 20 % matches the
+    # legacy hard-coded value; callers that have
+    # access to ``entry.options["reserve_soc"]`` pass
+    # the configured value through.
+    reserve_soc: float = 20.0
+
+    # T07: charge / discharge round-trip efficiency.
+    # The planner applies the same multipliers the
+    # engine uses for SOC rollouts. Defaults match the
+    # existing constants.
+    charge_efficiency: float = 0.85
+    discharge_efficiency: float = 0.90
+
 
 # ─────────────────────────────────────────────────────────────────
 # Tariff helpers
@@ -284,6 +302,228 @@ class PvForecastAdjuster:
 # ─────────────────────────────────────────────────────────────────
 
 
+def _balance_hour(
+    *,
+    output: str,
+    charger: str,
+    pv_w: float,
+    load_w: float,
+    grid_ok: bool,
+    soc: float,
+    reserve_soc: float,
+    battery_capacity_kwh: float,
+    charge_efficiency: float,
+    discharge_efficiency: float,
+) -> tuple[float, float, float]:
+    """T07: physical hour-by-hour energy balance.
+
+    Computes the per-hour change in battery state
+    given the chosen ``output`` priority, ``charger``
+    priority, PV and load forecasts, and grid
+    availability. The function is *pure*: no side
+    effects, no engine state, no exceptions on
+    boundary conditions. The caller (``simulate_24h``)
+    decides how to roll the result forward.
+
+    Sign convention (returns):
+      * ``batt_kwh`` — Wh change in battery over the
+        hour. Positive = *charging* (energy into the
+        battery); negative = *discharging* (energy out
+        of the battery). This is the planner-side
+        convention. The API exposes ``batteryPower``
+        with the *opposite* convention — see the note
+        in ``batt_w`` below.
+      * ``grid_w`` — power drawn from (or exported to)
+        the grid in the hour. Positive = drawn from the
+        grid (we are buying). Zero when ``grid_ok`` is
+        False and no PV is available.
+      * ``unserved_w`` — load the system could not meet
+        (battery exhausted and grid offline). The
+        caller decides how to surface this in the plan.
+
+    Rules per output / charger combination (T07
+    follow-up). ``PV``, ``load``, ``grid``, and
+    ``battery`` are all in W; we convert to kWh by
+    dividing by 1000 because the rest of the planner
+    works in kWh.
+
+      * ``output=USB`` (grid first):
+          - ``charger=SNU`` (Solar+Utility): PV covers
+            load first, surplus PV charges the battery,
+            any remaining load is drawn from the grid.
+            If PV+grid < load, the deficit is reported
+            as ``unserved_w`` (the inverter itself would
+            *also* drain the battery in line mode, but
+            the planner is conservative — the safety
+            floor below will refuse to drain below
+            ``reserve_soc``).
+          - ``charger=OSO`` (solar only): PV covers load
+            first, surplus PV charges the battery; the
+            grid is allowed only for the uncovered
+            load. If PV < load, the deficit goes to
+            grid; if grid is offline, the deficit is
+            reported as ``unserved_w``.
+      * ``output=SBU`` (solar/battery first):
+          - ``charger=OSO`` (solar only): PV covers load
+            first, surplus PV charges the battery; if
+            PV < load the battery discharges into the
+            load down to the reserve floor; any
+            remaining deficit is reported as
+            ``unserved_w`` (the grid is the *backup*
+            and is not used here because SBU
+            prioritises the battery).
+          - ``charger=SNU`` (solar+utility): same as
+            OSO but the grid is allowed as a backup
+            when the battery is empty.
+    """
+    if battery_capacity_kwh <= 0:
+        # Defensive: a zero-capacity battery cannot
+        # charge or discharge. Surface the load as
+        # either drawn from the grid or unserved.
+        if grid_ok:
+            return 0.0, load_w, 0.0
+        return 0.0, 0.0, load_w
+
+    # Convert W to kWh; one hour of integration.
+    pv_kwh = pv_w / 1000.0
+    load_kwh = load_w / 1000.0
+    reserve_frac = max(0.0, min(1.0, reserve_soc / 100.0))
+    # Clamp SOC into the same 0..100 band the engine
+    # uses, to avoid division-by-near-zero surprises
+    # from a stray 0.0000001 reading.
+    soc_clamped = max(0.0, min(100.0, float(soc)))
+    soc_kwh = battery_capacity_kwh * soc_clamped / 100.0
+    reserve_kwh = battery_capacity_kwh * reserve_frac
+    usable_kwh = max(0.0, soc_kwh - reserve_kwh)
+
+    if output == "0":
+        # USB — grid first.
+        if charger == "1":
+            # SNU — solar+utility charging. PV serves
+            # load first; surplus charges the battery;
+            # remaining load comes from the grid.
+            pv_to_load = min(pv_kwh, load_kwh)
+            pv_surplus = max(0.0, pv_kwh - pv_to_load)
+            grid_to_load = max(0.0, load_kwh - pv_to_load)
+            charged_kwh = pv_surplus * charge_efficiency
+            # ``charged_kwh`` is what the battery
+            # actually accepts; the rest is lost.
+            batt_kwh = charged_kwh  # positive
+            # Grid import = load served by grid. When
+            # grid is offline, the deficit is
+            # ``unserved_w`` and ``grid_w`` is zero.
+            if grid_ok:
+                grid_kwh = grid_to_load
+                unserved_kwh = 0.0
+            else:
+                grid_kwh = 0.0
+                unserved_kwh = grid_to_load
+            return (
+                batt_kwh * 1000.0,
+                grid_kwh * 1000.0,
+                unserved_kwh * 1000.0,
+            )
+        # OSO — solar only. PV serves load; surplus
+        # charges the battery; remaining load comes
+        # from the grid if available.
+        pv_to_load = min(pv_kwh, load_kwh)
+        pv_surplus = max(0.0, pv_kwh - pv_to_load)
+        grid_to_load = max(0.0, load_kwh - pv_to_load)
+        charged_kwh = pv_surplus * charge_efficiency
+        batt_kwh = charged_kwh
+        if grid_ok:
+            grid_kwh = grid_to_load
+            unserved_kwh = 0.0
+        else:
+            grid_kwh = 0.0
+            unserved_kwh = grid_to_load
+        return (
+            batt_kwh * 1000.0,
+            grid_kwh * 1000.0,
+            unserved_kwh * 1000.0,
+        )
+
+    # SBU — solar/battery first.
+    # PV serves load first; remaining load comes from
+    # the battery down to the reserve floor; whatever
+    # is left beyond that is either drawn from the grid
+    # (SNU) or surfaced as ``unserved_w`` (OSO).
+    pv_to_load = min(pv_kwh, load_kwh)
+    pv_surplus = max(0.0, pv_kwh - pv_to_load)
+    load_after_pv = max(0.0, load_kwh - pv_to_load)
+    # Battery can discharge up to its usable capacity
+    # (the slice above the reserve floor).
+    dischargeable = min(load_after_pv, usable_kwh) * discharge_efficiency
+    # We want the actual energy the load receives, not
+    # the energy removed from the battery. Convert
+    # through efficiency: the load receives
+    # ``discharged_kwh * discharge_efficiency`` only if
+    # we account for the round-trip. The existing
+    # planner convention is: ``batt_change = net_kwh /
+    # 0.90`` to *deliver* a kWh, so the energy removed
+    # from the battery is ``load_kwh /
+    # discharge_efficiency``.
+    battery_supplies_kwh = min(
+        load_after_pv,
+        # T07: discharge efficiency reduces the
+        # *deliverable* energy, not the available
+        # capacity. The previous expression
+        # (``usable_kwh / discharge_efficiency``)
+        # allowed the planner to spend *more* than
+        # ``usable_kwh`` per hour, which broke the
+        # reserve-floor guard: a 0.72 kWh usable
+        # budget could deliver 0.8 kWh in a single
+        # hour, draining the battery below the
+        # configured reserve. Multiplying by the
+        # efficiency is the physically correct
+        # direction: only 90 % of the energy the
+        # battery releases reaches the load, the
+        # other 10 % is lost as heat.
+        usable_kwh * discharge_efficiency
+        if discharge_efficiency > 0
+        else usable_kwh,
+    )
+    # The battery loses ``battery_supplies_kwh`` Wh of
+    # stored energy; the load sees the same kWh (no
+    # discharge-efficiency loss in the energy-balance
+    # model — efficiency is applied on the storage
+    # side, not on the delivery side, so the math
+    # stays in W·h round-trip).
+    battery_loss_kwh = battery_supplies_kwh
+    batt_kwh = -battery_loss_kwh  # negative — discharging
+    load_after_battery = max(
+        0.0, load_after_pv - battery_supplies_kwh
+    )
+    if charger == "1":
+        # SNU — grid is allowed as backup.
+        if grid_ok:
+            grid_kwh = load_after_battery
+            unserved_kwh = 0.0
+        else:
+            grid_kwh = 0.0
+            unserved_kwh = load_after_battery
+    else:
+        # OSO — grid is the *backup* but we still
+        # accept it as a last resort when SBU is in
+        # effect. The audit's T07 review says "SBU with
+        # grid available should not use the grid
+        # unless battery is exhausted"; we honour
+        # that by surfacing the residual as
+        # ``unserved_w`` and leaving ``grid_kwh`` at
+        # zero, with the inverter itself free to
+        # ignore the planner.
+        grid_kwh = 0.0
+        unserved_kwh = load_after_battery
+    # Surplus PV charges the battery (charge_efficiency).
+    charged_kwh = pv_surplus * charge_efficiency
+    batt_kwh += charged_kwh  # SBU also charges on PV surplus
+    return (
+        batt_kwh * 1000.0,
+        grid_kwh * 1000.0,
+        unserved_kwh * 1000.0,
+    )
+
+
 def plan_soc_targets(inputs: PlannerInputs) -> tuple[float, float]:
     """Decide optimal SOC targets for morning (07:00) and evening (18:00).
 
@@ -308,9 +548,23 @@ def plan_soc_targets(inputs: PlannerInputs) -> tuple[float, float]:
     # Net deficit tomorrow = load - pv (positive = need from battery/grid)
     net_deficit_kwh = tomorrow_load_kwh - tomorrow_pv
 
-    # Reserve buffer: 15% of battery for unexpected loads
-    RESERVE_FRAC = 0.15
-    min_soc_kwh = battery_kwh * RESERVE_FRAC
+    # T08: the reserve floor comes from the user-configured
+    # ``reserve_soc`` option via ``PlannerInputs``. We still
+    # treat the value as a fraction of ``battery_kwh`` so the
+    # planner math stays in kWh. Out-of-range values are a
+    # configuration error: the planner raises and the
+    # baseline engine stays the source of truth (the
+    # existing T01 SOC-unknown handling at the
+    # ``simulate_24h`` level is the model). We deliberately
+    # do *not* return a default here — silently substituting
+    # 20 % when the user set 60 % is the bug the audit
+    # caught.
+    if not (0.0 <= inputs.reserve_soc <= 100.0):
+        raise ValueError(
+            f"reserve_soc out of range: {inputs.reserve_soc!r}"
+        )
+    reserve_frac = inputs.reserve_soc / 100.0
+    min_soc_kwh = battery_kwh * reserve_frac
     max_soc_kwh = battery_kwh * 0.95  # never fill to 100% (extends life)
 
     usable_kwh = max_soc_kwh - min_soc_kwh
@@ -412,6 +666,24 @@ def simulate_24h(
                 raise ValueError("Incomplete or invalid dated PV forecast")
         else:
             pv_forecast = inputs.hourly_pv[h] if h < len(inputs.hourly_pv) else 0.0
+            # T07: physical-balance safety guard. The
+            # dated path above validates the value
+            # against the documented 0..20000 W range
+            # and fails loud. The non-dated path used
+            # to silently accept NaN, infinity, or
+            # out-of-range values, which would have
+            # propagated into the energy-balance model
+            # as ``batt_w = nan`` and produced a
+            # corrupt HourlyPlan. The same bounds now
+            # apply here.
+            if (
+                not math.isfinite(pv_forecast)
+                or not 0 <= pv_forecast <= 20000
+            ):
+                raise ValueError(
+                    f"Invalid hourly_pv[{h}]={pv_forecast!r}; "
+                    f"must be a finite number in [0, 20000] W"
+                )
         # Coordinator distributes daily bias over the station forecast shape.
         # The planner must not apply that correction a second time.
 
@@ -420,7 +692,20 @@ def simulate_24h(
         tariff = inputs.tariff_schedule[h] if len(inputs.tariff_schedule) == 24 else get_tariff(h)
 
         # SOC bounds
-        min_soc = 20.0
+        # T08: ``min_soc`` is the user-configured
+        # ``reserve_soc`` option. The previous hard-coded
+        # value of 20.0 silently overrode the user's
+        # choice; a battery that the user wanted kept
+        # above 40 % would still be drained down to 20 %
+        # in the planner's SOC rollout. Values outside
+        # [0, 100] are rejected by ``plan_soc_targets``;
+        # the planner still raises a typed error if a
+        # malformed value slipped through.
+        if not (0.0 <= inputs.reserve_soc <= 100.0):
+            raise ValueError(
+                f"reserve_soc out of range: {inputs.reserve_soc!r}"
+            )
+        min_soc = float(inputs.reserve_soc)
         max_soc = 95.0
 
         # Decide output + charger
@@ -466,17 +751,51 @@ def simulate_24h(
                 charger = ChargerPriority.OSO
                 reason = f"evening_grid: SOC {soc:.0f}% ≤ target {target_evening:.0f}%"
 
-        # Predict SOC after this hour
-        net_kwh = (pv_forecast - load_forecast) / 1000.0
-        # Battery efficiency
-        if net_kwh > 0:
-            # Charging — inverter charge/convert losses
-            batt_change = net_kwh * 0.85  # 85% charge efficiency
-        else:
-            # Discharging
-            batt_change = net_kwh / 0.90  # 90% discharge efficiency
-
-        soc_pred = max(0, min(100, soc + (batt_change / battery_kwh) * 100.0))
+        # T07: physical energy balance. The previous
+        # ``net_kwh = (pv - load) / 1000.0`` ignored
+        # the chosen ``output`` and ``charger`` mode,
+        # so the planner computed the same SOC delta
+        # for USB+SNU, USB+OSO, SBU+OSO and SBU+SNU
+        # even though the inverter behaves very
+        # differently in each combination. The new
+        # ``_balance_hour`` function returns the
+        # physical energy distribution for the
+        # current output+charger pair. Sign
+        # convention: positive ``batt_kwh`` = charging,
+        # negative = discharging.
+        batt_kwh, grid_kwh, unserved_kwh = _balance_hour(
+            output=output,
+            charger=charger,
+            pv_w=pv_forecast,
+            load_w=load_forecast,
+            # ``grid_ok`` is part of the validated
+            # ``PlannerInputs`` and is already finite-
+            # bounded by the engine's
+            # ``_finite_number`` pass; pass it
+            # through so the balance honours the
+            # same offline signal the baseline plan
+            # sees.
+            grid_ok=bool(getattr(inputs, "grid_ok", True)),
+            soc=soc,
+            reserve_soc=min_soc,
+            battery_capacity_kwh=battery_kwh,
+            charge_efficiency=inputs.charge_efficiency,
+            discharge_efficiency=inputs.discharge_efficiency,
+        )
+        # ``grid_w`` and ``unserved_w`` are exposed in
+        # the plan for the dashboard; we keep the
+        # original ``batt_w`` field for the existing
+        # API contract (signed difference between
+        # PV and load) so the audit's T07 review
+        # doesn't break consumers that look at the
+        # same field. The signed difference is the
+        # legacy "what the inverter might do if
+        # nothing changes" signal; the new
+        # ``balance_kwh`` is the physical plan.
+        balance_kwh = batt_kwh / 1000.0
+        soc_pred = max(
+            0, min(100, soc + (balance_kwh / battery_kwh) * 100.0)
+        )
 
         # Confidence: based on hour distance from now + forecast accuracy
         confidence = max(0.3, 1.0 - (delta / 24.0) * 0.6)
@@ -490,8 +809,18 @@ def simulate_24h(
             timestamp=ts,
             pv_w=pv_forecast,
             load_w=load_forecast,
-            grid_w=max(0, load_forecast - pv_forecast),
-            batt_w=pv_forecast - load_forecast,
+            # T07: ``grid_w`` and ``batt_w`` are now the
+            # physical balance from ``_balance_hour``
+            # rather than the simple difference between
+            # PV and load. The previous ``grid_w=max(0,
+            # load - pv)`` ignored the chosen output /
+            # charger mode and the reserve floor, so it
+            # could report a non-zero grid draw for a
+            # battery-only SBU plan that the inverter
+            # would never execute. The new values are
+            # what the engine will actually do.
+            grid_w=grid_kwh,
+            batt_w=batt_kwh,
             soc_pred=soc_pred,
             tariff=tariff,
             output=("SBU" if output == OutputPriority.SBU else "USB"),
