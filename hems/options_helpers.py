@@ -108,6 +108,15 @@ RELOAD_REQUIRED_OPTION_KEYS: frozenset[str] = frozenset(
         "poll_interval",
         "email",
         "password",
+        # T16 audit follow-up: site
+        # coordinates feed the PV-learning
+        # state at construction time. A
+        # coordinate change must be applied
+        # via a full reload so the
+        # ``_pv_learning`` state is rebuilt
+        # from scratch.
+        "site_latitude",
+        "site_longitude",
     }
 )
 

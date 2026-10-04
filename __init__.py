@@ -263,22 +263,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry.
 
-    Audit T17: release every resource the entry owns
-    before the platform teardown returns. The order
-    is:
-      1. unload platforms (returns ``unload_ok``);
-      2. close the API client (so in-flight HTTP
-         requests against the inverter are released);
-      3. call ``coordinator.shutdown()`` and
-         ``history_coordinator.shutdown()`` (releases
-         the forecast-owned ``aiohttp.ClientSession``
-         and cancels in-flight forecast tasks);
+    Audit T17: release every resource the
+    entry owns before the platform teardown
+    returns. The order is critical — the
+    coordinator must be stopped BEFORE the
+    API client, otherwise in-flight forecast
+    tasks would try to write to a closed
+    connection. The actual order is:
+
+      1. unload platforms (returns
+         ``unload_ok``);
+      2. stop ``coordinator`` and
+         ``history_coordinator`` (cancels
+         in-flight forecast tasks and waits
+         for them to drain);
+      3. close the API client (best-effort
+         — a failure is logged at debug and
+         does not abort cleanup);
       4. drop the entry from ``hass.data``.
 
-    The platform unload is the controlling boolean:
-    if it returns ``False`` we leave the entry data
-    in place so a subsequent reload can retry the
-    cleanup, and we do not raise.
+    The platform unload is the controlling
+    boolean: if it returns ``False`` we leave
+    the entry data in place so a subsequent
+    reload can retry the cleanup, and we do
+    not raise.
     """
     entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

@@ -241,6 +241,9 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
             msg="password change must trigger reload",
         )
         # Non-reload key changed: no reload.
+        # reserve_soc is read on every
+        # coordinator cycle; it is a
+        # selective-apply key.
         self.assertFalse(
             requires_reload(
                 {"reserve_soc": 30.0},
@@ -248,12 +251,32 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
             ),
             msg="reserve_soc change must NOT trigger reload",
         )
-        self.assertFalse(
+        # T16 audit follow-up: site
+        # coordinates feed the PV-learning
+        # state at construction time. A
+        # coordinate change must trigger a
+        # full reload so the
+        # ``_pv_learning`` state is rebuilt
+        # from scratch.
+        self.assertTrue(
             requires_reload(
-                {"site_latitude": 49.0, "site_longitude": 31.0},
-                {"site_latitude": 50.0, "site_longitude": 30.0},
+                {"site_latitude": 49.0},
+                {"site_latitude": 50.0},
             ),
-            msg="site coordinate change must NOT trigger reload",
+            msg=(
+                "site_latitude change must trigger reload "
+                "(PV-learning state must be rebuilt)"
+            ),
+        )
+        self.assertTrue(
+            requires_reload(
+                {"site_longitude": 31.0},
+                {"site_longitude": 30.0},
+            ),
+            msg=(
+                "site_longitude change must trigger reload "
+                "(PV-learning state must be rebuilt)"
+            ),
         )
         # New entry (no old options) and a
         # non-reload key: no reload.
@@ -261,6 +284,159 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
             requires_reload({"reserve_soc": 30.0}, None),
             msg="new entry with only non-reload keys must not reload",
         )
+
+    # ── 6b. site coordinates reach _init_pv_learning (real flow) ─
+
+    def test_16_live_07_pv_learning_uses_new_coordinates(self) -> None:
+        """Audit T16 follow-up: when
+        ``site_latitude`` / ``site_longitude``
+        change, the runtime must use the new
+        values. We do NOT just call
+        ``compute_site_coordinates``; we exec
+        the live ``_init_pv_learning`` body
+        from ``hems.pv_coordinator`` and
+        assert the ``PvLearningState``
+        constructor was called with the new
+        coordinates. This proves the end-to-end
+        contract: user submits a new
+        coordinate, the options flow triggers
+        a reload, ``async_setup_entry`` runs
+        ``_init_pv_learning``, and the new
+        values reach ``PvLearningState``.
+        """
+        import ast as _ast
+        pv_src = (REPO_ROOT / "hems" / "pv_coordinator.py").read_text(
+            encoding="utf-8"
+        )
+        tree = _ast.parse(pv_src)
+        method = None
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, _ast.FunctionDef)
+                and node.name == "_init_pv_learning"
+            ):
+                method = node
+                break
+        self.assertIsNotNone(
+            method,
+            msg="_init_pv_learning must be defined in hems.pv_coordinator",
+        )
+        pvl_call: list[dict[str, object]] = []
+
+        class _RecordingPvLearning:
+            def __init__(self, tz, latitude, longitude):
+                pvl_call.append(
+                    {
+                        "tz": tz,
+                        "latitude": latitude,
+                        "longitude": longitude,
+                    }
+                )
+                self.calibrator = object()
+                self.matrix: list[list[float]] = []
+                self.model: dict = {}
+
+        def _zone_info(_key):
+            return _zone_info
+
+        def _compute_site_coordinates(options):
+            opt = options or {}
+            return (
+                float(opt.get("site_latitude", 50.45)),
+                float(opt.get("site_longitude", 30.52)),
+            )
+
+        class _StubPredictiveController:
+            calibrator = None
+
+        class _StubSelf:
+            hass = type(
+                "H",
+                (),
+                {
+                    "config": type("C", (), {"time_zone": "Europe/Kyiv"})(),
+                    "async_add_executor_job": lambda *_a, **_k: None,
+                },
+            )()
+            _entry = type(
+                "E",
+                (),
+                {
+                    "entry_id": "test-entry",
+                    "options": {
+                        "site_latitude": 49.0,
+                        "site_longitude": 31.0,
+                    },
+                },
+            )()
+            _pv_actual: dict = {}
+            _cloud_pv_actual = {}
+            _cloud_history_attempt_at = None
+            _pv_matrix_at = None
+            _pv_calibrator_log_at = None
+            _archive_attempt_at = None
+            _pv_state_loaded = False
+            _pv_state_dirty = False
+            _pv_learning = None
+            forecast_learned_ratio = 0.13
+            def _configure_night_window(self):
+                return None
+            _hems = type(
+                "HEMS", (), {"_predictive_controller": None}
+            )()
+
+        lines_src = pv_src.splitlines()
+        # Skip the ``def`` line; include
+        # only the body.
+        start_idx = method.body[0].lineno - 1
+        end_idx = method.end_lineno
+        body_text = "\n".join(lines_src[start_idx:end_idx])
+        indented = "\n".join(
+            "        " + ln if ln.strip() else ln
+            for ln in body_text.split("\n")
+        )
+        wrapper_src = (
+            "class _Wrapper:\n"
+            "    def _init_pv_learning(self):\n"
+            + indented
+        )
+        ns = {
+            "__name__": "t16b_pvlearn",
+            "__file__": str(REPO_ROOT / "hems" / "pv_coordinator.py"),
+            "ZoneInfo": _zone_info,
+            "compute_site_coordinates": _compute_site_coordinates,
+            "PvLearningState": _RecordingPvLearning,
+            "PredictiveHemsController": _StubPredictiveController,
+            "Path": __import__("pathlib").Path,
+            "_LOGGER": type(
+                "L", (), {"warning": lambda *a, **k: None}
+            )(),
+        }
+        exec(compile(wrapper_src, "<t16b-pvlearn>", "exec"), ns)
+        ns["_Wrapper"]._init_pv_learning(_StubSelf())
+        self.assertEqual(
+            len(pvl_call),
+            1,
+            msg="PvLearningState must be constructed exactly once",
+        )
+        self.assertEqual(
+            pvl_call[0]["latitude"],
+            49.0,
+            msg=(
+                "PvLearningState must be constructed with the new "
+                "site_latitude (49.0), proving the runtime uses the "
+                "user-submitted value"
+            ),
+        )
+        self.assertEqual(
+            pvl_call[0]["longitude"],
+            31.0,
+            msg=(
+                "PvLearningState must be constructed with the new "
+                "site_longitude (31.0)"
+            ),
+        )
+
 
     # ── 6. the classifier is the single source of truth ──────
 

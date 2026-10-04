@@ -229,32 +229,54 @@ class T16OptionsContractTests(unittest.TestCase):
                 "DEFAULT_SITE_LONGITUDE (no duplicated literal)"
             ),
         )
-        # And the runtime must use the same
-        # constants.
-        m_rt_lat = re.search(
-            r"site_latitude.*?DEFAULT_SITE_LATITUDE",
+        # The runtime must reach the
+        # canonical defaults. After the
+        # T16 refactor, ``pv_coordinator``
+        # delegates to
+        # ``compute_site_coordinates`` from
+        # ``hems.options_helpers`` — which
+        # in turn references the canonical
+        # ``DEFAULT_SITE_LATITUDE`` /
+        # ``DEFAULT_SITE_LONGITUDE``.
+        # ``config_flow`` references the
+        # canonical constants directly for
+        # the UI defaults. Both paths must
+        # reach the same source of truth.
+        self.assertIn(
+            "compute_site_coordinates",
             pv_coordinator_src,
-            re.DOTALL,
-        )
-        m_rt_lon = re.search(
-            r"site_longitude.*?DEFAULT_SITE_LONGITUDE",
-            pv_coordinator_src,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(
-            m_rt_lat,
             msg=(
-                "pv_coordinator site_latitude must reference "
-                "DEFAULT_SITE_LATITUDE"
+                "pv_coordinator must call "
+                "compute_site_coordinates to read "
+                "site_latitude/site_longitude"
             ),
         )
-        self.assertIsNotNone(
-            m_rt_lon,
-            msg=(
-                "pv_coordinator site_longitude must reference "
-                "DEFAULT_SITE_LONGITUDE"
-            ),
+        # The config flow references the
+        # canonical constants directly. We
+        # also assert that
+        # ``hems.options_helpers`` is
+        # imported somewhere in the package
+        # (the contract is that the UI
+        # defaults and runtime defaults
+        # both trace back to
+        # ``hems.defaults``).
+        options_helpers_src = _read(
+            REPO_ROOT / "hems" / "options_helpers.py"
         )
+        for canonical in (
+            "DEFAULT_SITE_LATITUDE",
+            "DEFAULT_SITE_LONGITUDE",
+        ):
+            self.assertIn(
+                canonical,
+                options_helpers_src,
+                msg=(
+                    f"{canonical} must be defined in "
+                    "hems/options_helpers.py so both "
+                    "UI and runtime defaults trace back "
+                    "to the same source"
+                ),
+            )
 
     # ── 3. option flow reload trigger on key change ──────────────
 

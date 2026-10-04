@@ -36,6 +36,7 @@ from .hems.engine import (
     _finite_number,
 )
 from .hems import debug_logging
+from .hems.options_helpers import compute_reserve_soc
 from .hems.tuning import HemsTunables, HemsTuningService, PredictiveTuning
 from .hems.storm_risk import evaluate_storm_risk
 from .hems.schedule_rules import ScheduleRulesService
@@ -241,7 +242,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         # ── HEMS Engine ───────────────────────────────────────────────
         tunables = HemsTunables(
-            reserve_soc=float(entry.options.get("reserve_soc", 20.0)),
+            reserve_soc=compute_reserve_soc(entry.options),
             pv_surplus_enter_w=float(entry.options.get("pv_surplus_threshold_w", 250.0)),
         )
         self._tuning = HemsTuningService(tunables)

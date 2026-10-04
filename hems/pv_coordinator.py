@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .history_builder import build_hourly_load_matrix
 from .predictive import PredictiveHemsController, normalize_night_window
-from .defaults import DEFAULT_SITE_LATITUDE, DEFAULT_SITE_LONGITUDE
+from .options_helpers import compute_site_coordinates
 from .pv_learning import (PvLearningState, RealForecastPairs, finite, complete_hourly_days, daily_energy_deltas,
                           day_bounds, timestamp, train_station)
 
@@ -27,24 +27,21 @@ class PvLearningCoordinatorMixin:
 
     def _init_pv_learning(self):
         self._site_timezone = ZoneInfo(self.hass.config.time_zone)
-        # T16 audit: the site-coordinate default
-        # must come from ``const.py`` (single
-        # source of truth) so the runtime
-        # default matches the config flow's
-        # default. ``entry.options.get`` still
-        # wins when the user has set a value.
+        # T16 audit: the runtime default
+        # comes from ``options_helpers.compute_site_coordinates``,
+        # which falls back to the canonical
+        # ``DEFAULT_SITE_LATITUDE`` /
+        # ``DEFAULT_SITE_LONGITUDE`` in
+        # ``hems.defaults``. ``entry.options``
+        # always wins when the user has set a
+        # value.
+        latitude, longitude = compute_site_coordinates(
+            self._entry.options
+        )
         self._pv_learning = PvLearningState(
             self.hass.config.time_zone,
-            float(
-                self._entry.options.get(
-                    "site_latitude", DEFAULT_SITE_LATITUDE
-                )
-            ),
-            float(
-                self._entry.options.get(
-                    "site_longitude", DEFAULT_SITE_LONGITUDE
-                )
-            ),
+            latitude,
+            longitude,
         )
         self._pv_calibrator = self._pv_learning.calibrator
         self._pv_matrix: list[list[float]] = []
