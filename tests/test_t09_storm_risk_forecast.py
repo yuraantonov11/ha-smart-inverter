@@ -57,7 +57,7 @@ import logging
 import math
 import sys
 import textwrap
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -104,19 +104,9 @@ from hems.storm_risk import (
 # works on both Linux CI and Windows dev
 # checkouts.
 #
-# The fallback is **only** the timezone object
-# passed to ``datetime.fromtimestamp(...).astimezone(...)``;
-# it carries the same UTC offset (+02:00) that
-# Europe/Kyiv reports for our test window, so the
-# wall-clock hour-of-day comparisons the
-# production code performs are identical
-# regardless of which object is in scope. We do
-# *not* touch the production code's
-# ``ZoneInfo(...)`` call — that path remains
-# unchanged and continues to require ``tzdata``
-# on the operator's install (which is fine,
-# because Home Assistant ships ``tzdata`` in its
-# base image).
+# The fallback is confined to the AST harness;
+# it implements the European DST fold so these
+# tests remain meaningful without a system tzdb.
 # ── DST-aware timezone resolver (test harness only) ──────
 # The production code calls
 # ``ZoneInfo(self.hass.config.time_zone)`` inside
@@ -143,65 +133,14 @@ from hems.storm_risk import (
 # ``ZoneInfoNotFoundError`` (e.g. Windows venv
 # without ``tzdata``).
 _DST_OFFSETS = {
-    # key → (standard offset hours, DST offset hours)
-    # Standard time only (no DST observed in 2026).
-    "Europe/Kyiv": (2, 2),
+    # key → (standard offset hours, daylight offset hours)
+    "Europe/Kyiv": (2, 3),
     "Europe/Berlin": (1, 2),
     "Europe/Warsaw": (1, 2),
     "Europe/London": (0, 1),
     "UTC": (0, 0),
     "Etc/UTC": (0, 0),
 }
-
-
-def _europe_kyiv_offset(reference: datetime | None = None) -> int:
-    """Pick the UTC offset (hours) for the
-    IANA key in effect at ``reference``. If the
-    real ``ZoneInfo`` is available we defer to
-    it for the canonical answer; otherwise we
-    use the static table above. The DST rule
-    is "last Sunday of March → last Sunday of
-    October" for European zones. This is a
-    test-only helper; production code does not
-    use it.
-    """
-    return _harness_offset_for("Europe/Kyiv", reference)
-
-
-def _harness_offset_for(
-    key: str, reference: datetime | None = None
-) -> int:
-    """Return the UTC offset (hours) for the
-    given IANA key at ``reference``. The
-    real ``ZoneInfo`` wins when it is
-    available; the static ``_DST_OFFSETS``
-    table is the test-only fallback used on
-    Windows venvs without ``tzdata``. The DST
-    window for European zones is "last Sunday
-    of March 02:00 → last Sunday of October
-    03:00" (local time).
-    """
-    if ZoneInfo is not None and key:
-        try:
-            tz = ZoneInfo(key)
-            ref = reference or datetime(2026, 6, 21, 12, 0)
-            local = ref.astimezone(tz)
-            offset = local.utcoffset()
-            if offset is None:
-                std, _ = _DST_OFFSETS.get(key, (2, 2))
-                return std
-            return int(offset.total_seconds() // 3600)
-        except Exception:
-            pass
-    std, dst = _DST_OFFSETS.get(key, (2, 2))
-    if std == dst:
-        return std
-    ref = reference or datetime(2026, 6, 21, 12, 0)
-    march_last = _last_sunday(2026, 3)
-    dst_start = march_last.replace(hour=2)
-    oct_last = _last_sunday(2026, 10)
-    dst_end = oct_last.replace(hour=3)
-    return dst if dst_start <= ref < dst_end else std
 
 
 def _last_sunday(year: int, month: int) -> datetime:
@@ -214,30 +153,82 @@ def _last_sunday(year: int, month: int) -> datetime:
     return last - timedelta(days=back)
 
 
-def _europe_kyiv() -> Any:
-    """Return a tzinfo for Europe/Kyiv, or a
-    DST-aware fixed-offset fallback when the
-    real ``ZoneInfo`` is unavailable.
+class _EuropeanFallbackTimezone(tzinfo):
+    """DST-aware fallback for European zones used by this test harness.
 
-    The fallback uses the +02:00 winter / +03:00
-    summer offset that Kyiv *would* observe
-    under FLE Standard Time if DST were still
-    in effect; in 2026 Ukraine has suspended
-    DST so the offset is fixed at +02:00. The
-    test does not need strict correctness — it
-    needs ``astimezone(...)`` to produce a
-    well-defined wall-clock hour for the test
-    fixtures, including dates that would
-    straddle a DST transition.
+    EU transitions occur at 01:00 UTC on the last Sunday in March and
+    October. Production uses ZoneInfo; this class keeps the AST harness
+    faithful on Windows Python installs without tzdata.
     """
+
+    def __init__(self, key: str, standard_hours: int, daylight_hours: int):
+        self.key = key
+        self.standard = timedelta(hours=standard_hours)
+        self.daylight = timedelta(hours=daylight_hours)
+
+    @staticmethod
+    def _utc_transitions(year: int) -> tuple[datetime, datetime]:
+        return (
+            _last_sunday(year, 3).replace(hour=1),
+            _last_sunday(year, 10).replace(hour=1),
+        )
+
+    def utcoffset(self, dt: datetime | None) -> timedelta:
+        if dt is None:
+            return self.standard
+        wall = dt.replace(tzinfo=None)
+        start_utc, end_utc = self._utc_transitions(wall.year)
+        start_before = start_utc + self.standard
+        start_after = start_utc + self.daylight
+        end_standard = end_utc + self.standard
+        end_daylight = end_utc + self.daylight
+        if end_standard <= wall < end_daylight:
+            return self.standard if dt.fold else self.daylight
+        if start_before <= wall < start_after:
+            return self.daylight if dt.fold else self.standard
+        if start_after <= wall < end_standard:
+            return self.daylight
+        return self.standard
+
+    def dst(self, dt: datetime | None) -> timedelta:
+        offset = self.utcoffset(dt)
+        assert offset is not None
+        return offset - self.standard
+
+    def tzname(self, dt: datetime | None) -> str:
+        return self.key
+
+    def fromutc(self, dt: datetime) -> datetime:
+        if dt.tzinfo is not self:
+            raise ValueError("fromutc: dt.tzinfo is not self")
+        utc_value = dt.replace(tzinfo=None)
+        start, end = self._utc_transitions(utc_value.year)
+        in_dst = start <= utc_value < end
+        offset = self.daylight if in_dst else self.standard
+        fold = int(end <= utc_value < end + self.daylight - self.standard)
+        return (utc_value + offset).replace(tzinfo=self, fold=fold)
+
+
+def _fallback_timezone(key: str) -> tzinfo:
+    try:
+        standard, daylight = _DST_OFFSETS[key]
+    except KeyError as exc:
+        raise ValueError(
+            f"No test timezone fallback configured for {key!r}"
+        ) from exc
+    if standard == daylight:
+        return timezone(timedelta(hours=standard), name=key)
+    return _EuropeanFallbackTimezone(key, standard, daylight)
+
+
+def _europe_kyiv() -> Any:
+    """Return Europe/Kyiv rules, including DST when ZoneInfo is absent."""
     if ZoneInfo is not None:
         try:
             return ZoneInfo("Europe/Kyiv")
         except Exception:
             pass
-    return timezone(
-        timedelta(hours=2), name="Europe/Kyiv"
-    )
+    return _fallback_timezone("Europe/Kyiv")
 
 
 def _harness_zoneinfo(key: str | None = None) -> Any:
@@ -250,8 +241,8 @@ def _harness_zoneinfo(key: str | None = None) -> Any:
     Windows venv without ``tzdata`` that raises
     ``ZoneInfoNotFoundError``. This helper
     delegates to the real ``ZoneInfo`` when it
-    is available and falls back to
-    ``_europe_kyiv()`` otherwise. The production
+    is available and falls back to matching
+    DST-aware test rules otherwise. The production
     ``ZoneInfo(...)`` call is unchanged; the
     fallback is the binding at exec time only.
     """
@@ -260,7 +251,7 @@ def _harness_zoneinfo(key: str | None = None) -> Any:
             return ZoneInfo(key)
         except Exception:
             pass
-    return _europe_kyiv()
+    return _fallback_timezone(key or "Europe/Kyiv")
 
 
 # ── AST harness — local replica of ``finite`` ───────────
@@ -780,39 +771,13 @@ class _Coord:
                 "C", (), {"time_zone": tz_name}
             )()}
         )()
-        # Bind ``tzinfo`` as a property the test
-        # can patch; defaults to the harness
-        # resolver which falls back to
-        # ``_europe_kyiv()`` if the real
-        # ``ZoneInfo`` is missing.
+        # Keep a resolved timezone object for
+        # fixtures that need to inject the same
+        # zone instance as the AST-executed body.
         self._tzinfo = (
             tzinfo
             if tzinfo is not None
             else _europe_kyiv()
-        )
-        # Monkey-patch ``ZoneInfo`` for the
-        # duration of the stub: replace it with a
-        # callable that returns ``self._tzinfo``
-        # for any IANA key. This is the *test
-        # seam* the audit requires: the production
-        # code's ``ZoneInfo(self.hass.config.time_zone)``
-        # call stays untouched, but the binding
-        # inside the test process always resolves
-        # to a valid tzinfo regardless of
-        # platform.
-        import zoneinfo as _zi_mod
-
-        real_zi = _zi_mod.ZoneInfo
-
-        def _stub_zi(key, _real=real_zi, _stub=self):
-            try:
-                return _real(key)
-            except Exception:
-                return _stub._tzinfo
-
-        _zi_mod.ZoneInfo = _stub_zi
-        self._restore_zoneinfo = lambda: setattr(
-            _zi_mod, "ZoneInfo", real_zi
         )
         self._entry = type("E", (), {"options": {"auto_storm_by_forecast": auto_storm_by_forecast}})()
         # ``_forecast.get_hourly_forecast()`` is
@@ -845,7 +810,7 @@ class _Coord:
         self.timezone_name = tz_name
 
 
-def _materialise_storm_risk_fn():
+def _materialise_storm_risk_fn(zoneinfo_factory=_harness_zoneinfo):
     """Exec the production
     ``_maybe_evaluate_storm_risk`` body and return
     the resulting coroutine function.
@@ -870,7 +835,7 @@ def _materialise_storm_risk_fn():
         # ``_maybe_evaluate_storm_risk`` body
         # never raises on Windows venvs without
         # ``tzdata``.
-        "ZoneInfo": _harness_zoneinfo,
+        "ZoneInfo": zoneinfo_factory,
         "evaluate_storm_risk": evaluate_storm_risk,
         # The production code refers to
         # ``SmartMode.STORM`` when comparing the
@@ -900,13 +865,15 @@ _STORM_RISK_FN = _materialise_storm_risk_fn()
 async def _drive_storm_risk(
     coord: _Coord,
     now: datetime,
+    *,
+    zoneinfo_factory=_harness_zoneinfo,
 ) -> _Coord:
     """Drive the production
     ``_maybe_evaluate_storm_risk`` once. Returns
     the same coord so the test can read its
     mutated state.
     """
-    await _STORM_RISK_FN(coord, now)
+    await _materialise_storm_risk_fn(zoneinfo_factory)(coord, now)
     return coord
 
 
@@ -1107,84 +1074,57 @@ def test_t09_forecast_error_preserves_last_score() -> None:
 
 
 def test_t09_dst_offset_matches_window() -> None:
-    """The previous UTC+02:00 fallback silently
-    mis-offset summer fixtures (Kyiv does not
-    observe DST in 2026 but a generic
-    FLE-zone test fixture for 21 June was being
-    rendered as +02:00 instead of +03:00). This
-    test pins the DST-aware offset selection
-    inside the test harness by constructing two
-    fixtures that straddle a real European DST
-    transition and asserts the test tzinfo
-    resolves to the right offset on each side.
+    """The fallback resolver applies seasonal offsets without a tzdb."""
+    kyiv = _fallback_timezone("Europe/Kyiv")
+    assert datetime(2026, 1, 15, 12, tzinfo=kyiv).utcoffset() == timedelta(hours=2)
+    assert datetime(2026, 6, 21, 12, tzinfo=kyiv).utcoffset() == timedelta(hours=3)
 
-    It does *not* test the production code's
-    behaviour: the production ``ZoneInfo(...)``
-    call is unchanged. It tests the harness
-    contract — that the test environment
-    produces a wall-clock hour consistent with
-    the IANA key in effect at the fixture's
-    reference date.
-    """
-    from zoneinfo import ZoneInfo as _ZI
+    berlin = _fallback_timezone("Europe/Berlin")
+    assert datetime(2026, 1, 15, 12, tzinfo=berlin).utcoffset() == timedelta(hours=1)
+    assert datetime(2026, 6, 21, 12, tzinfo=berlin).utcoffset() == timedelta(hours=2)
 
-    # Pick a known-DST zone. Berlin in 2026
-    # observes DST from 29 March 02:00 CET to
-    # 25 October 03:00 CEST.
-    key = "Europe/Berlin"
-    if _ZI is not None:
-        try:
-            tz_std = _ZI(key)
-            # 1 January 2026 — winter, UTC+01:00.
-            winter = datetime(2026, 1, 15, 12, 0, tzinfo=tz_std)
-            summer = datetime(2026, 6, 21, 12, 0, tzinfo=tz_std)
-            assert winter.utcoffset().total_seconds() == 3600
-            assert summer.utcoffset().total_seconds() == 7200
-        except Exception:
-            # No tzdata — skip; the harness's
-            # fallback path is the interesting
-            # case for Windows venvs.
-            pass
-    # Walk the same dates through the harness
-    # resolver and assert it agrees with the
-    # real ZoneInfo (or, if tzdata is missing,
-    # with the FLE Standard Time reference
-    # table).
-    winter_offset = _harness_offset_for(
-        key, datetime(2026, 1, 15, 12, 0)
-    )
-    summer_offset = _harness_offset_for(
-        key, datetime(2026, 6, 21, 12, 0)
-    )
-    # The harness must produce *different*
-    # offsets for the two windows (DST
-    # transition). For Ukraine (no DST) both
-    # windows give the same offset; for Berlin
-    # (DST observed) the two windows give +1
-    # and +2 respectively.
-    assert winter_offset in (1, 2), winter_offset
-    assert summer_offset in (2, 3), summer_offset
-    # The harness must not collapse both
-    # windows to the same fixed offset. Kyiv
-    # is the only zone in the table that
-    # legitimately has the same offset in
-    # both windows (DST suspended since 2014
-    # and again in 2022). We pin that here so
-    # the next person to add a DST-observing
-    # zone to the table gets a clear signal.
-    if winter_offset == summer_offset:
-        # Same offset is OK only for non-DST
-        # zones (Kyiv in 2026, UTC, Etc/UTC).
-        assert key == "Europe/Kyiv" or key in {
-            "UTC", "Etc/UTC",
-        }, (
-            f"harness returned the same offset "
-            f"({winter_offset}h) for winter and "
-            f"summer for {key}; this means the "
-            f"DST table is missing or the "
-            f"reference dates are wrong"
+
+def test_t09_dst_fold_keeps_future_forecast_hour() -> None:
+    """A future 02:00 row after the autumn clock change remains eligible."""
+    tz = _fallback_timezone("Europe/Berlin")
+    now = datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc).astimezone(tz)
+    first_hour = datetime(2026, 10, 25, 0, 0, tzinfo=timezone.utc)
+    rows = []
+    for index in range(8):
+        ts = int((first_hour + timedelta(hours=index)).timestamp())
+        rows.append({
+            "timestamp": ts,
+            "weather_code": 95 if index == 1 else 0,
+            "wind_speed_ms": 0.0,
+            "precipitation_probability": 0.0,
+        })
+
+    coord = _Coord(rows=rows, tz_name="Europe/Berlin", tzinfo=tz)
+    asyncio.run(_drive_storm_risk(
+        coord, now, zoneinfo_factory=lambda _key: tz
+    ))
+    assert coord._storm_risk_score == 1.0
+    assert coord._storm_risk_reason == "thunderstorm"
+
+    # Also exercise the actual no-tzdb fallback factory used by the AST
+    # harness, rather than only injecting a known-good tzinfo instance.
+    saved_zoneinfo = globals()["ZoneInfo"]
+    try:
+        globals()["ZoneInfo"] = None
+        fallback_tz = _harness_zoneinfo("Europe/Berlin")
+        fallback_now = datetime(
+            2026, 10, 25, 0, 30, tzinfo=timezone.utc
+        ).astimezone(fallback_tz)
+        fallback_coord = _Coord(
+            rows=rows, tz_name="Europe/Berlin", tzinfo=fallback_tz
         )
-
+        asyncio.run(_drive_storm_risk(
+            fallback_coord, fallback_now,
+            zoneinfo_factory=_harness_zoneinfo,
+        ))
+        assert fallback_coord._storm_risk_score == 1.0
+    finally:
+        globals()["ZoneInfo"] = saved_zoneinfo
 
 def _run_one(name: str, fn) -> bool:
     try:

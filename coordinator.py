@@ -1316,6 +1316,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             now.astimezone(tz) if now.tzinfo else
             now.replace(tzinfo=tz)
         )
+        now_epoch = now_local.timestamp()
         upcoming: list[dict] = []
         for h in hourly:
             ts = h.get("timestamp")
@@ -1327,7 +1328,11 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 ).astimezone(tz)
             except (TypeError, ValueError, OSError):
                 continue
-            if local_dt < now_local:
+            # Compare instants, not local wall-clock values. During the
+            # autumn DST fold, two distinct forecast instants can both be
+            # 02:00 local; Python may compare datetimes sharing the same
+            # ZoneInfo by wall time and incorrectly discard the later one.
+            if local_dt.timestamp() < now_epoch:
                 continue
             upcoming.append(h)
             if len(upcoming) >= 6:
