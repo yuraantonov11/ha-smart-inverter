@@ -259,15 +259,41 @@ class ForecastService:
     # ── Internal ────────────────────────────────────────────────────────
 
     async def _fetch_hourly(self) -> list[dict[str, Any]]:
-        """Fetch hourly shortwave radiation and convert to PV power."""
+        """Fetch hourly shortwave radiation and convert to PV power.
+
+        T09: request ``wind_speed_10m`` and
+        ``precipitation_probability`` in the same
+        payload as the radiation fields. Asking for
+        them in a single call avoids a second HTTP
+        round-trip; the Open-Meteo /v1/forecast
+        endpoint accepts comma-separated hourly
+        field lists and returns them in one JSON
+        object. The ``wind_speed_unit=ms`` query
+        parameter pins the unit so we never have
+        to convert km/h defaults into the m/s
+        scale ``evaluate_storm_risk`` expects.
+        """
         await self._rate_limit()
         session = await self._ensure_session()
         params = {
             "latitude": self._latitude,
             "longitude": self._longitude,
-            # Request both shortwave_radiation AND weather_code so we
-            # can show cloud/rain conditions alongside the power curve.
-            "hourly": "shortwave_radiation,weather_code,cloud_cover,temperature_2m",
+            # Request shortwave_radiation AND
+            # weather_code so we can show cloud/rain
+            # conditions alongside the power curve.
+            # T09 follow-up: also pull wind and
+            # precipitation probability for the
+            # storm-risk evaluator — same call, no
+            # extra request.
+            "hourly": (
+                "shortwave_radiation,weather_code,cloud_cover,"
+                "temperature_2m,wind_speed_10m,precipitation_probability"
+            ),
+            # Pin the unit explicitly. Without this
+            # Open-Meteo defaults to km/h which is
+            # the wrong scale for the storm-risk
+            # thresholds (≥ 15 m/s and ≥ 25 m/s).
+            "wind_speed_unit": "ms",
             "timezone": self.timezone_name,
             "timeformat": "unixtime",
             "forecast_days": 3,
@@ -286,6 +312,12 @@ class ForecastService:
         weather_codes = hourly.get("weather_code", [])
         cloud_covers = hourly.get("cloud_cover", [])
         temperatures = hourly.get("temperature_2m", [])
+        # T09: new fields. ``wind_speed_10m`` is in
+        # m/s because we asked for ``wind_speed_unit=ms``
+        # above. ``precipitation_probability`` is
+        # already a percent (0..100).
+        wind_speeds = hourly.get("wind_speed_10m", [])
+        precip_probs = hourly.get("precipitation_probability", [])
 
         result: list[dict[str, Any]] = []
         for i, t in enumerate(times):
@@ -293,9 +325,38 @@ class ForecastService:
             wcode = weather_codes[i] if i < len(weather_codes) else None
             cc = cloud_covers[i] if i < len(cloud_covers) else None
             temp = temperatures[i] if i < len(temperatures) else None
+            wind_raw = wind_speeds[i] if i < len(wind_speeds) else None
+            precip_raw = precip_probs[i] if i < len(precip_probs) else None
             radiation = finite(rad, high=2000)
             if radiation is None:
                 continue  # unknown radiation is not a measured zero
+            # T09: validate the storm-risk inputs
+            # before exposing them to the evaluator.
+            # ``finite`` returns None for NaN, inf
+            # and non-numeric; the second call
+            # additionally clips to a physical
+            # range (no negative wind, precipitation
+            # probability bounded to 0..100). WMO
+            # weather codes are documented in
+            # 0..99; we accept up to 200 to leave
+            # headroom for future codes.
+            wind_ms = finite(wind_raw)
+            if wind_ms is not None:
+                if wind_ms < 0 or wind_ms > 200:
+                    wind_ms = None
+            precip_pct = finite(precip_raw)
+            if precip_pct is not None:
+                if precip_pct < 0 or precip_pct > 100:
+                    precip_pct = None
+            weather_code_clean = None
+            if wcode is not None:
+                try:
+                    wc_int = int(wcode)
+                except (TypeError, ValueError):
+                    wc_int = None
+                else:
+                    if 0 <= wc_int <= 200:
+                        weather_code_clean = wc_int
             local_time = datetime.fromtimestamp(t, timezone.utc).astimezone(ZoneInfo(self.timezone_name))
             gain = self.learned_ratio
             if self.hourly_response:
@@ -310,9 +371,17 @@ class ForecastService:
                 "timestamp": t,
                 "radiation_wm2": radiation,
                 "power_w": power_w,
-                "weather_code": wcode,
+                "weather_code": weather_code_clean,
                 "cloud_cover": cc,
                 "temperature": temp,
+                # T09: surface the storm-risk inputs to
+                # every consumer of the hourly
+                # forecast. Existing callers (the
+                # power curve, the energy matrix)
+                # ignore the new keys; the storm-risk
+                # evaluator uses them.
+                "wind_speed_ms": wind_ms,
+                "precipitation_probability": precip_pct,
             })
         return result
 

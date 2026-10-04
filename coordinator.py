@@ -16,6 +16,7 @@ import asyncio
 import logging
 import math
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -401,7 +402,18 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # Storm risk tracking
         self._storm_risk_score: float = 0.0
         self._storm_risk_reason: str = ""
-        self._auto_storm_active: bool = False
+        # T10 follow-up: the previous code had a
+        # single ``_auto_storm_active`` flag that
+        # conflated the grid-outage cause and the
+        # weather-risk cause, and overwrote
+        # ``self.smart_mode`` directly. The fix
+        # splits the cause into two booleans and
+        # keeps the user's intent (``_user_smart_mode``)
+        # separate from the effective mode the
+        # engine sees.
+        self._auto_storm_weather: bool = False
+        self._auto_storm_outage: bool = False
+        self._user_smart_mode: int = self.smart_mode
         self._previous_smart_mode_before_storm: int | None = None
 
         # ── HEMS diagnostics (readable by sensors) ────────────────────
@@ -423,6 +435,48 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     @property
     def grid_available(self) -> bool:
         return self._grid_available
+
+    @property
+    def _auto_storm_active(self) -> bool:
+        """T10: combined auto-storm cause.
+
+        Returns ``True`` while at least one of the
+        two independent auto-storm causes is
+        active. The previous code stored a single
+        bool and conflated the grid-outage cause
+        with the weather-risk cause; clearing
+        either one used to drop the whole flag,
+        which could take the operator out of Storm
+        even though the *other* cause was still
+        valid. This property preserves the old
+        attribute-style read surface
+        (``coord._auto_storm_active``) for every
+        caller that already exists; new code
+        should branch on the two specific causes
+        instead.
+        """
+        return self._auto_storm_weather or self._auto_storm_outage
+
+    @_auto_storm_active.setter
+    def _auto_storm_active(self, value: bool) -> None:
+        """T10: legacy single-flag setter.
+
+        Some pre-T10 callers (the outage branch in
+        ``_run_hems_engine`` and the T12 test
+        stub) still write the boolean directly. We
+        preserve that surface: writing ``True``
+        activates the outage cause, writing
+        ``False`` clears *both* causes. The new
+        weather path in ``_maybe_evaluate_storm_risk``
+        uses the dedicated ``_auto_storm_weather``
+        bool, so this setter is exercised only by
+        the outage branch and by tests.
+        """
+        if value:
+            self._auto_storm_outage = True
+        else:
+            self._auto_storm_weather = False
+            self._auto_storm_outage = False
 
     @property
     def hems_engine(self) -> HemsEngine:
@@ -509,7 +563,27 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             mode_int = 0
         if mode_int not in (0, 1, 2):
             mode_int = 0
+        # T10: ``self.smart_mode`` is the *user*
+        # intent. The auto-storm layer no longer
+        # writes to it; instead it drives the
+        # two ``_auto_storm_*`` causes which feed
+        # the effective-mode calculation in
+        # ``_run_hems_engine``. When the user
+        # changes the mode while an auto-storm
+        # cause is active, we treat their pick as
+        # the new "remembered" intent — the
+        # previous pointer is updated so the
+        # cause-clear path does not restore a
+        # stale value.
         self.smart_mode = mode_int
+        self._user_smart_mode = mode_int
+        if self._auto_storm_active:
+            # User chose a new mode during an
+            # active auto-storm. Adopt it as the
+            # "last user pick" so a future
+            # cause-clear path restores the new
+            # value rather than the pre-storm one.
+            self._previous_smart_mode_before_storm = mode_int
         self._persist_user_option("smart_mode", self.smart_mode)
 
     def _persist_user_option(self, key: str, value) -> None:
@@ -607,11 +681,51 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         grid_available, grid_transition = self._evaluate_grid(grid_v)
 
         # ── Grid outage auto-Storm ───────────────────────────────────
-        if grid_transition == "outage" and self.smart_mode == SmartMode.ADAPTIVE and self.hems_auto_mode:
-            _LOGGER.warning("⚡ Grid outage → auto-activating Storm mode")
-            self._previous_smart_mode_before_storm = self.smart_mode
-            self.smart_mode = SmartMode.STORM
-            self._auto_storm_active = True
+        # T10: drive the dedicated outage cause
+        # from the grid transition, never touch
+        # ``self.smart_mode`` here (that is the
+        # user intent). The effective mode the
+        # engine sees is computed from the cause
+        # flags later in this method.
+        if (
+            grid_transition == "outage"
+            and self.smart_mode == SmartMode.ADAPTIVE
+            and self.hems_auto_mode
+        ):
+            if not self._auto_storm_outage:
+                _LOGGER.warning(
+                    "⚡ Grid outage → auto-activating Storm mode "
+                    "(outage cause)"
+                )
+                # Snapshot the user's pick only on
+                # the *first* outage. The storm-risk
+                # branch does the same; whichever
+                # lands first wins.
+                if (
+                    self._previous_smart_mode_before_storm
+                    is None
+                ):
+                    self._previous_smart_mode_before_storm = (
+                        self.smart_mode
+                    )
+            self._auto_storm_outage = True
+        elif grid_transition == "restored":
+            if self._auto_storm_outage:
+                _LOGGER.info(
+                    "🔌 Grid restored → clearing outage cause"
+                )
+                self._auto_storm_outage = False
+                if not self._auto_storm_weather:
+                    self._previous_smart_mode_before_storm = None
+        # T10: a forecast error path in
+        # ``_maybe_evaluate_storm_risk`` returns
+        # before it can clear the weather cause;
+        # we keep that guarantee here too — the
+        # outage branch must not be cleared by a
+        # forecast call. The setter that clears
+        # both causes is only invoked by the
+        # outage-restore path above and by tests
+        # that explicitly opt in.
 
         # ── Battery cycle tracking ───────────────────────────────────
         cycle_completed = self._track_battery_cycle(corrected_soc)
@@ -698,7 +812,31 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._hems.detect_manual_override(current_output, current_charger, now)
         # ── Schedule Rules: override smart mode if active rule exists ──
         active_rule = self._schedule_rules.get_active_rule_now(now)
-        effective_mode = active_rule.mode if active_rule is not None else self.smart_mode
+        # T10: build the effective mode from the
+        # two auto-storm causes plus the user's
+        # intent. Precedence:
+        #   1. An active schedule rule wins.
+        #   2. If the user already picked Storm by
+        #      hand (``_user_smart_mode == STORM``)
+        #      OR an auto-storm cause is active,
+        #      effective is Storm.
+        #   3. Otherwise, the user's pick.
+        # The user's intent (``self.smart_mode``)
+        # is *never* overwritten by the auto-storm
+        # layer; only the two cause flags change.
+        # Restoring the user's pick on cause-clear
+        # therefore reads ``self.smart_mode``
+        # directly, which the engine sees as the
+        # same value the operator picked.
+        if active_rule is not None:
+            effective_mode = active_rule.mode
+        elif (
+            self._auto_storm_active
+            or self._user_smart_mode == SmartMode.STORM
+        ):
+            effective_mode = SmartMode.STORM
+        else:
+            effective_mode = self.smart_mode
 
         # ── Update demand forecast with current load ───────────────────
         load_power = raw.get("loadPower", 0.0)
@@ -1085,7 +1223,21 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     # ═══════════════════════════════════════════════════════════════════
 
     async def _maybe_evaluate_storm_risk(self, now: datetime) -> None:
-        """Evaluate storm risk from forecast weather data (every 15 min)."""
+        """Evaluate storm risk from forecast weather data (every 15 min).
+
+        T09 follow-up: feed the real
+        ``weather_code`` / ``wind_speed_ms`` /
+        ``precipitation_probability`` from the
+        hourly forecast into
+        ``evaluate_storm_risk``. The previous
+        code passed three zeros, so the storm
+        path never tripped regardless of the
+        forecast. We also pick the next 6 hours
+        by comparing ``datetime`` instances in the
+        HA local timezone, not by string
+        comparison (which misbehaves across date
+        boundaries and at the DST cliff).
+        """
         if self._forecast is None:
             return
 
@@ -1097,57 +1249,183 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         try:
             hourly = await self._forecast.get_hourly_forecast()
-            if not hourly:
-                return
-
-            # Check next 6 hours
-            from datetime import datetime as dt
-            now_str = now.strftime("%Y-%m-%dT%H:00")
-            upcoming = [h for h in hourly if h["time"] >= now_str][:6]
-
-            max_risk_score = 0.0
-            max_risk_reason = "clear"
-            for h in upcoming:
-                # Use radiation as proxy for weather intensity
-                # (Open-Meteo weather_code would need separate call)
-                risk = evaluate_storm_risk(
-                    weather_code=None,
-                    wind_speed_ms=0,
-                    precipitation_probability=0,
-                )
-                if risk.score > max_risk_score:
-                    max_risk_score = risk.score
-                    max_risk_reason = risk.reason
-
-            self._storm_risk_score = max_risk_score
-            self._storm_risk_reason = max_risk_reason
-
-            # Auto-activate Storm if risk high and not already in Storm
-            auto_storm_enabled = self._entry.options.get("auto_storm_by_forecast", False)
-            if (
-                auto_storm_enabled
-                and max_risk_score >= 0.6
-                and not self._auto_storm_active
-                and self.smart_mode != SmartMode.STORM
-            ):
-                _LOGGER.warning(
-                    "🌊 Storm risk %.0f%% (%s) → auto-activating Storm mode",
-                    max_risk_score * 100, max_risk_reason,
-                )
-                self._previous_smart_mode_before_storm = self.smart_mode
-                self.smart_mode = SmartMode.STORM
-                self._auto_storm_active = True
-
-            # Clear auto-storm when risk drops
-            if self._auto_storm_active and max_risk_score < 0.4:
-                if self._previous_smart_mode_before_storm is not None:
-                    _LOGGER.info("🌊 Storm risk cleared → restoring mode %d", self._previous_smart_mode_before_storm)
-                    self.smart_mode = self._previous_smart_mode_before_storm
-                self._auto_storm_active = False
-                self._previous_smart_mode_before_storm = None
-
         except Exception as exc:
-            _LOGGER.debug("Storm risk evaluation failed: %s", exc)
+            # T09: a request failure must NOT clear
+            # the previous risk state. We log the
+            # reason and leave ``_storm_risk_*``
+            # untouched so the operator keeps the
+            # last valid signal.
+            _LOGGER.debug(
+                "Storm risk forecast fetch failed; "
+                "preserving last valid score: %s",
+                exc,
+            )
+            return
+        if not hourly:
+            _LOGGER.debug(
+                "Storm risk forecast returned no hours; "
+                "preserving last valid score"
+            )
+            return
+
+        # T09: select the next 6 hours in the HA
+        # timezone, not by lexicographic string
+        # comparison. The forecast returns a
+        # ``time`` field formatted in the
+        # configured ``timezone_name`` (HA tz);
+        # we convert it to a real ``datetime``
+        # before comparing to ``now``.
+        try:
+            tz = ZoneInfo(self.hass.config.time_zone)
+        except Exception:
+            tz = ZoneInfo(self.timezone_name)
+        now_local = (
+            now.astimezone(tz) if now.tzinfo else
+            now.replace(tzinfo=tz)
+        )
+        upcoming: list[dict] = []
+        for h in hourly:
+            ts = h.get("timestamp")
+            if ts is None:
+                continue
+            try:
+                local_dt = datetime.fromtimestamp(
+                    int(ts), tz=timezone.utc
+                ).astimezone(tz)
+            except (TypeError, ValueError, OSError):
+                continue
+            if local_dt < now_local:
+                continue
+            upcoming.append(h)
+            if len(upcoming) >= 6:
+                break
+
+        # T09: if the forecast has no upcoming
+        # hours at all (e.g. only stale samples in
+        # cache after a long pause), do not
+        # synthesise a "clear" decision; keep the
+        # last valid score.
+        if not upcoming:
+            _LOGGER.debug(
+                "Storm risk forecast has no upcoming "
+                "hours; preserving last valid score"
+            )
+            return
+
+        max_risk_score = 0.0
+        max_risk_reason = "clear"
+        valid_evaluation = False
+        for h in upcoming:
+            # T09: read the real forecast values.
+            # The forecast sanitiser (``_fetch_hourly``)
+            # has already replaced NaN/inf/out-of-
+            # range values with ``None``; we leave
+            # the evaluator's defaults alone when
+            # the field is missing so a hole in the
+            # forecast never masks a real risk in
+            # the *other* hours.
+            weather_code = h.get("weather_code")
+            wind_ms = h.get("wind_speed_ms")
+            precip_pct = h.get("precipitation_probability")
+            # A "no information" hour is *not* the
+            # same as "all clear". The evaluator
+            # only treats missing fields as zero
+            # when ALL of them are missing; if at
+            # least one is present we still call
+            # the evaluator so the other fields
+            # can flag the risk.
+            if (
+                weather_code is None
+                and wind_ms is None
+                and precip_pct is None
+            ):
+                continue
+            risk = evaluate_storm_risk(
+                weather_code=(
+                    int(weather_code)
+                    if weather_code is not None else None
+                ),
+                wind_speed_ms=(
+                    float(wind_ms) if wind_ms is not None else 0.0
+                ),
+                precipitation_probability=(
+                    float(precip_pct)
+                    if precip_pct is not None else 0.0
+                ),
+            )
+            valid_evaluation = True
+            if risk.score > max_risk_score:
+                max_risk_score = risk.score
+                max_risk_reason = risk.reason
+
+        if not valid_evaluation:
+            # All 6 hours had no storm fields at
+            # all. Preserve the last valid score;
+            # do not synthesise a "clear" decision.
+            _LOGGER.debug(
+                "Storm risk forecast has 6 upcoming "
+                "hours but no storm fields; "
+                "preserving last valid score"
+            )
+            return
+
+        self._storm_risk_score = max_risk_score
+        self._storm_risk_reason = max_risk_reason
+
+        # T10: only the *weather* cause is allowed
+        # to act here. The grid-outage cause has
+        # its own driver (``_evaluate_grid`` in
+        # ``_run_hems_engine``) and must NOT be
+        # touched by a forecast update — clearing
+        # the risk score below must not clear
+        # ``_auto_storm_outage``.
+        auto_storm_enabled = self._entry.options.get(
+            "auto_storm_by_forecast", False
+        )
+        if (
+            auto_storm_enabled
+            and max_risk_score >= 0.6
+            and not self._auto_storm_weather
+            and self.smart_mode != SmartMode.STORM
+        ):
+            _LOGGER.warning(
+                "🌊 Storm risk %.0f%% (%s) → auto-activating "
+                "Storm mode (weather cause)",
+                max_risk_score * 100, max_risk_reason,
+            )
+            if self._previous_smart_mode_before_storm is None:
+                # Remember the user's choice so we
+                # can restore it when the cause
+                # clears. If they had already picked
+                # Storm by hand, we leave the
+                # pointer at None — the engine
+                # treats that as "user already
+                # wanted Storm" and does not
+                # overwrite it.
+                self._previous_smart_mode_before_storm = (
+                    self.smart_mode
+                )
+            self._auto_storm_weather = True
+
+        # T10: the *clear* path only ever touches
+        # the weather cause. A passing "all clear"
+        # never silently clears an active outage
+        # cause, and a forecast error does not
+        # clear the weather cause either — that
+        # already happens because we ``return``
+        # before reaching this point on error.
+        if self._auto_storm_weather and max_risk_score < 0.4:
+            self._auto_storm_weather = False
+            if not self._auto_storm_outage:
+                # Both causes now clear — drop the
+                # backup pointer so the next user
+                # change to ``smart_mode`` doesn't
+                # restore a stale value.
+                self._previous_smart_mode_before_storm = None
+            _LOGGER.info(
+                "🌊 Weather storm risk cleared (score=%.2f)",
+                max_risk_score,
+            )
 
     # ═══════════════════════════════════════════════════════════════════
     # EXISTING HELPERS (unchanged from original)

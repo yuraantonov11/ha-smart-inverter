@@ -165,7 +165,20 @@ class _StubCoordinator:
         self.smart_mode = 0
         self.keepalive_timer = None
         self._previous_smart_mode_before_storm = None
+        # T10 follow-up: keep the legacy single-flag
+        # attribute working for the T01 stub while
+        # also adding the two independent cause
+        # booleans the new code reads. Setting the
+        # legacy attribute flips the outage cause,
+        # which is the historical semantics: a
+        # forced storm event always meant "grid is
+        # down". The T09/T10 weather cause has its
+        # own flag and is only set by the storm-
+        # risk evaluator.
         self._auto_storm_active = False
+        self._auto_storm_weather = False
+        self._auto_storm_outage = False
+        self._user_smart_mode = 0
         self._grid_available = True
         # T12: timed-hold window set by force_grid_charge. The
         # T01 path is the "no force" path, so the field is

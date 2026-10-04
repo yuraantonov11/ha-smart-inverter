@@ -125,6 +125,20 @@ src = textwrap.dedent(
             # T02 fix: read from entry.options.
             self.hems_auto_mode = bool(self._entry.options.get("hems_auto_mode", True))
             self.smart_mode = int(self._entry.options.get("smart_mode", 0))
+            # T10 follow-up: the new code reads
+            # ``_user_smart_mode`` and the combined
+            # ``_auto_storm_active`` property
+            # whenever ``async_set_smart_mode`` runs.
+            # The legacy T02 stub only had
+            # ``smart_mode``; the harness exec's the
+            # production setter source directly,
+            # so we add the attributes the
+            # production setter now expects.
+            self._user_smart_mode = self.smart_mode
+            self._auto_storm_active = False
+            self._auto_storm_weather = False
+            self._auto_storm_outage = False
+            self._previous_smart_mode_before_storm = None
 
     """
 )
