@@ -27,6 +27,19 @@ DEFAULT_POLL_INTERVAL_SEC = 5
 MIN_POLL_INTERVAL_SEC = 3
 MAX_POLL_INTERVAL_SEC = 30
 
+# T16 audit: the integration's default site
+# coordinates. The root ``const.py`` and
+# ``hems/defaults.py`` are kept in lock-step
+# (the test_t16_options_contract suite
+# asserts the equality). Both files are leaf
+# modules in the import graph; neither imports
+# from the other. The audit requires the
+# config flow (UI default) and the
+# ``PvLearningCoordinatorMixin`` (runtime
+# default) to read the same numeric value.
+DEFAULT_SITE_LATITUDE = 50.45
+DEFAULT_SITE_LONGITUDE = 30.52
+
 # API rate limit
 MIN_REQUEST_INTERVAL_MS = 1000
 

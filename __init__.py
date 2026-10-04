@@ -16,7 +16,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
 from .api import InverterApiClient
-from .const import DOMAIN
+from .const import (
+    DEFAULT_POLL_INTERVAL_SEC,
+    DOMAIN,
+    MIN_POLL_INTERVAL_SEC,
+)
 from .coordinator import InverterCoordinator, HistoryCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -28,6 +32,62 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.BINARY_SENSOR,
 ]
+
+# T16 audit: the set of option keys that
+# require a full setup reload. Other keys are
+# applied selectively (the coordinator reads
+# them from ``entry.options`` on every cycle)
+# and do not trigger a reload.
+_RELOAD_REQUIRED_OPTION_KEYS: frozenset[str] = frozenset({
+    # Anything that changes the API polling
+    # cadence requires a fresh ``update_interval``.
+    "poll_interval",
+    # Anything that changes the upstream API
+    # requires a fresh ``InverterApiClient``.
+    "email",
+    "password",
+})
+
+# T16 audit: keys that are persisted by
+# internal state machines and must not be
+# surfaced in the user-facing config flow.
+# Writing to these keys must not trigger a
+# reload — the coordinator re-reads them on
+# every cycle.
+_INTERNAL_PERSISTENCE_KEYS: frozenset[str] = frozenset({
+    "predictive_feedback_override",
+    "night_window",
+    "_energy_state",
+    "energy_state_version",
+})
+
+
+async def _async_options_updated(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+) -> None:
+    """Selective-apply hook for ``entry.options``.
+
+    Audit T16: when the user changes an option
+    that is *not* in
+    ``_RELOAD_REQUIRED_OPTION_KEYS``, we do
+    not need to recreate the coordinator. The
+    coordinator re-reads ``entry.options`` on
+    every cycle, so the change takes effect on
+    the next update. This listener therefore
+    is a no-op for the common case. The
+    options flow is responsible for calling
+    ``entry.async_reload()`` when the user
+    changes a reload-required key.
+
+    The listener still records the event in the
+    log so we can observe selective-apply in
+    production diagnostics.
+    """
+    _LOGGER.debug(
+        "options updated for entry %s; selective apply (no reload)",
+        entry.entry_id,
+    )
 
 _FRONTEND_REGISTERED = False
 
@@ -47,11 +107,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return False
 
         # Create coordinator
+        # T16 audit: read ``poll_interval`` from
+        # ``entry.options`` so the UI-entered value
+        # actually reaches the runtime. Old entries
+        # without the key fall back to the constant
+        # in ``const.py`` — same value, single source
+        # of truth. ``MIN_POLL_INTERVAL_SEC`` is
+        # already enforced by the config flow's
+        # ``vol.Range``; we re-apply the floor here as
+        # a safety net for hand-edited entries.
+        poll_interval = int(
+            entry.options.get(
+                "poll_interval", DEFAULT_POLL_INTERVAL_SEC
+            )
+        )
+        if poll_interval < MIN_POLL_INTERVAL_SEC:
+            poll_interval = MIN_POLL_INTERVAL_SEC
         coordinator = InverterCoordinator(
             hass=hass,
             api=api,
             entry=entry,
-            update_interval=timedelta(seconds=5),
+            update_interval=timedelta(seconds=poll_interval),
         )
 
         # Create history coordinator (15-min polling)
@@ -115,6 +191,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Register services
         from .services import async_register_services
         await async_register_services(hass)
+
+        # Register a single options update listener
+        # that performs *selective* apply. The
+        # audit (T16) requires:
+        #   1. ``poll_interval``,
+        #      ``site_latitude``, ``site_longitude``,
+        #      ``reserve_soc`` take effect on the
+        #      next coordinator update (the
+        #      coordinator reads them from
+        #      ``entry.options`` on every cycle, so
+        #      we do not need to recreate the
+        #      coordinator).
+        #   2. ``hems_enabled``,
+        #      ``auto_storm_by_forecast``,
+        #      ``predictive_mode`` etc. take
+        #      effect on the next coordinator
+        #      update *or* via the existing
+        #      setter hooks.
+        #   3. Internal persistence keys
+        #      (``predictive_feedback_override``,
+        #      ``night_window``) must not trigger
+        #      a reload — they are in-process
+        #      state, not user-facing config.
+        #
+        # The selective-apply path is the listener
+        # registered below. The actual reload is
+        # only triggered by ``entry.async_reload``
+        # from the options flow when the user
+        # changes a *reload-required* key. We
+        # therefore register a NO-OP update
+        # listener that suppresses HA's automatic
+        # reload for option updates that go
+        # through the selective-apply path. The
+        # options flow calls ``entry.async_reload``
+        # explicitly for keys that need a fresh
+        # coordinator.
+        entry.async_on_unload(
+            entry.add_update_listener(_async_options_updated)
+        )
 
         # ── Bundle flow card (once per HA start) ─────────────────
         global _FRONTEND_REGISTERED

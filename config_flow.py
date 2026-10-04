@@ -22,6 +22,8 @@ from .const import (
     DEFAULT_POLL_INTERVAL_SEC,
     DEFAULT_PV_SURPLUS_ENTER_W,
     DEFAULT_RESERVE_SOC,
+    DEFAULT_SITE_LATITUDE,
+    DEFAULT_SITE_LONGITUDE,
     DOMAIN,
     MAX_POLL_INTERVAL_SEC,
     MIN_POLL_INTERVAL_SEC,
@@ -192,9 +194,49 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
             if poll < MIN_POLL_INTERVAL_SEC or poll > MAX_POLL_INTERVAL_SEC:
                 errors["poll_interval"] = "invalid_poll_interval"
             elif not errors:
-                # Keep internal state (feedback, recommendations) when the
-                # form edits only its visible fields.
-                return self.async_create_entry(data={**self.config_entry.options, **user_input})
+                # T16 audit: determine whether any
+                # *reload-required* key changed. The
+                # set of reload-required keys is
+                # declared in ``__init__.py`` so
+                # this flow and the entry
+                # update listener share the same
+                # source of truth.
+                from . import (
+                    _RELOAD_REQUIRED_OPTION_KEYS as _REL_KEYS,
+                )
+
+                new_data = {
+                    **self.config_entry.options,
+                    **user_input,
+                }
+                if any(
+                    k in _REL_KEYS
+                    and self.config_entry.options.get(k)
+                    != new_data.get(k)
+                    for k in _REL_KEYS
+                ):
+                    # A reload-required key changed.
+                    # ``async_create_entry`` triggers
+                    # HA's automatic reload, which
+                    # recreates the coordinator with
+                    # the new ``update_interval`` /
+                    # API client.
+                    return self.async_create_entry(data=new_data)
+                # No reload-required key changed —
+                # apply the change in-place via
+                # ``async_update_entry``. The
+                # coordinator re-reads
+                # ``entry.options`` on every cycle,
+                # so the change takes effect on
+                # the next update. The internal
+                # persistence keys (feedback,
+                # night_window, _energy_state) are
+                # not surfaced here, so this path
+                # cannot create a reload loop.
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, options=new_data
+                )
+                return self.async_abort(reason="options_updated")
 
         current = self.config_entry.options
         return self.async_show_form(
@@ -246,14 +288,18 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         "site_latitude",
-                        default=current.get("site_latitude", 49.0),
+                        default=current.get(
+                            "site_latitude", DEFAULT_SITE_LATITUDE
+                        ),
                     ): vol.All(
                         vol.Coerce(float),
                         vol.Range(min=-90.0, max=90.0),
                     ),
                     vol.Optional(
                         "site_longitude",
-                        default=current.get("site_longitude", 31.0),
+                        default=current.get(
+                            "site_longitude", DEFAULT_SITE_LONGITUDE
+                        ),
                     ): vol.All(
                         vol.Coerce(float),
                         vol.Range(min=-180.0, max=180.0),
