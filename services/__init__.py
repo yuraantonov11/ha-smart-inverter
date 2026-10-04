@@ -240,37 +240,88 @@ async def async_register_services(hass: HomeAssistant) -> None:
         _LOGGER.info("Service: smart mode → %s (%d)", mode, mode_val)
 
     async def handle_force_grid_charge(call: ServiceCall) -> None:
+        """Arm a timed hold for ``force_grid_charge``.
+
+        T12 follow-up (review ``c056341``): the previous
+        implementation sent the USB+SNU commands directly
+        *before* the coordinator had a chance to inspect
+        the guards. The very first command of a
+        ``force_grid_charge`` therefore bypassed the
+        ``soc_unknown`` gate, the manual-override hold,
+        the circuit breaker, and any other safety check
+        the coordinator would normally run. The fix is
+        to make this service a *pure timer arming* call.
+        It does **no** hardware writes. The actual writes
+        happen on the *next* coordinator cycle, where the
+        same ``_evaluation_hold`` that protects every
+        other engine decision is consulted. If a hold is
+        active, the cycle logs the reason, the timer
+        keeps running, and the next cycle tries again —
+        the user's request is honoured as soon as the
+        safety condition clears, but never before.
+
+        Three pieces of validation still happen on the
+        service side, *before* the timer is armed:
+
+        1. The targeted config entry is resolved via
+           ``_resolve_entry`` (T11). Without a loaded
+           inverter the service raises.
+        2. ``hems_auto_mode`` must be True. The user-facing
+           HEMS Auto switch is the only user-visible
+           control that gates automatic commands;
+           turning it off means "I want to drive the
+           inverter myself". ``force_grid_charge`` is
+           still allowed but the *engine* will not write
+           while ``hems_auto_mode`` is False, and a
+           timer armed under that condition would never
+           fire. We refuse to arm it up front so the
+           user gets an immediate error.
+        3. ``hems_enabled`` is also required for the
+           same reason — a coordinator that is in
+           monitor-only mode will never dispatch.
+
+        The duration is also clamped to the same range the
+        service schema already advertises (5–480 min).
+        """
         api, coordinator = await _get_api(call)
         duration = call.data["duration_minutes"]
-        _LOGGER.info("Service: force grid charge for %d min", duration)
-        # T12 follow-up: the previous implementation sent
-        # the commands once and then dropped the request on
-        # the floor — the next engine cycle could (and
-        # often did) immediately override them. The new
-        # behaviour arms a *timed hold* on the coordinator
-        # so the engine keeps the inverter on USB+SNU for
-        # the whole window. After the deadline the engine
-        # resumes normal planning from current data — we
-        # never restore a stale mode mechanically.
-        ok1 = await api.set_charger_priority("1")  # SNU
-        ok2 = await api.set_output_priority("0")  # USB
-        if ok1 and ok2:
-            now = datetime.now()
-            deadline = now + timedelta(minutes=duration)
-            coordinator._forced_charge_until = deadline
-            _LOGGER.info(
-                "Force grid charge started for %d min (until %s)",
-                duration,
-                deadline.isoformat(),
+        # Boundary check: the schema already coerces
+        # ``duration_minutes`` to ``vol.Range(min=5,
+        # max=480)``, but a hostile caller can still send
+        # raw ``call.data`` through. Defensive check.
+        if not 5 <= int(duration) <= 480:
+            raise ValueError(
+                f"duration_minutes must be 5..480 (got {duration!r})"
             )
-        else:
-            _LOGGER.error("Force grid charge failed")
-            # T12: if the ACK is partial, do NOT arm the
-            # timed hold. The previous code would have
-            # armed nothing *and* reported success; now we
-            # fail loudly so the user re-issues the
-            # service.
-            return
+        # Safety: the HEMS Auto switch must be on. If
+        # the user disabled HEMS, ``_evaluation_hold``
+        # will refuse the write anyway — but we want
+        # the user to learn *now*, not after a 60-min
+        # timer that will never fire.
+        if not getattr(coordinator, "hems_enabled", True):
+            raise ValueError(
+                "force_grid_charge requires HEMS Auto to be on"
+            )
+        if not getattr(coordinator, "hems_auto_mode", True):
+            raise ValueError(
+                "force_grid_charge requires HEMS Auto to be on"
+            )
+        now = datetime.now()
+        deadline = now + timedelta(minutes=int(duration))
+        # T12: this assignment is the *only* state
+        # change the service makes. No ``api.set_*`` call
+        # happens here. The coordinator's next cycle
+        # reads ``_forced_charge_until``, runs the same
+        # guards the engine would normally run, and
+        # dispatches the forced USB+SNU decision only
+        # when those guards pass.
+        coordinator._forced_charge_until = deadline
+        _LOGGER.info(
+            "Service: force_grid_charge armed for %d min "
+            "(deadline %s); coordinator will dispatch after guards",
+            int(duration),
+            deadline.isoformat(),
+        )
 
     hass.services.async_register(
         DOMAIN,

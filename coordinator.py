@@ -783,6 +783,18 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 # be checked.
                 grid_v = raw.get("gridVoltage", 230.0)
                 grid_ok = bool(raw.get("gridOk", True))
+                # Pass ``soc`` and ``reserve_soc`` so the
+                # reserve-floor guard is consulted too —
+                # the audit's T12 review called out that
+                # the original hold did not protect the
+                # battery from being drained below the
+                # configured reserve. We pass
+                # ``display_soc`` (the synthetic 100 % when
+                # ``soc_unknown``) so a *known* SOC is
+                # always supplied here; the SOC-unknown
+                # gate above us has already decided whether
+                # the request is allowed in the first
+                # place.
                 hold = self._hems._evaluation_hold(
                     hems_auto=self.hems_auto_mode,
                     smart_mode=self.smart_mode,
@@ -790,6 +802,11 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                     valid_telemetry=True,
                     now=now,
                     buzzer_off=True,
+                    soc=display_soc,
+                    reserve_soc=float(
+                        self._entry.options.get("reserve_soc", 20.0)
+                    ),
+                    soc_safety_margin=5.0,
                 )
                 if hold is not None and hold.skip:
                     # T12 does NOT bypass the engine's

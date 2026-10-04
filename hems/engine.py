@@ -396,10 +396,40 @@ class HemsEngine:
             controller.last_plan = None
         return mode
 
-    def _evaluation_hold(self, *, hems_auto: bool, smart_mode: int, is_online: bool,
-                         valid_telemetry: bool, now: datetime,
-                         buzzer_off: bool) -> HemsDecision | None:
-        """User control and transport holds precede automatic decisions."""
+    def _evaluation_hold(
+        self,
+        *,
+        hems_auto: bool,
+        smart_mode: int,
+        is_online: bool,
+        valid_telemetry: bool,
+        now: datetime,
+        buzzer_off: bool,
+        soc: float | None = None,
+        reserve_soc: float | None = None,
+        soc_safety_margin: float = 5.0,
+    ) -> HemsDecision | None:
+        """User control, transport, and safety holds precede
+        automatic decisions.
+
+        T12 follow-up: ``soc`` and ``reserve_soc`` are
+        optional. When both are supplied, this function
+        returns ``reserve_floor`` if the SOC has dropped
+        to ``reserve_soc + soc_safety_margin`` or below.
+        The forced-grid-charge path uses this to avoid
+        draining a battery that is already near the
+        configured reserve: the timer keeps running but
+        no command is dispatched. This mirrors the
+        reserve-SOC guard the engine already enforces in
+        ``_evaluate_adaptive`` for the regular plan.
+
+        The other holds — hems_auto_off, circuit breaker,
+        manual override, unknown mode, inverter offline,
+        invalid telemetry — are unchanged. The audit's
+        T12 review specifically asked for the *whole*
+        stack of guards to apply to the timed hold, not
+        just the four the original commit covered.
+        """
         reason = None
         if not hems_auto:
             reason = "hems_auto_off"
@@ -418,6 +448,19 @@ class HemsEngine:
             reason = _Reason.EMERGENCY_STALE if stale else "inverter_offline"
         elif not valid_telemetry:
             reason = "invalid_telemetry"
+        elif (
+            soc is not None
+            and reserve_soc is not None
+            and soc <= reserve_soc + soc_safety_margin
+        ):
+            # Reserve-floor guard: refuse to drive the
+            # inverter into a state that would drain the
+            # battery below the configured reserve. The
+            # forced-grid-charge path uses this to wait
+            # until the SOC recovers (e.g. via PV) before
+            # it starts the timed hold. The timer keeps
+            # running.
+            reason = "reserve_floor"
         if reason is not None:
             return HemsDecision(reason=reason, skip=True, buzzer_off=buzzer_off)
         return None
