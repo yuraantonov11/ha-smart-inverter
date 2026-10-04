@@ -203,8 +203,16 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # Total energy info card (informative total + daily/yearly breakdown)
         te_src = os.path.join(src_dir, "total-energy-card.js")
         if os.path.exists(te_src):
-            shutil.copy2(te_src, os.path.join(www_dir, "total-energy-card.js"))
-            _LOGGER.info("Installed total-energy-card.js → www/")
+            try:
+                shutil.copy2(
+                    te_src,
+                    os.path.join(www_dir, "total-energy-card.js"),
+                )
+                _LOGGER.info("Installed total-energy-card.js → www/")
+            except OSError as err:
+                _LOGGER.warning(
+                    "Could not install total-energy-card.js: %s", err
+                )
         # Icon PNGs → both primary AND legacy path (safety net for cached JS)
         for fname in ("grid-icon.png", "home-icon.png", "ev-charger-icon.png"):
             src = os.path.join(src_dir, fname)
