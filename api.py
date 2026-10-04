@@ -1165,6 +1165,13 @@ class InverterApiClient:
         # ``_raw_value = None`` whenever the parse fails, so
         # the coordinator's cache gate fires.
         total_energy_raw: float | None = None
+        # ``pair_valid`` is True iff the cloud returned both a
+        # numeric ``value`` AND a numeric ``totalEnergy`` (or
+        # the ``value`` itself is sufficient on its own — see
+        # below). When ``value`` parses but ``totalEnergy`` is
+        # missing or non-numeric, the pair cannot be confirmed
+        # and ``_safe_total`` must fall back.
+        pair_valid = True
         if v is None:
             total = 0.0
             raw_value = None
@@ -1193,31 +1200,60 @@ class InverterApiClient:
         if total_energy_raw is None and v is not None:
             # Try to read the cloud's totalEnergy so the pair
             # can be compared. If it's missing or non-numeric,
-            # fall back to ``total`` so the dict still has both
-            # keys (the helper's contract requires them).
+            # the pair is incomplete — surface a ``None`` so
+            # ``_safe_total`` can reject it as a malformed
+            # payload rather than accept a 0.0 placeholder
+            # that happens to agree with the real ``value=0``
+            # and overwrites a non-zero cache.
             e_field = latest.get("totalEnergy")
-            if e_field is not None:
+            if e_field is None:
+                # Field is genuinely missing; the pair cannot
+                # be confirmed. Mark the pair invalid.
+                pair_valid = False
+            else:
                 try:
                     total_energy_raw = float(e_field)
                 except (TypeError, ValueError):
+                    # Field is present but non-numeric. Do
+                    # *not* mask it with a 0.0 placeholder —
+                    # the previous body did that and the
+                    # ``_safe_total`` pair check then
+                    # accepted ``{"value": 0,
+                    # "totalEnergy": 0, "_raw_value": 0}``
+                    # as a real reading, overwriting a
+                    # populated cache. Mark the pair
+                    # invalid so the coordinator's cache
+                    # gate fires.
                     total_energy_raw = None
-        if total_energy_raw is None:
-            # The cloud's totalEnergy is unusable — surface a
-            # sentinel value ``0.0`` for the dict key (the
-            # helper requires the field to exist), but the
-            # pair will disagree with ``total`` so the cache
-            # gate fires.
-            total_energy_raw = 0.0 if v is not None and raw_value is not None else None
+                    pair_valid = False
         # ``_raw_value`` is the sentinel: it is None exactly when
         # the API did not surface a real number. A non-None
         # value means the cloud gave us a usable reading,
         # regardless of whether the resulting ``total`` is 0.0
         # (which is itself a valid cumulative reading for a
         # freshly-installed inverter).
+        # ``_pair_valid`` is False when the cloud's
+        # ``totalEnergy`` is missing or non-numeric and the
+        # ``value`` field alone is insufficient. ``_safe_total``
+        # treats a False pair as a fallback even when the
+        # numeric ``value`` parses cleanly. The dict still
+        # surfaces both keys (the helper's contract requires
+        # them) but the ``totalEnergy`` field is left as
+        # ``None`` rather than masked to 0.0.
+        if pair_valid:
+            te_value = total_energy_raw if total_energy_raw is not None else total
+        else:
+            # Incomplete pair — leave ``totalEnergy`` as None
+            # so the helper's ``v is None or e is None``
+            # branch fires (it does not depend on numeric
+            # equality). The numeric ``value`` is preserved
+            # in the dict for diagnostic logging.
+            te_value = None
         return {
             "value": total,
-            "totalEnergy": total_energy_raw if total_energy_raw is not None else 0.0,
+            "totalEnergy": te_value,
             "_raw_value": raw_value,
+            "_pair_valid": pair_valid,
         }
 
     # ── Helpers ────────────────────────────────────────────────────────

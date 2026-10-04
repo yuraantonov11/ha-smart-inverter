@@ -817,5 +817,104 @@ async def _e2e_value_zero_total_mismatch():
 _run(_e2e_value_zero_total_mismatch())
 
 
+# The audit's third follow-up: a payload where ``value`` is a
+# real 0 but ``totalEnergy`` is missing or non-numeric. The
+# previous API body masked the missing/non-numeric field with
+# 0.0, producing ``{"value": 0, "totalEnergy": 0,
+# "_raw_value": 0}`` — a placeholder pair the coordinator's
+# ``_safe_total`` accepted as a real reading (both fields
+# agree at 0, the raw sentinel is non-None). The cache was
+# then overwritten with 0.0 even though the second field was
+# garbage. The fix:
+#   * the API body now stamps ``_pair_valid=False`` when
+#     ``totalEnergy`` is missing or non-numeric and leaves
+#     ``totalEnergy`` as ``None`` in the returned dict,
+#   * ``_safe_total`` treats a ``False`` pair as a fallback
+#     even when the numeric ``value`` parses cleanly.
+async def _e2e_value_zero_total_missing():
+    daily = [{"time": "13", "value": 11.0}]
+    monthly = [{"date": "2026-09-30", "value": 12.0}]
+    yearly = [{"month": "2026-09", "value": 13.0}]
+    api = _RealApiMock(
+        daily, monthly, yearly,
+        # ``totalEnergy`` key is absent entirely.
+        overview_payload=[{"value": 0}],
+    )
+    c = _run_async_update(api, daily, monthly, yearly, seed_total=1500.0)
+    await c._async_update_data()
+    assert c.total_energy_kwh == 1500.0, (
+        f"value=0 with missing totalEnergy must NOT zero the "
+        f"cache: got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_e2e_value_zero_total_missing())
+
+
+async def _e2e_value_zero_total_bad_string():
+    daily = [{"time": "13", "value": 11.0}]
+    monthly = [{"date": "2026-09-30", "value": 12.0}]
+    yearly = [{"month": "2026-09", "value": 13.0}]
+    api = _RealApiMock(
+        daily, monthly, yearly,
+        overview_payload=[{"value": 0, "totalEnergy": "bad"}],
+    )
+    c = _run_async_update(api, daily, monthly, yearly, seed_total=1500.0)
+    await c._async_update_data()
+    assert c.total_energy_kwh == 1500.0, (
+        f"value=0 with non-numeric totalEnergy='bad' must NOT "
+        f"zero the cache: got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_e2e_value_zero_total_bad_string())
+
+
+# The same logic when ``value`` parses to a non-zero number
+# but ``totalEnergy`` is missing: a transient backend error
+# must not cause the cache to revert to the parsed
+# ``value``. The cache is preserved.
+async def _e2e_value_present_total_missing():
+    daily = [{"time": "13", "value": 11.0}]
+    monthly = [{"date": "2026-09-30", "value": 12.0}]
+    yearly = [{"month": "2026-09", "value": 13.0}]
+    api = _RealApiMock(
+        daily, monthly, yearly,
+        overview_payload=[{"value": 12.5}],
+    )
+    c = _run_async_update(api, daily, monthly, yearly, seed_total=1500.0)
+    await c._async_update_data()
+    assert c.total_energy_kwh == 1500.0, (
+        f"value=12.5 with missing totalEnergy must NOT update "
+        f"the cache: got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_e2e_value_present_total_missing())
+
+
+# Sanity check: when both fields are present and agree at a
+# real number, the new ``_pair_valid`` flag is True and the
+# cache updates. This guards against an over-zealous fix
+# that would reject every reading.
+async def _e2e_pair_valid_updates_cache():
+    daily = [{"time": "13", "value": 11.0}]
+    monthly = [{"date": "2026-09-30", "value": 12.0}]
+    yearly = [{"month": "2026-09", "value": 13.0}]
+    api = _RealApiMock(
+        daily, monthly, yearly,
+        overview_payload=[{"value": 12.5, "totalEnergy": 12.5}],
+    )
+    c = _run_async_update(api, daily, monthly, yearly, seed_total=0.0)
+    await c._async_update_data()
+    assert c.total_energy_kwh == 12.5, (
+        f"valid pair must update the cache: "
+        f"got {c.total_energy_kwh!r}"
+    )
+
+
+_run(_e2e_pair_valid_updates_cache())
+
+
 print("T14-lkg-real OK — last-known-good is preserved across partial failures")
 sys.exit(0)

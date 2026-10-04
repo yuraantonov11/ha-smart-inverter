@@ -1553,6 +1553,20 @@ class HistoryCoordinator(DataUpdateCoordinator):
             # contract here.
             if value.get("_raw_value") is None:
                 return {}, 0.0, True
+            # T14 follow-up: ``_pair_valid`` is False when the
+            # cloud's ``totalEnergy`` was missing or non-numeric
+            # and the API body therefore left that field as
+            # ``None``. The previous version of the body masked
+            # the field with ``0.0``, which the pair check
+            # (which demands both fields agree) then accepted as
+            # a valid reading for ``{"value": 0,
+            # "totalEnergy": "bad"}`` — overwriting a populated
+            # cache with 0.0. We now require an explicit
+            # ``_pair_valid=True`` flag, in addition to the
+            # equality and finiteness checks above, to accept
+            # the dict as a real reading.
+            if value.get("_pair_valid") is False:
+                return {}, 0.0, True
             return value, v_f, False
 
         today_pair = _safe_list(today_power_raw, "daily")
