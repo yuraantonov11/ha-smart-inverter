@@ -197,6 +197,20 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # Battery keepalive state (tracked in engine)
         self._keepalive_timer: datetime | None = None
 
+        # T12: force_grid_charge service holds the inverter
+        # on USB+SNU for a user-supplied duration. The
+        # ``_forced_charge_until`` timestamp is consulted
+        # at the top of ``_run_hems_engine``; while the
+        # current time is before it, the engine returns
+        # a forced USB+SNU decision instead of running
+        # the regular plan. After the deadline passes,
+        # the field is cleared and the engine resumes
+        # normal operation. The forced decision is
+        # *not* a hard override of guards — the SOC
+        # gate (``soc_unknown``), BMS, and the no-write
+        # rule still apply.
+        self._forced_charge_until: datetime | None = None
+
         # Load demand EWMA profile
         self._load_profile: dict[int, float] = {}
 
@@ -734,6 +748,115 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             self.hems_last_charger_cmd = None
             self.hems_buzzer_off = False
             return
+
+        # T12: ``force_grid_charge`` is in effect. Hold the
+        # inverter on USB+SNU until the user-supplied
+        # deadline. This block runs *after* the ``soc_unknown``
+        # gate above so a missing SOC still blocks the
+        # forced write, and *after* ``detect_manual_override``
+        # so the user's manual command is still respected.
+        # The forced decision is a regular ``HemsDecision``
+        # — the same dedup, hysteresis, and ack logic in
+        # ``_execute_hems_command`` apply. We replace the
+        # engine's regular plan with the forced one only
+        # while the deadline is in the future; after the
+        # deadline we clear the field and fall through to
+        # the engine's plan computed above.
+        if (
+            self._forced_charge_until is not None
+            and not soc_unknown
+        ):
+            deadline = self._forced_charge_until
+            if deadline.tzinfo is None and now.tzinfo is not None:
+                deadline = deadline.replace(tzinfo=now.tzinfo)
+            if now < deadline:
+                # Re-run the same hold checks the engine
+                # would have used: manual-override hold,
+                # circuit breaker, hems_auto_off, mode
+                # validity, and telemetry validity. A
+                # timed-hold request does *not* override
+                # these — the user must wait for the hold
+                # to expire, which is the documented
+                # behaviour. ``valid_telemetry`` is True
+                # here because the SOC gate above is
+                # already past, but the rest still need to
+                # be checked.
+                grid_v = raw.get("gridVoltage", 230.0)
+                grid_ok = bool(raw.get("gridOk", True))
+                hold = self._hems._evaluation_hold(
+                    hems_auto=self.hems_auto_mode,
+                    smart_mode=self.smart_mode,
+                    is_online=grid_ok and grid_v > 0.0,
+                    valid_telemetry=True,
+                    now=now,
+                    buzzer_off=True,
+                )
+                if hold is not None and hold.skip:
+                    # T12 does NOT bypass the engine's
+                    # own holds. A manual override or a
+                    # circuit breaker still wins; we
+                    # only log a single info-level line so
+                    # the operator can see why the timed
+                    # hold has no effect right now.
+                    _LOGGER.info(
+                        "HEMS: force_grid_charge hold active but "
+                        "engine has reason=%s; not overriding",
+                        hold.reason,
+                    )
+                    # Honour the hold — fall through to
+                    # the engine's plan so the existing
+                    # decision (which respects the same
+                    # hold) gets logged/applied.
+                else:
+                    forced = self._hems.build_forced_decision(
+                        "forced_grid_charge",
+                        output_priority="0",  # USB
+                        charger_priority="1",  # SNU
+                        buzzer_off=True,
+                    )
+                    # Apply the same dedup the engine
+                    # would have used. ``_apply_anti_flapping``
+                    # honours the previous command's
+                    # dedup window and the dwell lock; if
+                    # the user just changed the inverter
+                    # the forced command may be deduped
+                    # into a no-op, which is the desired
+                    # behaviour — the timer keeps running
+                    # but the actuator does not race the
+                    # user.
+                    forced = self._hems._apply_anti_flapping(forced, now)
+                    if forced is not None and not forced.skip:
+                        self._log_decision(
+                            forced,
+                            current_output=raw.get("outputSourcePriority", ""),
+                            current_charger=raw.get("chargerSourcePriority", ""),
+                            soc=display_soc,
+                            pv_w=raw.get("pvPower", 0.0),
+                            load_w=raw.get("loadPower", 0.0),
+                            grid_w=raw.get("gridPower", 0.0),
+                            batt_w=raw.get("batteryPower", 0.0),
+                            grid_v=grid_v,
+                            grid_ok=grid_ok,
+                            hour=now.hour,
+                            forecast_today_kwh=getattr(
+                                self, "_forecast_today_kwh", None
+                            ),
+                            forecast_tomorrow_kwh=getattr(
+                                self, "_forecast_tomorrow_kwh", None
+                            ),
+                            reserve_soc=getattr(
+                                self, "_reserve_soc", 20.0
+                            ),
+                            now=now,
+                        )
+                        await self._execute_hems_command(forced)
+                    return
+            else:
+                # Deadline passed — clear and let the next
+                # cycle run the regular plan.
+                self._forced_charge_until = None
+                _LOGGER.info("HEMS: force_grid_charge window ended; "
+                             "engine resumes normal planning")
 
         # Execute command
         if not decision.skip:

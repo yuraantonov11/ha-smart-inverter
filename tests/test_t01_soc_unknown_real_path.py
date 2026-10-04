@@ -167,6 +167,12 @@ class _StubCoordinator:
         self._previous_smart_mode_before_storm = None
         self._auto_storm_active = False
         self._grid_available = True
+        # T12: timed-hold window set by force_grid_charge. The
+        # T01 path is the "no force" path, so the field is
+        # always None here — the gate in _run_hems_engine
+        # still routes SOC-unknown writes through the
+        # command suppression block.
+        self._forced_charge_until: datetime | None = None
         self.hems_last_reason: str | None = None
         self.hems_last_output_cmd: str | None = None
         self.hems_last_charger_cmd: str | None = None

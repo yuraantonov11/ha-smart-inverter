@@ -52,11 +52,38 @@ class _InverterConfigSwitch(CoordinatorEntity, SwitchEntity):
         return bool(val) if val is not None else None
 
     async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, self._config_on_value)
+        # T13: surface the ACK to the operator. The previous
+        # implementation ignored the boolean returned by
+        # ``set_config_item`` and unconditionally requested a
+        # refresh, then logged "Service: ... → ON" at info
+        # level. A cloud ACK of False or an exception would
+        # still show up as a successful UI toggle — the
+        # user would think the device accepted the command
+        # when it had not. The fix logs the failure and
+        # raises so HA marks the switch call as failed and
+        # the next ``async_request_refresh`` does not paper
+        # over the failure with stale data.
+        ok = await self.coordinator.api.set_config_item(
+            self._setting_key, self._config_on_value
+        )
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected ON for %s=%s",
+                self.entity_id, self._setting_key, self._config_on_value,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, self._config_off_value)
+        ok = await self.coordinator.api.set_config_item(
+            self._setting_key, self._config_off_value
+        )
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected OFF for %s=%s",
+                self.entity_id, self._setting_key, self._config_off_value,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
 
@@ -138,11 +165,27 @@ class InverterGridFeedInSwitch(CoordinatorEntity, SwitchEntity):
         return val == 1 if val is not None else None
 
     async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "1")
+        # T13: ACK-aware command — see _InverterConfigSwitch
+        # for the rationale. The previous version logged a
+        # success and refreshed even when the cloud rejected
+        # the write.
+        ok = await self.coordinator.api.set_config_item(self._setting_key, "1")
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected ON for %s=1",
+                self.entity_id, self._setting_key,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "0")
+        ok = await self.coordinator.api.set_config_item(self._setting_key, "0")
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected OFF for %s=0",
+                self.entity_id, self._setting_key,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
 
@@ -168,11 +211,24 @@ class InverterBackupModeSwitch(CoordinatorEntity, SwitchEntity):
         return str(val) == "2" or str(val).startswith("SBU")
 
     async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.api.set_output_priority("2")
+        # T13: ACK-aware — see _InverterConfigSwitch.
+        ok = await self.coordinator.api.set_output_priority("2")
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected backup_mode ON (output=2)",
+                self.entity_id,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.api.set_output_priority("0")
+        ok = await self.coordinator.api.set_output_priority("0")
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected backup_mode OFF (output=0)",
+                self.entity_id,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
 
@@ -196,11 +252,25 @@ class InverterBuzzerSwitch(CoordinatorEntity, SwitchEntity):
         return bool(val) if val is not None else None
 
     async def async_turn_on(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "1")
+        # T13: ACK-aware command — see _InverterConfigSwitch
+        # for the rationale.
+        ok = await self.coordinator.api.set_config_item(self._setting_key, "1")
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected ON for %s=1",
+                self.entity_id, self._setting_key,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
-        await self.coordinator.api.set_config_item(self._setting_key, "0")
+        ok = await self.coordinator.api.set_config_item(self._setting_key, "0")
+        if not ok:
+            _LOGGER.error(
+                "Switch %s: cloud rejected OFF for %s=0",
+                self.entity_id, self._setting_key,
+            )
+            return
         await self.coordinator.async_request_refresh()
 
 

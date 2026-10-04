@@ -209,6 +209,41 @@ class HemsEngine:
     # PUBLIC API — called by coordinator
     # ═══════════════════════════════════════════════════════════════════════
 
+    def build_forced_decision(
+        self,
+        reason: str,
+        *,
+        output_priority: str,
+        charger_priority: str,
+        buzzer_off: bool = False,
+    ) -> HemsDecision:
+        """Build a forced decision for service-level overrides.
+
+        T12 follow-up: ``force_grid_charge`` and similar
+        service-level overrides need to drive the inverter
+        on a fixed output/charger pair without going
+        through the regular adaptive plan. We expose this
+        as a separate builder so the rest of the engine —
+        ``evaluate``, ``_evaluate_adaptive``,
+        ``_evaluate_arbitrage``, ``_evaluate_storm``,
+        ``detect_manual_override``, hysteresis — is
+        untouched. The forced decision still goes through
+        ``_execute_hems_command`` in the coordinator and is
+        therefore subject to the same manual-override and
+        dedup guards as any other decision.
+
+        The decision has ``skip=False`` and the supplied
+        ``reason`` so the dashboard surfaces the source
+        of the override.
+        """
+        return HemsDecision(
+            output_priority=output_priority,
+            charger_priority=charger_priority,
+            reason=reason,
+            skip=False,
+            buzzer_off=buzzer_off,
+        )
+
     def evaluate(
         self,
         *,
