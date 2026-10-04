@@ -60,7 +60,15 @@ import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    # Python < 3.9 fallback. Production code is
+    # 3.11+; this branch is only here so the
+    # test file can be imported on a stripped
+    # interpreter during static analysis.
+    ZoneInfo = None  # type: ignore[assignment]
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -71,6 +79,62 @@ from hems.storm_risk import (
     evaluate_storm_risk,
     _HIGH_RISK_THRESHOLD,
 )
+
+
+# ── Cross-platform timezone helper ───────────────────────
+#
+# The test exercises the production code's
+# timezone-aware 6-hour pick. Production calls
+# ``ZoneInfo(self.hass.config.time_zone)`` and
+# falls back to ``ZoneInfo(self.timezone_name)``;
+# both require the ``tzdata`` package on Windows.
+# ``tzdata`` is not a hard runtime dependency of
+# the integration (the production fallback to
+# ``self.timezone_name`` is only reached when the
+# HA-side config has no ``time_zone`` set, which
+# never happens in practice).
+#
+# The audit's T09 review reported that the test
+# fails on Windows checkouts with
+# ``ZoneInfoNotFoundError: 'No time zone found with
+# key Europe/Kyiv'`` because the venv has no
+# ``tzdata`` package. We fix the *test* harness
+# (which is the only place the test ever
+# instantiates a zoneinfo entry) so the test
+# works on both Linux CI and Windows dev
+# checkouts.
+#
+# The fallback is **only** the timezone object
+# passed to ``datetime.fromtimestamp(...).astimezone(...)``;
+# it carries the same UTC offset (+02:00) that
+# Europe/Kyiv reports for our test window, so the
+# wall-clock hour-of-day comparisons the
+# production code performs are identical
+# regardless of which object is in scope. We do
+# *not* touch the production code's
+# ``ZoneInfo(...)`` call — that path remains
+# unchanged and continues to require ``tzdata``
+# on the operator's install (which is fine,
+# because Home Assistant ships ``tzdata`` in its
+# base image).
+def _europe_kyiv() -> Any:
+    """Return a tzinfo for Europe/Kyiv, or an
+    equivalent fixed-offset fallback.
+
+    The fallback uses the +02:00 offset that Kyiv
+    observed throughout 2026 (no DST). For
+    comparison purposes the test does not care
+    whether the tz is IANA-named or fixed-offset;
+    it cares that ``astimezone(...)`` produces
+    the right wall-clock hour for the test
+    fixture.
+    """
+    if ZoneInfo is not None:
+        try:
+            return ZoneInfo("Europe/Kyiv")
+        except Exception:
+            pass
+    return timezone(timedelta(hours=2), name="Europe/Kyiv")
 
 
 # ── AST harness — local replica of ``finite`` ───────────
@@ -703,7 +767,7 @@ def test_t09_six_hours_across_midnight() -> None:
     converts each forecast timestamp to a real
     ``datetime`` first.
     """
-    tz = ZoneInfo("Europe/Kyiv")
+    tz = _europe_kyiv()
     start_local = datetime(2026, 6, 21, 22, 0, 0, tzinfo=tz)
     rows = _make_rows(
         start_local, hours=8, weather_code=0,
@@ -738,7 +802,7 @@ def test_t09_storm_hour_activates_weather_cause() -> None:
     cause never tripped, regardless of the
     forecast.
     """
-    tz = ZoneInfo("Europe/Kyiv")
+    tz = _europe_kyiv()
     start_local = datetime(2026, 6, 21, 12, 0, 0, tzinfo=tz)
     rows = _make_rows(
         start_local, hours=6, weather_code=95,
@@ -766,7 +830,7 @@ def test_t09_invalid_weather_does_not_clear_last_valid() -> None:
     from the previous successful evaluation when
     the new fetch cannot produce one.
     """
-    tz = ZoneInfo("Europe/Kyiv")
+    tz = _europe_kyiv()
     start_local = datetime(2026, 6, 21, 12, 0, 0, tzinfo=tz)
     storm_rows = _make_rows(
         start_local, hours=6, weather_code=95,
@@ -828,7 +892,7 @@ def test_t09_forecast_error_preserves_last_score() -> None:
     Open-Meteo outage would silently disarm the
     storm path on the operator's install.
     """
-    tz = ZoneInfo("Europe/Kyiv")
+    tz = _europe_kyiv()
     start_local = datetime(2026, 6, 21, 12, 0, 0, tzinfo=tz)
 
     class _Boom:

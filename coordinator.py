@@ -812,26 +812,43 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._hems.detect_manual_override(current_output, current_charger, now)
         # ── Schedule Rules: override smart mode if active rule exists ──
         active_rule = self._schedule_rules.get_active_rule_now(now)
-        # T10: build the effective mode from the
-        # two auto-storm causes plus the user's
-        # intent. Precedence:
-        #   1. An active schedule rule wins.
-        #   2. If the user already picked Storm by
-        #      hand (``_user_smart_mode == STORM``)
-        #      OR an auto-storm cause is active,
-        #      effective is Storm.
-        #   3. Otherwise, the user's pick.
-        # The user's intent (``self.smart_mode``)
-        # is *never* overwritten by the auto-storm
-        # layer; only the two cause flags change.
-        # Restoring the user's pick on cause-clear
-        # therefore reads ``self.smart_mode``
-        # directly, which the engine sees as the
-        # same value the operator picked.
-        if active_rule is not None:
+        # T10 follow-up: precedence is computed
+        # in *two* layers, not one. The
+        # grid-outage cause is a *hard floor*
+        # (the inverter is down, the schedule
+        # cannot override the operator's
+        # safety): when the grid is out, the
+        # effective mode is always Storm,
+        # regardless of any active schedule
+        # rule. The weather-risk cause is a
+        # *planning hint* (the engine will
+        # pre-charge and run Storm preemptively
+        # during the predicted window), so it
+        # yields to an active schedule rule —
+        # the user explicitly asked for
+        # Arbitrage or Adaptive at this hour and
+        # the schedule is the operator's
+        # override of the planning hint.
+        # The user's manual Storm pick always
+        # wins (no override; the operator asked
+        # for it).
+        #
+        # Precedence, top-down:
+        #   1. Outage cause → STORM (hard floor).
+        #   2. Schedule rule → rule.mode
+        #      (only when no outage).
+        #   3. Weather cause or user Storm →
+        #      STORM (only when no schedule rule
+        #      and no outage).
+        #   4. Otherwise → user mode.
+        if self._auto_storm_outage:
+            # Hard floor: the grid is out, the
+            # schedule is paused for safety.
+            effective_mode = SmartMode.STORM
+        elif active_rule is not None:
             effective_mode = active_rule.mode
         elif (
-            self._auto_storm_active
+            self._auto_storm_weather
             or self._user_smart_mode == SmartMode.STORM
         ):
             effective_mode = SmartMode.STORM

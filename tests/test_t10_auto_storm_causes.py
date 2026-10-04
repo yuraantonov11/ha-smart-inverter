@@ -199,24 +199,41 @@ def _load_class_attribute(path: Path, class_name: str, attr: str) -> Any:
 
 
 def _load_effective_mode_block() -> str:
-    """Find the effective-mode ``if/elif/else``
-    block inside ``_run_hems_engine`` and return
-    it as a standalone ``def`` body.
+    """Find the effective-mode cascade inside
+    ``_run_hems_engine`` and return it as a
+    standalone ``def`` body.
 
-    The T10 audit only touches the effective-mode
-    computation inside ``_run_hems_engine``. The
-    full function body would need stubs for
-    ``_hems``, ``_schedule_rules``,
-    ``_demand_forecast``, ``_battery_soh``, and
-    the keepalive / engine-evaluation pipeline —
-    out of scope for a unit test. The
-    effective-mode block is the smallest surface
-    that contains the T10 logic, so the harness
-    execs it directly. The block reads
-    ``self._auto_storm_active``,
-    ``self._user_smart_mode``, ``self.smart_mode``,
-    and ``SmartMode.STORM``; the harness binds
-    each one.
+    The T10 audit only touches the
+    effective-mode computation inside
+    ``_run_hems_engine``. The full function body
+    would need stubs for ``_hems``,
+    ``_schedule_rules``, ``_demand_forecast``,
+    ``_battery_soh``, and the keepalive /
+    engine-evaluation pipeline — out of scope
+    for a unit test. The effective-mode cascade
+    is the smallest surface that contains the
+    T10 logic, so the harness execs it
+    directly.
+
+    As of the schedule-vs-outage precedence fix
+    the cascade is an ``if / elif / else`` whose
+    first test is
+    ``self._auto_storm_outage`` (the hard floor
+    wins before the schedule rule is even
+    considered). The schedule-rule branch is
+    nested *inside* the ``else`` of the outage
+    check. We locate the outermost ``If`` whose
+    test is the outage check, then return the
+    unparsed cascade (all three branches).
+
+    The cascade reads ``self._auto_storm_outage``,
+    ``self._auto_storm_weather`` (via the
+    ``_auto_storm_active`` property),
+    ``self._user_smart_mode``,
+    ``self.smart_mode``, ``SmartMode.STORM``,
+    and (for the schedule-rule branch) the
+    local ``active_rule`` variable. The harness
+    binds each one.
     """
     src = _COORDINATOR_PATH.read_text(encoding="utf-8")
     tree = ast.parse(src)
@@ -224,10 +241,9 @@ def _load_effective_mode_block() -> str:
     def _walk(node):
         if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_hems_engine":
             for stmt in node.body:
-                if (
-                    isinstance(stmt, ast.If)
-                    and ast.unparse(stmt.test) == "active_rule is not None"
-                ):
+                if isinstance(stmt, ast.If) and ast.unparse(
+                    stmt.test
+                ) == "self._auto_storm_outage":
                     return ast.unparse(
                         ast.Module(body=[stmt], type_ignores=[])
                     )
@@ -240,7 +256,8 @@ def _load_effective_mode_block() -> str:
     block = _walk(tree)
     if block is None:
         raise SystemExit(
-            "effective-mode block not found in "
+            "effective-mode cascade (rooted at "
+            "self._auto_storm_outage) not found in "
             "_run_hems_engine"
         )
     return block
@@ -783,35 +800,95 @@ def test_t10_auto_storm_by_forecast_false_blocks_only_weather() -> None:
 # ── T10.7 schedule rule precedence ──────────────────────
 
 
-def test_t10_schedule_rule_overrides_storm() -> None:
-    """A schedule rule with ``mode=Arbitrage`` must
-    win over an active auto-storm cause. The
-    T10 audit fixes the precedence so the
-    schedule rules layer is the topmost.
+def test_t10_schedule_rule_does_not_override_outage() -> None:
+    """The audit's review of the 2d1a0d6 commit
+    found that an active schedule rule was
+    *unconditionally* setting the effective mode
+    to ``rule.mode``, which let a rule for
+    ``Adaptive`` or ``Arbitrage`` *override* the
+    grid-outage auto-Storm. The grid-outage
+    cause is a hard floor — the inverter is
+    down, the operator's schedule is paused for
+    safety. This test pins the corrected
+    precedence: outage > schedule > weather >
+    user.
+
+    The previous behaviour (``active_rule wins
+    always``) is the *opposite* of the hard
+    floor; it would let the operator accidentally
+    suppress Storm during a grid outage. The fix
+    in this commit moves the outage-cause branch
+    *above* the schedule-rule branch in
+    ``_run_hems_engine``'s effective-mode block.
+    The production AST harness exec's the
+    effective-mode block directly so the test
+    exercises the live wiring.
     """
-    coord = _make_stub()
-    coord.smart_mode = SmartMode.ADAPTIVE
-    coord._user_smart_mode = SmartMode.ADAPTIVE
-    coord.hems_auto_mode = True
-    # Outage cause active. Without a schedule
-    # rule, the effective mode would be STORM.
-    coord._auto_storm_outage = True
-    # Inject a schedule rule that wants
-    # Arbitrage.
-    class _Rule:
-        mode = SmartMode.ARBITRAGE
-    rule = _Rule()
-    # The effective-mode block returns the
-    # rule's mode when one is active, regardless
-    # of the cause flags.
-    assert _effective_mode(coord, active_rule=rule) == (
-        SmartMode.ARBITRAGE
+    # Scenario 1: outage + Adaptive rule →
+    # effective is STORM (hard floor wins).
+    c1 = _make_stub()
+    c1.smart_mode = SmartMode.ADAPTIVE
+    c1._user_smart_mode = SmartMode.ADAPTIVE
+    c1._auto_storm_outage = True
+    c1.hems_auto_mode = True
+
+    class _AdaptiveRule:
+        mode = SmartMode.ADAPTIVE
+    c1_rule = _AdaptiveRule()
+    effective = _effective_mode(c1, active_rule=c1_rule)
+    assert effective == SmartMode.STORM, (
+        f"Outage + Adaptive rule: expected STORM, "
+        f"got {effective}. The hard floor must win."
     )
-    # The cause flags are unchanged — the
-    # effective-mode block is read-only with
-    # respect to them.
-    assert coord._auto_storm_outage is True
-    assert coord._auto_storm_active is True
+    # Scenario 2: outage + Arbitrage rule →
+    # effective is still STORM. The hard floor
+    # is not optional.
+    c2 = _make_stub()
+    c2.smart_mode = SmartMode.ARBITRAGE
+    c2._user_smart_mode = SmartMode.ARBITRAGE
+    c2._auto_storm_outage = True
+    c2.hems_auto_mode = True
+
+    class _ArbitrageRule:
+        mode = SmartMode.ARBITRAGE
+    c2_rule = _ArbitrageRule()
+    effective2 = _effective_mode(c2, active_rule=c2_rule)
+    assert effective2 == SmartMode.STORM, (
+        f"Outage + Arbitrage rule: expected STORM, "
+        f"got {effective2}. The hard floor must win."
+    )
+    # Scenario 3: no outage + Adaptive rule →
+    # the schedule rule wins (this is the
+    # *intended* precedence for the planning
+    # path: the user explicitly asked for
+    # Adaptive at this hour).
+    c3 = _make_stub()
+    c3.smart_mode = SmartMode.ADAPTIVE
+    c3._user_smart_mode = SmartMode.ADAPTIVE
+    c3._auto_storm_weather = True
+    c3.hems_auto_mode = True
+    c3_rule2 = _AdaptiveRule()
+    effective3 = _effective_mode(c3, active_rule=c3_rule2)
+    assert effective3 == SmartMode.ADAPTIVE, (
+        f"No-outage + Adaptive rule: expected ADAPTIVE "
+        f"(schedule rule wins when no outage), "
+        f"got {effective3}."
+    )
+    # Scenario 4: no outage, no rule, weather
+    # cause + user Adaptive → STORM. The
+    # weather cause is a planning hint, but
+    # without a schedule rule it is the
+    # topmost input and forces Storm.
+    c4 = _make_stub()
+    c4.smart_mode = SmartMode.ADAPTIVE
+    c4._user_smart_mode = SmartMode.ADAPTIVE
+    c4._auto_storm_weather = True
+    c4.hems_auto_mode = True
+    effective4 = _effective_mode(c4)
+    assert effective4 == SmartMode.STORM, (
+        f"No-outage + weather cause + user Adaptive: "
+        f"expected STORM, got {effective4}."
+    )
 
 
 # ── T10.8 effective-mode precedence (functional check) ──
@@ -862,8 +939,13 @@ def test_t10_effective_mode_precedence_functional() -> None:
         mode = SmartMode.ARBITRAGE
 
     c4_rule = _Rule()
+    # Outage is a hard floor; the schedule
+    # rule (Arbitrage) is suppressed until the
+    # grid comes back. This is the precedence
+    # the T10 audit requires: outage > schedule
+    # > weather > user.
     assert _effective_mode(c4, active_rule=c4_rule) == (
-        SmartMode.ARBITRAGE
+        SmartMode.STORM
     )
 
 
@@ -900,6 +982,9 @@ def test_t10_outage_restore_clears_only_outage_cause() -> None:
     # The property reflects the remaining
     # cause.
     assert coord._auto_storm_active is True
+
+
+# ── T10.10 schedule rule precedence over outage ────────
 
 
 # ── Runner ─────────────────────────────────────────────
