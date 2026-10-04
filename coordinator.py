@@ -1983,6 +1983,43 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     def monthly_savings_uah(self) -> float:
         return max(0.0, self._monthly_savings_uah + self._daily_savings_uah)
 
+    async def shutdown(self) -> None:
+        """Release owned HTTP resources on unload.
+
+        Audit T17: ``async_unload_entry`` calls this
+        method to close the forecast-owned
+        ``aiohttp.ClientSession`` and cancel any
+        in-flight forecast tasks. The cloud-history
+        task is owned by ``PvLearningCoordinatorMixin``
+        and is cancelled via ``entry.async_on_unload``,
+        so we do not duplicate that work here. We
+        swallow exceptions from third-party teardown
+        helpers so a partial teardown does not block
+        the rest of the unload chain.
+        """
+        forecast = getattr(self, "_forecast", None)
+        if forecast is not None and hasattr(forecast, "close"):
+            try:
+                await forecast.close()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "forecast.close() failed during coordinator shutdown: %s",
+                    err,
+                )
+        # The demand-forecast service is in-process and
+        # has no HTTP session; nothing to release.
+        demand_forecast = getattr(self, "_demand_forecast", None)
+        if demand_forecast is not None and hasattr(
+            demand_forecast, "close"
+        ):
+            try:
+                await demand_forecast.close()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "demand_forecast.close() failed during "
+                    "coordinator shutdown: %s",
+                    err,
+                )
 
 
 class HistoryCoordinator(DataUpdateCoordinator):
@@ -2290,6 +2327,23 @@ class HistoryCoordinator(DataUpdateCoordinator):
 
         except Exception as exc:
             _LOGGER.warning("HistoryCoordinator: fetch failed: %s", exc)
+
+    async def shutdown(self) -> None:
+        """Release owned HTTP resources on unload.
+
+        The history coordinator opens an ad-hoc
+        ``aiohttp.ClientSession`` inside
+        ``_fetch_historical_weather`` for the
+        cloud-history refresh. The session is
+        scoped to the request and released on
+        context exit, so the coordinator itself
+        does not own any session. This method
+        exists for symmetry with the main
+        coordinator's ``shutdown`` contract and
+        to give a single, well-known hook for any
+        future cleanup work.
+        """
+        return None
 
     async def _fetch_historical_weather(self) -> dict[str, int]:
         """Fetch last-7-days WMO weather codes from Open-Meteo Archive API.

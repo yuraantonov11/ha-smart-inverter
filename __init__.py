@@ -147,23 +147,72 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+    """Unload a config entry.
+
+    Audit T17: release every resource the entry owns
+    before the platform teardown returns. The order
+    is:
+      1. unload platforms (returns ``unload_ok``);
+      2. close the API client (so in-flight HTTP
+         requests against the inverter are released);
+      3. call ``coordinator.shutdown()`` and
+         ``history_coordinator.shutdown()`` (releases
+         the forecast-owned ``aiohttp.ClientSession``
+         and cancels in-flight forecast tasks);
+      4. drop the entry from ``hass.data``.
+
+    The platform unload is the controlling boolean:
+    if it returns ``False`` we leave the entry data
+    in place so a subsequent reload can retry the
+    cleanup, and we do not raise.
+    """
     entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
-    if unload_ok:
-        if entry_data is not None:
-            api: InverterApiClient | None = entry_data.get("api")
-            if api is not None:
-                await api.close()
+    if unload_ok and entry_data is not None:
+        api: InverterApiClient | None = entry_data.get("api")
+        if api is not None:
+            await api.close()
+        coordinator = entry_data.get("coordinator")
+        if coordinator is not None and hasattr(coordinator, "shutdown"):
+            try:
+                await coordinator.shutdown()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "coordinator.shutdown failed during unload: %s", err
+                )
+        history_coordinator = entry_data.get("history_coordinator")
+        if history_coordinator is not None and hasattr(
+            history_coordinator, "shutdown"
+        ):
+            try:
+                await history_coordinator.shutdown()
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "history_coordinator.shutdown failed during "
+                    "unload: %s",
+                    err,
+                )
+        # Idempotent: a second unload with the entry
+        # data still in place is a no-op on the API
+        # client (it has already been closed).
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
     return unload_ok
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
-    await async_unload_entry(hass, entry)
+    """Reload config entry.
+
+    If the unload fails, do not attempt setup. The
+    audit requirement is: a failed unload means the
+    entry is still bound to its old coordinator, and
+    re-running setup would replace it and leak the
+    previous one.
+    """
+    unloaded = await async_unload_entry(hass, entry)
+    if not unloaded:
+        return
     await async_setup_entry(hass, entry)
 
 

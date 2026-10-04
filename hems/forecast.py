@@ -130,9 +130,24 @@ class ForecastService:
         return self._session
 
     async def close(self) -> None:
+        # T17 audit: cancel any in-flight
+        # requests so the underlying HTTP session
+        # is not left waiting for a response that
+        # the caller no longer wants. We swallow
+        # ``CancelledError`` because the task is
+        # already being torn down.
+        for attr in ("_in_flight_local", "_in_flight_daily"):
+            task = getattr(self, attr, None)
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            setattr(self, attr, None)
         if self._session and not self._session.closed:
             await self._session.close()
-            self._session = None
+        self._session = None
 
     # ── Public API ──────────────────────────────────────────────────────
 
