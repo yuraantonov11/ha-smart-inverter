@@ -687,9 +687,25 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # user intent). The effective mode the
         # engine sees is computed from the cause
         # flags later in this method.
+        #
+        # The grid outage is a safety hard floor,
+        # not a planning hint: the inverter is
+        # off-grid and the operator's schedule /
+        # smart-mode pick is suspended for the
+        # duration of the outage. We therefore
+        # activate the outage cause whenever the
+        # transition to ``outage`` is detected,
+        # regardless of whether the user is in
+        # Adaptive or Arbitrage mode. The
+        # ``hems_auto_mode`` master toggle and the
+        # existing engine safety guards
+        # (manual override, circuit breaker,
+        # reserve SOC, BMS) still gate the
+        # *dispatch* of the Storm command in
+        # ``_run_hems_engine``; this branch
+        # only sets the cause flag.
         if (
             grid_transition == "outage"
-            and self.smart_mode == SmartMode.ADAPTIVE
             and self.hems_auto_mode
         ):
             if not self._auto_storm_outage:
