@@ -194,26 +194,21 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
             if poll < MIN_POLL_INTERVAL_SEC or poll > MAX_POLL_INTERVAL_SEC:
                 errors["poll_interval"] = "invalid_poll_interval"
             elif not errors:
-                # T16 audit: determine whether any
-                # *reload-required* key changed. The
-                # set of reload-required keys is
-                # declared in ``__init__.py`` so
-                # this flow and the entry
-                # update listener share the same
-                # source of truth.
-                from . import (
-                    _RELOAD_REQUIRED_OPTION_KEYS as _REL_KEYS,
+                # T16 audit: the reload-vs-apply
+                # decision lives in a pure helper
+                # (``hems.options_helpers.requires_reload``)
+                # so the test suite can exercise
+                # it without importing homeassistant.
+                from .hems.options_helpers import (
+                    requires_reload,
                 )
 
                 new_data = {
                     **self.config_entry.options,
                     **user_input,
                 }
-                if any(
-                    k in _REL_KEYS
-                    and self.config_entry.options.get(k)
-                    != new_data.get(k)
-                    for k in _REL_KEYS
+                if requires_reload(
+                    new_data, self.config_entry.options
                 ):
                     # A reload-required key changed.
                     # ``async_create_entry`` triggers

@@ -356,6 +356,130 @@ class T17CleanupTests(unittest.TestCase):
 
         asyncio.run(_run())
 
+    # ── 7b. real behavioral: call order coordinator→history→api →pop ─
+
+    def test_17_07b_unload_order_is_coordinator_first(self) -> None:
+        """Audit T17: ``async_unload_entry`` must
+        stop the coordinator and history
+        coordinator BEFORE closing the API
+        client. Otherwise in-flight tasks
+        would try to write to a closed
+        connection. We exec the production
+        function body against a stub that
+        records the call order.
+        """
+        order: list[str] = []
+
+        class _OrderApi:
+            async def close(self) -> None:
+                order.append("api.close")
+
+        class _OrderCoord:
+            async def shutdown(self) -> None:
+                order.append("coordinator.shutdown")
+
+        class _OrderHist:
+            async def shutdown(self) -> None:
+                order.append("history_coordinator.shutdown")
+
+        body = _extract_function("async_unload_entry")
+        ns: dict[str, object] = {
+            "_LOGGER": __import__("logging").getLogger("t17"),
+            "DOMAIN": "powmr_inverter",
+            "InverterApiClient": object,
+            "PLATFORMS": ("sensor",),
+        }
+        exec(compile(body, "<t17-unload>", "exec"), ns)
+        unload = ns["async_unload_entry"]
+
+        async def _run() -> None:
+            hass = _StubHass()
+            entry = _StubConfigEntry()
+            hass.data["powmr_inverter"][entry.entry_id] = {
+                "api": _OrderApi(),
+                "coordinator": _OrderCoord(),
+                "history_coordinator": _OrderHist(),
+            }
+            await unload(hass, entry)
+
+        asyncio.run(_run())
+        # Coordinator must run first, then
+        # history, then API close. The entry
+        # is dropped from hass.data after all
+        # three.
+        self.assertEqual(
+            order,
+            [
+                "coordinator.shutdown",
+                "history_coordinator.shutdown",
+                "api.close",
+            ],
+            msg=(
+                f"unload order must be coordinator -> history -> api; "
+                f"got {order}"
+            ),
+        )
+
+    # ── 7c. api.close() exception does not abort cleanup ─────────
+
+    def test_17_07c_api_close_exception_does_not_abort_cleanup(self) -> None:
+        """If ``api.close()`` raises, the
+        coordinator and history shutdowns
+        must have run, and the entry must
+        still be removed from ``hass.data``.
+        """
+        order: list[str] = []
+
+        class _BoomApi:
+            async def close(self) -> None:
+                order.append("api.close")
+                raise RuntimeError("simulated network drop")
+
+        class _OrderCoord:
+            async def shutdown(self) -> None:
+                order.append("coordinator.shutdown")
+
+        class _OrderHist:
+            async def shutdown(self) -> None:
+                order.append("history_coordinator.shutdown")
+
+        body = _extract_function("async_unload_entry")
+        ns: dict[str, object] = {
+            "_LOGGER": __import__("logging").getLogger("t17"),
+            "DOMAIN": "powmr_inverter",
+            "InverterApiClient": object,
+            "PLATFORMS": ("sensor",),
+        }
+        exec(compile(body, "<t17-unload>", "exec"), ns)
+        unload = ns["async_unload_entry"]
+
+        async def _run() -> None:
+            hass = _StubHass()
+            entry = _StubConfigEntry()
+            hass.data["powmr_inverter"][entry.entry_id] = {
+                "api": _BoomApi(),
+                "coordinator": _OrderCoord(),
+                "history_coordinator": _OrderHist(),
+            }
+            # Must not raise.
+            await unload(hass, entry)
+            # Coordinator and history ran.
+            self.assertIn("coordinator.shutdown", order)
+            self.assertIn("history_coordinator.shutdown", order)
+            self.assertIn("api.close", order)
+            # Entry was removed despite the
+            # api.close failure.
+            self.assertNotIn(
+                entry.entry_id,
+                hass.data["powmr_inverter"],
+                msg=(
+                    "hass.data entry must be removed even when "
+                    "api.close raises"
+                ),
+            )
+
+        asyncio.run(_run())
+
 
 class T17ForecastShutdownTests(unittest.TestCase):
     """Forecast-owned HTTP session cleanup contract.

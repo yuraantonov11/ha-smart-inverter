@@ -22,6 +22,9 @@ from .const import (
     MIN_POLL_INTERVAL_SEC,
 )
 from .coordinator import InverterCoordinator, HistoryCoordinator
+from .hems.options_helpers import (
+    RELOAD_REQUIRED_OPTION_KEYS as _RELOAD_REQUIRED_OPTION_KEYS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,16 +40,15 @@ PLATFORMS: list[Platform] = [
 # require a full setup reload. Other keys are
 # applied selectively (the coordinator reads
 # them from ``entry.options`` on every cycle)
-# and do not trigger a reload.
-_RELOAD_REQUIRED_OPTION_KEYS: frozenset[str] = frozenset({
-    # Anything that changes the API polling
-    # cadence requires a fresh ``update_interval``.
-    "poll_interval",
-    # Anything that changes the upstream API
-    # requires a fresh ``InverterApiClient``.
-    "email",
-    "password",
-})
+# and do not trigger a reload. The
+# canonical definition lives in
+# ``hems.options_helpers``; the symbol is
+# re-exported as ``_RELOAD_REQUIRED_OPTION_KEYS``
+# via the import above. The
+# ``test_16_06`` suite asserts the
+# equality between this binding, the
+# source values in ``const.py`` and
+# ``hems/defaults.py``.
 
 # T16 audit: keys that are persisted by
 # internal state machines and must not be
@@ -107,22 +109,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             return False
 
         # Create coordinator
-        # T16 audit: read ``poll_interval`` from
-        # ``entry.options`` so the UI-entered value
-        # actually reaches the runtime. Old entries
-        # without the key fall back to the constant
-        # in ``const.py`` — same value, single source
-        # of truth. ``MIN_POLL_INTERVAL_SEC`` is
-        # already enforced by the config flow's
-        # ``vol.Range``; we re-apply the floor here as
-        # a safety net for hand-edited entries.
-        poll_interval = int(
-            entry.options.get(
-                "poll_interval", DEFAULT_POLL_INTERVAL_SEC
-            )
+        # T16 audit: the runtime value of
+        # ``poll_interval`` is the contract
+        # value the user submitted, not a
+        # hard-coded constant. The helper
+        # ``compute_poll_interval`` is a pure
+        # function in ``hems.options_helpers``
+        # and is exercised directly by the
+        # T16 behavioural test suite.
+        from .hems.options_helpers import (
+            compute_poll_interval,
         )
-        if poll_interval < MIN_POLL_INTERVAL_SEC:
-            poll_interval = MIN_POLL_INTERVAL_SEC
+
+        poll_interval = compute_poll_interval(entry.options)
         coordinator = InverterCoordinator(
             hass=hass,
             api=api,
@@ -285,9 +284,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
     if unload_ok and entry_data is not None:
-        api: InverterApiClient | None = entry_data.get("api")
-        if api is not None:
-            await api.close()
+        # T17 audit: order is critical.
+        # 1. Stop the coordinator and its
+        #    owned tasks first. ``shutdown``
+        #    cancels in-flight forecast
+        #    requests; we must wait for them
+        #    to finish before closing the
+        #    session they used.
+        # 2. Stop the history coordinator.
+        # 3. Close the API client. A
+        #    failure here must not abort
+        #    cleanup; we log and continue.
+        # 4. Drop the entry from ``hass.data``.
         coordinator = entry_data.get("coordinator")
         if coordinator is not None and hasattr(coordinator, "shutdown"):
             try:
@@ -308,9 +316,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "unload: %s",
                     err,
                 )
-        # Idempotent: a second unload with the entry
-        # data still in place is a no-op on the API
-        # client (it has already been closed).
+        api: InverterApiClient | None = entry_data.get("api")
+        if api is not None:
+            try:
+                await api.close()
+            except Exception as err:  # noqa: BLE001
+                # A failed API close must not
+                # abort cleanup. The session is
+                # gone; downstream code that
+                # touches it will fail loudly, and
+                # we proceed to drop the entry.
+                _LOGGER.debug(
+                    "api.close() failed during unload: %s", err
+                )
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
     return unload_ok
