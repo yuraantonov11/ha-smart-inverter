@@ -400,20 +400,65 @@ def _balance_hour(
         # USB — grid first.
         if charger == "1":
             # SNU — solar+utility charging. PV serves
-            # load first; surplus charges the battery;
-            # remaining load comes from the grid.
+            # load first; surplus PV charges the
+            # battery; the grid feeds the uncovered
+            # load. The T07 follow-up adds
+            # grid-to-battery charging when the SOC
+            # is below ``max_soc`` (= 95 %): the
+            # night-time planner asks for this mode
+            # specifically to pre-charge the battery
+            # ahead of an evening peak, and the
+            # previous model refused to model the
+            # charge — the SOC prediction never
+            # moved, so the planner had no way to
+            # confirm the night window worked.
+            #
+            # The model is conservative: only the
+            # battery headroom flows into the charge,
+            # capped at ``max_soc`` to honour the BMS
+            # top voltage. We do not invent a charger
+            # power limit; the real inverter throttles
+            # the charge, and the planner's job is to
+            # surface the requested energy, not the
+            # inverter's exact response curve.
             pv_to_load = min(pv_kwh, load_kwh)
             pv_surplus = max(0.0, pv_kwh - pv_to_load)
             grid_to_load = max(0.0, load_kwh - pv_to_load)
-            charged_kwh = pv_surplus * charge_efficiency
-            # ``charged_kwh`` is what the battery
-            # actually accepts; the rest is lost.
-            batt_kwh = charged_kwh  # positive
-            # Grid import = load served by grid. When
-            # grid is offline, the deficit is
-            # ``unserved_w`` and ``grid_w`` is zero.
+            # Available headroom for charging, in
+            # kWh, honouring the BMS top voltage
+            # (``max_soc = 95 %``).
+            headroom_kwh = max(
+                0.0,
+                battery_capacity_kwh
+                * (95.0 - soc_clamped) / 100.0,
+            )
+            # The total energy available to charge
+            # the battery in this hour: PV surplus
+            # (free from the panels) plus, when the
+            # grid is on-line, additional energy
+            # drawn from the grid up to the
+            # remaining headroom. The model applies
+            # ``charge_efficiency`` once, to the
+            # *combined* charge, so the dual-source
+            # accounting cannot accidentally charge
+            # the same kWh twice.
+            charge_source_kwh = pv_surplus
             if grid_ok:
-                grid_kwh = grid_to_load
+                charge_source_kwh += max(
+                    0.0, headroom_kwh - pv_surplus
+                )
+            charged_kwh = (
+                min(headroom_kwh, charge_source_kwh)
+                * charge_efficiency
+            )
+            batt_kwh = charged_kwh
+            # ``grid_w`` = load served by grid + grid
+            # energy that flowed into the battery.
+            if grid_ok:
+                grid_kwh = grid_to_load + max(
+                    0.0,
+                    charged_kwh - pv_surplus * charge_efficiency,
+                )
                 unserved_kwh = 0.0
             else:
                 grid_kwh = 0.0
@@ -483,13 +528,25 @@ def _balance_hour(
         if discharge_efficiency > 0
         else usable_kwh,
     )
-    # The battery loses ``battery_supplies_kwh`` Wh of
-    # stored energy; the load sees the same kWh (no
-    # discharge-efficiency loss in the energy-balance
-    # model — efficiency is applied on the storage
-    # side, not on the delivery side, so the math
-    # stays in W·h round-trip).
-    battery_loss_kwh = battery_supplies_kwh
+    # The battery loses *more* internal energy than
+    # the load receives. The T07 follow-up models
+    # the round-trip: to deliver ``X`` kWh to the
+    # load, the battery has to release
+    # ``X / discharge_efficiency`` kWh of stored
+    # energy (the difference is lost as heat in the
+    # inverter). The previous code reported
+    # ``battery_loss = battery_supplies`` which made
+    # the planner *over-estimate* the residual SOC
+    # after each discharge hour — a 1.0 kWh load
+    # drawn from a 0.90-efficient battery should
+    # drop SOC by 1.111 kWh, not 1.0 kWh. Without
+    # this fix, the planner can promise a "no
+    # grid import" evening that the battery cannot
+    # actually deliver.
+    if discharge_efficiency > 0:
+        battery_loss_kwh = battery_supplies_kwh / discharge_efficiency
+    else:
+        battery_loss_kwh = battery_supplies_kwh
     batt_kwh = -battery_loss_kwh  # negative — discharging
     load_after_battery = max(
         0.0, load_after_pv - battery_supplies_kwh

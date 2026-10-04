@@ -23,6 +23,15 @@ class HemsTunables:
     min_mode_hold_min: int = 20
     manual_override_hold_min: int = 5
     command_dedup_window_sec: int = 300
+    # T08 follow-up: the round-trip efficiency
+    # values used by the planner and the
+    # energy-balance model. Strictly between 0 and
+    # 1 (exclusive). The defaults (0.85 charge,
+    # 0.90 discharge) match the documented
+    # inverter specification and are the same
+    # values ``build_planner_inputs`` defaults to.
+    charge_efficiency: float = 0.85
+    discharge_efficiency: float = 0.90
 
 
 @dataclass

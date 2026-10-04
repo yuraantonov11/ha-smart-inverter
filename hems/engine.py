@@ -288,6 +288,20 @@ class HemsEngine:
             "battery_power": battery_power, "load_power": load_power,
             "grid_voltage": grid_voltage, "reserve_soc": reserve_soc,
             "min_operating_soc": min_operating_soc,
+            # T08 follow-up: the engine reads its
+            # efficiency bounds from the inputs dict
+            # (validated upstream by
+            # ``build_planner_inputs``) so the planner
+            # receives the same values the engine
+            # uses for its own anti-flapping
+            # calculations. The defaults match the
+            # documented inverter specification.
+            "charge_efficiency": _finite_number(
+                getattr(self.tun, "charge_efficiency", 0.85)
+            ),
+            "discharge_efficiency": _finite_number(
+                getattr(self.tun, "discharge_efficiency", 0.90)
+            ),
         }.items()}
         inputs = {**numeric, "smart_mode": smart_mode, "grid_available": grid_available,
                   "current_output": current_output, "current_charger": current_charger,
@@ -493,6 +507,21 @@ class HemsEngine:
             if not hasattr(self, "_predictive_controller"):
                 self._predictive_controller = PredictiveHemsController()
             controller = self._predictive_controller
+            # T08 follow-up: propagate the user-
+            # configured ``reserve_soc`` from the
+            # engine inputs into ``build_planner_inputs``.
+            # The previous code path left the planner
+            # on the dataclass default (20 %), so a
+            # 35 % reserve was silently dropped before
+            # any planner call. ``inputs["reserve_soc"]``
+            # is set by the coordinator from
+            # ``entry.options["reserve_soc"]`` and is
+            # already validated by ``evaluate()``.
+            planner_reserve = _finite_number(
+                inputs.get("reserve_soc")
+            )
+            if planner_reserve is None or not 0 <= planner_reserve <= 100:
+                planner_reserve = 20.0
             pi = build_planner_inputs(
                 raw={"gridVoltage": inputs["grid_voltage"],
                      # T01 follow-up: when ``soc_unknown`` is set, do
@@ -521,10 +550,15 @@ class HemsEngine:
                 # fields and any planning math that reads them.
                 # The baseline engine still uses ``inputs["soc"]``
                 # (=100) for its own non-predictive code paths; the
-                # gate in the coordinator already prevents any
+                # the gate in the coordinator already prevents any
                 # downstream inverter write. This flag is the
                 # diagnostic truth for the planner.
                 soc_unknown=bool(inputs.get("soc_unknown", False)),
+                # T08 follow-up: the user-configured
+                # reserve reaches the planner here,
+                # validated by ``build_planner_inputs``
+                # at the boundary.
+                reserve_soc=planner_reserve,
             )
             hint = controller.suggest(pi)
             try:

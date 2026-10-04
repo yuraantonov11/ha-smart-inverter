@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from .engine import SmartMode
+from .engine import SmartMode, _finite_number
 
 
 # Real upper/lower bounds for telemetry — anything outside is a
@@ -224,6 +224,20 @@ def build_planner_inputs(
     max_age_sec: float = 60.0,
     night_charge_window: tuple[int, int] = (23, 7),
     soc_unknown: bool | None = None,
+    # T08 follow-up: the user-configured reserve_soc
+    # must reach the planner, not be silently
+    # replaced by the dataclass default of 20. The
+    # coordinator now passes the option through here;
+    # the planner reads it from PlannerInputs and
+    # ``simulate_24h`` clamps SOC above this value.
+    reserve_soc: float | None = None,
+    # Efficiency bounds follow physical reality:
+    # round-trip efficiency of any inverter is
+    # strictly between 0 and 1 (exclusive on both
+    # sides), with 0.85 charge and 0.90 discharge as
+    # the documented default for this station.
+    charge_efficiency: float = 0.85,
+    discharge_efficiency: float = 0.90,
 ) -> PlannerInputs:
     """Build a ``PlannerInputs`` from raw API + already-corrected values.
 
@@ -249,6 +263,64 @@ def build_planner_inputs(
     """
     raw = raw if isinstance(raw, dict) else {}
     now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+
+    # T08 follow-up: validate the user-configured
+    # ``reserve_soc`` at the boundary. NaN, infinity,
+    # text, or out-of-range values are rejected with
+    # a clear ValueError so the operator sees the
+    # failure in the log instead of the planner
+    # silently using a default. ``None`` falls back
+    # to the documented 20 % sane default.
+    if reserve_soc is None:
+        reserve_soc_value = 20.0
+    else:
+        # ``_finite_number`` from ``hems.engine`` is
+        # the same validator the T12 path uses, so
+        # ``reserve_soc`` cannot be a string,
+        # ``True``/``False``, NaN, or infinity.
+        checked = _finite_number(reserve_soc)
+        if checked is None:
+            raise ValueError(
+                f"Invalid reserve_soc={reserve_soc!r}; "
+                f"must be a finite number"
+            )
+        if not (0.0 <= checked <= 100.0):
+            raise ValueError(
+                f"Invalid reserve_soc={checked!r}; "
+                f"must be in [0, 100]"
+            )
+        reserve_soc_value = checked
+
+    # T08 follow-up: efficiency bounds. The
+    # physical round-trip efficiency of any inverter
+    # is strictly between 0 and 1 (exclusive). A
+    # value of 0 would mean "no energy ever reaches
+    # the load"; a value of 1 would mean a
+    # perpetual-motion machine. We reject both
+    # endpoints and any non-numeric input, mirroring
+    # the SOC / reserve_soc validation above. The
+    # defaults (0.85 / 0.90) match the values the
+    # T07 audit verified.
+    def _check_efficiency(name, value):
+        checked = _finite_number(value)
+        if checked is None:
+            raise ValueError(
+                f"Invalid {name}={value!r}; "
+                f"must be a finite number"
+            )
+        if not (0.0 < checked < 1.0):
+            raise ValueError(
+                f"Invalid {name}={checked!r}; "
+                f"must be strictly between 0 and 1"
+            )
+        return checked
+
+    charge_eff = _check_efficiency(
+        "charge_efficiency", charge_efficiency
+    )
+    discharge_eff = _check_efficiency(
+        "discharge_efficiency", discharge_efficiency
+    )
 
     # ── SOC ────────────────────────────────────────────────────────
     # T01 hardening: distinguish a real SOC reading from a missing or
@@ -384,6 +456,14 @@ def build_planner_inputs(
         tariff_schedule=tariff,
         consumption_history=consumption,
         night_charge_window=night_charge_window,
+        # T08 follow-up: the validated values reach
+        # the planner here. The previous code path
+        # let the dataclass default (20.0) shadow
+        # the user's option, so a 35 % reserve was
+        # silently dropped before any planner call.
+        reserve_soc=reserve_soc_value,
+        charge_efficiency=charge_eff,
+        discharge_efficiency=discharge_eff,
         soc_source=TelemetrySource(
             origin="fallback" if soc_fallback else soc_origin,
             stale=False,
