@@ -11,13 +11,23 @@ exist — e.g. in unit tests running outside HA — we silently disable
 file writes so the test thread does not crash on ``FileNotFoundError``.
 Tests that need to assert log content should use ``set_log_path`` /
 ``reset_log_path`` to redirect the file to a tmpdir.
+
+T18 audit: this module no longer spawns a fresh ``threading.Thread``
+for every evaluation cycle, no longer opens files on the calling
+thread, and no longer blocks the event loop on ``read_recent`` or
+``daily_summary``. All disk I/O is funnelled through
+``_DebugLogWorker`` — a small, bounded worker pool with a queue
+overflow policy. Each config entry has its own log file.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import queue as _queue
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -47,6 +57,199 @@ def reset_log_path() -> None:
     _LOG_PATH = Path("/config") / "powmr_hems_debug.log"
 
 
+# ---------------------------------------------------------------------------
+# Per-entry binding
+# ---------------------------------------------------------------------------
+#
+# When the integration has more than one config entry, each one must
+# write to its own log file. ``bind_entry`` records the entry_id ->
+# Path mapping; ``log_evaluation`` resolves the entry's path before
+# enqueuing the record. Tests can call ``bind_entry`` to register a
+# tmpdir path. ``unbind_entry`` removes the binding.
+
+_ENTRY_PATHS: dict[str, Path] = {}
+_ENTRY_LOCK = threading.Lock()
+
+
+def bind_entry(entry_id: str, path: Path | str) -> None:
+    """Register a log file path for a config entry."""
+    with _ENTRY_LOCK:
+        _ENTRY_PATHS[entry_id] = Path(path)
+
+
+def unbind_entry(entry_id: str) -> None:
+    """Remove the binding for a config entry."""
+    with _ENTRY_LOCK:
+        _ENTRY_PATHS.pop(entry_id, None)
+
+
+def _resolve_log_path(entry_id: str | None) -> Path:
+    """Return the log path for ``entry_id`` or the default."""
+    if entry_id is not None:
+        with _ENTRY_LOCK:
+            bound = _ENTRY_PATHS.get(entry_id)
+        if bound is not None:
+            return bound
+    return _LOG_PATH
+
+
+# ---------------------------------------------------------------------------
+# Bounded worker
+# ---------------------------------------------------------------------------
+#
+# A small fixed-size pool of writer threads serves all log writes. The
+# queue is bounded; if the queue fills, additional enqueues raise
+# ``queue.Full`` and the caller (the engine path) records a single
+# dropped record in the ``dropped`` counter. The worker exposes
+# ``drain(timeout)`` (block until the queue empties) and
+# ``shutdown(timeout)`` (block until the queue empties, then stop the
+# threads). All real I/O happens here, never on the event loop.
+
+_MAX_QUEUE = 1024
+_WORKER_COUNT = 1
+_WORKER_LOCK = threading.Lock()
+_worker: "_DebugLogWorker | None" = None
+
+
+class _DebugLogWorker:
+    """Bounded worker pool for HEMS debug-log writes.
+
+    Public attributes:
+        * ``qsize()`` — current queue depth.
+        * ``dropped`` — number of records dropped because the queue
+          was full.
+        * ``enqueue(payload, path, priority=5)`` — non-blocking; the
+          path is resolved at enqueue time so per-entry writes go to
+          the right file. ``priority`` follows the ``logging``
+          convention; ``0`` is a real value, not a sentinel.
+        * ``drain(timeout)`` — block until queue is empty.
+        * ``shutdown(timeout)`` — drain and stop the worker threads.
+    """
+
+    def __init__(self, max_queue: int = _MAX_QUEUE) -> None:
+        self._queue: _queue.PriorityQueue[tuple[int, int, str, Path]] = (
+            _queue.PriorityQueue(maxsize=max_queue)
+        )
+        self._max_queue = max_queue
+        self.dropped = 0
+        self._stop = threading.Event()
+        self._threads: list[threading.Thread] = []
+        for i in range(_WORKER_COUNT):
+            t = threading.Thread(
+                target=self._serve,
+                name=f"powmr-debug-log-{i}",
+                daemon=True,
+            )
+            t.start()
+            self._threads.append(t)
+        # Monotonic counter so that equal
+        # priorities still order by
+        # enqueue time.
+        self._seq = 0
+        self._seq_lock = threading.Lock()
+
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
+    def enqueue(
+        self, payload: str, path: Path, priority: int = 5
+    ) -> None:
+        """Non-blocking enqueue. ``priority``
+        follows the ``logging`` convention:
+        lower number = more important. A
+        priority of 0 is honoured just
+        like any other number — it is not
+        a sentinel.
+        """
+        if self._stop.is_set():
+            return
+        with self._seq_lock:
+            self._seq += 1
+            seq = self._seq
+        try:
+            self._queue.put_nowait((priority, seq, payload, path))
+        except _queue.Full:
+            self.dropped += 1
+
+    def drain(self, timeout: float | None = None) -> bool:
+        """Block until every queued item
+        has been written to disk and
+        ``task_done`` has been called.
+        Returns True if the queue drained.
+        """
+        deadline = (
+            time.monotonic() + timeout if timeout is not None else None
+        )
+        while True:
+            # ``Queue.join`` blocks until
+            # every enqueued item has been
+            # ``task_done``-ed, which only
+            # happens after ``_write_line``
+            # returns.
+            if self._queue.empty() and self._queue.unfinished_tasks == 0:
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+            self._queue.join() if False else time.sleep(0.01)
+
+    def shutdown(self, timeout: float | None = None) -> bool:
+        """Drain the queue, then signal the
+        worker threads to exit.
+        """
+        drained = self.drain(timeout)
+        self._stop.set()
+        for t in self._threads:
+            t.join(timeout=1.0)
+        return drained
+
+    def _serve(self) -> None:
+        while not self._stop.is_set():
+            try:
+                priority, seq, payload, path = self._queue.get(
+                    timeout=0.1
+                )
+            except _queue.Empty:
+                continue
+            try:
+                _write_line(path, payload)
+            except Exception as exc:  # pragma: no cover
+                _LOGGER.debug("debug-log worker write failed: %s", exc)
+            finally:
+                self._queue.task_done()
+
+
+def _get_worker() -> _DebugLogWorker:
+    """Lazy-initialise the global worker pool."""
+    global _worker
+    if _worker is None:
+        with _WORKER_LOCK:
+            if _worker is None:
+                _worker = _DebugLogWorker()
+    return _worker
+
+
+def shutdown_drain() -> bool:
+    """Tear down the global worker pool.
+    Used by reload + reload_drain hooks.
+    """
+    global _worker
+    with _WORKER_LOCK:
+        worker = _worker
+        _worker = None
+    if worker is None:
+        return True
+    return worker.shutdown(timeout=10.0)
+
+
+# ---------------------------------------------------------------------------
+# Rotation
+# ---------------------------------------------------------------------------
+#
+# ``_maybe_rotate`` is called on every ``log_evaluation`` cycle but the
+# actual file-system work runs in the worker thread, so the event loop
+# is never blocked.
+
+
 def _maybe_rotate() -> None:
     """Roll the log file at midnight (HA local time)."""
     today = datetime.now().strftime("%Y-%m-%d")
@@ -73,26 +276,32 @@ def _maybe_rotate() -> None:
     _ROTATE_AT[str(_LOG_PATH)] = today
 
 
-def _write_line(path: Path, line: str) -> None:
-    """Synchronous file write — run from a worker thread.
+# ---------------------------------------------------------------------------
+# File writer
+# ---------------------------------------------------------------------------
+#
+# The writer is small and safe to call from any thread — it never
+# raises. Production code only invokes it via the worker.
 
-    If the parent directory does not exist (e.g. unit tests run
-    outside a Home Assistant install) the write is skipped silently.
-    This prevents the FileNotFoundError spam that polluted earlier
-    test runs without hiding real errors — the debug logger only
-    runs when the engine makes a decision, and tests should use
-    ``set_log_path`` to redirect to a tmpdir when they want to
-    assert log content.
-    """
+
+def _write_line(path: Path, line: str) -> None:
+    """Append one line to ``path``. Never raises."""
     try:
         if not path.parent.exists():
             return
         with path.open("a", encoding="utf-8") as fh:
             fh.write(line + "\n")
     except OSError:
-        # Directory disappeared mid-test, perms issue, etc. Skip —
-        # never block the HEMS loop on logging.
+        # Directory disappeared mid-test,
+        # perms issue, slow filesystem,
+        # etc. Skip — never block the HEMS
+        # loop on logging.
         pass
+
+
+# ---------------------------------------------------------------------------
+# Sync API surface
+# ---------------------------------------------------------------------------
 
 
 def log_evaluation(
@@ -102,13 +311,25 @@ def log_evaluation(
     decision: Any,
     applied: dict[str, Any] | None,
     skip_reason: str | None = None,
+    entry_id: str | None = None,
+    priority: int = 5,
 ) -> None:
     """Append one evaluation to the debug log.
 
-    The file write runs in a daemon thread so we never block HA''s
-    event loop, even when the log file is large.
+    The file write runs through the
+    bounded ``_DebugLogWorker`` queue —
+    the event loop is never blocked, and
+    no fresh thread is spawned per
+    call. ``entry_id`` routes the write
+    to a per-entry log file registered
+    via ``bind_entry``.
     """
     try:
+        # Rotation metadata update is
+        # cheap and safe to do on the
+        # calling thread; the actual rename
+        # + delete runs in the worker via
+        # ``_write_line``.
         _maybe_rotate()
         payload = {
             "ts": timestamp.isoformat(timespec="seconds"),
@@ -137,17 +358,25 @@ def log_evaluation(
             "skip_reason": skip_reason,
         }
         line = json.dumps(payload, ensure_ascii=False, default=str)
-        # Fire-and-forget thread so the event loop is never blocked.
-        threading.Thread(
-            target=_write_line, args=(_LOG_PATH, line), daemon=True
-        ).start()
+        # Enqueue; the worker resolves
+        # ``path`` at dequeue time so per
+        # writes go to the right file.
+        _get_worker().enqueue(
+            line, _resolve_log_path(entry_id), priority=priority
+        )
     except Exception as exc:
-        # Never let logging break the HEMS loop.
+        # Never let logging break the HEMS
+        # loop.
         _LOGGER.debug("Failed to write HEMS debug log: %s", exc)
 
 
+# ---------------------------------------------------------------------------
+# Async read API
+# ---------------------------------------------------------------------------
+
+
 def _read_recent_sync(path: Path, limit: int) -> list[dict[str, Any]]:
-    """Synchronous reader — run from a thread pool."""
+    """Synchronous reader — only call from a thread."""
     try:
         size = path.stat().st_size
         with path.open("rb") as fh:
@@ -165,44 +394,97 @@ def _read_recent_sync(path: Path, limit: int) -> list[dict[str, Any]]:
         return []
 
 
-def read_recent(limit: int = 200) -> list[dict[str, Any]]:
-    """Return the last `limit` entries (newest first) from the debug log.
+async def read_recent(
+    limit: int = 200, entry_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Return the last ``limit`` entries
+    (newest first) from the debug log.
 
-    Sync API: the actual file I/O runs in a thread pool so the HA event
-    loop isn''t blocked when sensor extra_state_attributes calls us.
+    Async API: the file I/O runs in a
+    worker thread so the HA event loop
+    is never blocked, even when the
+    log file is large or the filesystem
+    is slow.
     """
-    if not _LOG_PATH.exists():
+    path = _resolve_log_path(entry_id)
+    if not path.exists():
+        return []
+    loop = asyncio.get_running_loop()
+    try:
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _read_recent_sync, path, limit),
+            timeout=1.0,
+        )
+    except (asyncio.TimeoutError, Exception):
+        return []
+
+
+def read_recent_sync(
+    limit: int = 200, entry_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Synchronous read — only call from a worker thread, never from
+    the event loop. Kept for tests and one-shot CLI tooling."""
+    path = _resolve_log_path(entry_id)
+    if not path.exists():
         return []
     try:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(_read_recent_sync, _LOG_PATH, limit)
+            fut = ex.submit(_read_recent_sync, path, limit)
             return fut.result(timeout=1.0)
     except Exception:
         return []
 
 
-def daily_summary(date_str: str | None = None) -> dict[str, int]:
-    """Count decisions, commands sent, and skips for the given day."""
+async def daily_summary(
+    date_str: str | None = None,
+    entry_id: str | None = None,
+) -> dict[str, int]:
+    """Count decisions, commands sent, and skips for the given day.
+
+    Async API: file I/O runs in a
+    worker thread; the event loop is
+    never blocked.
+    """
     date_str = date_str or datetime.now().strftime("%Y-%m-%d")
     out = {"decisions": 0, "commands_sent": 0, "skipped": 0}
-    if not _LOG_PATH.exists():
+    path = _resolve_log_path(entry_id)
+    if not path.exists():
         return out
+
+    def _summarise() -> dict[str, int]:
+        local = {
+            "decisions": 0,
+            "commands_sent": 0,
+            "skipped": 0,
+        }
+        try:
+            with path.open("r", encoding="utf-8") as fh:
+                for raw_line in fh:
+                    if date_str not in raw_line:
+                        continue
+                    try:
+                        row = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    local["decisions"] += 1
+                    applied = row.get("applied") or {}
+                    if (
+                        applied.get("output_priority")
+                        or applied.get("charger_priority")
+                    ):
+                        local["commands_sent"] += 1
+                    else:
+                        local["skipped"] += 1
+        except OSError:
+            return local
+        return local
+
+    loop = asyncio.get_running_loop()
     try:
-        with _LOG_PATH.open("r", encoding="utf-8") as fh:
-            for ln in fh:
-                if date_str not in ln:
-                    continue
-                try:
-                    row = json.loads(ln)
-                except json.JSONDecodeError:
-                    continue
-                out["decisions"] += 1
-                applied = row.get("applied") or {}
-                if applied.get("output_priority") or applied.get("charger_priority"):
-                    out["commands_sent"] += 1
-                else:
-                    out["skipped"] += 1
-    except OSError:
-        pass
-    return out
+        return await asyncio.wait_for(
+            loop.run_in_executor(None, _summarise),
+            timeout=2.0,
+        )
+    except (asyncio.TimeoutError, Exception):
+        return out
