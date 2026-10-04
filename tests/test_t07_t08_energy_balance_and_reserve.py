@@ -175,22 +175,16 @@ def test_t07_pv_surplus_charges_battery_usb_snu():
     # (``max_soc = 95 %``) caps the headroom at
     # ``4.8 * 0.45 = 2.16 kWh``.
     #
-    # Total charge source: PV surplus (1.5 kWh) +
-    # grid (2.16 - 1.5 = 0.66 kWh) = 2.16 kWh.
-    # After the 0.85 efficiency: 1.836 kWh stored.
-    # The previous test pinned different numbers
-    # because the dual-source accounting applied
-    # the efficiency twice; the corrected version
-    # applies it once to the combined charge.
-    assert batt_w == pytest.approx(1836.0, rel=1e-3)
-    # Grid side: PV covers the whole 0.5 kWh load,
-    # so ``grid_to_load = 0``. The grid contributes
-    # only the battery-charge share. The total
-    # charge is 1.836 kWh; the PV-side contribution
-    # is ``min(1.5, 2.16) * 0.85 = 1.275``; the
-    # grid-side contribution is ``1.836 - 1.275 =
-    # 0.561 kWh = 561 W``.
-    assert grid_w == pytest.approx(561.0, rel=1e-3)
+    # Stored headroom is 2.16 kWh, so the source
+    # energy required is 2.16 / 0.85 = 2.541 kWh.
+    # PV supplies 1.5 kWh and grid supplies the
+    # remaining 1.041 kWh. The battery stores
+    # exactly the remaining headroom.
+    assert batt_w == pytest.approx(2160.0, rel=1e-3)
+    # Grid import is source energy, before the
+    # battery's conversion loss: 2.541 - 1.5 =
+    # 1.041 kWh, with no grid-to-load import.
+    assert grid_w == pytest.approx(1041.1765, rel=1e-3)
     # Nothing unserved.
     assert unserved_w == pytest.approx(0.0, abs=1e-9)
 
@@ -256,7 +250,7 @@ def test_t07_pv_deficit_sbu_oso_battery_supplies():
     # stored energy. ``batt_w`` is the change in
     # stored energy, so it equals the latter.
     assert batt_w == pytest.approx(-666.7, rel=1e-3)
-    # No grid import (SBU; battery is enough).
+    # No grid import while the battery covers load.
     assert grid_w == pytest.approx(0.0, abs=1e-9)
     assert unserved_w == pytest.approx(0.0, abs=1e-9)
 
@@ -285,16 +279,68 @@ def test_t07_grid_charging_usb_snu_load_from_grid():
         charge_efficiency=0.85,
         discharge_efficiency=0.90,
     )
-    # SOC=50 %, max_soc=95 % → 2.16 kWh headroom.
-    # PV surplus = 0, so the entire headroom flows
-    # from the grid: 2.16 * 0.85 = 1.836 kWh
-    # stored. ``batt_w`` is the W·h change in stored
-    # energy over the hour.
-    assert batt_w == pytest.approx(1836.0, rel=1e-3)
-    # Grid serves the load (0.5 kWh) AND the
-    # battery (1.836 kWh) = 2.336 kWh.
-    assert grid_w == pytest.approx(2336.0, rel=1e-3)
+    # SOC=50 %, max_soc=95 % → 2.16 kWh stored
+    # headroom. The AC source must provide
+    # 2.16 / 0.85 = 2.541 kWh to fill it.
+    assert batt_w == pytest.approx(2160.0, rel=1e-3)
+    # Grid serves the 0.5 kWh load plus 2.541 kWh
+    # of battery charge source energy.
+    assert grid_w == pytest.approx(3041.1765, rel=1e-3)
     assert unserved_w == pytest.approx(0.0, abs=1e-9)
+
+
+def test_t07_pv_charge_respects_bms_headroom_in_all_modes():
+    """PV charging must stop at the same 95 % ceiling
+    in USB+OSO and SBU+OSO, not only USB+SNU."""
+    common = dict(
+        charger="2",  # OSO: solar-only charging
+        pv_w=1000.0,
+        load_w=0.0,
+        grid_ok=True,
+        soc=94.0,
+        reserve_soc=20.0,
+        battery_capacity_kwh=4.8,
+        charge_efficiency=0.85,
+        discharge_efficiency=0.90,
+    )
+    # 1 % SOC headroom = 0.048 kWh stored. The
+    # source energy must account for charge losses.
+    expected_stored_w = 48.0
+    for output in ("0", "2"):
+        batt_w, _grid_w, unserved_w = _balance_hour(
+            output=output, **common
+        )
+        assert batt_w == pytest.approx(expected_stored_w, rel=1e-3)
+        assert unserved_w == pytest.approx(0.0, abs=1e-9)
+
+
+def test_t07_sbu_oso_grid_backup_and_offline_unserved():
+    """SBU+OSO uses utility as the final output source
+    after reserve, while OSO still prevents utility charging."""
+    common = dict(
+        output="2",  # SBU output priority
+        charger="2",  # OSO charger priority
+        pv_w=0.0,
+        load_w=1000.0,
+        soc=20.0,
+        reserve_soc=20.0,
+        battery_capacity_kwh=4.8,
+        charge_efficiency=0.85,
+        discharge_efficiency=0.90,
+    )
+    batt_w, grid_w, unserved_w = _balance_hour(
+        grid_ok=True, **common
+    )
+    assert batt_w == pytest.approx(0.0, abs=1e-9)
+    assert grid_w == pytest.approx(1000.0, rel=1e-3)
+    assert unserved_w == pytest.approx(0.0, abs=1e-9)
+
+    batt_w, grid_w, unserved_w = _balance_hour(
+        grid_ok=False, **common
+    )
+    assert batt_w == pytest.approx(0.0, abs=1e-9)
+    assert grid_w == pytest.approx(0.0, abs=1e-9)
+    assert unserved_w == pytest.approx(1000.0, rel=1e-3)
 
 
 # ── T07: battery stops at reserve floor ─────────────────
@@ -316,10 +362,11 @@ def test_t07_reserve_floor_blocks_discharge():
     )
     # No usable energy above the reserve.
     assert batt_w == pytest.approx(0.0, abs=1e-9)
-    # All load is unserved (SBU + OSO + grid_ok is
-    # irrelevant for SBU — the battery is the
-    # source-of-truth, not the grid).
-    assert unserved_w == pytest.approx(1000.0, rel=1e-3)
+    # OSO disables utility charging, not utility
+    # output. In SBU the grid is the final output
+    # source after the battery reaches reserve.
+    assert grid_w == pytest.approx(1000.0, rel=1e-3)
+    assert unserved_w == pytest.approx(0.0, abs=1e-9)
 
 
 # ── T07: inverter offline + SBU → unserved ──────────────
@@ -382,8 +429,10 @@ def test_t08_custom_reserve_soc_honoured():
     )
     # 0.72 kWh released from storage; load sees 0.648.
     assert batt_w == pytest.approx(-720.0, rel=1e-3)
-    # SBU + OSO: the rest is unserved, not from grid.
-    assert unserved_w == pytest.approx(2000.0 - 648.0, abs=1e-3)
+    # SBU changes to utility output after its reserve
+    # threshold; OSO only prevents grid charging.
+    assert grid_w == pytest.approx(1352.0, abs=1e-3)
+    assert unserved_w == pytest.approx(0.0, abs=1e-9)
 
 
 # ── T08: reserve_soc field exists on PlannerInputs ──────
