@@ -1793,10 +1793,30 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             else:
                 self._daily_battery_discharge_night_kwh += discharge_kwh
 
-        # Savings = value of battery energy that displaced grid import.
-        # When battery discharges, it powers the load instead of the grid.
-        # Grid import still happens when battery is depleted or in SNU mode,
-        # but that doesn't reduce the value of battery discharge.
+        # Audit T21: savings = gross estimate of the import value that
+        # battery discharge replaced. The formula is intentionally a
+        # gross estimate of "import-value replaced by battery discharge",
+        # not a net-savings figure. The audit explicitly forbids
+        # adding a net model without an agreed formula. Three documented
+        # limitations:
+        #
+        #   1. Energy origin not considered. Every discharged kWh is
+        #      credited at the day/night tariff even if the battery was
+        #      charged from the grid at night (cheap tariff) and
+        #      discharged during the day (expensive tariff). This is an
+        #      arbitrage profit, not a saving against the
+        #      counterfactual of grid-only operation.
+        #   2. Losses not subtracted. Battery round-trip efficiency is
+        #      not 100 %; the discharged kWh does not equal the energy
+        #      that was originally available to the load. The formula
+        #      does not subtract charge/discharge losses.
+        #   3. Imports not subtracted. The formula does not subtract
+        #      the kWh imported from the grid during the same period.
+        #      A setup that imports 30 kWh and discharges 25 kWh shows
+        #      positive savings instead of negative net.
+        #
+        # DO NOT add a net-savings formula without an agreed model that
+        # addresses all three limitations.
         self._daily_savings_uah = round(
             self._daily_battery_discharge_day_kwh * self._day_tariff_uah
             + self._daily_battery_discharge_night_kwh * self._night_tariff_uah,

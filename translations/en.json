@@ -129,10 +129,12 @@
         "name": "Learned PV Ratio"
       },
       "daily_savings": {
-        "name": "Daily Savings"
+        "name": "Gross import-value replaced (daily)",
+        "description": "Gross estimate of the value (in UAH) of grid import that battery discharge replaced today. This is NOT net savings: it does not subtract losses, does not subtract grid import during the same period, and credits every discharged kWh at the day/night tariff regardless of where the energy came from."
       },
       "monthly_savings": {
-        "name": "Monthly Savings"
+        "name": "Gross import-value replaced (monthly)",
+        "description": "Gross estimate of the value (in UAH) of grid import that battery discharge replaced this month. Same formula as the daily one; same limitations apply (energy origin, losses, imports not subtracted). Not net savings."
       },
       "hems_last_reason": {
         "name": "HEMS Decision Reason"

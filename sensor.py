@@ -851,7 +851,46 @@ class LearnedRatioSensor(InverterSensor):
 
 
 class DailySavingsSensor(InverterSensor):
-    """Sensor: estimated savings today (UAH) from battery usage."""
+    """Sensor: gross estimate of the value of grid import that
+    battery discharge replaced today.
+
+    The formula is::
+
+        savings_uah = discharge_day_kwh * day_tariff
+                     + discharge_night_kwh * night_tariff
+
+    Audit T21: this is a **gross** estimate of the import value
+    that battery discharge replaced - it is NOT net savings.
+    The formula has three explicit limitations:
+
+      1. **Energy origin not considered**. Every discharged kWh
+         is credited at the day/night tariff, even if the
+         battery was charged from the grid at night (cheap
+         tariff) and discharged during the day (expensive
+         tariff). This is an arbitrage profit, not a
+         saving against the counterfactual of grid-only
+         operation.
+      2. **Losses not subtracted**. Battery round-trip
+         efficiency is not 100 %; the discharged kWh does
+         not equal the energy that was originally available
+         to the load. The formula does not subtract
+         charge/discharge losses.
+      3. **Imports not subtracted**. The formula does not
+         subtract the kWh imported from the grid during
+         the same period. A setup that imports 30 kWh and
+         discharges 25 kWh shows positive savings instead
+         of negative net.
+
+    The audit requires that we do NOT add a net-savings model
+    without an agreed formula. Consumers reading this
+    sensor should treat the value as an estimate of
+    "import-value replaced by battery discharge", not as
+    net savings.
+
+    The entity ID, translation_key, unit (UAH), and
+    state class (MEASUREMENT) are preserved so consumer
+    dashboards and automations continue to work.
+    """
 
     def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
@@ -869,9 +908,46 @@ class DailySavingsSensor(InverterSensor):
     def native_value(self) -> float:
         return self.coordinator.daily_savings_uah
 
+    @property
+    def extra_state_attributes(self):
+        """Audit T21: expose the formula and limitations
+        so a consumer reading the sensor can see what
+        it represents."""
+        return {
+            "savings_formula": (
+                "gross_estimate_of_import_value_replaced "
+                "= discharge_day_kwh * day_tariff "
+                "+ discharge_night_kwh * night_tariff"
+            ),
+            "savings_limitations": [
+                "energy_origin_not_considered",
+                "losses_not_subtracted",
+                "imports_not_subtracted",
+            ],
+            "is_net_savings": False,
+        }
+
+
 
 class MonthlySavingsSensor(InverterSensor):
-    """Sensor: estimated savings this month (UAH) from battery usage."""
+    """Sensor: gross estimate of the value of grid import
+    that battery discharge replaced this month.
+
+    Audit T21: the formula mirrors ``DailySavingsSensor``::
+
+        monthly_savings_uah = sum of daily_savings_uah over
+                              the calendar month (with the
+                              current day included if not
+                              yet rolled over)
+
+    The three limitations in ``DailySavingsSensor``
+    (energy origin, losses, imports not subtracted) apply
+    here too. The audit forbids a net-savings model without
+    an agreed formula.
+
+    Entity ID, translation_key, unit (UAH), and state class
+    are preserved.
+    """
 
     def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
@@ -888,6 +964,25 @@ class MonthlySavingsSensor(InverterSensor):
     @property
     def native_value(self) -> float:
         return self.coordinator.monthly_savings_uah
+
+    @property
+    def extra_state_attributes(self):
+        """Audit T21: expose the formula and limitations
+        so a consumer reading the sensor can see what
+        it represents."""
+        return {
+            "savings_formula": (
+                "gross_estimate_of_import_value_replaced "
+                "= sum over the month of discharge_kwh * tariff"
+            ),
+            "savings_limitations": [
+                "energy_origin_not_considered",
+                "losses_not_subtracted",
+                "imports_not_subtracted",
+            ],
+            "is_net_savings": False,
+        }
+
 
 
 class HemsReasonSensor(InverterSensor):
