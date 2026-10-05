@@ -255,7 +255,7 @@ def _run_python_suite(
         # to ``sys.path`` so
         # ``import pv_test_support`` and
         # similar helpers resolve.
-        "sys.path.insert(0, '" + str(suite_dir) + "')" + "\n"
+        "sys.path.insert(0, " + repr(str(suite_dir)) + ")\n"
         # Step 3: add the repo root for
         # ``import hems`` /
         # ``import coordinator``. This is
@@ -266,7 +266,7 @@ def _run_python_suite(
         # step 4 strips the integration
         # copy if anything ever bypasses
         # the cache.
-        "sys.path.insert(0, '" + str(REPO_ROOT) + "')" + "\n"
+        "sys.path.insert(0, " + repr(str(REPO_ROOT)) + ")\n"
         # Step 4: belt-and-braces unshadow.
         # If anything in this process
         # ever imported the integration's
@@ -277,7 +277,7 @@ def _run_python_suite(
         # ``sys.modules`` so subsequent
         # imports fall back to the
         # stdlib location.
-        "_repo_root = '" + str(REPO_ROOT) + "'\n"
+        "_repo_root = " + repr(str(REPO_ROOT)) + "\n"
         "_shadowed = {\n"
         "    'select', 'selectors', 'socket', 'asyncio',\n"
         "}\n"
@@ -295,8 +295,8 @@ def _run_python_suite(
         "sys.modules['selectors'] = _stdlib_selectors\n"
         "sys.modules['socket'] = _stdlib_socket\n"
         "sys.modules['asyncio'] = _stdlib_asyncio\n"
-        "sys.argv[0] = '" + str(suite_rel) + "'\n"
-        "runpy.run_path('" + str(suite_rel) + "', run_name='__main__')\n"
+        "sys.argv[0] = " + repr(str(suite_rel)) + "\n"
+        "runpy.run_path(" + repr(str(suite_rel)) + ", run_name='__main__')\n"
     )
     try:
         r = subprocess.run(

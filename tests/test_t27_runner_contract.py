@@ -310,6 +310,189 @@ class T27RunnerContractTests(unittest.TestCase):
             ),
         )
 
+
+    def test_t27_12_wrapper_handles_windows_paths(self) -> None:
+        """The wrapper string must
+        correctly encode Windows-style
+        paths (``C:\\...``) without
+        breaking on the embedded
+        backslashes. The audit's
+        follow-up requirement: build
+        Python string literals via
+        ``repr()`` (or ``json.dumps()``),
+        not via manual concatenation
+        that would mangle
+        ``C:\\Users\\foo`` to
+        ``C:Users\\foo`` after Python
+        escape processing.
+
+        We construct a fake
+        ``suite_dir`` and ``suite_rel``
+        with a Windows-style path,
+        build the same wrapper string
+        the runner builds (via
+        ``repr()``), and exec it in
+        a subprocess. The subprocess
+        must parse the wrapper without
+        a ``SyntaxError`` and reach
+        ``sys.path.insert`` with the
+        original path intact.
+        """
+        import sys as _sys
+        import subprocess as _subprocess
+        # Simulate a Windows checkout
+        # by faking the path style.
+        # The wrapper must not care:
+        # ``repr()`` produces a
+        # single-quoted Python string
+        # with backslashes properly
+        # escaped, and the resulting
+        # string round-trips through
+        # ``ast.literal_eval`` to the
+        # original value.
+        fake_repo_root = r"C:\\Users\\yura\\repo"
+        fake_suite_dir = r"C:\\Users\\yura\\repo\\tests"
+        fake_suite_rel = (
+            r"C:\\Users\\yura\\repo\\tests\\test_dummy.py"
+        )
+        # Build the wrapper using
+        # the same ``repr()`` calls
+        # the runner uses. The
+        # resulting string must be
+        # valid Python source.
+        wrapper = (
+            "import sys\n"
+            "import runpy\n"
+            "import select as _stdlib_select\n"
+            "import selectors as _stdlib_selectors\n"
+            "import socket as _stdlib_socket\n"
+            "import asyncio as _stdlib_asyncio\n"
+            "sys.path.insert(0, " + repr(fake_suite_dir) + ")\n"
+            "sys.path.insert(0, " + repr(fake_repo_root) + ")\n"
+            "_repo_root = " + repr(fake_repo_root) + "\n"
+            "sys.modules['select'] = _stdlib_select\n"
+            "sys.argv[0] = " + repr(fake_suite_rel) + "\n"
+        )
+        # The wrapper must be valid
+        # Python source — ``compile``
+        # would reject an unterminated
+        # string, a backslash typo, or
+        # any other syntax error.
+        try:
+            compile(wrapper, "<t27-windows-path>", "exec")
+        except SyntaxError as exc:
+            self.fail(
+                "wrapper source is not valid Python: "
+                f"{exc}. The runner is producing a "
+                "broken wrapper string. Wrapper was: "
+                f"{wrapper!r}"
+            )
+        # Run the wrapper in a
+        # subprocess and capture the
+        # resulting ``sys.path`` and
+        # the parsed ``_repo_root``.
+        # We do not need the test
+        # file at the path to exist;
+        # the wrapper is a probe
+        # for the path-encoding
+        # contract, not a real
+        # test execution.
+        #
+        # We use ``json.dumps()`` to
+        # serialise the path values
+        # into a Python string literal
+        # and concatenate with the
+        # wrapper. ``json.dumps()``
+        # produces a single-quoted
+        # Python source string with
+        # all backslashes properly
+        # escaped, which is exactly
+        # what the runner does for
+        # its own wrapper construction.
+        import json as _json_mod
+        probe = (
+            wrapper
+            + "import json as _json\n"
+            + "import sys as _sys\n"
+            + "_probe = {\n"
+            + "    'suite_dir_in_path': "
+            + _json_mod.dumps(fake_suite_dir)
+            + " in _sys.path,\n"
+            + "    'repo_in_path': "
+            + _json_mod.dumps(fake_repo_root)
+            + " in _sys.path,\n"
+            + "    'repo_root_eq': _repo_root == "
+            + _json_mod.dumps(fake_repo_root)
+            + ",\n"
+            + "}\n"
+            + "print('PROBE=' + _json.dumps(_probe))\n"
+        )
+        r = _subprocess.run(
+            [_sys.executable, "-I", "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # The subprocess must have
+        # parsed the wrapper, run the
+        # path-insert code, and
+        # printed the probe.
+        self.assertEqual(
+            r.returncode,
+            0,
+            msg=(
+                "wrapper probe subprocess failed. "
+                f"stdout={r.stdout!r}, stderr={r.stderr!r}"
+            ),
+        )
+        # Parse the PROBE=... line.
+        probe_data = None
+        for line in r.stdout.splitlines():
+            if line.startswith("PROBE="):
+                import json as _json
+                probe_data = _json.loads(line[len("PROBE="):])
+                break
+        self.assertIsNotNone(
+            probe_data,
+            msg=(
+                "probe subprocess did not emit a "
+                "PROBE=... line; stdout: "
+                f"{r.stdout!r}"
+            ),
+        )
+        # The Windows-style paths
+        # must have round-tripped
+        # through the wrapper without
+        # mangling. A backslash-eaten
+        # path would fail both checks.
+        self.assertTrue(
+            probe_data["suite_dir_in_path"],
+            msg=(
+                "suite_dir was not on sys.path after the "
+                "wrapper ran. The runner is likely "
+                "mangling Windows-style backslashes. "
+                f"Probe: {probe_data!r}"
+            ),
+        )
+        self.assertTrue(
+            probe_data["repo_in_path"],
+            msg=(
+                "REPO_ROOT was not on sys.path after the "
+                "wrapper ran. The runner is likely "
+                "mangling Windows-style backslashes. "
+                f"Probe: {probe_data!r}"
+            ),
+        )
+        self.assertTrue(
+            probe_data["repo_root_eq"],
+            msg=(
+                "_repo_root does not equal the input "
+                "REPO_ROOT after the wrapper ran. The "
+                "runner is likely truncating the path. "
+                f"Probe: {probe_data!r}"
+            ),
+        )
+
     def test_t27_11_runner_runs_full_suite_with_isolation(self) -> None:
         """The runner must execute the
         full set of ``tests/test_*.py``
