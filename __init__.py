@@ -7,6 +7,7 @@ __version__ = "1.8.13-perf-fixes"
 Tracks local-only fixes (5 patches applied 2026-07-07); HACS version stays 1.8.12."""
 
 import logging
+import json
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -94,6 +95,35 @@ async def _async_options_updated(
 
 _FRONTEND_REGISTERED = False
 
+
+def _get_debug_logging_module():
+    """Resolve the ``hems.debug_logging`` module from
+    a place that is callable in a flat
+    namespace (T17 AST harness).
+
+    We try the absolute package name first
+    (``powmr_inverter.hems.debug_logging``),
+    then a package-relative import. The
+    function returns ``None`` if neither
+    resolves — the caller must treat that
+    as a soft failure and skip the audit
+    hook rather than raising.
+    """
+    import importlib
+    for module_name in (
+        "powmr_inverter.hems.debug_logging",
+        ".hems.debug_logging",
+    ):
+        try:
+            return importlib.import_module(
+                module_name,
+                package=__name__,
+            )
+        except Exception:
+            continue
+    return None
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Smart Solar Inverter from a config entry."""
     hass.data.setdefault(DOMAIN, {})
@@ -154,25 +184,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # file. ``debug_logging`` resolves
         # ``entry_id`` to its own log
         # path so each config entry has
-        # an isolated debug file. We
-        # import via ``importlib`` so the
-        # call works from the module
-        # boundary (T17 AST-exec harness
-        # needs a flat namespace).
-        import importlib as _importlib_setup
-        _debug_mod = None
-        for _module_name in (
-            "powmr_inverter.hems.debug_logging",
-            ".hems.debug_logging",
-        ):
-            try:
-                _debug_mod = _importlib_setup.import_module(
-                    _module_name,
-                    package=__name__,
-                )
-                break
-            except Exception:
-                continue
+        # an isolated debug file. The
+        # module reference is module-level
+        # so the AST harness used by T17 AST
+        # contract tests can exec the
+        # body in a flat namespace without
+        # forcing a relative import.
+        _debug_mod = _get_debug_logging_module()
         if _debug_mod is not None:
             _debug_mod.bind_entry(
                 entry.entry_id,
@@ -276,7 +294,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # storage — otherwise our default layout would overwrite their
         # changes every time we reload. This respects user agency and
         # keeps customisations stable across integration updates.
-        import os
         dashboard_path = os.path.join(hass.config.config_dir, ".storage", "lovelace.powmr_energy")
         if not os.path.exists(dashboard_path):
             _LOGGER.info("Auto-installing dashboard (first setup)")
@@ -378,26 +395,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # per-entry debug log binding
         # and drain the bounded worker
         # so no record is lost when the
-        # entry goes away. We import
-        # via ``importlib`` so this
-        # works from the module
-        # boundary (no relative
-        # imports — audit T17 AST-exec
-        # harness needs to run the
-        # body in a flat namespace).
-        import importlib
-        try:
-            debug_logging_mod = importlib.import_module(
-                "powmr_inverter.hems.debug_logging"
-            )
-        except Exception:
-            try:
-                debug_logging_mod = importlib.import_module(
-                    ".hems.debug_logging",
-                    package=__name__,
-                )
-            except Exception:
-                debug_logging_mod = None
+        # entry goes away. The module
+        # reference is module-level so
+        # the T17 AST harness can exec
+        # this body in a flat namespace.
+        debug_logging_mod = _get_debug_logging_module()
         if debug_logging_mod is not None:
             debug_logging_mod.unbind_entry(entry.entry_id)
             # ``shutdown_drain`` is global
@@ -865,7 +867,6 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     }
 
     # Hash for change detection
-    import json as _json
     config_hash = hashlib.md5(_json.dumps(dashboard_config, sort_keys=True).encode()).hexdigest()[:8]
     old_hash = hass.data[DOMAIN][entry.entry_id].get("dash_hash", "")
 
@@ -885,9 +886,6 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_config: di
     The config is stored as a JSON object — NOT a YAML string — which
     avoids the "Cannot use 'in' operator to search for 'strategy'" crash.
     """
-    import json
-    import os
-
     DASHBOARD_URL = "powmr-energy"
     DASHBOARD_TITLE = "Smart Solar Енергопанель"
     DASHBOARD_ID = "powmr_energy"
@@ -961,7 +959,6 @@ async def _update_dashboard_content(
     Storing a string causes "Cannot use 'in' operator to search for 'strategy'"
     in the HA frontend because JS receives a string where it expects an object.
     """
-    import json
 
     def _write():
         data = {

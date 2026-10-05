@@ -115,6 +115,14 @@ class _StubConfigEntry:
         self.entry_id = entry_id
 
 
+
+def _stub_debug_logging():
+    class _M:
+        bind_entry = lambda *a, **kw: None
+        unbind_entry = lambda *a, **kw: None
+        shutdown_drain = lambda *a, **kw: True
+    return _M()
+
 class T17CleanupTests(unittest.TestCase):
     def setUp(self) -> None:
         self._init_source = _load_init_source()
@@ -129,6 +137,7 @@ class T17CleanupTests(unittest.TestCase):
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
             "__name__": "t17_unloaded",
+            "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -203,6 +212,7 @@ class T17CleanupTests(unittest.TestCase):
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
             "__name__": "t17_unloaded",
+            "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -335,6 +345,7 @@ class T17CleanupTests(unittest.TestCase):
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
             "__name__": "t17_unloaded",
+            "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -389,6 +400,7 @@ class T17CleanupTests(unittest.TestCase):
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
             "__name__": "t17_unloaded",
+            "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -451,6 +463,7 @@ class T17CleanupTests(unittest.TestCase):
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
             "__name__": "t17_unloaded",
+            "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -634,6 +647,7 @@ class T17ForecastShutdownTests(unittest.TestCase):
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
             "__name__": "t17_unloaded",
+            "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
         }
         exec(compile(body, "<t17-reload>", "exec"), ns)
