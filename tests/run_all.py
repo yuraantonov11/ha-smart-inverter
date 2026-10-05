@@ -209,32 +209,94 @@ def _run_python_suite(
     # *after* the wrapper has run.
     suite_rel = suite.resolve()
     suite_dir = suite_rel.parent
+    # The audit's Windows repro is
+    # ``import select`` resolving to
+    # the integration's
+    # ``./select.py`` entity file
+    # because ``REPO_ROOT`` is on
+    # ``sys.path``. The preloader
+    # below defeats that by importing
+    # the **stdlib** ``select`` (and
+    # the modules Python's asyncio /
+    # selectors machinery depend on)
+    # **before** ``REPO_ROOT`` is
+    # added to ``sys.path``. Once
+    # cached, subsequent ``import``
+    # statements short-circuit and
+    # never re-scan ``sys.path``.
+    #
+    # The unshadow loop we previously
+    # relied on is insufficient: it
+    # only strips modules that were
+    # already loaded by some prior
+    # import. A fresh
+    # ``import select`` in a child
+    # test would still re-scan
+    # ``sys.path`` and pick up the
+    # integration's ``./select.py``.
+    # The preloader closes that gap.
     wrapper = (
-        "import sys, runpy\n"
-        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
-        # Some test files import helpers
-        # from ``tests/`` directly (e.g.
-        # ``pv_test_support``). Add the
-        # test directory to ``sys.path``
-        # so those imports resolve.
-        f"sys.path.insert(0, {str(suite_dir)!r})\n"
-        # Defensive unshadow: any module
-        # already loaded from
-        # ``REPO_ROOT`` is removed so a
-        # later ``import <name>`` falls
-        # back to the stdlib location.
-        # This protects against the
-        # audit's repro:
-        # ``./select.py`` shadowing the
-        # stdlib ``select`` on Windows.
-        "_repo_root = "
-        f"{str(REPO_ROOT)!r}\n"
+        # Step 1: pre-import the stdlib
+        # modules that the integration
+        # entity files could shadow.
+        # ``select`` is the audit's main
+        # repro; ``selectors`` is what
+        # ``asyncio`` actually uses
+        # under the hood; ``socket`` and
+        # ``asyncio`` are part of the
+        # same shadow family.
+        "import sys\n"
+        "import runpy\n"
+        "import select as _stdlib_select\n"
+        "import selectors as _stdlib_selectors\n"
+        "import socket as _stdlib_socket\n"
+        "import asyncio as _stdlib_asyncio\n"
+        # Step 2: add the test directory
+        # to ``sys.path`` so
+        # ``import pv_test_support`` and
+        # similar helpers resolve.
+        "sys.path.insert(0, '" + str(suite_dir) + "')" + "\n"
+        # Step 3: add the repo root for
+        # ``import hems`` /
+        # ``import coordinator``. This is
+        # the entry that *would* expose
+        # ``./select.py`` to a fresh
+        # ``import select`` — but step 1
+        # cached the stdlib ``select`` and
+        # step 4 strips the integration
+        # copy if anything ever bypasses
+        # the cache.
+        "sys.path.insert(0, '" + str(REPO_ROOT) + "')" + "\n"
+        # Step 4: belt-and-braces unshadow.
+        # If anything in this process
+        # ever imported the integration's
+        # ``./select.py`` (it should
+        # not, because step 1 cached the
+        # stdlib one), strip the
+        # REPO_ROOT-tainted copy from
+        # ``sys.modules`` so subsequent
+        # imports fall back to the
+        # stdlib location.
+        "_repo_root = '" + str(REPO_ROOT) + "'\n"
+        "_shadowed = {\n"
+        "    'select', 'selectors', 'socket', 'asyncio',\n"
+        "}\n"
         "for _name, _mod in list(sys.modules.items()):\n"
         "    _f = getattr(_mod, '__file__', None)\n"
-        "    if _f and _f.startswith(_repo_root):\n"
+        "    if _f and _f.startswith(_repo_root) and _name in _shadowed:\n"
         "        sys.modules.pop(_name, None)\n"
-        f"sys.argv[0] = {str(suite_rel)!r}\n"
-        f"runpy.run_path({str(suite_rel)!r}, run_name='__main__')\n"
+        # Step 5: re-bind the cached
+        # stdlib modules at the standard
+        # names so any later
+        # ``import select`` (in the test
+        # or in code the test exec's)
+        # returns the stdlib module.
+        "sys.modules['select'] = _stdlib_select\n"
+        "sys.modules['selectors'] = _stdlib_selectors\n"
+        "sys.modules['socket'] = _stdlib_socket\n"
+        "sys.modules['asyncio'] = _stdlib_asyncio\n"
+        "sys.argv[0] = '" + str(suite_rel) + "'\n"
+        "runpy.run_path('" + str(suite_rel) + "', run_name='__main__')\n"
     )
     try:
         r = subprocess.run(

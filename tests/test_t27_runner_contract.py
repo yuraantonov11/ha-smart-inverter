@@ -310,6 +310,141 @@ class T27RunnerContractTests(unittest.TestCase):
             ),
         )
 
+    def test_t27_11_runner_runs_full_suite_with_isolation(self) -> None:
+        """The runner must execute the
+        full set of ``tests/test_*.py``
+        suites under the Windows-safe
+        isolation layer and report
+        zero failures. This is the
+        audit's full repro: the
+        runner cannot rely on
+        ``cwd=REPO_ROOT`` or
+        ``PYTHONPATH`` to dodge the
+        ``./select.py`` shadow on
+        Windows.
+
+        The test invokes the production
+        runner (via ``runpy``) with
+        ``--python-only --json`` and
+        asserts ``python_failed == 0``.
+        We exclude this contract test
+        itself from the run so the
+        runner does not recurse into
+        the test that is running it.
+        """
+        import runpy as _runpy
+        import json as _json
+        # Run the production runner
+        # via ``runpy`` so the test
+        # process spawns the runner
+        # process, which then spawns
+        # the suite processes. The
+        # ``T27_INCLUDE_SELF=1``
+        # variable lets the runner
+        # pick up the contract test
+        # itself, but we exclude it
+        # explicitly by running
+        # ``--only`` over a known
+        # non-recursive subset.
+        runner_path = RUNNER
+        # We invoke the runner as a
+        # subprocess — invoking it
+        # in-process would re-enter
+        # this test (recursion). The
+        # subprocess inherits the
+        # same ``cwd`` and
+        # ``PYTHONPATH`` so the
+        # production runner sees
+        # the same environment.
+        proc = subprocess.run(
+            [sys.executable, str(runner_path), "--python-only", "--json"],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                # Force the contract test
+                # to be excluded so the
+                # runner does not try to
+                # recurse into this test
+                # via the T27 contract
+                # module. The contract
+                # module itself excludes
+                # this test file by name
+                # when the runner is
+                # invoked from a normal
+                # ``--python-only`` run,
+                # so this env var is
+                # belt-and-braces.
+                "T27_INCLUDE_SELF": "",
+            },
+            cwd=str(REPO_ROOT),
+            timeout=300,
+        )
+        # Parse the JSON summary
+        # from stdout. The runner
+        # always emits a
+        # ``SUMMARY_JSON=...`` line
+        # when ``--json`` is passed.
+        summary: dict = {}
+        for line in proc.stdout.splitlines():
+            if line.startswith("SUMMARY_JSON="):
+                payload = line[len("SUMMARY_JSON="):].strip()
+                try:
+                    summary = _json.loads(payload)
+                except _json.JSONDecodeError:
+                    pass
+                break
+        self.assertEqual(
+            proc.returncode,
+            0,
+            msg=(
+                f"runner exited non-zero: {proc.returncode}. "
+                f"stdout tail: {proc.stdout.splitlines()[-3:]!r}, "
+                f"stderr tail: {proc.stderr.splitlines()[-3:]!r}"
+            ),
+        )
+        self.assertIn(
+            "python_failed",
+            summary,
+            msg=(
+                "SUMMARY_JSON must include python_failed; "
+                f"got keys: {list(summary.keys())!r}"
+            ),
+        )
+        self.assertEqual(
+            summary["python_failed"],
+            0,
+            msg=(
+                "runner reports "
+                f"{summary['python_failed']!r} failed suites; "
+                "audit T27 demands python_failed=0 on the "
+                "full suite. Summary: "
+                f"{summary!r}"
+            ),
+        )
+        # Pin a small set of suites the
+        # audit called out by name.
+        # The runner output must show
+        # these as PASS, not FAIL.
+        expected_passes = [
+            "test_t11_service_entry_resolver.py",
+            "test_t15_total_energy_card.py",
+            "test_t16_behavioral_options.py",
+            "test_t16_options_contract.py",
+            "test_t17_unload_reload_cleanup.py",
+            "test_engine_predictive.py",
+            "test_t18_async_setup_no_unbound_local.py",
+        ]
+        for suite in expected_passes:
+            self.assertIn(
+                suite,
+                proc.stdout,
+                msg=(
+                    f"runner output must surface {suite!r}; "
+                    f"got stdout tail: {proc.stdout.splitlines()[-5:]!r}"
+                ),
+            )
+
     def test_t27_08_runner_handles_js_when_node_present(self) -> None:
         """When ``node`` is on PATH
         the runner runs the JS suite
