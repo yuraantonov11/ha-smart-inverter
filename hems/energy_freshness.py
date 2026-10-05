@@ -3,23 +3,36 @@
 Audit T20: ``InverterDailyEnergySensor`` reads
 ``api.daily_energy`` directly. The Powmr cloud
 API returns ``dailyProducedQuantity`` *without
-a date stamp*, so the sensor cannot tell
-"today's value so far" from "yesterday's
-final value".
+a date stamp* - the value is a raw number the
+inverter reported most recently. The integrator
+cannot ask "for which day?" from the API
+itself.
 
-This module holds the canonical freshness
-contract so the API client, the sensor, and
-the regression tests share one source of
-truth.
+To recover the freshness contract, the
+coordinator attaches the date and timestamp
+*at refresh time* and surfaces them to the
+sensor. This module holds the canonical
+freshness contract so the API client, the
+sensor, and the regression tests share one
+source of truth.
 
 Three fields:
 
   * ``daily_energy_date``: ``date | None``
-    - the calendar date the API attached to
-    the value. ``None`` means unknown.
+    - the calendar date (in the HA site's
+    local timezone) when the coordinator
+    most recently refreshed the value.
+    ``None`` means we have never refreshed.
+    The audit explicitly says this date is
+    **not** API-attached - the API does not
+    return it.
   * ``daily_energy_at``: ``datetime | None``
-    - when the API most recently refreshed
-    the value. ``None`` means never.
+    - the timestamp the coordinator most
+    recently refreshed the value. The
+    contract is UTC; the helper accepts
+    naive timestamps (assumed UTC) and
+    timezone-aware timestamps in any zone.
+    ``None`` means never.
   * ``daily_energy_stale``: ``bool``
     - whether the freshness threshold
     (default 6 hours) has been crossed.
@@ -30,13 +43,25 @@ the coordinator can tune it. The default of
 outage without flipping the sensor to stale
 on every 30-minute polling slip.
 
+Audit T20 follow-up (timezone):
+``compute_daily_energy_freshness`` normalises
+both ``daily_energy_at`` and ``now`` to UTC
+before subtracting them. A naive
+``datetime`` is assumed to already be UTC
+(this matches the historical API-client
+wiring where the integrator ran on a UTC
+VM). The alternative is exactly the bug we
+are fixing - naive ``datetime.now()`` minus
+aware ``datetime.now(tz=timezone.utc)`` raises
+``TypeError``.
+
 Pure stdlib - no Home Assistant imports.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 
 DEFAULT_FRESHNESS_HOURS = 6
@@ -78,6 +103,58 @@ class DailyEnergyFreshness:
         }
 
 
+def _normalize_utc(ts: datetime | None) -> datetime | None:
+    """Return ``ts`` as a timezone-aware
+    ``datetime`` in UTC.
+
+    Audit T20 follow-up: the production API
+    client historically wrote
+    ``datetime.now()`` (a naive timestamp in
+    the host system's local time) while the
+    sensor wrote
+    ``datetime.now(tz=timezone.utc)``. The
+    mismatch crashed the freshness helper
+    with::
+
+        TypeError: can't subtract
+        offset-naive and offset-aware
+        datetimes
+
+    The helper now normalises both sides to
+    UTC:
+
+      * ``None`` stays ``None``.
+      * A naive ``datetime`` is assumed to
+        already be in UTC - this matches the
+        API client's intent on the original
+        Powmr wiring (the integrator ran on
+        a UTC VM and wrote the naive value
+        *expecting* UTC). The audit accepts
+        the assumption because the alternative
+        - assuming local time - is what made
+        midnight-reset calculations wrong on
+        every host not configured as ``UTC``.
+      * An aware ``datetime`` is converted
+        via ``astimezone(timezone.utc)``.
+
+    Returning a normalized UTC timestamp
+    rather than a timedelta keeps the
+    contract symmetric: both
+    ``daily_energy_at`` and ``now`` flow
+    through the same path.
+    """
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        # Audit T20 follow-up: assume
+        # UTC for naive timestamps. The
+        # alternative (assume local)
+        # is exactly the bug we are
+        # fixing.
+        return ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc)
+
+
 def compute_daily_energy_freshness(
     daily_energy_at: datetime | None,
     daily_energy_date: date | None,
@@ -104,6 +181,16 @@ def compute_daily_energy_freshness(
         to surface ``None``, ``0.0``, or a
         cached value; the freshness helper
         only reports the truth.
+
+    Audit T20 follow-up: the helper accepts
+    ``daily_energy_at`` and ``now`` in any
+    combination of naive / aware datetimes.
+    Both are normalized to UTC internally
+    so the subtraction never raises
+    ``TypeError``. The freshness triple
+    surfaces the normalized UTC values
+    so consumers do not have to repeat the
+    work.
     """
     if daily_energy_at is None or daily_energy_date is None:
         return DailyEnergyFreshness(
@@ -111,23 +198,32 @@ def compute_daily_energy_freshness(
             daily_energy_at=None,
             daily_energy_stale=True,
         )
-    # Compare the timestamp against
-    # ``now`` in a way that tolerates
-    # timezone-naive timestamps (the API
-    # returns naive datetimes in the
-    # production wiring; the audit
-    # accepts both).
-    elapsed = now - daily_energy_at
+    # Audit T20 follow-up:
+    # normalize both timestamps
+    # to UTC before subtraction.
+    api_at_utc = _normalize_utc(daily_energy_at)
+    now_utc = _normalize_utc(now)
+    if api_at_utc is None or now_utc is None:
+        # Defensive: ``_normalize_utc``
+        # only returns ``None`` when
+        # ``ts`` is ``None``, which we
+        # already filtered above.
+        return DailyEnergyFreshness(
+            daily_energy_date=None,
+            daily_energy_at=None,
+            daily_energy_stale=True,
+        )
+    elapsed = now_utc - api_at_utc
     if elapsed < timedelta(0):
-        # A timestamp from the future is
-        # suspicious. Mark stale rather
-        # than silently trusting.
+        # A timestamp from the future
+        # is suspicious. Mark stale
+        # rather than silently trusting.
         stale = True
     else:
         stale = elapsed > timedelta(hours=freshness_hours)
     return DailyEnergyFreshness(
         daily_energy_date=daily_energy_date,
-        daily_energy_at=daily_energy_at,
+        daily_energy_at=api_at_utc,
         daily_energy_stale=stale,
     )
 

@@ -145,19 +145,25 @@ class InverterApiClient:
         # Audit T20: freshness
         # metadata for ``daily_energy``.
         # ``daily_energy_at`` is the
-        # timestamp the value was last
-        # refreshed by the API. ``None``
-        # means we have never refreshed.
-        # ``daily_energy_date`` is the
-        # calendar date the API attached
-        # to the value (the inverter
-        # rolls ``dailyProducedQuantity``
-        # back to zero at 00:00 local
-        # time, so the sensor must
-        # honour that reset rather than
-        # surface yesterday's final
-        # reading as today's morning
-        # reading).
+        # UTC timestamp the value was
+        # last refreshed by the API.
+        # ``None`` means we have never
+        # refreshed. ``daily_energy_date``
+        # is the calendar date (in the
+        # HA site's local timezone) when
+        # the value was refreshed. The
+        # audit explicitly says this
+        # date is **not** API-attached -
+        # the Powmr API returns a raw
+        # ``dailyProducedQuantity`` with
+        # no date stamp; the coordinator
+        # attaches the date when it
+        # refreshes so the sensor can
+        # answer "for which day?".
+        # ``daily_energy_date`` defaults
+        # to ``None`` here and is set
+        # to a ``date`` instance after a
+        # successful ``fetch_overview``.
         self.daily_energy_at: datetime | None = None
         self.daily_energy_date: Any = None
 
@@ -386,20 +392,40 @@ class InverterApiClient:
                 self.total_energy = self._parse_double(
                     dev.get("totalProducedQuantity")
                 )
-                # Audit T20: publish the
-                # freshness triple alongside
-                # ``daily_energy``. ``_now``
-                # is the local time the API
-                # was refreshed; ``daily_energy_date``
-                # is the calendar date the
-                # API attached (we use the
-                # local date because the
-                # inverter rolls its counter
-                # back to zero at local
-                # midnight).
-                _now = datetime.now()
-                self.daily_energy_at = _now
-                self.daily_energy_date = _now.date()
+                # Audit T20 follow-up: publish
+                # the freshness triple
+                # alongside ``daily_energy``.
+                # ``_now_utc`` is the UTC
+                # timestamp the API was
+                # refreshed. We always store
+                # ``daily_energy_at`` as a
+                # timezone-aware UTC datetime
+                # so the freshness helper can
+                # subtract it from a
+                # timezone-aware ``now`` without
+                # ``TypeError``. ``daily_energy_date``
+                # is the calendar date in the
+                # host's local timezone because
+                # the inverter rolls its
+                # counter back to zero at local
+                # midnight. ``dt_util`` is the
+                # HA utility used elsewhere in
+                # the codebase; if it is not
+                # available (standalone / unit
+                # tests) we fall back to the
+                # naive ``datetime.now()``
+                # which the freshness helper
+                # normalises to UTC.
+                _now_utc = datetime.now(tz=timezone.utc)
+                self.daily_energy_at = _now_utc
+                try:
+                    from homeassistant.util import (
+                        dt as _ha_dt,
+                    )
+                    _local = _ha_dt.as_local(_now_utc)
+                except ImportError:
+                    _local = _now_utc.astimezone()
+                self.daily_energy_date = _local.date()
                 self._update_co2()
                 _LOGGER.info(
                     "Device found: SN=%s station=%s",
