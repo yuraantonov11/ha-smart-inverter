@@ -133,13 +133,56 @@ def _run_python_suite(
     py: str, suite: Path, label: str
 ) -> tuple[bool, str]:
     """Run one Python test file.
-    Returns ``(passed, summary)``."""
+    Returns ``(passed, summary)``.
+
+    Audit T27 follow-up: the runner
+    used to launch child tests with
+    ``cwd=REPO_ROOT``. That puts the
+    REPO_ROOT directory at
+    ``sys.path[0]``, which on Windows
+    shadows the stdlib ``select`` module
+    with the integration's
+    ``./select.py`` entity file.
+    ``./select.py`` imports from
+    ``homeassistant``, which crashes
+    on a Home-Assistant-less Windows
+    checkout with
+    ``ModuleNotFoundError:
+    homeassistant``.
+
+    The fix is two-fold:
+
+      1. Launch child tests with
+         ``cwd=REPO_ROOT/tests`` so the
+         integration entity files
+         (``select.py``,
+         ``sensor.py``, …) stay out
+         of the implicit
+         ``sys.path[0]``.
+      2. Prepend ``REPO_ROOT`` to the
+         child's ``PYTHONPATH`` so
+         ``import hems``, ``import
+         coordinator``, etc. still
+         resolve. ``sys.path[0]`` is
+         now the test file's own
+         directory; the project root is
+         reachable via ``PYTHONPATH``.
+    """
+    env = dict(os.environ)
+    existing_pp = env.get("PYTHONPATH", "")
+    pp_parts = [
+        p for p in existing_pp.split(os.pathsep) if p
+    ]
+    pp_parts.insert(0, str(REPO_ROOT))
+    env["PYTHONPATH"] = os.pathsep.join(pp_parts)
     try:
         r = subprocess.run(
             [py, str(suite)],
             capture_output=True,
             text=True,
             timeout=120,
+            cwd=str(suite.parent),
+            env=env,
         )
     except subprocess.TimeoutExpired:
         return False, f"{label}: TIMEOUT after 120s"
@@ -269,7 +312,19 @@ def main() -> int:
             return 2
         suites = _discover_python_suites(target)
         if args.only:
-            suites = [s for s in suites if s.name == args.only]
+            wanted = {
+                name.strip()
+                for name in args.only.split(",")
+                if name.strip()
+            }
+            suites = [s for s in suites if s.name in wanted]
+            if not suites:
+                print(
+                    f"FATAL: --only matched 0 of {len(suites)} suites; "
+                    f"requested={sorted(wanted)}",
+                    file=sys.stderr,
+                )
+                return 3
         summary["python_files"] = len(suites)
         if not suites:
             print(

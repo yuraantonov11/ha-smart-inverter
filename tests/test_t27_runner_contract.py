@@ -348,5 +348,164 @@ class T27RunnerContractTests(unittest.TestCase):
             )
 
 
+
+    def test_t27_09_stdlib_selectors_not_shadowed(self) -> None:
+        """Audit T27 follow-up: when the
+        runner is launched with
+        ``cwd=REPO_ROOT`` (which puts the
+        REPO_ROOT directory at
+        ``sys.path[0]``), an ``import
+        select`` statement in a child
+        test must NOT resolve to the
+        integration's ``./select.py``
+        entity module — that file
+        imports from ``homeassistant``
+        and would crash on a
+        Home-Assistant-less Windows
+        checkout.
+
+        Reproduce the failure mode by
+        starting a subprocess with
+        ``cwd=REPO_ROOT`` and verifying
+        ``select`` still resolves to the
+        stdlib (no ``__file__``) or to a
+        non-entity module.
+        """
+        # ``cwd=REPO_ROOT`` is the
+        # runner's normal launch
+        # context. Run a tiny inline
+        # script that imports
+        # ``selectors`` (stdlib) and
+        # checks it does not transitively
+        # pull the integration's
+        # ``./select.py``.
+        inline = textwrap.dedent(
+            """\
+            import selectors
+            import sys
+
+            # stdlib selectors lives under
+            # ``python_install_dir`` and
+            # always carries an absolute
+            # ``__file__`` that does not
+            # end with the integration
+            # entity filename.
+            assert hasattr(selectors, "__file__"), (
+                "stdlib selectors must have __file__"
+            )
+            sel_file = selectors.__file__
+            assert not sel_file.endswith("select.py"), (
+                "selectors must not resolve to the integration's "
+                f"./select.py; got {sel_file!r}"
+            )
+
+            # ``select`` itself may be
+            # either the builtin or the
+            # stdlib module — what
+            # matters is that it does
+            # NOT resolve to the
+            # integration entity file.
+            import select
+            sel_file = getattr(select, "__file__", "")
+            assert not sel_file.endswith("select.py") or not sel_file, (
+                "select must not resolve to the integration's "
+                f"./select.py; got {sel_file!r}"
+            )
+
+            # ``selectors`` must not have
+            # transitively imported
+            # ``homeassistant`` (which
+            # would happen if we
+            # accidentally shadowed it).
+            assert "homeassistant" not in sys.modules, (
+                "stdlib selectors pulled homeassistant via "
+                "sys.path shadowing — see audit T27 follow-up"
+            )
+            print("OK")
+            """
+        )
+        r = subprocess.run(
+            [sys.executable, "-c", inline],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=30,
+        )
+        self.assertEqual(
+            r.returncode,
+            0,
+            msg=(
+                "stdlib selectors was shadowed by the integration's "
+                "./select.py when cwd=REPO_ROOT. "
+                f"stdout={r.stdout!r}, stderr={r.stderr!r}"
+            ),
+        )
+        self.assertIn(
+            "OK",
+            r.stdout,
+            msg=(
+                "inline subprocess did not reach the OK branch; "
+                f"stdout={r.stdout!r}, stderr={r.stderr!r}"
+            ),
+        )
+
+    def test_t27_10_runner_passes_all_problem_suites(self) -> None:
+        """The suites that historically
+        failed on Windows because of the
+        ``select`` / ``selectors``
+        shadowing must now pass through
+        ``tests/run_all.py --python-only``.
+        We pin the runner contract end
+        to end on the same set of files
+        the audit calls out.
+        """
+        problem_suites = [
+            "test_t11_service_entry_resolver.py",
+            "test_t15_total_energy_card.py",
+            "test_t16_behavioral_options.py",
+            "test_t16_options_contract.py",
+            "test_t17_unload_reload_cleanup.py",
+        ]
+        r = _run_runner(
+            "--python-only",
+            "--only",
+            ",".join(problem_suites),
+        )
+        combined = r.stdout + r.stderr
+        for suite in problem_suites:
+            self.assertIn(
+                suite,
+                combined,
+                msg=(
+                    f"runner output must surface {suite!r}; got "
+                    f"{combined[:500]!r}"
+                ),
+            )
+            # The per-suite line must
+            # read PASS, not FAIL.
+            for line in combined.splitlines():
+                if suite in line:
+                    self.assertIn(
+                        "PASS",
+                        line,
+                        msg=(
+                            f"{suite!r} must PASS through the "
+                            f"runner; runner line was {line!r}"
+                        ),
+                    )
+                    break
+        self.assertEqual(
+            r.returncode,
+            0,
+            msg=(
+                "runner exited non-zero on the historical "
+                "problem suites; runner must keep these green. "
+                f"stderr={r.stderr!r}"
+            ),
+        )
+
+
+
 if __name__ == "__main__":
     _main(verbosity=2)
