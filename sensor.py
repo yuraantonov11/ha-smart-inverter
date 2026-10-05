@@ -67,6 +67,18 @@ from .const import DOMAIN
 from .coordinator import InverterCoordinator, HistoryCoordinator
 from .hems import debug_logging
 
+# Audit T20: freshness helpers
+# live in ``hems.energy_freshness``
+# so the sensor does not invent
+# its own midnight-reset logic.
+# ``hems.energy_freshness`` is a
+# pure-stdlib module - no Home
+# Assistant imports.
+from .hems.energy_freshness import (
+    compute_daily_energy_freshness,
+    daily_energy_for_today,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 WORKING_MODE_LABELS_UK: dict[str, str] = {
