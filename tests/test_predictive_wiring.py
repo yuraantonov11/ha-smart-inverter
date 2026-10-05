@@ -575,10 +575,51 @@ def test_debug_logging_no_config_dir():
                 skip_reason=None,
             )
             # Complete asynchronous file writes before Windows deletes tmpdir.
-            import threading
-            for worker in threading.enumerate():
-                if getattr(worker, "_target", None) is debug_logging._write_line:
-                    worker.join(timeout=2)
+            #
+            # Audit T18 follow-up: the old
+            # implementation polled
+            # ``threading.enumerate()`` for
+            # workers whose ``_target`` was
+            # ``debug_logging._write_line``.
+            # That predicate was wrong on
+            # two counts:
+            #
+            # 1. The production worker is
+            #    ``threading.Thread(
+            #    target=self._serve)`` —
+            #    the *target* attribute
+            #    points to the bound
+            #    ``_DebugLogWorker._serve``
+            #    method, not
+            #    ``debug_logging._write_line``.
+            # 2. Even on platforms where
+            #    the predicate matched,
+            #    ``worker.join(timeout=2)``
+            #    can race with the
+            #    underlying
+            #    ``Queue.put_nowait`` /
+            #    ``Queue.join`` semantics
+            #    on slow filesystems.
+            #
+            # The correct primitive is
+            # the worker's own ``drain``
+            # helper, which uses
+            # ``unfinished_tasks`` to
+            # block until every queued
+            # item has been written to
+            # disk and ``task_done``-ed.
+            worker = debug_logging._worker
+            if worker is not None:
+                drained = worker.drain(timeout=5.0)
+                if not drained:
+                    raise AssertionError(
+                        "bounded worker did not drain before "
+                        "TemporaryDirectory cleanup; pending "
+                        "writes would race the OSError on Windows. "
+                        "This usually means a test or fixture "
+                        "enqueued a record that the worker thread "
+                        "has not yet processed."
+                    )
         # Now flip to a path with a missing parent directory.
         debug_logging.set_log_path("/nonexistent_dir_x/powmr_hems_debug.log")
         debug_logging.log_evaluation(

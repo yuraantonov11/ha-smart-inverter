@@ -747,6 +747,102 @@ class T27RunnerContractTests(unittest.TestCase):
         )
 
 
+    def test_t27_14_wiring_drain_loop_20_times(self) -> None:
+        """Audit T18 / T27 follow-up: the
+        ``test_debug_logging_no_config_dir``
+        regression in
+        ``test_predictive_wiring.py`` is
+        a flaky-on-Windows race. The
+        original test polled
+        ``threading.enumerate()`` for
+        workers whose ``_target`` was
+        ``debug_logging._write_line``
+        and called ``join(timeout=2)``,
+        but the production worker is
+        ``threading.Thread(target=self._serve)``
+        so the predicate never matches
+        and the join is a no-op. On
+        Windows the pending file
+        write then races the
+        ``TemporaryDirectory`` cleanup
+        and the test fails with::
+
+            OSError: [WinError 145]
+            The directory is not empty
+
+        The fix replaces the predicate
+        with ``worker.drain(timeout=...)``,
+        which uses the queue's
+        ``unfinished_tasks`` to block
+        until every queued record has
+        been written and ``task_done``-ed.
+        We pin the contract by
+        running the same test path
+        20 times in succession — a
+        single failure would expose
+        the race; twenty iterations
+        catch a 5 % flake with
+        ``1 - 0.95**20 ≈ 64 %``
+        confidence.
+        """
+        import sys as _sys_t
+        import os as _os_t
+        if str(REPO_ROOT) not in _sys_t.path:
+            _sys_t.path.insert(0, str(REPO_ROOT))
+        import tempfile as _tempfile
+        import threading as _threading
+        from hems import debug_logging as _debug_logging
+        from hems.engine import HemsDecision as _HemsDecision
+        from datetime import datetime as _datetime
+        for _i in range(20):
+            with _tempfile.TemporaryDirectory() as _td:
+                _debug_logging.set_log_path(
+                    _td + "/stress.log"
+                )
+                _debug_logging.log_evaluation(
+                    timestamp=_datetime(2026, 6, 15, 12, _i % 60, 0),
+                    inputs={
+                        "smart_mode": 0,
+                        "soc": 60.0,
+                        "pv_power": 100.0,
+                        "load_power": 200.0,
+                    },
+                    decision=_HemsDecision(
+                        output_priority="2",
+                        charger_priority="2",
+                        reason=f"stress_{_i}",
+                        skip=False,
+                    ),
+                    applied={
+                        "output_priority": "2",
+                        "charger_priority": "2",
+                    },
+                    skip_reason=None,
+                )
+                # Drain the bounded
+                # worker. If the worker
+                # was not started, skip
+                # the drain — that
+                # means the test is
+                # running on a fresh
+                # interpreter and
+                # ``log_evaluation``
+                # fell back to the
+                # synchronous
+                # ``_write_line`` call.
+                _worker = _debug_logging._worker
+                if _worker is not None:
+                    _drained = _worker.drain(timeout=5.0)
+                    if not _drained:
+                        raise AssertionError(
+                            f"iteration {_i}: worker did not "
+                            "drain before TemporaryDirectory "
+                            "cleanup; this is the Windows "
+                            "race the audit fix is meant to "
+                            "prevent."
+                        )
+
+
     def test_t27_08_runner_handles_js_when_node_present(self) -> None:
         """When ``node`` is on PATH
         the runner runs the JS suite
