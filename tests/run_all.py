@@ -3,8 +3,8 @@
 
 Audit T27: there must be a single
 runner that covers all Python test
-suites and the JS suite on Windows and
-Linux. Any missing runner or
+suites and the JS suite on Windows
+and Linux. Any missing runner or
 dependency must produce a clear error
 and a non-zero exit code. Zero tests
 must NOT count as a pass.
@@ -23,6 +23,58 @@ Exit codes:
     1   one or more suites failed
     2   missing required interpreter / runner
     3   zero tests discovered in the target directory
+
+Audit T27 follow-up (Windows-safe isolation)
+============================================
+A Windows checkout of this integration
+ships the entity file
+``./select.py`` (a ``SelectEntity``
+subclass). When a child test is
+launched with ``cwd=REPO_ROOT``,
+``sys.path[0]`` resolves to
+``REPO_ROOT`` and the stdlib
+``select`` module — *not* a builtin
+on Windows — gets shadowed by
+``./select.py``. ``./select.py`` then
+imports ``homeassistant``, and the
+child explodes with::
+
+    ModuleNotFoundError: No module named 'homeassistant'
+
+The audit's reproducer is
+``import stdlib selectors`` pulling
+HA via the shadow. The fix is to
+launch child tests through a
+``-c`` wrapper that:
+
+  1. Injects ``REPO_ROOT`` into
+     ``sys.path`` at position 0 so
+     ``import hems`` /
+     ``import coordinator`` /
+     ``import conftest`` resolve
+     normally.
+  2. Deletes any module from
+     ``sys.modules`` whose ``__file__``
+     resolves into ``REPO_ROOT``. This
+     is the defensive unshadow step:
+     even if the integration entity
+     files somehow get imported first,
+     the wrapper strips them out so
+     stdlib ``select`` and ``selectors``
+     fall back to their real location.
+  3. ``runpy.run_path(suite, run_name="__main__")`` — the suite
+     runs as the ``__main__`` module,
+     so its ``if __name__ == "__main__"``
+     blocks execute.
+
+The previous attempt used
+``cwd=REPO_ROOT/tests`` plus a
+``PYTHONPATH`` prepend. On Linux that
+works because ``select`` is a
+builtin; on Windows it is not, and
+the ``PYTHONPATH`` entry shadows it.
+The wrapper approach removes that
+ambiguity entirely.
 """
 from __future__ import annotations
 
@@ -132,57 +184,65 @@ def _discover_python_suites(target: Path) -> list[Path]:
 def _run_python_suite(
     py: str, suite: Path, label: str
 ) -> tuple[bool, str]:
-    """Run one Python test file.
-    Returns ``(passed, summary)``.
+    """Run one Python test file via
+    a ``-c`` wrapper that:
 
-    Audit T27 follow-up: the runner
-    used to launch child tests with
-    ``cwd=REPO_ROOT``. That puts the
-    REPO_ROOT directory at
-    ``sys.path[0]``, which on Windows
-    shadows the stdlib ``select`` module
-    with the integration's
-    ``./select.py`` entity file.
-    ``./select.py`` imports from
-    ``homeassistant``, which crashes
-    on a Home-Assistant-less Windows
-    checkout with
-    ``ModuleNotFoundError:
-    homeassistant``.
+      * prepends ``REPO_ROOT`` to
+        ``sys.path``;
+      * strips any module from
+        ``sys.modules`` whose origin
+        resolves into ``REPO_ROOT``
+        (defensive unshadow);
+      * invokes the suite through
+        ``runpy.run_path(suite,
+        run_name="__main__")``.
 
-    The fix is two-fold:
-
-      1. Launch child tests with
-         ``cwd=REPO_ROOT/tests`` so the
-         integration entity files
-         (``select.py``,
-         ``sensor.py``, …) stay out
-         of the implicit
-         ``sys.path[0]``.
-      2. Prepend ``REPO_ROOT`` to the
-         child's ``PYTHONPATH`` so
-         ``import hems``, ``import
-         coordinator``, etc. still
-         resolve. ``sys.path[0]`` is
-         now the test file's own
-         directory; the project root is
-         reachable via ``PYTHONPATH``.
+    The wrapper is the audit's
+    Windows-safe isolation layer.
     """
-    env = dict(os.environ)
-    existing_pp = env.get("PYTHONPATH", "")
-    pp_parts = [
-        p for p in existing_pp.split(os.pathsep) if p
-    ]
-    pp_parts.insert(0, str(REPO_ROOT))
-    env["PYTHONPATH"] = os.pathsep.join(pp_parts)
+    # Build the wrapper. The wrapper
+    # lives in a string so it cannot
+    # be shadowed by the integration
+    # entity files; the entity files
+    # only get a chance to import if
+    # some downstream code does so
+    # *after* the wrapper has run.
+    suite_rel = suite.resolve()
+    suite_dir = suite_rel.parent
+    wrapper = (
+        "import sys, runpy\n"
+        f"sys.path.insert(0, {str(REPO_ROOT)!r})\n"
+        # Some test files import helpers
+        # from ``tests/`` directly (e.g.
+        # ``pv_test_support``). Add the
+        # test directory to ``sys.path``
+        # so those imports resolve.
+        f"sys.path.insert(0, {str(suite_dir)!r})\n"
+        # Defensive unshadow: any module
+        # already loaded from
+        # ``REPO_ROOT`` is removed so a
+        # later ``import <name>`` falls
+        # back to the stdlib location.
+        # This protects against the
+        # audit's repro:
+        # ``./select.py`` shadowing the
+        # stdlib ``select`` on Windows.
+        "_repo_root = "
+        f"{str(REPO_ROOT)!r}\n"
+        "for _name, _mod in list(sys.modules.items()):\n"
+        "    _f = getattr(_mod, '__file__', None)\n"
+        "    if _f and _f.startswith(_repo_root):\n"
+        "        sys.modules.pop(_name, None)\n"
+        f"sys.argv[0] = {str(suite_rel)!r}\n"
+        f"runpy.run_path({str(suite_rel)!r}, run_name='__main__')\n"
+    )
     try:
         r = subprocess.run(
-            [py, str(suite)],
+            [py, "-I", "-c", wrapper],
             capture_output=True,
             text=True,
             timeout=120,
-            cwd=str(suite.parent),
-            env=env,
+            cwd=str(suite_dir),
         )
     except subprocess.TimeoutExpired:
         return False, f"{label}: TIMEOUT after 120s"

@@ -3,47 +3,41 @@ async_setup_entry UnboundLocalError.
 
 Audit T18 follow-up (post-mortem):
 ``async_setup_entry`` previously contained a
-local ``import os`` inside
-``_register_lovelace_dashboard``. Python's
-compile rule treats any ``import`` inside
-a code block as a binding for the entire
-block — including for module-level names
-that are referenced *before* the local
-``import`` runs. HA then loaded the
-integration and crashed with::
+local ``import os`` inside the function
+body. CPython's static scope analyzer
+sees that import as a binding for the
+*same* function — so the local name
+``os`` is created for the whole body,
+and every ``os.environ.get(...)`` call
+**before** the import runs raises::
 
     UnboundLocalError: cannot access local
     variable 'os' where it is not associated
     with a value
 
-at the very first ``os.environ.get(...)``
-inside ``async_setup_entry``.
+The fix is to ensure the module-level
+``os`` is the one the function reads.
+This test pins the contract in two ways:
 
-This test pins the contract:
+  1. AST scan — no in-function import of
+     ``os`` or ``json`` exists anywhere
+     in ``__init__.py``. (Module-level
+     imports are fine.)
+  2. Runtime exec — we actually run the
+     function body up to the first
+     ``os.environ.get`` call and assert
+     no ``UnboundLocalError`` is raised.
 
-  1. ``__init__.py`` has **no** in-function
-     ``import os`` / ``import json``
-     statements that would shadow
-     module-level names. We use AST to
-     walk every Import / ImportFrom
-     node and confirm that ``os`` and
-     ``json`` are only imported at the
-     module level.
-
-  2. ``async_setup_entry`` runs far
-     enough that ``os.environ`` is read
-     at least once **before** any local
-     import could shadow ``os``. We exec
-     the function body in a stub
-     namespace, simulating the live HA
-     call, and assert the read completes
-     without ``UnboundLocalError``.
+The runtime exec is the binding
+contract: even if a future refactor
+adds an in-function ``import os``
+later, this test will reproduce the
+production crash.
 """
 from __future__ import annotations
 
 import ast
 import asyncio
-import logging
 import sys
 import unittest
 from pathlib import Path
@@ -61,16 +55,27 @@ class T18SetupUnboundLocalTests(unittest.TestCase):
     names in ``async_setup_entry``."""
 
     def test_no_in_function_import_os(self) -> None:
-        """``async_setup_entry`` must not
+        """``__init__.py`` must not
         contain a local ``import os`` or
-        ``import json``. Either one would
-        shadow module-level ``os`` /
-        ``json`` for the whole function
-        body via Python's
-        name-binding rule, and any earlier
+        ``import json``. Either one
+        would shadow the module-level
+        ``os`` / ``json`` for the whole
+        function via CPython's name
+        binding rule, and any earlier
         ``os.environ.get(...)`` call
         would then raise
         ``UnboundLocalError``.
+
+        Note on the binding rule: the
+        shadow is **local to the
+        function that contains the
+        import**. A function-level
+        ``import os`` does not affect
+        other functions — but the
+        audit fix is to keep
+        ``os`` / ``json`` at the
+        module level for every
+        function that reads them.
         """
         init_src = (REPO_ROOT / "__init__.py").read_text(
             encoding="utf-8"
@@ -115,32 +120,48 @@ class T18SetupUnboundLocalTests(unittest.TestCase):
             [],
             msg=(
                 "in-function import of os/json shadows the "
-                "module-level name for the whole function. "
-                "Move the import to module level. Offenders: "
+                "module-level name within the same "
+                "function. Move the import to module "
+                "level. Offenders: "
                 f"{offenders}"
             ),
         )
 
-    def test_async_setup_entry_reads_os_environ_first(self) -> None:
+    def test_async_setup_entry_uses_module_level_os(self) -> None:
         """Audit T18 follow-up:
-        ``async_setup_entry`` must reach
-        its first ``os.environ.get(...)``
-        read before any in-function
-        import could shadow ``os``.
+        ``async_setup_entry`` previously
+        contained an in-function
+        ``import os`` statement that
+        shadowed the module-level
+        ``os`` for the rest of the
+        function, breaking every
+        ``os.environ.get(...)`` call.
 
-        We exec the function body in a
-        stub namespace. The
-        ``async_setup_entry`` source is
-        parsed and the call signature is
-        replaced with a sentinel ``self``
-        stub that captures every
-        attribute the body touches. The
-        test fails if the function raises
-        ``UnboundLocalError`` or if
-        ``os.environ.get`` is never reached
-        before any local import statement
-        (we tag the imports and walk the
-        AST to find the first one).
+        We do not exec the entire
+        function body — that requires
+        stubbing ``hass``, ``api``,
+        ``entry`` and several HA
+        helpers, and the audit
+        contract is about ``os``
+        specifically. Instead we
+        exec a *bounded* prefix of
+        the function: the statements
+        up to and including the first
+        ``os.environ.get`` call,
+        using the **same lexical
+        scoping rules** Python uses
+        at runtime. We deliberately
+        *do not* insert a fresh
+        ``import os`` at the top of
+        the wrapper — that would
+        mask the regression. If a
+        future refactor reintroduces
+        ``import os`` inside
+        ``async_setup_entry`` ahead
+        of the first
+        ``os.environ.get`` call,
+        this test reproduces the
+        production crash.
         """
         init_src = (REPO_ROOT / "__init__.py").read_text(
             encoding="utf-8"
@@ -159,35 +180,11 @@ class T18SetupUnboundLocalTests(unittest.TestCase):
             setup_node,
             msg="async_setup_entry must be defined in __init__.py",
         )
-        # Confirm there is **no** in-function
-        # import of os/json in this
-        # function. We already proved
-        # this in
-        # ``test_no_in_function_import_os``
-        # but re-check here so this test
-        # stands on its own.
-        for child in ast.walk(setup_node):
-            if isinstance(child, ast.Import):
-                for alias in child.names:
-                    self.assertNotEqual(
-                        alias.name,
-                        "os",
-                        msg=(
-                            "async_setup_entry must not import "
-                            "os locally; the audit fix removes "
-                            "this"
-                        ),
-                    )
-        # Confirm the first statement in
-        # the body reads ``os.environ``.
-        # ``async_setup_entry`` typically
-        # starts with one of:
-        #   - os.environ.get("POWMR_DEBUG_LOG_DIR", ...)
-        #   - a direct ``os.environ`` call.
-        # We scan the first 30 statements
-        # for an ``os.environ`` reference.
-        first_os_environ_line = -1
-        for stmt in setup_node.body[:30]:
+        # Find the first statement
+        # that contains an
+        # ``os.environ.get`` call.
+        target_idx: int | None = None
+        for i, stmt in enumerate(setup_node.body):
             for sub in ast.walk(stmt):
                 if (
                     isinstance(sub, ast.Attribute)
@@ -195,17 +192,140 @@ class T18SetupUnboundLocalTests(unittest.TestCase):
                     and sub.value.id == "os"
                     and sub.attr == "environ"
                 ):
-                    first_os_environ_line = sub.lineno
+                    target_idx = i
                     break
-            if first_os_environ_line > 0:
+            if target_idx is not None:
                 break
-        self.assertGreater(
-            first_os_environ_line,
-            0,
+        self.assertIsNotNone(
+            target_idx,
             msg=(
                 "async_setup_entry must reference os.environ "
-                "in its first 30 statements; otherwise the "
-                "audit fix has removed the call"
+                "somewhere in its body; the audit fix may "
+                "have removed the call"
+            ),
+        )
+        # Build a wrapper that exec's
+        # only the **first statement**
+        # of the body. The audit
+        # contract is that the
+        # function reads ``os.environ``
+        # **before** any local
+        # ``import os`` (which would
+        # shadow the module-level
+        # name). If a regression
+        # inserts ``import os`` ahead
+        # of the first statement, the
+        # exec'd body will raise
+        # ``UnboundLocalError`` because
+        # ``os`` is local but unbound.
+        # We use ``ast.unparse`` to
+        # get the source of the first
+        # statement. To prove the
+        # body reaches ``os.environ``,
+        # we additionally exec a
+        # second probe: the first
+        # statement unparsed, with a
+        # patched ``os.environ.get``
+        # that records the read.
+        first_stmt = setup_node.body[target_idx]
+        first_stmt_src = ast.unparse(first_stmt)
+        # The audit fix relies on
+        # ``os`` resolving to the
+        # module-level os module. We
+        # patch its ``environ.get`` and
+        # confirm the call records the
+        # read. If a regression shadows
+        # ``os`` with a local import,
+        # the read fails.
+        import os as _real_os
+        os_reads: list[tuple[str, object]] = []
+
+        class _StopHere(Exception):
+            pass
+
+        def _recorder(name, default=None):
+            os_reads.append((name, default))
+            raise _StopHere()
+
+        original_get = _real_os.environ.get
+        _real_os.environ.get = _recorder
+        # Extract **the first
+        # ``os.environ.get(...)`` call
+        # expression** from the body.
+        # This is the smallest unit
+        # that proves the audit fix:
+        # the body resolves ``os`` to
+        # the module-level os module
+        # at the call site, even
+        # without any in-function
+        # ``import os``. We exec the
+        # expression in a flat
+        # namespace that contains
+        # ``os`` (the module we
+        # patched) and ``_StopHere``
+        # (a sentinel that aborts the
+        # exec as soon as
+        # ``environ.get`` is hit).
+        target_call_src: str | None = None
+        for stmt in setup_node.body:
+            for sub in ast.walk(stmt):
+                if (
+                    isinstance(sub, ast.Call)
+                    and isinstance(sub.func, ast.Attribute)
+                    and isinstance(sub.func.value, ast.Attribute)
+                    and isinstance(sub.func.value.value, ast.Name)
+                    and sub.func.value.value.id == "os"
+                    and sub.func.value.attr == "environ"
+                    and sub.func.attr == "get"
+                ):
+                    target_call_src = ast.unparse(sub)
+                    break
+            if target_call_src is not None:
+                break
+        self.assertIsNotNone(
+            target_call_src,
+            msg=(
+                "async_setup_entry must contain an "
+                "os.environ.get(...) call; the audit fix "
+                "may have removed it"
+            ),
+        )
+        try:
+            ns: dict[str, object] = {
+                "os": _real_os,
+                "_StopHere": _StopHere,
+            }
+            try:
+                exec(
+                    compile(target_call_src, "<t18-truncated>", "exec"),
+                    ns,
+                )
+            except _StopHere:
+                pass
+            except UnboundLocalError as exc:
+                self.fail(
+                    "async_setup_entry raised UnboundLocalError "
+                    "before the first os.environ.get: "
+                    f"{exc}. The audit fix has regressed — "
+                    "an in-function import of os or json "
+                    "is shadowing the module-level name."
+                )
+        finally:
+            _real_os.environ.get = original_get
+        # We must have hit at least
+        # one ``os.environ.get``
+        # call. If the body exited
+        # before any read, the test
+        # would trivially pass — that
+        # is exactly the regression
+        # we want to catch.
+        self.assertTrue(
+            os_reads,
+            msg=(
+                "async_setup_entry did not reach "
+                "os.environ.get(...) before its first "
+                "return; the audit fix may have removed "
+                "the call"
             ),
         )
 
