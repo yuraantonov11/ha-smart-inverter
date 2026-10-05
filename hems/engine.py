@@ -541,7 +541,16 @@ class HemsEngine:
                 hourly_pv=hourly_pv, hourly_radiation=radiation, hourly_weather_codes=weather,
                 dated_hourly_pv=dated_pv,
                 tariff_schedule=list(getattr(self, "_tariff_schedule", []) or []),
-                consumption_history=list(getattr(self, "_consumption_history", []) or []),
+                # Audit T19: the dated
+                # ``list[tuple[date,
+                # list[float], bool]]``
+                # shape is the canonical
+                # history contract. The
+                # fallback to the legacy
+                # flat shape is kept for
+                # tests and migration
+                # safety.
+                consumption_history=list(getattr(self, "_consumption_history_with_dates", None) or getattr(self, "_consumption_history", []) or []),
                 battery_capacity_kwh=capacity, grid_available=inputs["grid_available"],
                 # T01 follow-up: propagate the unknown-SOC flag all the
                 # way into PlannerInputs so the predictive controller

@@ -27,6 +27,33 @@ def _check(cond: bool, msg: str) -> None:
         print(f"  FAIL: {msg}")
 
 
+
+def _row_payload(row):
+    """Unwrap the dated tuple shape so legacy
+    test bodies can keep iterating over a flat
+    payload. Audit T19: ``build_hourly_load_matrix``
+    now returns ``list[tuple[date, list[float],
+    bool]]``. Test bodies that previously
+    iterated over ``row`` directly use
+    ``_row_payload(row)``.
+    """
+    if isinstance(row, tuple):
+        return row[1]
+    return row
+
+
+def _row_date(row):
+    if isinstance(row, tuple):
+        return row[0]
+    return None
+
+
+def _row_gap_filled(row):
+    if isinstance(row, tuple) and len(row) >= 3:
+        return bool(row[2])
+    return False
+
+
 def _section(name: str) -> None:
     print(f"\n-- {name} --")
 
@@ -53,8 +80,8 @@ def test_three_full_days_constant():
     _check(len(out) == 3, f"len == 3 (got {len(out)})")
     _check(history_depth_days(out) == 3, "history_depth_days == 3")
     for i, row in enumerate(out):
-        _check(len(row) == 24, f"row {i} length 24")
-        _check(all(abs(v - 250.0) < 1e-9 for v in row),
+        _check(len(_row_payload(row)) == 24, f"row {i} length 24")
+        _check(all(abs(v - 250.0) < 1e-9 for v in _row_payload(row)),
                f"row[{i}] all 250.0")
 
 
@@ -68,7 +95,7 @@ def test_today_partial_excluded():
         samples.append((datetime(2026, 6, 12, h, 30), 999.0))
     out = build_hourly_load_matrix(samples, now)
     _check(len(out) == 1, f"only yesterday included (got {len(out)})")
-    _check(all(abs(v - 300.0) < 1e-9 for v in out[0]),
+    _check(all(abs(v - 300.0) < 1e-9 for v in _row_payload(out[0])),
            "yesterday row all 300.0")
 
 
@@ -95,7 +122,7 @@ def test_day_with_20_hours_fill_missing():
                         400.0))
     out = build_hourly_load_matrix(samples, now)
     _check(len(out) == 1, "20-hour day included")
-    row = out[0]
+    row = _row_payload(out[0])
     for h in range(24):
         _check(abs(row[h] - 400.0) < 1e-9, f"hour {h} == 400.0")
 
@@ -116,7 +143,7 @@ def test_invalid_samples_ignored():
     samples.append((datetime(the_day.year, the_day.month, the_day.day, 0, 5), float('inf')))
     out = build_hourly_load_matrix(samples, now)
     _check(len(out) == 1, "exactly one row")
-    _check(all(abs(v - 500.0) < 1e-9 for v in out[0]),
+    _check(all(abs(v - 500.0) < 1e-9 for v in _row_payload(out[0])),
            "row unaffected by invalid samples")
 
 
@@ -137,8 +164,8 @@ def test_days_cap_returns_most_recent():
     expected = [(i + 1) * 100.0 for i in range(6, -1, -1)]
     _check(len(out) == len(expected), f"len(out) {len(out)} matches expected")
     for i, row in enumerate(out):
-        _check(len(row) == 24, f"row {i} length 24")
-        _check(all(abs(v - expected[i]) < 1e-9 for v in row),
+        _check(len(_row_payload(row)) == 24, f"row {i} length 24")
+        _check(all(abs(v - expected[i]) < 1e-9 for v in _row_payload(row)),
                f"row {i} values == {expected[i]} W")
 
 
@@ -156,8 +183,9 @@ def test_hourly_averaging_two_samples():
             samples.append((datetime(the_day.year, the_day.month, the_day.day, h, 0), 250.0))
     out = build_hourly_load_matrix(samples, now)
     _check(len(out) == 1, "one row returned")
-    _check(abs(out[0][5] - 200.0) < 1e-9, f"hour 5 avg == 200.0 (got {out[0][5]})")
-    _check(abs(out[0][0] - 250.0) < 1e-9, "hour 0 still 250.0")
+    payload = _row_payload(out[0])
+    _check(abs(payload[5] - 200.0) < 1e-9, f"hour 5 avg == 200.0 (got {payload[5]})")
+    _check(abs(payload[0] - 250.0) < 1e-9, "hour 0 still 250.0")
 
 
 if __name__ == "__main__":

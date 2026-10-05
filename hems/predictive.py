@@ -201,25 +201,148 @@ class ConsumptionPredictor:
         Юра's pattern is regular (200-300W baseline, peaks 1-1.8kW for kettle).
         Pattern repeats: weekday vs weekend differs slightly.
         Weather impacts: cold = more heating; hot = more AC.
+
+    Audit T19: the predictor now distinguishes
+    three history shapes:
+
+      * ``list[tuple[date, list[float], bool]]``
+        (canonical, dated, with a ``gap_filled``
+        trust flag from the history builder).
+        Rows whose ``gap_filled=True`` are
+        excluded from the same-weekday sample
+        set because the audit found that
+        averaged-in values pollute the mean.
+      * ``list[tuple[date, list[float]]]`` (dated,
+        all rows trusted). The predictor never
+        re-derives the gap-filled flag; it
+        trusts the builder.
+      * ``list[list[float]]`` (legacy, non-dated).
+        The predictor keeps an "honest
+        all-history" fallback: every weekday
+        argument returns the same all-history
+        average. The audit explicitly forbids
+        the predictor from inventing a
+        weekday filter when no dates are
+        available.
+
+    Day-of-week matching uses
+    ``row[0].weekday()`` so missing dates do
+    not shift the matrix index of the
+    remaining rows.
     """
 
-    def __init__(self, history: list[list[float]] | None = None):
-        """history: list of [7 days][24 hours] of W."""
-        self._hist = history or []
+    def __init__(self, history=None):
+        """history: any of the three shapes
+        documented in the class docstring.
+        ``None`` becomes an empty history.
+        """
+        self._hist: list = []
+        self._has_dates: bool = False
+        self._gap_filled_flags: list[bool] = []
+        if history:
+            self._set_history(history)
+
+    def _set_history(self, history) -> None:
+        self._hist = list(history)
+        self._has_dates = bool(self._hist) and isinstance(
+            self._hist[0], tuple
+        )
+        # Pre-extract the
+        # ``gap_filled`` flag from a
+        # 3-tuple (date, row, flag)
+        # so the predict loop stays
+        # in the hot path. Rows that
+        # arrive as 2-tuples (date,
+        # row) or as flat
+        # ``list[list[float]]`` are
+        # trusted by default - the
+        # audit explicitly says the
+        # predictor must NOT invent
+        # its own gap-filled
+        # detection because that
+        # would produce false
+        # positives for rows whose
+        # baseline is constant for
+        # 23 hours and a single
+        # spike in the remaining
+        # hour.
+        flags: list[bool] = []
+        for row in self._hist:
+            if isinstance(row, tuple) and len(row) >= 3:
+                flags.append(bool(row[2]))
+            else:
+                flags.append(False)
+        self._gap_filled_flags = flags
 
     def add_day(self, hourly_load: list[float]) -> None:
-        """Add today's hourly load to rolling 7-day history."""
+        """Add today's hourly load to the rolling
+        30-day history. The predictor treats the
+        appended row as dated (with ``None`` as
+        the date) so the all-history fallback
+        path is taken until the coordinator
+        refreshes the matrix. The audit asks
+        that ``add_day`` not crash when no
+        date is supplied.
+        """
         if len(hourly_load) != 24:
             return
-        self._hist.append(hourly_load)
-        # Keep the same 30-day depth accepted by telemetry/coordinator.
+        self._hist.append((None, list(hourly_load), False))
+        self._gap_filled_flags.append(False)
+        # Keep the same 30-day depth
+        # accepted by telemetry/coordinator.
         if len(self._hist) > 30:
             self._hist.pop(0)
+            self._gap_filled_flags.pop(0)
+
+    def _row_load(self, row, hour: int):
+        """Return the load value at ``hour`` for
+        a row in either the legacy or dated
+        shape. Returns ``None`` if the row's
+        load vector is malformed.
+        """
+        if isinstance(row, tuple):
+            payload = row[1]
+        else:
+            payload = row
+        if (
+            payload is None
+            or hour >= len(payload)
+            or payload[hour] is None
+        ):
+            return None
+        try:
+            return float(payload[hour])
+        except (TypeError, ValueError):
+            return None
 
     def predict(self, hour: int, day_of_week: int) -> tuple[float, float]:
-        """Predict load at `hour` on `day_of_week`. Return (mean, stdev)."""
+        """Predict load at ``hour`` on
+        ``day_of_week``. Returns ``(mean, stdev)``.
+
+        Algorithm:
+
+          1. If the history is empty, fall back
+             to the typical 250 W baseline +
+             peak shifters (audit: the previous
+             behavior; kept for parity).
+          2. If the history is dated, collect
+             same-weekday samples **excluding**
+             rows whose ``gap_filled`` flag is
+             set. If two or more such samples
+             remain, return their mean / stdev.
+          3. Otherwise, fall back to the
+             all-history average at ``hour``,
+             again excluding gap-filled rows
+             when dates are available. Legacy
+             non-dated history skips the
+             weekday filter entirely and
+             reports the same value for any
+             weekday.
+        """
         if not self._hist:
-            # No history yet — fall back to typical 250W baseline + peaks
+            # No history yet - fall back
+            # to typical 250 W baseline
+            # + peaks.
             base = 250.0
             if 17 <= hour <= 22:
                 base = 800.0
@@ -227,25 +350,85 @@ class ConsumptionPredictor:
                 base = 500.0
             return base, 200.0
 
-        # Day-of-week matching: same weekday from history
-        same_dow = [
-            day[hour]
-            for day in self._hist
-            if day[hour] is not None
-        ]
-        if len(same_dow) >= 2:
-            n = len(same_dow)
-            mean = sum(same_dow) / n
-            var = sum((x - mean) ** 2 for x in same_dow) / max(n - 1, 1)
+        if self._has_dates:
+            # Day-of-week matching using
+            # ``row[0].weekday()`` so missing
+            # dates do not shift the matrix
+            # index of remaining rows.
+            same_dow: list[float] = []
+            for row, gap in zip(
+                self._hist, self._gap_filled_flags
+            ):
+                if gap:
+                    continue
+                d = row[0] if isinstance(row, tuple) else None
+                if d is None:
+                    # Dated-shape row but with
+                    # ``None`` as the date. We
+                    # cannot decide a weekday, so
+                    # we drop the row from the
+                    # same-weekday bucket. It
+                    # still contributes to the
+                    # all-history fallback below.
+                    continue
+                try:
+                    row_dow = d.weekday()
+                except AttributeError:
+                    continue
+                if row_dow != day_of_week:
+                    continue
+                value = self._row_load(row, hour)
+                if value is None:
+                    continue
+                same_dow.append(value)
+            if len(same_dow) >= 2:
+                n = len(same_dow)
+                mean = sum(same_dow) / n
+                var = sum(
+                    (x - mean) ** 2 for x in same_dow
+                ) / max(n - 1, 1)
+                return mean, var ** 0.5
+            # Same-weekday bucket is too
+            # small (or zero). Fall back to
+            # all-history, again skipping
+            # gap-filled rows.
+            all_hours: list[float] = []
+            for row, gap in zip(
+                self._hist, self._gap_filled_flags
+            ):
+                if gap:
+                    continue
+                value = self._row_load(row, hour)
+                if value is None:
+                    continue
+                all_hours.append(value)
+            if not all_hours:
+                return 250.0, 200.0
+            n = len(all_hours)
+            mean = sum(all_hours) / n
+            var = sum(
+                (x - mean) ** 2 for x in all_hours
+            ) / max(n - 1, 1)
             return mean, var ** 0.5
 
-        # Fall back to all-history average for this hour
-        all_hours = [day[hour] for day in self._hist if day[hour] is not None]
-        n = len(all_hours)
-        if n == 0:
+        # Legacy, non-dated path. The
+        # audit is explicit: do not pretend
+        # to know weekdays when the history
+        # has no dates. All weekdays collapse
+        # to the same all-history average.
+        all_hours_legacy: list[float] = []
+        for row in self._hist:
+            value = self._row_load(row, hour)
+            if value is None:
+                continue
+            all_hours_legacy.append(value)
+        if not all_hours_legacy:
             return 250.0, 200.0
-        mean = sum(all_hours) / n
-        var = sum((x - mean) ** 2 for x in all_hours) / max(n - 1, 1)
+        n = len(all_hours_legacy)
+        mean = sum(all_hours_legacy) / n
+        var = sum(
+            (x - mean) ** 2 for x in all_hours_legacy
+        ) / max(n - 1, 1)
         return mean, var ** 0.5
 
     def predict_day(self, day_of_week: int) -> list[float]:

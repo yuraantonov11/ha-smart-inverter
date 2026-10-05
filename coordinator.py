@@ -947,7 +947,22 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         )
         # Build 24h tariff schedule from coordinator tariffs
         self._hems._tariff_schedule = self._build_tariff_schedule()
-        self._hems._consumption_history = list(self._load_matrix)
+        # Audit T19: ``build_hourly_load_matrix``
+        # now returns ``list[tuple[date,
+        # list[float], bool]]``. We propagate the
+        # dated shape so ``ConsumptionPredictor``
+        # can filter by ``date.weekday()`` and the
+        # gap_filled flag is honoured.
+        self._hems._consumption_history_with_dates = (
+            list(self._load_matrix)
+        )
+        # Legacy flat shape preserved for any
+        # downstream consumer that has not yet
+        # migrated to the dated contract.
+        self._hems._consumption_history = [
+            row[1] if isinstance(row, tuple) else row
+            for row in self._load_matrix
+        ]
         self._hems._battery_capacity_kwh = self._battery_capacity_kwh
         self._configure_night_window()
 
