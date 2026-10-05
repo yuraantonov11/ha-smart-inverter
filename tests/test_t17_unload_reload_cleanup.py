@@ -128,6 +128,7 @@ class T17CleanupTests(unittest.TestCase):
         body = _extract_function("async_unload_entry")
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
+            "__name__": "t17_unloaded",
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -201,6 +202,7 @@ class T17CleanupTests(unittest.TestCase):
         body = _extract_function("async_unload_entry")
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
+            "__name__": "t17_unloaded",
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -332,6 +334,7 @@ class T17CleanupTests(unittest.TestCase):
         body = _extract_function("async_unload_entry")
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
+            "__name__": "t17_unloaded",
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -385,6 +388,7 @@ class T17CleanupTests(unittest.TestCase):
         body = _extract_function("async_unload_entry")
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
+            "__name__": "t17_unloaded",
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -446,6 +450,7 @@ class T17CleanupTests(unittest.TestCase):
         body = _extract_function("async_unload_entry")
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
+            "__name__": "t17_unloaded",
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
             "PLATFORMS": ("sensor",),
@@ -628,6 +633,7 @@ class T17ForecastShutdownTests(unittest.TestCase):
         body = _extract_function("async_reload_entry")
         ns: dict[str, object] = {
             "_LOGGER": __import__("logging").getLogger("t17"),
+            "__name__": "t17_unloaded",
             "DOMAIN": "powmr_inverter",
         }
         exec(compile(body, "<t17-reload>", "exec"), ns)

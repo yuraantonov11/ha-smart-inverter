@@ -211,7 +211,25 @@ class _DebugLogWorker:
             except _queue.Empty:
                 continue
             try:
-                _write_line(path, payload)
+                # Rotation sentinel —
+                # run the rotation helper
+                # on the worker thread so
+                # the event loop stays
+                # free. The rotation day
+                # is embedded in the
+                # sentinel payload
+                # (``__ROTATE__:<last>``)
+                # because ``_ROTATE_AT``
+                # is already bumped to
+                # today by the time the
+                # worker picks up the
+                # entry.
+                if isinstance(payload, str) and payload.startswith("__ROTATE__:"):
+                    last = payload[len("__ROTATE__:"):]
+                    if last:
+                        _rotate_paths(path, last)
+                else:
+                    _write_line(path, payload)
             except Exception as exc:  # pragma: no cover
                 _LOGGER.debug("debug-log worker write failed: %s", exc)
             finally:
@@ -250,8 +268,53 @@ def shutdown_drain() -> bool:
 # is never blocked.
 
 
+def _rotate_paths(target: Path, last: str) -> None:
+    """Synchronous rotation work —
+    only call from the worker
+    thread. Splits off the
+    ``os.rename`` and
+    ``Path.unlink`` calls so they
+    never run on the event loop.
+    """
+    try:
+        old = target.with_name(
+            f"powmr_hems_debug.{last}.log"
+        )
+        if target.exists() and not old.exists():
+            target.rename(old)
+    except OSError as exc:
+        _LOGGER.debug(
+            "Could not rotate HEMS debug log: %s",
+            exc,
+        )
+    try:
+        cutoff = (datetime.now() - timedelta(days=3)).strftime(
+            "%Y-%m-%d"
+        )
+        for p in target.parent.glob(
+            "powmr_hems_debug.*.log"
+        ):
+            tag = (
+                p.name.replace("powmr_hems_debug.", "")
+                .replace(".log", "")
+            )
+            if tag < cutoff:
+                p.unlink()
+    except OSError:
+        pass
+
+
 def _maybe_rotate() -> None:
-    """Roll the log file at midnight (HA local time)."""
+    """Roll the log file at midnight (HA local time).
+
+    Audit T18 follow-up: only the
+    metadata update (``_ROTATE_AT``)
+    runs on the event loop. The
+    rename + unlink are pushed to
+    the worker via
+    ``_rotate_paths`` so a slow
+    filesystem cannot stall HA.
+    """
     today = datetime.now().strftime("%Y-%m-%d")
     last = _ROTATE_AT.get(str(_LOG_PATH))
     if last == today:
@@ -259,21 +322,46 @@ def _maybe_rotate() -> None:
     if last is None:
         _ROTATE_AT[str(_LOG_PATH)] = today
         return
-    try:
-        old = _LOG_PATH.with_name(f"powmr_hems_debug.{last}.log")
-        if _LOG_PATH.exists() and not old.exists():
-            _LOG_PATH.rename(old)
-    except OSError as exc:
-        _LOGGER.debug("Could not rotate HEMS debug log: %s", exc)
-    try:
-        cutoff = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
-        for p in _LOG_PATH.parent.glob("powmr_hems_debug.*.log"):
-            tag = p.name.replace("powmr_hems_debug.", "").replace(".log", "")
-            if tag < cutoff:
-                p.unlink()
-    except OSError:
-        pass
+    # Update the metadata first so
+    # concurrent calls do not
+    # double-enqueue rotation work.
     _ROTATE_AT[str(_LOG_PATH)] = today
+    # Push the actual rotation
+    # onto the worker queue. Use a
+    # high priority so it runs
+    # before user writes that target
+    # the *new* file. The rotation
+    # day is embedded in the
+    # payload so the worker does
+    # not have to re-read
+    # ``_ROTATE_AT`` (which has
+    # already been bumped to today).
+    try:
+        sentinel = "__ROTATE__:" + last
+        _get_worker()._queue.put_nowait(
+            (-1, 0, sentinel, _LOG_PATH)
+        )
+    except Exception:
+        # Queue full or worker not
+        # running — fall back to a
+        # synchronous rotation on the
+        # caller thread. We swallow
+        # every error here; the worst
+        # outcome is a stale file
+        # name.
+        try:
+            _rotate_paths(_LOG_PATH, last)
+        except Exception:
+            pass
+
+
+# Sentinel string that tells the
+# worker to call ``_rotate_paths``
+# instead of writing a line. The
+# string is intentionally odd so
+# no real payload can collide with
+# it.
+_ROTATE_SENTINEL = "__ROTATE__"
 
 
 # ---------------------------------------------------------------------------
@@ -469,9 +557,26 @@ async def daily_summary(
                         continue
                     local["decisions"] += 1
                     applied = row.get("applied") or {}
+                    # T18 audit follow-up:
+                    # a recorded priority of ``0``
+                    # is a real value — it is
+                    # not None and it is not a
+                    # skip. We must check ``is
+                    # not None`` instead of
+                    # relying on truthiness, so
+                    # ``"0"`` (string) and ``0``
+                    # (int) both count as a
+                    # command. The legacy
+                    # ``or applied.get(...)``
+                    # pattern dropped these.
+                    out_p = applied.get("output_priority")
+                    chg_p = applied.get("charger_priority")
                     if (
-                        applied.get("output_priority")
-                        or applied.get("charger_priority")
+                        out_p is not None
+                        and out_p != ""
+                    ) or (
+                        chg_p is not None
+                        and chg_p != ""
                     ):
                         local["commands_sent"] += 1
                     else:

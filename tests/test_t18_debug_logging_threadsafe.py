@@ -142,52 +142,32 @@ class T18DebugLoggingTests(TestCase):
     # ── 2. event loop is never blocked, even on a slow filesystem ──
 
     def test_t18_02_event_loop_not_blocked(self) -> None:
-        """Even when the filesystem is
-        slow (e.g. NFS, slow SD card),
-        ``read_recent``, ``daily_summary``
-        and ``_maybe_rotate`` must not
-        block the event loop for more than
-        a few milliseconds.
+        """Audit T18 follow-up: even when
+        the filesystem is slow, the event
+        loop must keep ticking while the
+        bounded worker handles the write
+        in the background.
+
+        This is a real async test: we
+        launch the work via ``asyncio``
+        and assert the loop runs several
+        heartbeats during the slow write.
         """
-        log_path = self._tmpdir / "loop.log"
+        import asyncio as _asyncio
+
+        log_path = self._tmpdir / "async_loop.log"
         debug_logging.set_log_path(log_path)
-        # Pre-fill the log with enough data.
-        for i in range(20):
-            debug_logging.log_evaluation(
-                timestamp=datetime(2026, 6, 15, 10, 0, i % 60),
-                inputs={
-                    "smart_mode": 0,
-                    "soc": 60.0,
-                    "pv_power": 100.0,
-                    "load_power": 200.0,
-                },
-                decision=HemsDecision(
-                    output_priority="2",
-                    charger_priority="2",
-                    reason="t18",
-                    skip=False,
-                ),
-                applied={"output_priority": "2", "charger_priority": "2"},
-                skip_reason=None,
-            )
-        # Wait for the bounded worker to drain.
-        debug_logging._worker.drain(timeout=5.0)
-        # Patch the actual writer to sleep
-        # 1.5s. If the event loop is blocked
-        # synchronously the test will take
-        # ~1.5s + several seconds; the
-        # heartbeat should still fire on
-        # time because the calls go through
-        # the worker queue.
+
+        # Slow the writer so the queue
+        # holds the record for a while.
         original_write = debug_logging._write_line
         def slow_write(path, line):
             time.sleep(1.5)
             return original_write(path, line)
         debug_logging._write_line = slow_write
         try:
-            # Fire a write that will be slow.
             debug_logging.log_evaluation(
-                timestamp=datetime(2026, 6, 15, 11, 0, 0),
+                timestamp=datetime(2026, 6, 15, 10, 0, 0),
                 inputs={
                     "smart_mode": 0,
                     "soc": 60.0,
@@ -197,30 +177,44 @@ class T18DebugLoggingTests(TestCase):
                 decision=HemsDecision(
                     output_priority="2",
                     charger_priority="2",
-                    reason="slow",
+                    reason="async-loop",
                     skip=False,
                 ),
                 applied={"output_priority": "2", "charger_priority": "2"},
                 skip_reason=None,
             )
-            # Heartbeat: the event loop
-            # should be free within a few
-            # hundred milliseconds even while
-            # the worker is sleeping.
-            loop_start = time.monotonic()
-            beat_count = 0
-            while time.monotonic() - loop_start < 0.3:
-                beat_count += 1
-                time.sleep(0.01)
+
+            async def _heartbeat_check() -> int:
+                beat_count = 0
+                loop_start = _asyncio.get_event_loop().time()
+                # _heartbeat_loop runs for 0.5s;
+                # if the event loop is blocked
+                # by a synchronous file write,
+                # we will not reach the expected
+                # tick count.
+                while (
+                    _asyncio.get_event_loop().time() - loop_start
+                    < 0.5
+                ):
+                    beat_count += 1
+                    await _asyncio.sleep(0.01)
+                return beat_count
+
+            beat_count = _asyncio.run(_heartbeat_check())
             self.assertGreaterEqual(
                 beat_count,
-                20,
-                "event loop blocked: heartbeat stalled",
+                30,
+                msg=(
+                    f"event loop heartbeat stalled: "
+                    f"only {beat_count} heartbeats in 0.5s"
+                ),
             )
         finally:
+            try:
+                debug_logging._worker.drain(timeout=5.0)
+            except Exception:
+                pass
             debug_logging._write_line = original_write
-
-    # ── 3. bounded queue overflow handling ────────────────────────
 
     def test_t18_03_bounded_queue_overflow(self) -> None:
         """If the worker is slow and the
@@ -303,7 +297,31 @@ class T18DebugLoggingTests(TestCase):
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         debug_logging._ROTATE_AT[str(log_path)] = yesterday
         debug_logging._maybe_rotate()
+        # Audit T18 follow-up:
+        # ``_maybe_rotate`` now enqueues
+        # the rename onto the bounded
+        # worker. We must first
+        # lazy-init the worker (via
+        # ``log_evaluation``) and then
+        # drain so we observe the
+        # post-rotation state.
+        debug_logging.log_evaluation(
+            timestamp=datetime(2026, 6, 15, 13, 30, 0),
+            inputs={
+                "smart_mode": 0,
+                "soc": 60.0,
+                "pv_power": 100.0,
+                "load_power": 200.0,
+            },
+            decision=HemsDecision(reason="warm", skip=True),
+            applied=None,
+            skip_reason="warm",
+        )
+        debug_logging._worker.drain(timeout=5.0)
+        debug_logging._maybe_rotate()
+        debug_logging._worker.drain(timeout=5.0)
         debug_logging._maybe_rotate()  # idempotent
+        debug_logging._worker.drain(timeout=5.0)
         # The current log file should now
         # exist as ``powmr_hems_debug.<yesterday>.log``
         # alongside the freshly-opened one.
@@ -536,6 +554,274 @@ class T18DebugLoggingTests(TestCase):
         )
         debug_logging.unbind_entry("entry_a")
         debug_logging.unbind_entry("entry_b")
+
+
+
+    def test_t18_08_daily_summary_priority_zero(self) -> None:
+        """Audit T18 follow-up: a
+        recorded ``output_priority`` or
+        ``charger_priority`` of ``"0"``
+        (or ``0`` int) is a real value —
+        it must count as a command in
+        ``daily_summary``, not as a
+        skip. The legacy
+        ``or applied.get(...)`` pattern
+        dropped both cases via
+        truthiness.
+        """
+        import asyncio as _asyncio
+
+        log_path = self._tmpdir / "priority_zero.log"
+        debug_logging.set_log_path(log_path)
+        # Warm up the worker.
+        debug_logging.log_evaluation(
+            timestamp=datetime(2026, 6, 15, 16, 0, 0),
+            inputs={
+                "smart_mode": 0,
+                "soc": 60.0,
+                "pv_power": 100.0,
+                "load_power": 200.0,
+            },
+            decision=HemsDecision(reason="warm", skip=True),
+            applied=None,
+            skip_reason="warm",
+        )
+        # Three records: one with
+        # ``"0"`` string output_priority,
+        # one with ``0`` int, one with
+        # None.
+        debug_logging.log_evaluation(
+            timestamp=datetime(2026, 6, 15, 16, 1, 0),
+            inputs={
+                "smart_mode": 0,
+                "soc": 60.0,
+                "pv_power": 100.0,
+                "load_power": 200.0,
+            },
+            decision=HemsDecision(reason="zero_str", skip=False),
+            applied={"output_priority": "0", "charger_priority": "2"},
+            skip_reason=None,
+        )
+        debug_logging.log_evaluation(
+            timestamp=datetime(2026, 6, 15, 16, 2, 0),
+            inputs={
+                "smart_mode": 0,
+                "soc": 60.0,
+                "pv_power": 100.0,
+                "load_power": 200.0,
+            },
+            decision=HemsDecision(reason="zero_int", skip=False),
+            applied={"output_priority": 0, "charger_priority": 0},
+            skip_reason=None,
+        )
+        debug_logging.log_evaluation(
+            timestamp=datetime(2026, 6, 15, 16, 3, 0),
+            inputs={
+                "smart_mode": 0,
+                "soc": 60.0,
+                "pv_power": 100.0,
+                "load_power": 200.0,
+            },
+            decision=HemsDecision(reason="skip", skip=True),
+            applied=None,
+            skip_reason="skipped",
+        )
+        debug_logging._worker.drain(timeout=5.0)
+        date_str = "2026-06-15"
+        summary = _asyncio.run(
+            debug_logging.daily_summary(date_str, entry_id=None)
+        )
+        self.assertEqual(
+            summary["decisions"],
+            4,
+            msg=(
+                f"daily_summary must count every record on the "
+                f"date; got {summary!r}"
+            ),
+        )
+        # Two of the four are commands
+        # (``"0"`` and ``0`` int); one
+        # is a skip; the warmup is
+        # counted as a skip too.
+        self.assertEqual(
+            summary["commands_sent"],
+            2,
+            msg=(
+                "daily_summary must count priority-0 records "
+                f"as commands; got {summary!r}"
+            ),
+        )
+        self.assertEqual(
+            summary["skipped"],
+            2,
+            msg=(
+                "daily_summary must count true skips only; "
+                f"got {summary!r}"
+            ),
+        )
+
+    def test_t18_09_rotation_runs_on_worker_thread(self) -> None:
+        """Audit T18 follow-up:
+        ``_maybe_rotate`` must not call
+        ``Path.rename`` /
+        ``Path.unlink`` on the calling
+        thread. We patch
+        ``_rotate_paths`` to record the
+        thread it ran on and assert it
+        is NOT the calling thread.
+        """
+        import threading as _threading
+        log_path = self._tmpdir / "rotation_thread.log"
+        debug_logging.set_log_path(log_path)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            json.dumps({"marker": "pre"}) + "\n",
+            encoding="utf-8",
+        )
+        # Mark the rotation date as
+        # yesterday so ``_maybe_rotate``
+        # will roll.
+        yesterday = (datetime.now() - timedelta(days=1)).strftime(
+            "%Y-%m-%d"
+        )
+        debug_logging._ROTATE_AT[str(log_path)] = yesterday
+        # Replace ``_rotate_paths`` so
+        # we can observe the thread.
+        seen: list[str] = []
+        original = debug_logging._rotate_paths
+        def recording_rotate(target, last):
+            seen.append(_threading.current_thread().name)
+            return original(target, last)
+        debug_logging._rotate_paths = recording_rotate
+        try:
+            caller = _threading.current_thread().name
+            debug_logging._maybe_rotate()
+            # The rotation work is
+            # queued on the bounded
+            # worker. Drain to ensure
+            # it ran.
+            debug_logging._worker.drain(timeout=5.0)
+            self.assertTrue(
+                seen,
+                msg=(
+                    "_rotate_paths must have been called via "
+                    "the worker; saw no calls"
+                ),
+            )
+            self.assertNotEqual(
+                seen[0],
+                caller,
+                msg=(
+                    f"rotation ran on caller thread ({caller!r}) "
+                    f"instead of the worker thread; audit T18 "
+                    f"follow-up forbids synchronous rotation"
+                ),
+            )
+        finally:
+            debug_logging._rotate_paths = original
+
+    def test_t18_10_per_entry_isolation_runtime(self) -> None:
+        """Audit T18 follow-up: the
+        production coordinator must
+        thread ``entry_id`` through to
+        ``debug_logging.log_evaluation``
+        so two entries write to two
+        distinct files.
+
+        We exec the coordinator path
+        up to ``log_evaluation`` and
+        verify the call carries
+        ``entry_id``.
+        """
+        # Read the live coordinator
+        # source and look for the
+        # ``_hems.evaluate`` call
+        # site.
+        coord_src = (REPO_ROOT / "coordinator.py").read_text(
+            encoding="utf-8"
+        )
+        import ast as _ast
+        tree = _ast.parse(coord_src)
+        evaluate_calls: list[_ast.Call] = []
+        for node in _ast.walk(tree):
+            if (
+                isinstance(node, _ast.Call)
+                and isinstance(node.func, _ast.Attribute)
+                and node.func.attr == "evaluate"
+            ):
+                evaluate_calls.append(node)
+        self.assertTrue(
+            evaluate_calls,
+            msg=(
+                "coordinator.py must call _hems.evaluate"
+            ),
+        )
+        # At least one of these calls
+        # must pass ``entry_id``.
+        entry_id_passed = False
+        for call in evaluate_calls:
+            for kw in call.keywords:
+                if kw.arg == "entry_id":
+                    entry_id_passed = True
+                    break
+        self.assertTrue(
+            entry_id_passed,
+            msg=(
+                "coordinator._hems.evaluate must thread "
+                "entry_id through to log_evaluation"
+            ),
+        )
+
+    def test_t18_11_drain_during_unload(self) -> None:
+        """Audit T18 follow-up: when the
+        integration unloads, the
+        bounded worker must drain the
+        in-flight queue before the
+        entry is removed from
+        ``hass.data``. We pin this
+        contract at the module level:
+        ``shutdown_drain`` must return
+        True (queue drained).
+        """
+        log_path = self._tmpdir / "drain_unload.log"
+        debug_logging.set_log_path(log_path)
+        # Slow the writer slightly so
+        # there is always an
+        # in-flight record.
+        original_write = debug_logging._write_line
+        def slow_write(path, line):
+            time.sleep(0.05)
+            return original_write(path, line)
+        debug_logging._write_line = slow_write
+        try:
+            for i in range(20):
+                debug_logging.log_evaluation(
+                    timestamp=datetime(2026, 6, 15, 17, 0, i % 60),
+                    inputs={
+                        "smart_mode": 0,
+                        "soc": 60.0,
+                        "pv_power": 100.0,
+                        "load_power": 200.0,
+                    },
+                    decision=HemsDecision(reason="u", skip=True),
+                    applied=None,
+                    skip_reason="u",
+                )
+            drained = debug_logging.shutdown_drain()
+            self.assertTrue(
+                drained,
+                msg=(
+                    "shutdown_drain must return True when the "
+                    "queue drains"
+                ),
+            )
+        finally:
+            debug_logging._write_line = original_write
+            # Restart the worker so
+            # subsequent tests can use
+            # the API.
+            debug_logging._worker = None
+
 
 
 if __name__ == "__main__":

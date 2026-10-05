@@ -972,6 +972,15 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             forecast_day_after_kwh=self.forecast_day_after_kwh,
             reserve_soc=float(self._entry.options.get("reserve_soc", 20.0)),
             tarif_day=self._day_tariff_uah,
+            # Some unit tests build a
+            # ``SimpleNamespace`` for
+            # ``self._entry`` that omits
+            # ``entry_id``. ``getattr``
+            # with a None default keeps
+            # the test path green while
+            # production threads the real
+            # config-entry id through.
+            entry_id=getattr(self._entry, "entry_id", None),
             tarif_night=self._night_tariff_uah,
             is_online=True,
             # T01 follow-up: forward the unknown-SOC flag so the

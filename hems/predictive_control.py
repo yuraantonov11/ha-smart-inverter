@@ -144,7 +144,7 @@ class PredictiveControlEngine(HemsEngine):
                                              output_priority=None, charger_priority=None,
                                              confidence=0.0, applied=False, reason=reason, execution_reason=reason)
 
-    def _finalize_decision(self, decision, now, inputs):
+    def _finalize_decision(self, decision, now, inputs, entry_id=None):
         proposal = self._last_predictive_decision
         floor = max(inputs["reserve_soc"] + 2, inputs["min_operating_soc"])
         eligible = (
@@ -164,7 +164,7 @@ class PredictiveControlEngine(HemsEngine):
         if eligible:
             self._predictive_selected = True
             decision = replace(proposal, buzzer_off=decision.buzzer_off)
-        result = super()._finalize_decision(decision, now, inputs)
+        result = super()._finalize_decision(decision, now, inputs, entry_id)
         if eligible:
             matches_output = (_normalize_output(inputs["current_output"]) == proposal.output_priority or result.output_priority == proposal.output_priority)
             matches_charger = (_normalize_charger(inputs["current_charger"]) == proposal.charger_priority or result.charger_priority == proposal.charger_priority)

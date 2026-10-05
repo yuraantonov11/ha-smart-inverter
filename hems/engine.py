@@ -269,6 +269,7 @@ class HemsEngine:
         battery_health_percent: float = 100.0,
         is_online: bool = True,
         soc_unknown: bool = False,
+        entry_id: str | None = None,
     ) -> HemsDecision:
         """Run one HEMS evaluation cycle.
 
@@ -337,7 +338,7 @@ class HemsEngine:
                                      is_online=is_online, valid_telemetry=valid_telemetry,
                                      now=now, buzzer_off=buzzer_off)
         if hold is not None:
-            return self._log_decision(hold, now, inputs)
+            return self._log_decision(hold, now, inputs, entry_id)
 
         predictive_hint, predictive_plan = self._evaluate_predictive(now, inputs)
 
@@ -394,7 +395,7 @@ class HemsEngine:
         else:
             return HemsDecision(reason="unknown_mode", skip=True, buzzer_off=buzzer_off)
 
-        return self._finalize_decision(decision, now, inputs)
+        return self._finalize_decision(decision, now, inputs, entry_id)
 
     def _reset_predictive_state(self) -> str:
         """No recommendation survives an Off/hold/error evaluation cycle."""
@@ -576,7 +577,8 @@ class HemsEngine:
             return None, None
 
     def _finalize_decision(self, decision: HemsDecision, now: datetime,
-                           inputs: dict[str, Any]) -> HemsDecision:
+                           inputs: dict[str, Any],
+                           entry_id: str | None = None) -> HemsDecision:
         """Filter redundant writes, apply dwell/dedup and record the proposal."""
         if not decision.skip:
             for command, current in (("output_priority", inputs["current_output"]),
@@ -597,11 +599,12 @@ class HemsEngine:
                 self._pending_commands.add("charger")
                 self._last_cmd_charger = decision.charger_priority
                 self._last_cmd_charger_at = now
-        return self._log_decision(decision, now, inputs)
+        return self._log_decision(decision, now, inputs, entry_id)
 
     @staticmethod
     def _log_decision(decision: HemsDecision, now: datetime,
-                      inputs: dict[str, Any]) -> HemsDecision:
+                      inputs: dict[str, Any],
+                      entry_id: str | None = None) -> HemsDecision:
         """Include early holds in the existing trace; logging cannot stop HEMS."""
         try:
             applied = None
@@ -617,7 +620,8 @@ class HemsEngine:
                            "charger_priority": decision.charger_priority,
                            "buzzer_off": decision.buzzer_off}
             debug_logging.log_evaluation(timestamp=now, inputs=inputs, decision=decision,
-                                         applied=applied, skip_reason=skip_reason)
+                                         applied=applied, skip_reason=skip_reason,
+                                         entry_id=entry_id)
         except Exception:
             pass
         return decision

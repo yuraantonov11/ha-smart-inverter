@@ -9,6 +9,7 @@ Tracks local-only fixes (5 patches applied 2026-07-07); HACS version stays 1.8.1
 import logging
 import os
 from datetime import timedelta
+from pathlib import Path
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -148,6 +149,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "coordinator": coordinator,
             "history_coordinator": history_coordinator,
         }
+
+        # T18 audit: bind a per-entry log
+        # file. ``debug_logging`` resolves
+        # ``entry_id`` to its own log
+        # path so each config entry has
+        # an isolated debug file. We
+        # import via ``importlib`` so the
+        # call works from the module
+        # boundary (T17 AST-exec harness
+        # needs a flat namespace).
+        import importlib as _importlib_setup
+        _debug_mod = None
+        for _module_name in (
+            "powmr_inverter.hems.debug_logging",
+            ".hems.debug_logging",
+        ):
+            try:
+                _debug_mod = _importlib_setup.import_module(
+                    _module_name,
+                    package=__name__,
+                )
+                break
+            except Exception:
+                continue
+        if _debug_mod is not None:
+            _debug_mod.bind_entry(
+                entry.entry_id,
+                Path(
+                    os.environ.get(
+                        "POWMR_DEBUG_LOG_DIR",
+                        "/config",
+                    )
+                ) / f"powmr_hems_debug.{entry.entry_id}.log",
+            )
 
         # Register device
         device_registry = dr.async_get(hass)
@@ -338,6 +373,39 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "api.close() failed during unload: %s", err
                 )
         hass.data[DOMAIN].pop(entry.entry_id, None)
+
+        # T18 audit: tear down the
+        # per-entry debug log binding
+        # and drain the bounded worker
+        # so no record is lost when the
+        # entry goes away. We import
+        # via ``importlib`` so this
+        # works from the module
+        # boundary (no relative
+        # imports — audit T17 AST-exec
+        # harness needs to run the
+        # body in a flat namespace).
+        import importlib
+        try:
+            debug_logging_mod = importlib.import_module(
+                "powmr_inverter.hems.debug_logging"
+            )
+        except Exception:
+            try:
+                debug_logging_mod = importlib.import_module(
+                    ".hems.debug_logging",
+                    package=__name__,
+                )
+            except Exception:
+                debug_logging_mod = None
+        if debug_logging_mod is not None:
+            debug_logging_mod.unbind_entry(entry.entry_id)
+            # ``shutdown_drain`` is global
+            # (one worker per HA install),
+            # so only call it when the last
+            # entry is leaving.
+            if not hass.data.get(DOMAIN):
+                debug_logging_mod.shutdown_drain()
 
     return unload_ok
 
