@@ -297,14 +297,67 @@ def _run_python_suite(
         "sys.modules['asyncio'] = _stdlib_asyncio\n"
         "sys.argv[0] = " + repr(str(suite_rel)) + "\n"
         "runpy.run_path(" + repr(str(suite_rel)) + ", run_name='__main__')\n"
+        # Audit T27 follow-up: force
+        # UTF-8 on the child's stdout
+        # and stderr. On a Windows
+        # checkout the default code
+        # page is CP1252 and a test
+        # that prints non-ASCII (for
+        # example a Ukrainian message
+        # in a docstring or a unit
+        # test's ``✅`` glyph) would
+        # raise ``UnicodeEncodeError``
+        # even when all 13 of its
+        # assertions pass. We belt
+        # and braces this:
+        #  1. ``sys.stdout.reconfigure``
+        #     at runtime so any
+        #     ``print()`` call inside
+        #     the test goes through
+        #     UTF-8 regardless of the
+        #     inherited code page.
+        #  2. The runner also passes
+        #     ``-X utf8`` and
+        #     ``PYTHONIOENCODING=utf-8``
+        #     below as a redundant
+        #     safety net for the
+        #     interpreter startup.
+        "try:\n"
+        "    sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
+        "    sys.stderr.reconfigure(encoding='utf-8', errors='replace')\n"
+        "except Exception:\n"
+        "    pass\n"
     )
     try:
         r = subprocess.run(
-            [py, "-I", "-c", wrapper],
+            [
+                py,
+                "-I",
+                "-X",
+                "utf8",
+                "-c",
+                wrapper,
+            ],
             capture_output=True,
             text=True,
             timeout=120,
             cwd=str(suite_dir),
+            env={
+                **os.environ,
+                # Belt and braces: even
+                # without ``-X utf8``,
+                # this forces UTF-8 on
+                # the child's I/O. The
+                # ``-I`` flag we already
+                # pass makes
+                # ``PYTHONIOENCODING``
+                # ignored unless the
+                # variable is set in the
+                # environment, which is
+                # what this dict does.
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUTF8": "1",
+            },
         )
     except subprocess.TimeoutExpired:
         return False, f"{label}: TIMEOUT after 120s"

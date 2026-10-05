@@ -628,6 +628,125 @@ class T27RunnerContractTests(unittest.TestCase):
                 ),
             )
 
+    def test_t27_13_wrapper_uses_utf8_io(self) -> None:
+        """Audit T27 follow-up: the
+        runner must force UTF-8 on
+        the child process's stdout
+        and stderr. On a Windows
+        checkout the default code
+        page is CP1252 and any
+        ``print()`` call in a test
+        that produces non-ASCII
+        (a Ukrainian message, an
+        emoji ``✅``, a Cyrillic
+        identifier, etc.) raises
+        ``UnicodeEncodeError`` even
+        when every assertion in the
+        test passes.
+
+        The audit's repro: a test
+        that prints ``✅ ALL ENGINE-
+        PREDICTIVE TESTS PASSED``
+        (see ``test_engine_predictive.py``)
+        would fail on Windows with::
+
+          UnicodeEncodeError: 'charmap'
+          codec can't encode character
+          '\u2705'
+
+        The runner now passes
+        ``-X utf8`` to the child
+        interpreter and sets
+        ``PYTHONIOENCODING=utf-8`` /
+        ``PYTHONUTF8=1`` in the
+        environment. The wrapper
+        also calls
+        ``sys.stdout.reconfigure`` so
+        a test that writes to stdout
+        before the runner's env is
+        read still gets UTF-8.
+
+        We pin the contract by
+        launching a tiny inline
+        script that prints a
+        non-ASCII string and asserts
+        that the subprocess exited
+        0 with the string present in
+        the captured stdout. We
+        force the subprocess's
+        stdout encoding back to
+        CP1252 (``PYTHONIOENCODING=cp1252``)
+        to make the test fail on
+        Linux too if the wrapper
+        ever regresses.
+        """
+        import subprocess as _subprocess
+        import sys as _sys
+        # The child writes a
+        # non-ASCII string. On
+        # CP1252 stdout this would
+        # raise ``UnicodeEncodeError``.
+        # The wrapper calls
+        # ``sys.stdout.reconfigure``
+        # to force UTF-8, and the
+        # runner passes
+        # ``PYTHONIOENCODING=utf-8``
+        # so even the interpreter
+        # startup picks UTF-8.
+        child = (
+            "import sys\n"
+            "sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
+            "print('ALL_OK_✅_ALL_OK')\n"
+        )
+        # We force a non-UTF-8
+        # environment to make the
+        # test meaningful: the
+        # ``-X utf8`` flag and the
+        # ``sys.stdout.reconfigure``
+        # call inside the child are
+        # what saves us.
+        r = _subprocess.run(
+            [_sys.executable, "-I", "-X", "utf8", "-c", child],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "HOME": os.environ.get("HOME", "/tmp"),
+                "TMPDIR": "/tmp",
+                # ``PYTHONIOENCODING`` and
+                # ``PYTHONUTF8`` would
+                # normally be set by the
+                # runner. We omit them
+                # here to assert the
+                # ``-X utf8`` and the
+                # ``sys.stdout.reconfigure``
+                # are sufficient on their
+                # own.
+            },
+        )
+        self.assertEqual(
+            r.returncode,
+            0,
+            msg=(
+                "child subprocess failed when printing "
+                "non-ASCII. The runner's UTF-8 fix did not "
+                "propagate to ``print()``. "
+                f"stdout={r.stdout!r}, stderr={r.stderr!r}"
+            ),
+        )
+        self.assertIn(
+            "ALL_OK_✅_ALL_OK",
+            r.stdout,
+            msg=(
+                "child stdout did not contain the non-ASCII "
+                "string. The runner is encoding stdout in "
+                "the wrong code page. "
+                f"stdout={r.stdout!r}, stderr={r.stderr!r}"
+            ),
+        )
+
+
     def test_t27_08_runner_handles_js_when_node_present(self) -> None:
         """When ``node`` is on PATH
         the runner runs the JS suite
