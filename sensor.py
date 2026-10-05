@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -447,7 +448,37 @@ class InverterSensor(CoordinatorEntity, SensorEntity):
 
 
 class InverterDailyEnergySensor(InverterSensor):
-    """Sensor for daily PV energy from API (not from realtime data)."""
+    """Sensor for daily PV energy from API (not from realtime data).
+
+    Audit T20: the sensor must honour three
+    freshness rules:
+
+      1. **Midnight reset**: when the API
+         still reports yesterday's value
+         (the inverter's daily counter
+         rolled back to zero at 00:00 but
+         the API response is cached), the
+         sensor must report ``0.0`` for
+         today rather than yesterday's
+         final reading.
+      2. **Never refreshed**: when the API
+         has never refreshed the value,
+         the sensor must report ``None``
+         (HA surfaces ``unknown``). The
+         audit forbids substituting a
+         measured value with a forecast.
+      3. **Stale**: when the API value is
+         older than the freshness threshold
+         (default 6 hours), the sensor
+         exposes ``daily_energy_stale=True``
+         in ``extra_state_attributes`` so a
+         consumer can warn the user.
+
+    The freshness logic itself lives in
+    ``hems.energy_freshness`` so the API
+    client, the sensor, and the regression
+    tests share one source of truth.
+    """
 
     def __init__(self, coordinator: InverterCoordinator) -> None:
         super().__init__(
@@ -463,8 +494,67 @@ class InverterDailyEnergySensor(InverterSensor):
         )
 
     @property
-    def native_value(self) -> float:
-        return self.coordinator.api.daily_energy
+    def native_value(self):
+        api = self.coordinator.api
+        # The API must publish
+        # ``daily_energy_at`` and
+        # ``daily_energy_date``. If the
+        # coordinator has not yet wired
+        # those attributes (older
+        # integration), we report ``None``
+        # so HA surfaces ``unknown``
+        # rather than a stale number.
+        daily_energy_at = getattr(api, "daily_energy_at", None)
+        daily_energy_date = getattr(api, "daily_energy_date", None)
+        now = datetime.now(tz=timezone.utc)
+        freshness = compute_daily_energy_freshness(
+            daily_energy_at=daily_energy_at,
+            daily_energy_date=daily_energy_date,
+            now=now,
+        )
+        try:
+            raw = float(api.daily_energy)
+        except (TypeError, ValueError, AttributeError):
+            raw = 0.0
+        try:
+            return daily_energy_for_today(
+                value=raw,
+                freshness=freshness,
+                today=now.date(),
+            )
+        except Exception:
+            # Defensive: never let the
+            # helper crash the sensor.
+            return None
+
+    @property
+    def extra_state_attributes(self):
+        base = super().extra_state_attributes
+        if base is None:
+            base = {}
+        api = self.coordinator.api
+        daily_energy_at = getattr(api, "daily_energy_at", None)
+        daily_energy_date = getattr(api, "daily_energy_date", None)
+        now = datetime.now(tz=timezone.utc)
+        freshness = compute_daily_energy_freshness(
+            daily_energy_at=daily_energy_at,
+            daily_energy_date=daily_energy_date,
+            now=now,
+        )
+        # Audit T20.4: multi-device
+        # warning. The production API
+        # client picks ``devices[0]``
+        # without warning the user; we
+        # surface a flag here so the
+        # consumer can decide whether to
+        # raise a repair.
+        device_count = getattr(api, "_account_device_count", 1)
+        if device_count is None:
+            device_count = 1
+        attrs = dict(freshness.as_dict())
+        attrs["multi_device_warning"] = device_count > 1
+        base.update(attrs)
+        return base
 
 
 class InverterTotalEnergySensor(InverterSensor):

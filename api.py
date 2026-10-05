@@ -142,6 +142,25 @@ class InverterApiClient:
         self.total_energy: float = 0.0
         self.co2_reduction: float = 0.0
 
+        # Audit T20: freshness
+        # metadata for ``daily_energy``.
+        # ``daily_energy_at`` is the
+        # timestamp the value was last
+        # refreshed by the API. ``None``
+        # means we have never refreshed.
+        # ``daily_energy_date`` is the
+        # calendar date the API attached
+        # to the value (the inverter
+        # rolls ``dailyProducedQuantity``
+        # back to zero at 00:00 local
+        # time, so the sensor must
+        # honour that reset rather than
+        # surface yesterday's final
+        # reading as today's morning
+        # reading).
+        self.daily_energy_at: datetime | None = None
+        self.daily_energy_date: Any = None
+
         # Rate limiting
         self._last_request_time: dict[str, float] = {}
         # Async lock for rate limiting (prevents 5 simultaneous requests
@@ -367,6 +386,20 @@ class InverterApiClient:
                 self.total_energy = self._parse_double(
                     dev.get("totalProducedQuantity")
                 )
+                # Audit T20: publish the
+                # freshness triple alongside
+                # ``daily_energy``. ``_now``
+                # is the local time the API
+                # was refreshed; ``daily_energy_date``
+                # is the calendar date the
+                # API attached (we use the
+                # local date because the
+                # inverter rolls its counter
+                # back to zero at local
+                # midnight).
+                _now = datetime.now()
+                self.daily_energy_at = _now
+                self.daily_energy_date = _now.date()
                 self._update_co2()
                 _LOGGER.info(
                     "Device found: SN=%s station=%s",
