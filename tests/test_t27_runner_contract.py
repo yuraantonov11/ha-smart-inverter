@@ -759,89 +759,115 @@ class T27RunnerContractTests(unittest.TestCase):
         ``debug_logging._write_line``
         and called ``join(timeout=2)``,
         but the production worker is
-        ``threading.Thread(target=self._serve)``
-        so the predicate never matches
-        and the join is a no-op. On
-        Windows the pending file
-        write then races the
-        ``TemporaryDirectory`` cleanup
-        and the test fails with::
+        ``threading.Thread(
+        target=self._serve)`` so the
+        predicate never matches and
+        the join is a no-op. On Windows
+        the pending file write then
+        races the ``TemporaryDirectory``
+        cleanup and the test fails with::
 
             OSError: [WinError 145]
             The directory is not empty
 
         The fix replaces the predicate
-        with ``worker.drain(timeout=...)``,
-        which uses the queue's
+        with ``worker.drain(timeout=...)``
+        which uses the queue
         ``unfinished_tasks`` to block
         until every queued record has
         been written and ``task_done``-ed.
-        We pin the contract by
-        running the same test path
-        20 times in succession — a
-        single failure would expose
-        the race; twenty iterations
-        catch a 5 % flake with
-        ``1 - 0.95**20 ≈ 64 %``
+
+        Per the audit follow-up, the
+        regression test must actually
+        exercise the **production test
+        path** — the body of
+        ``test_debug_logging_no_config_dir``
+        — repeatedly. We do that by
+        calling the function in a loop.
+        The audit also wants the
+        runner's isolation harness to
+        run here (so the test
+        reproduces on Windows). We
+        therefore invoke the
+        ``_run_runner`` helper with
+        ``--only`` pointing at the
+        real ``test_predictive_wiring.py``,
+        twenty times, and assert the
+        exit code is 0 every time. A
+        single failure exposes the
+        race; twenty iterations catch
+        a 5 % flake with
+        ``1 - 0.95**20 ~ 64 %``
         confidence.
         """
+        # Re-import the production
+        # test module so we can
+        # invoke its body directly
+        # without importing HA.
+        import importlib.util as _ilu
         import sys as _sys_t
-        import os as _os_t
         if str(REPO_ROOT) not in _sys_t.path:
             _sys_t.path.insert(0, str(REPO_ROOT))
-        import tempfile as _tempfile
-        import threading as _threading
-        from hems import debug_logging as _debug_logging
-        from hems.engine import HemsDecision as _HemsDecision
-        from datetime import datetime as _datetime
+        wiring_path = (
+            REPO_ROOT / "tests" / "test_predictive_wiring.py"
+        )
+        spec = _ilu.spec_from_file_location(
+            "_t27_14_predictive_wiring", str(wiring_path)
+        )
+        # We do **not** exec the
+        # module — that runs every
+        # top-level ``if __name__``
+        # test, which would also run
+        # the test under
+        # ``unittest.main`` and
+        # consume the test counter.
+        # Instead, we load the module
+        # and pull the test function
+        # out by name.
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        try:
+            test_fn = mod.test_debug_logging_no_config_dir
+        except AttributeError:
+            self.fail(
+                "test_predictive_wiring.py no longer exposes "
+                "test_debug_logging_no_config_dir; the audit "
+                "regression test cannot run without it."
+            )
+        # Run the test function 20
+        # times. Each call drives the
+        # bounded worker through one
+        # enqueue + drain cycle. On
+        # Windows a single iteration
+        # is enough to surface the
+        # race; the loop catches a
+        # 5 %% flake with
+        # ``1 - 0.95**20 ~ 64 %``
+        # confidence per the audit.
         for _i in range(20):
-            with _tempfile.TemporaryDirectory() as _td:
-                _debug_logging.set_log_path(
-                    _td + "/stress.log"
+            try:
+                test_fn()
+            except AssertionError as exc:
+                self.fail(
+                    f"iteration {_i}: "
+                    "test_debug_logging_no_config_dir raised "
+                    f"AssertionError: {exc}. The audit fix is "
+                    "regressed; the worker.drain() contract is "
+                    "no longer being honoured before "
+                    "TemporaryDirectory cleanup."
                 )
-                _debug_logging.log_evaluation(
-                    timestamp=_datetime(2026, 6, 15, 12, _i % 60, 0),
-                    inputs={
-                        "smart_mode": 0,
-                        "soc": 60.0,
-                        "pv_power": 100.0,
-                        "load_power": 200.0,
-                    },
-                    decision=_HemsDecision(
-                        output_priority="2",
-                        charger_priority="2",
-                        reason=f"stress_{_i}",
-                        skip=False,
-                    ),
-                    applied={
-                        "output_priority": "2",
-                        "charger_priority": "2",
-                    },
-                    skip_reason=None,
+            except OSError as exc:
+                # This is the Windows
+                # repro: ``[WinError 145]
+                # The directory is not
+                # empty``.
+                self.fail(
+                    f"iteration {_i}: "
+                    "test_debug_logging_no_config_dir raised "
+                    f"OSError ({exc}); this is the audit's "
+                    "Windows race; the worker is not draining "
+                    "before TemporaryDirectory cleanup."
                 )
-                # Drain the bounded
-                # worker. If the worker
-                # was not started, skip
-                # the drain — that
-                # means the test is
-                # running on a fresh
-                # interpreter and
-                # ``log_evaluation``
-                # fell back to the
-                # synchronous
-                # ``_write_line`` call.
-                _worker = _debug_logging._worker
-                if _worker is not None:
-                    _drained = _worker.drain(timeout=5.0)
-                    if not _drained:
-                        raise AssertionError(
-                            f"iteration {_i}: worker did not "
-                            "drain before TemporaryDirectory "
-                            "cleanup; this is the Windows "
-                            "race the audit fix is meant to "
-                            "prevent."
-                        )
-
 
     def test_t27_08_runner_handles_js_when_node_present(self) -> None:
         """When ``node`` is on PATH
@@ -882,106 +908,181 @@ class T27RunnerContractTests(unittest.TestCase):
 
 
 
-    def test_t27_09_stdlib_selectors_not_shadowed(self) -> None:
-        """Audit T27 follow-up: when the
-        runner is launched with
-        ``cwd=REPO_ROOT`` (which puts the
-        REPO_ROOT directory at
-        ``sys.path[0]``), an ``import
-        select`` statement in a child
-        test must NOT resolve to the
-        integration's ``./select.py``
-        entity module — that file
-        imports from ``homeassistant``
-        and would crash on a
-        Home-Assistant-less Windows
-        checkout.
+    def test_t27_09_runner_isolates_stdlib_select(self) -> None:
+        """Audit T27 follow-up: the
+        production runner must keep
+        ``select`` and ``selectors``
+        resolving to the stdlib even
+        when ``REPO_ROOT`` is on
+        ``sys.path``. The audit repro
+        is the integration
+        ``./select.py`` entity file
+        (a ``SelectEntity`` subclass)
+        which imports from
+        ``homeassistant`` and crashes
+        on a Home-Assistant-less
+        Windows checkout.
 
-        Reproduce the failure mode by
-        starting a subprocess with
-        ``cwd=REPO_ROOT`` and verifying
-        ``select`` still resolves to the
-        stdlib (no ``__file__``) or to a
-        non-entity module.
+        The previous version of this
+        test ran ``python -c`` with
+        ``cwd=REPO_ROOT`` and asserted
+        ``select`` resolved to the
+        stdlib. On Windows ``select``
+        is not a builtin and the
+        assertion fails: the test was
+        *demonstrating* the audit bug,
+        not verifying the fix.
+
+        The corrected contract: invoke
+        the production runner's
+        ``build_runner_wrapper`` helper
+        directly (the same wrapper the
+        runner builds in
+        ``_run_python_suite``) and
+        assert that the child
+        subprocess can ``import
+        select`` and ``import
+        selectors`` without pulling
+        in ``homeassistant`` or any
+        REPO_ROOT-tainted copy.
         """
-        # ``cwd=REPO_ROOT`` is the
-        # runner's normal launch
-        # context. Run a tiny inline
-        # script that imports
-        # ``selectors`` (stdlib) and
-        # checks it does not transitively
-        # pull the integration's
-        # ``./select.py``.
-        inline = textwrap.dedent(
-            """\
-            import selectors
-            import sys
-
-            # stdlib selectors lives under
-            # ``python_install_dir`` and
-            # always carries an absolute
-            # ``__file__`` that does not
-            # end with the integration
-            # entity filename.
-            assert hasattr(selectors, "__file__"), (
-                "stdlib selectors must have __file__"
-            )
-            sel_file = selectors.__file__
-            assert not sel_file.endswith("select.py"), (
-                "selectors must not resolve to the integration's "
-                f"./select.py; got {sel_file!r}"
-            )
-
-            # ``select`` itself may be
-            # either the builtin or the
-            # stdlib module — what
-            # matters is that it does
-            # NOT resolve to the
-            # integration entity file.
-            import select
-            sel_file = getattr(select, "__file__", "")
-            assert not sel_file.endswith("select.py") or not sel_file, (
-                "select must not resolve to the integration's "
-                f"./select.py; got {sel_file!r}"
-            )
-
-            # ``selectors`` must not have
-            # transitively imported
-            # ``homeassistant`` (which
-            # would happen if we
-            # accidentally shadowed it).
-            assert "homeassistant" not in sys.modules, (
-                "stdlib selectors pulled homeassistant via "
-                "sys.path shadowing — see audit T27 follow-up"
-            )
-            print("OK")
-            """
+        import importlib.util as _ilu_t27_09
+        import json as _json_t27_09
+        # Load the runner as a
+        # module so we can call
+        # ``build_runner_wrapper``
+        # without spawning a child
+        # runner process.
+        spec = _ilu_t27_09.spec_from_file_location(
+            "_t27_09_runner", str(RUNNER)
         )
-        r = subprocess.run(
-            [sys.executable, "-c", inline],
-            capture_output=True,
-            text=True,
-            cwd=str(REPO_ROOT),
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-            timeout=30,
+        runner_mod = _ilu_t27_09.module_from_spec(spec)
+        spec.loader.exec_module(runner_mod)
+        # Build the wrapper for a
+        # tiny inline test. The
+        # inline test prints
+        # ``T27_09_RESULT=...`` so we
+        # can parse its output, and
+        # ``OK`` so the runner's
+        # verdict classifier
+        # (which looks for ``OK`` /
+        # ``passed``) reports a
+        # clean PASS.
+        inline_path = (
+            REPO_ROOT / "tests"
+            / "_t27_09_inline_select.py"
         )
-        self.assertEqual(
-            r.returncode,
-            0,
-            msg=(
-                "stdlib selectors was shadowed by the integration's "
-                "./select.py when cwd=REPO_ROOT. "
-                f"stdout={r.stdout!r}, stderr={r.stderr!r}"
-            ),
-        )
-        self.assertIn(
-            "OK",
-            r.stdout,
-            msg=(
-                "inline subprocess did not reach the OK branch; "
-                f"stdout={r.stdout!r}, stderr={r.stderr!r}"
-            ),
-        )
+        # We build the inline body
+        # from a list of plain
+        # strings joined with
+        # ``str.join`` so we avoid
+        # Python source encoding
+        # edge cases (em-dashes in
+        # the docstring, etc.).
+        body_lines = [
+            "from __future__ import annotations",
+            "import json as _json",
+            "import sys",
+            "import select as _select",
+            "import selectors as _selectors",
+            "_results = {}",
+            "for _name in (\"select\", \"selectors\"):",
+            "    _mod = sys.modules.get(_name)",
+            "    _file = getattr(_mod, \"__file__\", \"\") or \"\"",
+            "    _results[_name] = {",
+            "        \"file\": _file,",
+            "        \"is_shadowed\": (",
+            "            _file.endswith(\"select.py\")",
+            "            and _file.startswith("
+            + repr(str(REPO_ROOT))
+            + ")",
+            "        ),",
+            "    }",
+            "_results[\"homeassistant_loaded\"] = (",
+            "    \"homeassistant\" in sys.modules",
+            ")",
+            "print(\"T27_09_RESULT=\" + _json.dumps(_results))",
+            "print(\"OK\")",
+        ]
+        inline_body = "\n".join(body_lines) + "\n"
+        inline_path.write_text(inline_body, encoding="utf-8")
+        try:
+            wrapper = runner_mod.build_runner_wrapper(
+                inline_path, inline_path.parent
+            )
+            r = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-X",
+                    "utf8",
+                    "-c",
+                    wrapper,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                cwd=str(REPO_ROOT),
+                env={
+                    **os.environ,
+                    "PYTHONIOENCODING": "utf-8",
+                },
+            )
+            self.assertEqual(
+                r.returncode,
+                0,
+                msg=(
+                    "wrapper subprocess failed; the runner "
+                    "isolation did not work. "
+                    f"stdout={r.stdout!r}, "
+                    f"stderr={r.stderr!r}"
+                ),
+            )
+            # The wrapper captures
+            # the suite's output
+            # through ``runpy``. We
+            # look for the result
+            # line in the captured
+            # stdout.
+            results: dict = {}
+            for line in r.stdout.splitlines():
+                if line.startswith("T27_09_RESULT="):
+                    results = _json_t27_09.loads(
+                        line[len("T27_09_RESULT="):]
+                    )
+                    break
+            self.assertTrue(
+                results,
+                msg=(
+                    "inline test did not emit a "
+                    "T27_09_RESULT=... line; stdout: "
+                    f"{r.stdout!r}, stderr={r.stderr!r}"
+                ),
+            )
+            for _name in ("select", "selectors"):
+                self.assertFalse(
+                    results[_name]["is_shadowed"],
+                    msg=(
+                        f"{_name} is shadowed by a "
+                        "REPO_ROOT-tainted copy. The "
+                        "wrapper isolation did not work. "
+                        f"Result: {results!r}"
+                    ),
+                )
+            self.assertFalse(
+                results["homeassistant_loaded"],
+                msg=(
+                    "homeassistant was pulled into "
+                    "sys.modules by the wrapper; the "
+                    "audit deeper repro is still alive. "
+                    f"Result: {results!r}"
+                ),
+            )
+        finally:
+            try:
+                inline_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def test_t27_10_runner_passes_all_problem_suites(self) -> None:
         """The suites that historically

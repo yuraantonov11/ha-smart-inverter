@@ -181,6 +181,89 @@ def _discover_python_suites(target: Path) -> list[Path]:
     )
 
 
+def build_runner_wrapper(suite: Path, suite_dir: Path) -> str:
+    """Build the ``python -c`` wrapper
+    string the runner passes to the
+    child interpreter for every
+    ``test_*.py`` suite.
+
+    Audit T27 follow-up: this is a
+    public seam so the T27 contract
+    tests can invoke the *exact*
+    wrapper the runner uses without
+    spawning a child runner process.
+    The wrapper:
+
+      1. Pre-imports the stdlib
+         ``select`` / ``selectors`` /
+         ``socket`` / ``asyncio``
+         modules **before**
+         ``REPO_ROOT`` is added to
+         ``sys.path`` so they cache in
+         ``sys.modules`` and never
+         re-scan ``sys.path`` later.
+      2. Inserts ``suite_dir`` and
+         ``REPO_ROOT`` into
+         ``sys.path`` so the suite
+         can ``import hems`` /
+         ``import pv_test_support``.
+      3. Strips any module from
+         ``sys.modules`` whose
+         ``__file__`` points into
+         ``REPO_ROOT`` and whose name
+         is in the shadow set.
+      4. Re-binds the cached stdlib
+         modules at the standard
+         names so any later
+         ``import select`` returns
+         the stdlib module.
+      5. Reconfigures
+         ``sys.stdout`` / ``sys.stderr``
+         to UTF-8 so tests that print
+         non-ASCII do not raise
+         ``UnicodeEncodeError`` on
+         Windows.
+      6. Runs the suite via
+         ``runpy.run_path`` as
+         ``__main__``.
+
+    The function returns a single
+    string suitable for
+    ``subprocess.run([py, "-c", wrapper])``
+    on either Windows or POSIX.
+    """
+    suite_rel = suite.resolve()
+    return (
+        "import sys\n"
+        "import runpy\n"
+        "import select as _stdlib_select\n"
+        "import selectors as _stdlib_selectors\n"
+        "import socket as _stdlib_socket\n"
+        "import asyncio as _stdlib_asyncio\n"
+        "sys.path.insert(0, " + repr(str(suite_dir)) + ")\n"
+        "sys.path.insert(0, " + repr(str(REPO_ROOT)) + ")\n"
+        "_repo_root = " + repr(str(REPO_ROOT)) + "\n"
+        "_shadowed = {\n"
+        "    'select', 'selectors', 'socket', 'asyncio',\n"
+        "}\n"
+        "for _name, _mod in list(sys.modules.items()):\n"
+        "    _f = getattr(_mod, '__file__', None)\n"
+        "    if _f and _f.startswith(_repo_root) and _name in _shadowed:\n"
+        "        sys.modules.pop(_name, None)\n"
+        "sys.modules['select'] = _stdlib_select\n"
+        "sys.modules['selectors'] = _stdlib_selectors\n"
+        "sys.modules['socket'] = _stdlib_socket\n"
+        "sys.modules['asyncio'] = _stdlib_asyncio\n"
+        "sys.argv[0] = " + repr(str(suite_rel)) + "\n"
+        "runpy.run_path(" + repr(str(suite_rel)) + ", run_name='__main__')\n"
+        "try:\n"
+        "    sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
+        "    sys.stderr.reconfigure(encoding='utf-8', errors='replace')\n"
+        "except Exception:\n"
+        "    pass\n"
+    )
+
+
 def _run_python_suite(
     py: str, suite: Path, label: str
 ) -> tuple[bool, str]:
@@ -235,99 +318,18 @@ def _run_python_suite(
     # ``sys.path`` and pick up the
     # integration's ``./select.py``.
     # The preloader closes that gap.
-    wrapper = (
-        # Step 1: pre-import the stdlib
-        # modules that the integration
-        # entity files could shadow.
-        # ``select`` is the audit's main
-        # repro; ``selectors`` is what
-        # ``asyncio`` actually uses
-        # under the hood; ``socket`` and
-        # ``asyncio`` are part of the
-        # same shadow family.
-        "import sys\n"
-        "import runpy\n"
-        "import select as _stdlib_select\n"
-        "import selectors as _stdlib_selectors\n"
-        "import socket as _stdlib_socket\n"
-        "import asyncio as _stdlib_asyncio\n"
-        # Step 2: add the test directory
-        # to ``sys.path`` so
-        # ``import pv_test_support`` and
-        # similar helpers resolve.
-        "sys.path.insert(0, " + repr(str(suite_dir)) + ")\n"
-        # Step 3: add the repo root for
-        # ``import hems`` /
-        # ``import coordinator``. This is
-        # the entry that *would* expose
-        # ``./select.py`` to a fresh
-        # ``import select`` — but step 1
-        # cached the stdlib ``select`` and
-        # step 4 strips the integration
-        # copy if anything ever bypasses
-        # the cache.
-        "sys.path.insert(0, " + repr(str(REPO_ROOT)) + ")\n"
-        # Step 4: belt-and-braces unshadow.
-        # If anything in this process
-        # ever imported the integration's
-        # ``./select.py`` (it should
-        # not, because step 1 cached the
-        # stdlib one), strip the
-        # REPO_ROOT-tainted copy from
-        # ``sys.modules`` so subsequent
-        # imports fall back to the
-        # stdlib location.
-        "_repo_root = " + repr(str(REPO_ROOT)) + "\n"
-        "_shadowed = {\n"
-        "    'select', 'selectors', 'socket', 'asyncio',\n"
-        "}\n"
-        "for _name, _mod in list(sys.modules.items()):\n"
-        "    _f = getattr(_mod, '__file__', None)\n"
-        "    if _f and _f.startswith(_repo_root) and _name in _shadowed:\n"
-        "        sys.modules.pop(_name, None)\n"
-        # Step 5: re-bind the cached
-        # stdlib modules at the standard
-        # names so any later
-        # ``import select`` (in the test
-        # or in code the test exec's)
-        # returns the stdlib module.
-        "sys.modules['select'] = _stdlib_select\n"
-        "sys.modules['selectors'] = _stdlib_selectors\n"
-        "sys.modules['socket'] = _stdlib_socket\n"
-        "sys.modules['asyncio'] = _stdlib_asyncio\n"
-        "sys.argv[0] = " + repr(str(suite_rel)) + "\n"
-        "runpy.run_path(" + repr(str(suite_rel)) + ", run_name='__main__')\n"
-        # Audit T27 follow-up: force
-        # UTF-8 on the child's stdout
-        # and stderr. On a Windows
-        # checkout the default code
-        # page is CP1252 and a test
-        # that prints non-ASCII (for
-        # example a Ukrainian message
-        # in a docstring or a unit
-        # test's ``✅`` glyph) would
-        # raise ``UnicodeEncodeError``
-        # even when all 13 of its
-        # assertions pass. We belt
-        # and braces this:
-        #  1. ``sys.stdout.reconfigure``
-        #     at runtime so any
-        #     ``print()`` call inside
-        #     the test goes through
-        #     UTF-8 regardless of the
-        #     inherited code page.
-        #  2. The runner also passes
-        #     ``-X utf8`` and
-        #     ``PYTHONIOENCODING=utf-8``
-        #     below as a redundant
-        #     safety net for the
-        #     interpreter startup.
-        "try:\n"
-        "    sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
-        "    sys.stderr.reconfigure(encoding='utf-8', errors='replace')\n"
-        "except Exception:\n"
-        "    pass\n"
+    # Delegate to the public
+    # ``build_runner_wrapper``
+    # helper so the T27
+    # contract tests can invoke
+    # the same wrapper the
+    # runner uses without
+    # spawning a child runner
+    # process.
+    wrapper = build_runner_wrapper(
+        suite_rel, suite_dir
     )
+
     try:
         r = subprocess.run(
             [
