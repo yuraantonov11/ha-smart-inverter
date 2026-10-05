@@ -780,94 +780,167 @@ class T27RunnerContractTests(unittest.TestCase):
         Per the audit follow-up, the
         regression test must actually
         exercise the **production test
-        path** — the body of
+        path** through the **production
+        isolation wrapper** - not the
+        in-process ``importlib`` path
+        that the previous version of
+        this test used. The in-process
+        path transitively imported
+        ``unittest.mock`` which pulls
+        in ``asyncio`` which imports
+        ``selectors`` which imports
+        ``select`` - and on Windows
+        ``select`` resolves to the
+        integration ``./select.py``
+        entity file which then fails
+        with ``ModuleNotFoundError:
+        homeassistant``.
+
+        The corrected contract: spawn a
+        subprocess that uses
+        ``build_runner_wrapper`` to
+        load the wiring module and call
         ``test_debug_logging_no_config_dir``
-        — repeatedly. We do that by
-        calling the function in a loop.
-        The audit also wants the
-        runner's isolation harness to
-        run here (so the test
-        reproduces on Windows). We
-        therefore invoke the
-        ``_run_runner`` helper with
-        ``--only`` pointing at the
-        real ``test_predictive_wiring.py``,
-        twenty times, and assert the
-        exit code is 0 every time. A
-        single failure exposes the
-        race; twenty iterations catch
-        a 5 % flake with
+        twenty times, with the same
+        ``-I -X utf8`` flags the runner
+        uses. We then check the exit
+        code and look for a
+        ``T27_14_DONE=20`` marker the
+        inline script prints on
+        success. The audit's repro
+        (Windows ``OSError [WinError
+        145]``) is reproduced by any
+        of the 20 iterations if the
+        ``worker.drain()`` contract
+        regresses; the loop catches a
+        5 %% flake with
         ``1 - 0.95**20 ~ 64 %``
         confidence.
         """
-        # Re-import the production
-        # test module so we can
-        # invoke its body directly
-        # without importing HA.
-        import importlib.util as _ilu
-        import sys as _sys_t
-        if str(REPO_ROOT) not in _sys_t.path:
-            _sys_t.path.insert(0, str(REPO_ROOT))
-        wiring_path = (
-            REPO_ROOT / "tests" / "test_predictive_wiring.py"
+        import importlib.util as _ilu_t27_14
+        # Load the production
+        # runner so we can call
+        # ``build_runner_wrapper``
+        # without spawning a
+        # child runner process -
+        # we want the test to
+        # directly drive the
+        # wrapper subprocess, the
+        # same way the production
+        # runner does.
+        spec = _ilu_t27_14.spec_from_file_location(
+            "_t27_14_runner", str(RUNNER)
         )
-        spec = _ilu.spec_from_file_location(
-            "_t27_14_predictive_wiring", str(wiring_path)
+        runner_mod = _ilu_t27_14.module_from_spec(spec)
+        spec.loader.exec_module(runner_mod)
+        # Write a one-shot inline
+        # script that imports
+        # ``test_predictive_wiring``
+        # via ``importlib``, calls
+        # ``test_debug_logging_no_config_dir``
+        # 20 times, and prints
+        # ``T27_14_DONE=20`` on
+        # success. We delete the
+        # script in ``finally``.
+        # The script itself
+        # imports only ``os``,
+        # ``sys``, ``json``,
+        # ``importlib`` and
+        # ``unittest.mock`` is
+        # **not** used; the
+        # wiring module does
+        # import ``unittest.mock``
+        # internally but
+        # ``build_runner_wrapper``'s
+        # pre-import of stdlib
+        # ``select`` keeps the
+        # audit repro at bay.
+        body_lines = [
+            "import importlib.util as _ilu",
+            "import json as _json",
+            "import os as _os",
+            "import sys as _sys",
+            "_REPO_ROOT = " + repr(str(REPO_ROOT)),
+            "_wiring_path = _os.path.join("
+            "_REPO_ROOT, 'tests', "
+            "'test_predictive_wiring.py')",
+            "_spec = _ilu.spec_from_file_location("
+            "'_t27_14_wiring', _wiring_path)",
+            "_mod = _ilu.module_from_spec(_spec)",
+            "_spec.loader.exec_module(_mod)",
+            "_test_fn = _mod.test_debug_logging_no_config_dir",
+            "for _i in range(20):",
+            "    _test_fn()",
+            "print('T27_14_DONE=20')",
+        ]
+        inline_body = "\n".join(body_lines) + "\n"
+        # The script must start
+        # with ``test_`` so the
+        # runner's discovery glob
+        # picks it up. We put it
+        # under ``tests/`` so the
+        # runner's normal
+        # discovery finds it.
+        inline_path = (
+            REPO_ROOT / "tests"
+            / "test_t27_14_inline_loop.py"
         )
-        # We do **not** exec the
-        # module — that runs every
-        # top-level ``if __name__``
-        # test, which would also run
-        # the test under
-        # ``unittest.main`` and
-        # consume the test counter.
-        # Instead, we load the module
-        # and pull the test function
-        # out by name.
-        mod = _ilu.module_from_spec(spec)
-        spec.loader.exec_module(mod)
+        inline_path.write_text(inline_body, encoding="utf-8")
         try:
-            test_fn = mod.test_debug_logging_no_config_dir
-        except AttributeError:
-            self.fail(
-                "test_predictive_wiring.py no longer exposes "
-                "test_debug_logging_no_config_dir; the audit "
-                "regression test cannot run without it."
+            wrapper = runner_mod.build_runner_wrapper(
+                inline_path, inline_path.parent
             )
-        # Run the test function 20
-        # times. Each call drives the
-        # bounded worker through one
-        # enqueue + drain cycle. On
-        # Windows a single iteration
-        # is enough to surface the
-        # race; the loop catches a
-        # 5 %% flake with
-        # ``1 - 0.95**20 ~ 64 %``
-        # confidence per the audit.
-        for _i in range(20):
+            r = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-X",
+                    "utf8",
+                    "-c",
+                    wrapper,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                cwd=str(REPO_ROOT),
+                env={
+                    **os.environ,
+                    "PYTHONIOENCODING": "utf-8",
+                },
+            )
+            self.assertEqual(
+                r.returncode,
+                0,
+                msg=(
+                    "wrapper subprocess failed; the "
+                    "production isolation did not work. "
+                    f"stdout={r.stdout!r}, "
+                    f"stderr={r.stderr!r}"
+                ),
+            )
+            # The wrapper captures
+            # the inline script's
+            # stdout through
+            # ``runpy``. We look for
+            # the T27_14_DONE marker
+            # in the captured output.
+            self.assertIn(
+                "T27_14_DONE=20",
+                r.stdout,
+                msg=(
+                    "inline script did not complete all "
+                    "20 iterations. The audit repro: a "
+                    "Windows ``OSError [WinError 145]`` "
+                    "may have crashed one of the iterations. "
+                    f"stdout={r.stdout!r}, "
+                    f"stderr={r.stderr!r}"
+                ),
+            )
+        finally:
             try:
-                test_fn()
-            except AssertionError as exc:
-                self.fail(
-                    f"iteration {_i}: "
-                    "test_debug_logging_no_config_dir raised "
-                    f"AssertionError: {exc}. The audit fix is "
-                    "regressed; the worker.drain() contract is "
-                    "no longer being honoured before "
-                    "TemporaryDirectory cleanup."
-                )
-            except OSError as exc:
-                # This is the Windows
-                # repro: ``[WinError 145]
-                # The directory is not
-                # empty``.
-                self.fail(
-                    f"iteration {_i}: "
-                    "test_debug_logging_no_config_dir raised "
-                    f"OSError ({exc}); this is the audit's "
-                    "Windows race; the worker is not draining "
-                    "before TemporaryDirectory cleanup."
-                )
+                inline_path.unlink()
+            except FileNotFoundError:
+                pass
 
     def test_t27_08_runner_handles_js_when_node_present(self) -> None:
         """When ``node`` is on PATH

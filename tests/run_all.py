@@ -254,13 +254,36 @@ def build_runner_wrapper(suite: Path, suite_dir: Path) -> str:
         "sys.modules['selectors'] = _stdlib_selectors\n"
         "sys.modules['socket'] = _stdlib_socket\n"
         "sys.modules['asyncio'] = _stdlib_asyncio\n"
-        "sys.argv[0] = " + repr(str(suite_rel)) + "\n"
-        "runpy.run_path(" + repr(str(suite_rel)) + ", run_name='__main__')\n"
+        # Force UTF-8 on the child's
+        # stdout and stderr BEFORE
+        # ``runpy.run_path`` so any
+        # ``print()`` call inside the
+        # suite (or in modules the
+        # suite imports - for example
+        # ``unittest.mock`` which
+        # transitively imports
+        # ``asyncio``) goes through
+        # UTF-8 regardless of the
+        # inherited code page. On
+        # Windows the default is
+        # CP1252 and tests that print
+        # non-ASCII (a Ukrainian
+        # message in a docstring, an
+        # emoji like ``CHECK`` or
+        # ``CROSS``, a Cyrillic
+        # identifier) would raise
+        # ``UnicodeEncodeError``
+        # otherwise. We do this *before*
+        # the suite runs so even
+        # ``asyncio``'s own logging
+        # output is UTF-8.
         "try:\n"
         "    sys.stdout.reconfigure(encoding='utf-8', errors='replace')\n"
         "    sys.stderr.reconfigure(encoding='utf-8', errors='replace')\n"
         "except Exception:\n"
         "    pass\n"
+        "sys.argv[0] = " + repr(str(suite_rel)) + "\n"
+        "runpy.run_path(" + repr(str(suite_rel)) + ", run_name='__main__')\n"
     )
 
 
