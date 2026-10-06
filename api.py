@@ -439,6 +439,87 @@ class InverterApiClient:
                 data.get("msg", "Failed to fetch device list")
             )
 
+    async def refresh_device_summary(self) -> bool:
+        """Refresh ``daily_energy``,
+        ``total_energy``, ``daily_energy_at``,
+        ``daily_energy_date`` and
+        ``co2_reduction`` from the device
+        list endpoint.
+
+        Audit T20 follow-up (Windows
+        review): the production path
+        was previously updating
+        ``daily_energy`` /
+        ``daily_energy_at`` only inside
+        ``_fetch_device_list`` which
+        was called at login or when
+        ``device_sn`` was missing.
+        Ordinary polling did not
+        refresh the value, so a
+        sensor reading stayed at the
+        login value for hours.
+
+        The coordinator now calls
+        this method on every polling
+        cycle subject to a TTL (default
+        15 minutes). Failure keeps
+        the previous ``daily_energy``
+        and ``daily_energy_at`` so
+        the sensor surfaces ``stale``
+        instead of an outage.
+
+        Returns ``True`` when the
+        device list response was
+        parsed and at least one device
+        was found; ``False`` otherwise.
+        """
+        try:
+            await self._apply_rate_limit(ENDPOINT_DEVICE_LIST)
+        except Exception:
+            return False
+        body = {"page": 1, "count": 10, "applyModeCategory": 1}
+        headers = self._build_headers("POST", body)
+        try:
+            async with self._session.post(
+                ENDPOINT_DEVICE_LIST,
+                data=self._json_compact(body),
+                headers=headers,
+            ) as resp:
+                data = await resp.json()
+        except Exception:
+            # Network or transport error.
+            # Keep the previous value
+            # and timestamp.
+            return False
+        if not (data.get("code") == 0 and data.get("data")):
+            return False
+        devices = data["data"].get("list", [])
+        self._account_device_count = len(devices)
+        if not devices:
+            return False
+        dev = devices[0]
+        # Update only the energy fields,
+        # not device_sn (which is sticky
+        # for the lifetime of the entry).
+        self.daily_energy = self._parse_double(
+            dev.get("dailyProducedQuantity")
+        )
+        self.total_energy = self._parse_double(
+            dev.get("totalProducedQuantity")
+        )
+        # Audit T20: refresh the
+        # freshness triple. We use UTC
+        # here; the coordinator sets
+        # ``daily_energy_date`` from the
+        # HA site timezone so the
+        # midnight-reset rule fires at
+        # the right wall-clock hour.
+        from datetime import datetime as _dt, timezone as _tz
+        self.daily_energy_at = _dt.now(_tz.utc)
+        self._update_co2()
+        return True
+
+
     async def fetch_realtime_data(self) -> dict[str, Any] | None:
         """Fetch real-time inverter data mirroring Dart getRealTimeData."""
         if not self.device_sn:

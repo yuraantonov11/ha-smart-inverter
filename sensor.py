@@ -518,7 +518,30 @@ class InverterDailyEnergySensor(InverterSensor):
         # rather than a stale number.
         daily_energy_at = getattr(api, "daily_energy_at", None)
         daily_energy_date = getattr(api, "daily_energy_date", None)
-        now = datetime.now(tz=timezone.utc)
+        # Audit T20 follow-up (timezone):
+        # we use the HA site timezone for
+        # both ``now`` and ``today``. The
+        # previous version used UTC for
+        # ``now`` and ``today``, which
+        # broke the midnight-reset rule
+        # for users east of UTC (the audit
+        # repro was 6 October 00:01 Kyiv:
+        # the sensor saw ``daily_energy_date``
+        # dated 5 October from the API but
+        # ``today`` was 6 October UTC -
+        # the comparison passed and the
+        # sensor reported yesterday's
+        # 18.5 kWh as today's reading).
+        # ``_site_tz_offset_minutes`` is
+        # exposed by the coordinator as
+        # ``entry.options.get("site_tz_offset_minutes")``
+        # or computed from
+        # ``dt_util.as_local(now).utcoffset()``.
+        # ``None`` means "use UTC".
+        site_tz = getattr(
+            self.coordinator.api, "_site_tz", None
+        )
+        now = datetime.now(tz=site_tz or timezone.utc)
         freshness = compute_daily_energy_freshness(
             daily_energy_at=daily_energy_at,
             daily_energy_date=daily_energy_date,
@@ -547,7 +570,17 @@ class InverterDailyEnergySensor(InverterSensor):
         api = self.coordinator.api
         daily_energy_at = getattr(api, "daily_energy_at", None)
         daily_energy_date = getattr(api, "daily_energy_date", None)
-        now = datetime.now(tz=timezone.utc)
+        # Audit T20 follow-up (timezone):
+        # use the HA site timezone so
+        # the freshness triple and the
+        # ``today`` comparison both
+        # see the same wall clock.
+        # ``_site_tz`` is set by the
+        # coordinator at init time;
+        # ``None`` falls back to UTC
+        # for standalone / unit tests.
+        site_tz = getattr(api, "_site_tz", None)
+        now = datetime.now(tz=site_tz or timezone.utc)
         freshness = compute_daily_energy_freshness(
             daily_energy_at=daily_energy_at,
             daily_energy_date=daily_energy_date,

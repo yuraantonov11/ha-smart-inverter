@@ -228,6 +228,35 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self.api = api
         self._entry = entry
         self._consecutive_nulls = 0
+        # Audit T20: throttle the
+        # device-summary refresh
+        # (daily_energy / total_energy)
+        # to ``_energy_stats_ttl_s``
+        # seconds so ordinary cycles
+        # keep the timestamp current
+        # without flooding the API.
+        # ``None`` means "not yet
+        # refreshed", which forces the
+        # first cycle to refresh.
+        self._last_energy_stats_at: datetime | None = None
+        self._energy_stats_ttl_s: int = 900  # 15 minutes
+        # Audit T20 follow-up (timezone):
+        # the sensor's ``daily_energy_date``
+        # comparison runs against the HA site
+        # timezone so the midnight-reset rule
+        # fires at local midnight. We resolve
+        # it once at init and propagate to
+        # the API client.
+        try:
+            from homeassistant.util import dt as _dt
+            from datetime import timezone as _tz, timedelta as _td
+            tz_name = str(self.hass.config.time_zone)
+            offset = _dt.now().utcoffset() or _td(0)
+            self._site_tz_offset = offset
+        except Exception:
+            from datetime import timedelta as _td
+            self._site_tz_offset = _td(0)
+        self.api._site_tz = self._site_tz_offset
 
         # HEMS state. T02 fix: user toggles for HEMS auto mode and smart
         # mode are read from ``entry.options`` so they survive reload. The
@@ -641,6 +670,19 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             return self._build_offline_state(now)
 
         self._consecutive_nulls = 0
+
+        # Audit T20: refresh device
+        # summary so
+        # ``daily_energy_at`` /
+        # ``daily_energy`` /
+        # ``total_energy`` track the
+        # current polling cycle,
+        # subject to a TTL. Failure
+        # keeps the previous value
+        # and timestamp; the
+        # freshness helper will mark
+        # the sensor ``stale``.
+        await self._maybe_refresh_energy_stats(now)
 
         # ── Compute corrected SOC ────────────────────────────────────
         # T01 hardening: a missing or invalid batterySoc must NOT
@@ -1513,6 +1555,80 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             "gridAvailable": True, "gridTransition": "none",
             "online": False, "lastUpdated": now.isoformat(),
         }
+
+    async def _maybe_refresh_energy_stats(self, now: datetime) -> None:
+        """Refresh ``daily_energy`` /
+        ``total_energy`` from the
+        device-list endpoint.
+
+        Audit T20 follow-up (Windows
+        review): the production path
+        was previously updating
+        ``daily_energy`` only at
+        login or when ``device_sn``
+        was missing; ordinary
+        polling did not refresh
+        the value. The sensor
+        stayed at the login value
+        for hours until the next
+        restart / reauth.
+
+        We refresh every
+        ``_energy_stats_ttl_s``
+        seconds (15 minutes by
+        default). Failure keeps the
+        previous value and
+        timestamp; the freshness
+        helper exposes
+        ``daily_energy_stale=True``
+        in ``extra_state_attributes``
+        so the dashboard can warn
+        the user.
+
+        We also refresh
+        ``daily_energy_date`` from
+        the HA site timezone so the
+        midnight-reset rule fires at
+        the right wall-clock hour.
+        """
+        if (
+            self._last_energy_stats_at is not None
+            and (now - self._last_energy_stats_at).total_seconds()
+            < self._energy_stats_ttl_s
+        ):
+            return
+        self._last_energy_stats_at = now
+        try:
+            refreshed_ok = await self.api.refresh_device_summary()
+            if not refreshed_ok:
+                # Network or parse error;
+                # the helper inside the
+                # API kept the previous
+                # value and timestamp.
+                return
+            # Audit T20 (timezone): the
+            # ``daily_energy_date`` we
+            # publish follows the HA
+            # site timezone so the
+            # midnight-reset rule fires
+            # at local midnight, not
+            # UTC midnight. The sensor
+            # compares its own local
+            # date against this same
+            # site timezone so the two
+            # sides cannot disagree.
+            try:
+                from homeassistant.util import dt as _dt
+                _local = _dt.as_local(now)
+            except ImportError:
+                _local = now
+            self.api.daily_energy_date = _local.date()
+        except Exception as exc:
+            # Never break HEMS because
+            # of a stats refresh.
+            _LOGGER.debug(
+                "Energy stats refresh failed: %s", exc
+            )
 
     async def _maybe_refresh_load_history(self, now: datetime) -> None:
         """Load hourly load-power history from the HA recorder (max once/hour).
