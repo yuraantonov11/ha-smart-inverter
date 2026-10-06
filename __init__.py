@@ -6,9 +6,12 @@ __version__ = "1.8.13-perf-fixes"
 """Bumped to surface applied patches in HA UI Devices panel.
 Tracks local-only fixes (5 patches applied 2026-07-07); HACS version stays 1.8.12."""
 
+import hashlib
 import logging
 import json
 import os
+import shutil
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 
@@ -491,19 +494,43 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
 
     try:
         from homeassistant.components.frontend import add_extra_js_url
-        # Bump the cache-buster on every release so browsers pick up the new JS
-        add_extra_js_url(hass, f"{resource_url}?v=1.8.2")
+        # Audit T23: cache-bust version is derived from the
+        # SHA-256 of each asset's bytes. A static literal
+        # version does not guarantee the user's browser
+        # re-fetches the asset when only one of the bundled
+        # scripts changed.
+        www_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "www",
+        )
+        _flow_bust = _compute_assets_cache_bust(
+            www_dir, ["k-flow-card.js"]
+        )
+        _forecast_bust = _compute_assets_cache_bust(
+            www_dir, ["forecast-card.js"]
+        )
+        _ph_bust = _compute_assets_cache_bust(
+            www_dir, ["power-history-card.js"]
+        )
+        _te_bust = _compute_assets_cache_bust(
+            www_dir, ["total-energy-card.js"]
+        )
+        add_extra_js_url(hass, f"{resource_url}?v={_flow_bust}")
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
-        add_extra_js_url(hass, f"{fc_url}?v=1.8.2")
+        add_extra_js_url(hass, f"{fc_url}?v={_forecast_bust}")
         add_extra_js_url(hass, "/local/community/powmr-inverter/pv-comparison-card.js?v=2")
-        # Power history chart card (v3.0: per-series chart_type, smooth curves)
+        # Power history chart card
         ph_url = "/local/community/powmr-inverter/power-history-card.js"
-        add_extra_js_url(hass, f"{ph_url}?v=1.8.12")
-        # Total energy info card (informative total + daily/yearly breakdown)
+        add_extra_js_url(hass, f"{ph_url}?v={_ph_bust}")
+        # Total energy info card
         te_url = "/local/community/powmr-inverter/total-energy-card.js"
-        add_extra_js_url(hass, f"{te_url}?v=1.8.12")
-        _LOGGER.info("Flow card + forecast card + power-history card + total-energy card registered")
+        add_extra_js_url(hass, f"{te_url}?v={_te_bust}")
+        _LOGGER.info(
+            "Flow card + forecast card + power-history card + total-energy card registered "
+            "(cache-bust: flow=%s forecast=%s ph=%s te=%s)",
+            _flow_bust, _forecast_bust, _ph_bust, _te_bust,
+        )
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
 
@@ -511,6 +538,188 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
 # ═══════════════════════════════════════════════════════════════════════
 # Dashboard builder — returns a plain Python dict (stored as JSON)
 # ═══════════════════════════════════════════════════════════════════════
+
+# ── Audit T22 — AI view builder ───────────────────────────────
+def _build_ai_view(
+    entity_lookup,
+    decision_state: dict,
+) -> dict:
+    """Build the AI dashboard view.
+
+    The view surfaces five keys the
+    audit requires:
+
+      * mode (``Off`` / ``Shadow`` / ``Assist``)
+      * readiness (assistant "ready" boolean)
+      * real_pairs (count of measured
+        PV fact pairs feeding the
+        calibrator)
+      * model_quality (calibration
+        confidence factor 0..1)
+      * decision_reason (text from
+        ``predictive_decision_state.reason``)
+
+    ``entity_lookup`` is a callable
+    the dashboard builder injects
+    so the AI view resolves the
+    predictive sensors via the
+    entity registry (which honours
+    renames) rather than hard-coded
+    ``sensor.`` IDs. The contract
+    is documented in
+    ``tests/test_t22_t23_dashboard.py``.
+    """
+    mode = decision_state.get("mode", "Off")
+    readiness = bool(decision_state.get("readiness", False))
+    real_pairs = int(decision_state.get("real_pairs", 0))
+    model_quality = float(
+        decision_state.get("model_quality", 0.0)
+    )
+    reason = str(decision_state.get("reason", ""))
+
+    decision_state_eid = entity_lookup(
+        "predictive_decision_state"
+    )
+    hint_eid = entity_lookup("predictive_hint")
+    plan_eid = entity_lookup("predictive_plan")
+    reason_eid = entity_lookup("hems_last_reason")
+
+    cards: list[dict] = []
+    cards.append({
+        "type": "markdown",
+        "content": (
+            f"# ШІ · Режим **{mode}**\n\n"
+            f"Готовність: **{'так' if readiness else 'ні'}**\n\n"
+            f"Реальних пар: **{real_pairs}**\n\n"
+            f"Якість моделі: **{round(model_quality, 2)}**\n\n"
+            f"Причина рішення: **{reason}**"
+        ),
+    })
+    if real_pairs == 0:
+        cards.append({
+            "type": "markdown",
+            "content": "ℹ️ Даних ще немає (0 пар).",
+        })
+    rows: list[dict] = []
+    for eid, name in (
+        (decision_state_eid, "Decision State"),
+        (hint_eid, "Predictive Hint"),
+        (plan_eid, "Predictive Plan"),
+        (reason_eid, "HEMS Last Reason"),
+    ):
+        if eid:
+            rows.append({"entity": eid, "name": name})
+    if rows:
+        cards.append({
+            "type": "entities",
+            "title": "Стан AI",
+            "entities": rows,
+        })
+    return {
+        "title": "ШІ",
+        "path": "powmr-ai",
+        "icon": "mdi:brain",
+        "type": "sections",
+        "max_columns": 2,
+        "sections": [{"type": "grid", "cards": cards}],
+    }
+
+
+# ── Audit T23 — atomic write + cache-bust ───────────────────
+def _write_dashboard_atomic(
+    target_path: str, payload: dict
+) -> None:
+    """Write ``payload`` to
+    ``target_path`` atomically.
+
+    The function:
+
+      * writes the JSON to a
+        tempfile in the same
+        directory (so ``os.replace``
+        is a same-filesystem rename,
+        never a copy);
+      * backs up the existing file
+        to ``target_path + ".bak"``
+        if it exists;
+      * calls ``os.replace`` so the
+        move is atomic;
+      * on failure, removes the
+        tempfile and re-raises the
+        exception so the previous
+        file is preserved.
+
+    Audit T23 (Windows review):
+    the previous direct
+    ``json.dump`` overwrote the
+    existing file in place; a
+    crash mid-write left a
+    half-written dashboard and
+    took the AI view down. This
+    writer is the agreed
+    replacement.
+    """
+
+
+    target_dir = os.path.dirname(
+        os.path.abspath(target_path)
+    )
+    fd, tmp_path = tempfile.mkstemp(
+        dir=target_dir,
+        prefix=".lovelace.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        if os.path.exists(target_path):
+            shutil.copyfile(
+                target_path, target_path + ".bak"
+            )
+        os.replace(tmp_path, target_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def _compute_assets_cache_bust(
+    www_dir: str, asset_names: list[str]
+) -> str:
+    """Compute a content-derived
+    cache-bust suffix for the
+    frontend assets.
+
+    Returns the first 8 hex
+    characters of the SHA-256 over
+    each asset's bytes (with a
+    name-keyed separator so two
+    files with identical content
+    still hash differently by
+    position).
+
+    Audit T23: a single static
+    literal version (e.g.
+    ``?v=1.8.2``) does not
+    guarantee the user's browser
+    re-fetches the asset when only
+    one of the bundled scripts
+    changed.
+    """
+    h = hashlib.sha256()
+    for name in asset_names:
+        path = os.path.join(www_dir, name)
+        if not os.path.exists(path):
+            continue
+        with open(path, "rb") as f:
+            h.update(name.encode("utf-8"))
+            h.update(b"\x00")
+            h.update(f.read())
+            h.update(b"\x00")
+    return h.hexdigest()[:8]
+
 
 def _tile(entity: str, name: str, icon: str) -> dict:
     return {"type": "tile", "entity": entity, "name": name, "icon": icon}
@@ -579,6 +788,23 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         tk = ent.translation_key
         if tk:
             eid[tk] = ent.entity_id
+
+    # Predictive sensors do NOT have translation_keys; their
+    # unique_id is ``f"{entry_id}_predictive_..."``. Map those
+    # onto the same lookup table so the AI view can resolve
+    # them via the registry (audit T22).
+    for ent in entry_entities:
+        uid = ent.unique_id
+        if not uid:
+            continue
+        prefix = f"{entry.entry_id}_predictive_"
+        if uid.startswith(prefix):
+            suffix = uid[len(prefix):]
+            eid.setdefault(
+                f"predictive_{suffix}", ent.entity_id
+            )
+        elif uid == f"{entry.entry_id}_hems_last_reason":
+            eid.setdefault("hems_last_reason", ent.entity_id)
 
     # Shorthand: entity by translation_key, empty string if missing
     def _e(key: str) -> str:
@@ -880,6 +1106,70 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         "sections": econ_cards,
     })
 
+    # ═══════════════════════════════════════════════════════════════
+    # View 5: ШІ (audit T22)
+    # ═══════════════════════════════════════════════════════════════
+    # Pull live decision state
+    # from the coordinator so the
+    # view is honest even on fresh
+    # install (samples == 0 → "no
+    # data yet" tile).
+    hems = getattr(hass.data.get(DOMAIN, {}).get(
+        entry.entry_id
+    ), "_hems", None)
+    if hems is None:
+        # Fall back to a default
+        # decision state when the
+        # HEMS engine is not yet
+        # bound.
+        decision_state: dict = {
+            "mode": "Off",
+            "readiness": False,
+            "real_pairs": 0,
+            "model_quality": 0.0,
+            "reason": "hems_unbound",
+        }
+    else:
+        decision_state = (
+            hems.predictive_decision_state.copy()
+        )
+        # Compute readiness from the
+        # last hint + calibrator so
+        # the view does not rely on
+        # the audit-required boolean
+        # being explicitly set.
+        controller = getattr(
+            hems, "_predictive_controller", None
+        )
+        calibrator = getattr(
+            controller, "calibrator", None
+        )
+        real_pairs = 0
+        model_quality = 0.0
+        if calibrator is not None:
+            try:
+                metrics = calibrator.metrics()
+                real_pairs = int(metrics.sample_count)
+                model_quality = float(
+                    metrics.confidence_factor
+                )
+            except (AttributeError, TypeError, ValueError):
+                pass
+        hint = getattr(hems, "_last_predictive_hint", None)
+        confidence = float(
+            decision_state.get("confidence", 0.0) or 0.0
+        )
+        import math as _math
+        readiness = bool(
+            _math.isfinite(confidence)
+            and real_pairs >= 3
+            and model_quality >= 0.2
+        ) if hint is not None else False
+        decision_state["real_pairs"] = real_pairs
+        decision_state["model_quality"] = model_quality
+        decision_state["readiness"] = readiness
+    views.append(_build_ai_view(_e, decision_state))
+
     # ── Assemble final config dict ───────────────────────────────
     dashboard_config: dict = {
         "title": "Smart Solar Енергопанель",
@@ -887,7 +1177,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     }
 
     # Hash for change detection
-    config_hash = hashlib.md5(_json.dumps(dashboard_config, sort_keys=True).encode()).hexdigest()[:8]
+    config_hash = hashlib.md5(json.dumps(dashboard_config, sort_keys=True).encode()).hexdigest()[:8]
     old_hash = hass.data[DOMAIN][entry.entry_id].get("dash_hash", "")
 
     if config_hash != old_hash:
@@ -978,8 +1268,11 @@ async def _update_dashboard_content(
     CRITICAL: data.config MUST be a dict (JSON object), NOT a YAML string.
     Storing a string causes "Cannot use 'in' operator to search for 'strategy'"
     in the HA frontend because JS receives a string where it expects an object.
-    """
 
+    Audit T23: the write goes through ``_write_dashboard_atomic`` so a crash
+    mid-write cannot leave a half-written dashboard. The previous direct
+    ``json.dump`` overwrote the file in place.
+    """
     def _write():
         data = {
             "key": f"lovelace.{dashboard_id}",
@@ -990,7 +1283,6 @@ async def _update_dashboard_content(
                 "config": dashboard_config,  # ← JSON dict, NOT YAML string!
             },
         }
-        with open(storage_path, "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        _write_dashboard_atomic(storage_path, data)
 
     await hass.async_add_executor_job(_write)
