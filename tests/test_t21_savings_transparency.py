@@ -444,6 +444,92 @@ def ast_literal(node):
     return None
 
 
+def test_init_does_not_mislabel_savings() -> None:
+    """Audit T21 follow-up: the
+    generated dashboard in __init__.py
+    must not label the savings
+    sensor simply 'Економія'. The
+    audit requires an honest
+    framing ('Валова оцінка' or
+    similar) in the generated card
+    names AND in the explanatory
+    markdown the dashboard injects.
+    """
+    src = _load("__init__.py")
+    # Look for the generated card
+    # names. The audit allows the
+    # exact phrase 'Економія' only
+    # if it is qualified by an
+    # adjacent honest-framing word.
+    for substring in [
+        "daily_savings",
+        "monthly_savings",
+    ]:
+        idx = 0
+        while True:
+            i = src.find(substring, idx)
+            if i < 0:
+                break
+            # Find the surrounding
+            # tuple (or substring of
+            # a tuple). Read the
+            # line and check that
+            # the ``Економія`` /
+            # ``economy`` label is
+            # either absent or
+            # accompanied by a
+            # qualifier.
+            line_end = src.find(chr(10), i)
+            line = src[i:line_end]
+            if "Економія" in line and "Валова" not in line and "оцінка" not in line.lower():
+                raise AssertionError(
+                    "Generated dashboard in __init__.py "
+                    "still labels "
+                    f"{substring!r} as 'Економія' "
+                    f"without the audit-required qualifier. "
+                    f"Line: {line!r}"
+                )
+            idx = line_end
+
+
+def test_init_explains_savings_limitations() -> None:
+    """Audit T21 follow-up: the
+    generated dashboard markdown
+    must explicitly enumerate the
+    three limitations the audit
+    found in the savings formula:
+    charging cost, losses, and
+    direct PV self-consumption.
+    """
+    src = _load("__init__.py")
+    # Find the markdown block
+    # inside the economics tiles.
+    phrases = [
+        "заряджання",   # charging cost
+        "втрат",        # losses
+        "НЕ чиста",     # not net
+        "арбітраж",     # arbitrage
+        "самопоживанн", # direct self-consumption
+    ]
+    missing = [
+        p for p in phrases
+        if p.lower() not in src.lower()
+    ]
+    assert not missing, (
+        "Generated dashboard markdown "
+        "in __init__.py does not name "
+        "all the audit-required "
+        "limitations. Missing: "
+        f"{missing!r}. The audit "
+        "requires the markdown to "
+        "explain: charging cost not "
+        "subtracted, losses not "
+        "subtracted, no PV "
+        "self-consumption, not net "
+        "savings."
+    )
+
+
 def _run_all() -> None:
     failures: list[tuple[str, str]] = []
     tests = sorted(

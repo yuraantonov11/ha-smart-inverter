@@ -602,7 +602,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         ("grid_available", "Мережа", "mdi:transmission-tower"),
         ("working_mode", "Режим", "mdi:state-machine"),
         ("battery_soc_corrected", "SOC", "mdi:battery-heart-variant"),
-        ("daily_savings", "Економія", "mdi:cash-check"),
+        ("daily_savings", "Валова оцінка", "mdi:cash-check"),
         ("forecast_tomorrow", "Прогноз PV", "mdi:solar-power"),
     ]:
         if _e(tk):
@@ -831,11 +831,31 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     econ_cards: list[dict] = []
 
     econ_tiles: list[dict] = [
-        {"type": "markdown", "content": "# Економіка сонячної енергії\nРозрахунок економії на основі тарифів та генерації."}
+        {"type": "markdown", "content": (
+            "# Валова оцінка вартості заміщеного імпорту\n\n"
+            "Це **груба оцінка** того, скільки грошей "
+            "зекономили б розряди батареї замість "
+            "покупки електроенергії з мережі. "
+            "Формула: розряд_день × тариф_день + "
+            "розряд_ніч × тариф_ніч.\n\n"
+            "**Це НЕ чиста економія**: не віднімає "
+            "ні вартість заряджання від мережі, ні "
+            "втрати в батареї, ні загальний імпорт. "
+            "Якщо батарею заряджали вночі з мережі "
+            "за дешевим тарифом і розряджали вдень — "
+            "це **арбітраж**, а не економія. "
+            "Пряме самопоживання PV без "
+            "проходження через батарею "
+            "також не враховується — значення "
+            "охоплює лише розряди батареї. "
+            "Деталі — в атрибутах сенсора "
+            "(savings_formula, savings_limitations, "
+            "is_net_savings)."
+        )}
     ]
     for tk, nm, ic in [
-        ("daily_savings", "Економія сьогодні", "mdi:cash-check"),
-        ("monthly_savings", "Економія за місяць", "mdi:cash-multiple"),
+        ("daily_savings", "Валова оцінка · сьогодні", "mdi:cash-check"),
+        ("monthly_savings", "Валова оцінка · місяць", "mdi:cash-multiple"),
         ("forecast_tomorrow", "Прогноз на завтра", "mdi:solar-power"),
         ("forecast_day_after", "Прогноз на післязавтра", "mdi:solar-power-variant"),
         ("learned_ratio", "Коефіцієнт PV", "mdi:brain"),
@@ -847,7 +867,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     econ_graphs: list[dict] = []
     ds = _e("daily_savings")
     if ds:
-        econ_graphs.append(_stats("Економія (30 днів)", "bar", "day", 30, ["sum"], [ds]))
+        econ_graphs.append(_stats("Валова оцінка (30 днів)", "bar", "day", 30, ["sum"], [ds]))
     if econ_graphs:
         econ_cards.append({"type": "grid", "cards": econ_graphs})
 
