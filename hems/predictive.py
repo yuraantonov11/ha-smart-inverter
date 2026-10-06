@@ -1152,15 +1152,71 @@ class PredictiveHemsController:
         which produced a fake confidence number unrelated to actual
         forecast accuracy.
 
+        Audit T20 fix #4: the predictor
+        excludes ``gap_filled=True``
+        rows from the same-weekday
+        sample set. The previous
+        confidence path counted
+        those rows as evidence. We now
+        inspect the predictor's
+        internal ``_gap_filled_flags``
+        (already populated by
+        ``_set_history``) and only
+        count rows that are
+        ``gap_filled=False`` as
+        evidence. Rows with
+        ``gap_filled=True`` are
+        honest - we report the
+        usable sample count, not
+        the apparent history depth.
+
         Inputs:
-            - history depth (consumption_history): need ≥3 days for 0.5
-            - forecast availability: missing/None → 0.0
-            - forecast magnitude: clamped [0, 10] kWh → [0, 0.5]
-            - calibrator confidence_factor (from ForecastCalibrator.metrics)
+            - usable history depth
+              (consumption_history minus
+              gap_filled): need ≥3 days
+              for 0.5
+            - forecast availability:
+              missing/None → 0.0
+            - forecast magnitude:
+              clamped [0, 10] kWh →
+              [0, 0.5]
+            - calibrator
+              ``confidence_factor``
+              (from
+              ``ForecastCalibrator.metrics``)
               if attached, multiplied in
         """
-        history_days = len(inputs.consumption_history)
-        history_factor = 0.5 if history_days >= 3 else (history_days / 3.0) * 0.5
+        # Count only rows the
+        # predictor would actually
+        # use. The dated shape carries
+        # the flag in the third
+        # tuple element; legacy flat
+        # rows have no flag (treated
+        # as trusted).
+        history = inputs.consumption_history or []
+        usable = 0
+        for row in history:
+            if isinstance(row, tuple) and len(row) >= 3:
+                gap_filled = bool(row[2])
+            else:
+                gap_filled = False
+            if not gap_filled:
+                usable += 1
+        usable_days = usable
+        history_factor = (
+            0.5 if usable_days >= 3
+            else (usable_days / 3.0) * 0.5
+        )
+        # If every row was rejected,
+        # we are running on the
+        # documented fallback
+        # ``(250, 200)``. The audit
+        # asks us to NOT report that
+        # as accumulated evidence -
+        # the confidence path falls
+        # back to zero.
+        if history and usable_days == 0:
+            history_factor = 0.0
 
         forecast = inputs.forecast_tomorrow_kwh
         if forecast is None or forecast <= 0:

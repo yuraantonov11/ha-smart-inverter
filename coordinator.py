@@ -240,27 +240,31 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # first cycle to refresh.
         self._last_energy_stats_at: datetime | None = None
         self._energy_stats_ttl_s: int = 900  # 15 minutes
-        # Audit T20 follow-up (timezone):
-        # the sensor's ``daily_energy_date``
-        # comparison runs against the HA site
-        # timezone so the midnight-reset rule
-        # fires at local midnight. We resolve
-        # it once at init and propagate to
-        # the API client as a real
-        # ``datetime.tzinfo`` subclass (the
-        # ``timedelta`` raw offset is not a
-        # ``tzinfo`` - HA rejects it).
+        # Audit T20 fix #3 (timezone):
+        # the sensor's
+        # ``daily_energy_date`` comparison
+        # runs against the HA site
+        # timezone so the midnight-reset
+        # rule fires at local midnight.
+        # We use ``ZoneInfo(
+        # hass.config.time_zone)`` - the
+        # actual IANA zone, which handles
+        # DST correctly. A bare
+        # ``datetime.timedelta`` captured
+        # at startup is wrong the moment
+        # DST kicks in: e.g. Europe/Kyiv
+        # goes from UTC+2 in winter to
+        # UTC+3 in summer.
         try:
-            from datetime import timezone as _tz
-            from homeassistant.util import dt as _dt
-            offset = _dt.now().utcoffset()
-            if offset is not None:
-                self._site_tz_offset = _tz(offset)
-            else:
-                self._site_tz_offset = _tz.utc
+            from zoneinfo import ZoneInfo
+            tz_name = str(self.hass.config.time_zone)
+            self._site_tz_offset = ZoneInfo(tz_name)
         except Exception:
-            from datetime import timezone as _tz
-            self._site_tz_offset = _tz.utc
+            try:
+                from datetime import timezone as _tz
+                self._site_tz_offset = _tz.utc
+            except Exception:
+                self._site_tz_offset = None
         self.api._site_tz = self._site_tz_offset
 
         # HEMS state. T02 fix: user toggles for HEMS auto mode and smart

@@ -497,26 +497,109 @@ class InverterApiClient:
         self._account_device_count = len(devices)
         if not devices:
             return False
-        dev = devices[0]
-        # Update only the energy fields,
-        # not device_sn (which is sticky
-        # for the lifetime of the entry).
-        self.daily_energy = self._parse_double(
-            dev.get("dailyProducedQuantity")
-        )
-        self.total_energy = self._parse_double(
-            dev.get("totalProducedQuantity")
-        )
-        # Audit T20: refresh the
-        # freshness triple. We use UTC
-        # here; the coordinator sets
-        # ``daily_energy_date`` from the
-        # HA site timezone so the
-        # midnight-reset rule fires at
-        # the right wall-clock hour.
+        # Audit T20 fix #1: match by
+        # ``device_sn`` first. The
+        # previous bug picked
+        # ``devices[0]`` regardless of
+        # which device the
+        # coordinator was configured
+        # for. We match the
+        # configured ``device_sn``
+        # against each ``entry.id``;
+        # ``current_station_id`` is a
+        # **fallback** that only runs
+        # if ``device_sn`` is empty
+        # (older entries that pre-date
+        # the per-device selector).
+        #
+        # The audit is explicit: "якщо
+        # його немає — зберігай кеш і
+        # повертай failure". If
+        # ``device_sn`` is set and no
+        # entry matches, we DO NOT
+        # fall back to
+        # ``current_station_id`` -
+        # doing so would silently
+        # accept a sibling device's
+        # energy.
+        target_id = str(self.device_sn or "")
+        target_station = str(self.current_station_id or "")
+        dev = None
+        for entry in devices:
+            entry_id = str(entry.get("id", ""))
+            entry_station = str(entry.get("stationId", ""))
+            if target_id and entry_id == target_id:
+                dev = entry
+                break
+        if dev is None and not target_id and target_station:
+            # ``device_sn`` is empty -
+            # the older selector is the
+            # ``current_station_id``.
+            # The audit's predecessor
+            # behaviour matches here: a
+            # legacy entry without
+            # ``device_sn`` still works.
+            for entry in devices:
+                entry_station = str(entry.get("stationId", ""))
+                if entry_station == target_station:
+                    dev = entry
+                    break
+        if dev is None:
+            # Audit T20: cache is
+            # preserved; the freshness
+            # helper exposes
+            # ``daily_energy_stale=True``
+            # so the user knows the
+            # value is stale.
+            return False
+        # Audit T20 fix #2: validate
+        # before mutating any cache
+        # field.
+        daily_raw = dev.get("dailyProducedQuantity")
+        total_raw = dev.get("totalProducedQuantity")
+        daily_value = self._parse_double(daily_raw)
+        total_value = self._parse_double(total_raw)
+        if not self._is_valid_double(daily_raw, daily_value):
+            return False
+        if not self._is_valid_double(total_raw, total_value):
+            return False
+        if (
+            self.total_energy is not None
+            and self.total_energy > 0
+            and total_value < self.total_energy - 0.001
+        ):
+            return False
+        self.daily_energy = daily_value
+        self.total_energy = total_value
         from datetime import datetime as _dt, timezone as _tz
         self.daily_energy_at = _dt.now(_tz.utc)
         self._update_co2()
+        return True
+
+    @staticmethod
+    def _is_valid_double(raw, value) -> bool:
+        """Audit T20 fix #2: distinguish
+        a real ``0.0`` from invalid /
+        missing. Returns ``True`` when
+        the raw value parses to a
+        finite number in
+        ``[0, 20000]``. ``raw=None`` /
+        ``raw=""`` / ``raw="bad"`` are
+        rejected.
+        """
+        if raw is None:
+            return False
+        if isinstance(raw, str) and raw.strip() == "":
+            return False
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return False
+        import math as _math
+        if _math.isnan(v) or _math.isinf(v):
+            return False
+        if v < 0 or v > 20000.0:
+            return False
         return True
 
 
