@@ -102,16 +102,33 @@ def build_hourly_load_matrix(samples, now, days: int = 7):
         for h in range(24):
             if hour_counts[h] == 0:
                 row[h] = fill
-        # Audit T19.3: a row whose
-        # average filled more than
-        # half of its 24 hours is
-        # gap-filled - the
-        # coordinator's hourly
-        # recorder never saw real
-        # samples for those hours.
-        # The predictor treats
-        # such rows as untrusted.
-        gap_filled = (24 - known_hours) > 12
+        # Audit T19.3 (Windows review):
+        # the previous threshold of
+        # ``(24 - known_hours) > 12``
+        # never fired because the
+        # builder itself only includes
+        # rows with ``known_hours >= 18``,
+        # so the maximum gap-filled
+        # count is 6 - below the
+        # 12-hour threshold. The
+        # gap_filled flag never
+        # fired in practice.
+        #
+        # The audit asks us to
+        # propagate coverage so the
+        # filled rows do not become
+        # weekday samples. The fix
+        # uses ``(24 - known_hours) > 0``:
+        # any hour that the recorder
+        # never saw is a filled
+        # hour and the row is
+        # untrusted. The threshold
+        # ``> 0`` matches the
+        # audit's framing: "filled
+        # with average value does
+        # not become a real weekday
+        # sample".
+        gap_filled = (24 - known_hours) > 0
         rows.append((d, row, gap_filled))
 
     rows.sort(key=lambda r: r[0])
