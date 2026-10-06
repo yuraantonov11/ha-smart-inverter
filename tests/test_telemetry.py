@@ -45,6 +45,17 @@ def _section(name: str) -> None:
     print(f"\n── {name} ──")
 
 
+def _row_payload(row):
+    """Audit T19 follow-up: telemetry
+    normalises the dated shape to
+    ``(date, list, gap_filled)``. Unwrap
+    the payload for length/value checks.
+    """
+    if isinstance(row, tuple):
+        return row[1]
+    return row
+
+
 def _build(**kw):
     defaults = {
         "raw": {"gridVoltage": 232.5, "batterySoc": 60.0,
@@ -118,12 +129,19 @@ def test_missing_forecast_semantics() -> None:
 def test_consumption_history_bounds() -> None:
     _section("consumption history bounds")
     pi = _build()
+    # No history -> empty list. The
+    # consumer side flattens the
+    # dated shape to access the
+    # payload; for the empty case the
+    # list is empty.
     _check(pi.consumption_history == [], "no history → []")
     _check(pi.consumption_source.origin == "fallback", "no history origin=fallback")
 
     days = [[100.0] * 24 for _ in range(10)]
     pi = _build(consumption_history=days)
     _check(len(pi.consumption_history) == 10, "all ten available days retained")
+    for row in pi.consumption_history:
+        _check(len(_row_payload(row)) == 24, "row length 24")
     pi = _build(consumption_history=[[100.0] * 24 for _ in range(40)])
     _check(len(pi.consumption_history) == 30, "history capped at thirty days")
     _check(pi.consumption_source.origin == "api", "real history origin=api")
@@ -135,7 +153,8 @@ def test_consumption_history_bounds() -> None:
     days = [[100.0] * 24]
     days[0][5] = 999_999.0
     pi = _build(consumption_history=days)
-    _check(max(pi.consumption_history[0]) <= 50_000.0, "extreme values clamped")
+    _check(max(_row_payload(pi.consumption_history[0])) <= 50_000.0,
+           "extreme values clamped")
 
 
 def test_tariff_schedule() -> None:

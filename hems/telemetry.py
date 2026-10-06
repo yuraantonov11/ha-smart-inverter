@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from .engine import SmartMode, _finite_number
@@ -112,7 +112,7 @@ class PlannerInputs:
     discharge_efficiency: float = 0.90
 
     # Historical consumption (most-recent day last; length <= 30).
-    consumption_history: list[list[float]] = field(default_factory=list)
+    consumption_history: list = field(default_factory=list)
     night_charge_window: tuple[int, int] = (23, 7)
 
     # Provenance (origin strings only — cheap to copy)
@@ -218,7 +218,7 @@ def build_planner_inputs(
     hourly_radiation: list[float] | None = None,
     hourly_weather_codes: list[int | None] | None = None,
     tariff_schedule: list[float] | None = None,
-    consumption_history: list[list[float]] | None = None,
+    consumption_history: list | None = None,
     battery_capacity_kwh: float = 4.8,
     grid_available: bool = True,
     max_age_sec: float = 60.0,
@@ -425,13 +425,65 @@ def build_planner_inputs(
             tariff.append(fv)
 
     # ── Consumption history ────────────────────────────────────────
-    consumption: list[list[float]] = []
+    # Audit T19 follow-up: telemetry must
+    # preserve the dated shape so the
+    # ``ConsumptionPredictor`` can filter
+    # by ``date.weekday()`` end-to-end.
+    # We accept three shapes:
+    #
+    #   * ``list[tuple[date, list[float], bool]]``
+    #     - canonical. The boolean is the
+    #     ``gap_filled`` trust flag from
+    #     ``history_builder.build_hourly_load_matrix``.
+    #   * ``list[tuple[date, list[float]]]`` -
+    #     2-tuple legacy shape (no gap flag,
+    #     trusted by default).
+    #   * ``list[list[float]]`` - legacy
+    #     flat shape, no dates. The
+    #     predictor falls back to all-history.
+    #
+    # All three are normalised to the
+    # canonical 3-tuple shape so the
+    # downstream code does not need to
+    # branch on shape again.
+    consumption: list = []
     if consumption_history:
         for day in consumption_history[-30:]:
+            if isinstance(day, tuple):
+                # Dated shape. The
+                # tuple may be 2- or
+                # 3-element.
+                if len(day) == 3:
+                    d, payload, gap_flag = day
+                elif len(day) == 2:
+                    d, payload = day
+                    gap_flag = False
+                else:
+                    continue
+                if not isinstance(payload, list) or len(payload) != 24:
+                    continue
+                if not isinstance(d, date):
+                    # T19 shapes sometimes
+                    # pass ``None`` as the
+                    # date. We keep the
+                    # row for the
+                    # all-history fallback
+                    # but strip the date
+                    # so the predictor does
+                    # not crash on
+                    # ``None.weekday()``.
+                    d = None
+                clean_day = _sanitize_hourly(payload, 0.0, _POWER_MAX_W)
+                consumption.append((d, clean_day, bool(gap_flag)))
+                continue
             if not isinstance(day, list) or len(day) != 24:
                 continue
             clean_day = _sanitize_hourly(day, 0.0, _POWER_MAX_W)
-            consumption.append(clean_day)
+            # Legacy shape: no date, no
+            # gap flag. The predictor
+            # treats this as trusted
+            # all-history.
+            consumption.append((None, clean_day, False))
 
     return PlannerInputs(
         now=now,
