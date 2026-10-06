@@ -246,16 +246,21 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # timezone so the midnight-reset rule
         # fires at local midnight. We resolve
         # it once at init and propagate to
-        # the API client.
+        # the API client as a real
+        # ``datetime.tzinfo`` subclass (the
+        # ``timedelta`` raw offset is not a
+        # ``tzinfo`` - HA rejects it).
         try:
+            from datetime import timezone as _tz
             from homeassistant.util import dt as _dt
-            from datetime import timezone as _tz, timedelta as _td
-            tz_name = str(self.hass.config.time_zone)
-            offset = _dt.now().utcoffset() or _td(0)
-            self._site_tz_offset = offset
+            offset = _dt.now().utcoffset()
+            if offset is not None:
+                self._site_tz_offset = _tz(offset)
+            else:
+                self._site_tz_offset = _tz.utc
         except Exception:
-            from datetime import timedelta as _td
-            self._site_tz_offset = _td(0)
+            from datetime import timezone as _tz
+            self._site_tz_offset = _tz.utc
         self.api._site_tz = self._site_tz_offset
 
         # HEMS state. T02 fix: user toggles for HEMS auto mode and smart
