@@ -231,6 +231,18 @@ def _make_fake_self(
     fake._session = _Session(payload, raises)
     fake._last_request_time = {}
     fake._site_tz = timezone.utc
+    # Production class attributes
+    # bound as instance attributes
+    # for the AST-exec'd production
+    # body. The audit's round 2 fix
+    # moved the upper bound from
+    # ``_is_valid_double`` to the
+    # caller: ``_MAX_DAILY_KWH`` for
+    # daily, ``_MAX_TOTAL_KWH = None``
+    # for cumulative. Mirror those
+    # on the fake.
+    fake._MAX_DAILY_KWH = 1000.0
+    fake._MAX_TOTAL_KWH = None
     async def _no_rate(_endpoint):
         return None
     fake._apply_rate_limit = _no_rate

@@ -554,7 +554,21 @@ class InverterApiClient:
             return False
         # Audit T20 fix #2: validate
         # before mutating any cache
-        # field.
+        # field. The audit's round 2
+        # observation: a universal
+        # ``<= 20 000`` upper cap is
+        # wrong for the cumulative
+        # ``totalProducedQuantity``
+        # which grows monotonically
+        # over the station's lifetime.
+        # We bound only the daily
+        # reading by
+        # ``_MAX_DAILY_KWH`` and keep
+        # the total unbounded. The
+        # monotonic-decrease check
+        # below still protects the
+        # ``total_increasing`` state
+        # class.
         daily_raw = dev.get("dailyProducedQuantity")
         total_raw = dev.get("totalProducedQuantity")
         daily_value = self._parse_double(daily_raw)
@@ -564,10 +578,32 @@ class InverterApiClient:
         if not self._is_valid_double(total_raw, total_value):
             return False
         if (
+            self._MAX_DAILY_KWH is not None
+            and daily_value > self._MAX_DAILY_KWH
+        ):
+            # The daily reading is
+            # out of range. Reject -
+            # we do not know whether
+            # the API is reporting junk
+            # or the inverter is
+            # misconfigured.
+            return False
+        if (
             self.total_energy is not None
             and self.total_energy > 0
             and total_value < self.total_energy - 0.001
         ):
+            # Audit T20 fix #2:
+            # monotonic-decrease
+            # protection for the
+            # cumulative total. The
+            # inverter's
+            # ``totalProducedQuantity``
+            # is monotonic over the
+            # station's lifetime; a
+            # decrease means the
+            # device list re-mapped or
+            # returned a stale cache.
             return False
         self.daily_energy = daily_value
         self.total_energy = total_value
@@ -578,14 +614,46 @@ class InverterApiClient:
 
     @staticmethod
     def _is_valid_double(raw, value) -> bool:
-        """Audit T20 fix #2: distinguish
-        a real ``0.0`` from invalid /
-        missing. Returns ``True`` when
-        the raw value parses to a
-        finite number in
-        ``[0, 20000]``. ``raw=None`` /
-        ``raw=""`` / ``raw="bad"`` are
-        rejected.
+        """Validate an energy payload
+        value without silently clobbering
+        the cache.
+
+        Audit T20 fix #2 (round 2): a
+        universal ``<= 20 000`` upper
+        cap is wrong for
+        ``totalProducedQuantity`` -
+        it is cumulative lifetime
+        kWh and grows monotonically.
+        A working station with
+        25 MWh of cumulative output
+        would have a ``total`` of
+        25 000 and we would silently
+        reject it. Keep the numeric /
+        finite / non-negative checks;
+        drop the upper cap for the
+        cumulative total. The audit
+        was explicit: "прибери довільну
+        верхню межу cumulative total;
+        збережи перевірки числового
+        типу, скінченності,
+        невід'ємності та захист від
+        зменшення."
+
+        Returns ``True`` when the raw
+        value parses to a finite,
+        non-negative number. ``raw=None``
+        / ``raw=""`` / ``raw="bad"``
+        are rejected. A real ``0`` is
+        accepted.
+
+        The function is the shared
+        validator for both the daily and
+        the cumulative field; the upper
+        cap is the caller's
+        responsibility (use
+        ``_MAX_DAILY_KWH`` /
+        ``_MAX_TOTAL_KWH`` if a cap is
+        needed).
         """
         if raw is None:
             return False
@@ -598,9 +666,18 @@ class InverterApiClient:
         import math as _math
         if _math.isnan(v) or _math.isinf(v):
             return False
-        if v < 0 or v > 20000.0:
+        if v < 0:
             return False
         return True
+
+    # Audit T20 round 2: the
+    # daily reading is bounded by
+    # the inverter's daily maximum
+    # (``~20 kW * 24 h ~ 480 kWh``).
+    # The cumulative reading is
+    # unbounded; we drop the cap.
+    _MAX_DAILY_KWH = 1000.0
+    _MAX_TOTAL_KWH = None
 
 
     async def fetch_realtime_data(self) -> dict[str, Any] | None:

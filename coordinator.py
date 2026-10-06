@@ -1615,23 +1615,50 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 # API kept the previous
                 # value and timestamp.
                 return
-            # Audit T20 (timezone): the
-            # ``daily_energy_date`` we
-            # publish follows the HA
-            # site timezone so the
-            # midnight-reset rule fires
-            # at local midnight, not
-            # UTC midnight. The sensor
-            # compares its own local
-            # date against this same
-            # site timezone so the two
-            # sides cannot disagree.
-            try:
-                from homeassistant.util import dt as _dt
-                _local = _dt.as_local(now)
-            except ImportError:
-                _local = now
-            self.api.daily_energy_date = _local.date()
+            # Audit T19/T20 round 3
+            # (Windows review):
+            # ``daily_energy_date`` is
+            # derived from the timestamp
+            # the production
+            # ``refresh_device_summary``
+            # just wrote into
+            # ``self.api.daily_energy_at``
+            # - the response-completion
+            # instant in UTC. The audit's
+            # repro: the request started
+            # at 5 October 23:59:55 Kyiv,
+            # returned at 6 October
+            # 00:00:04 Kyiv; using the
+            # pre-await ``now`` would
+            # stamp the date as
+            # 5 October and the sensor
+            # would show yesterday's
+            # value as today's.
+            #
+            # We use
+            # ``self.api.daily_energy_at``
+            # (UTC, timezone-aware) and
+            # convert to the HA site
+            # timezone (``ZoneInfo(...)``
+            # resolved at init) for the
+            # calendar date. ``as_local``
+            # would also work but is
+            # HA-only; the IANA-zone
+            # path is robust outside HA.
+            tz = self._site_tz_offset
+            response_completion = (
+                self.api.daily_energy_at
+            )
+            if response_completion is None:
+                response_completion = (
+                    self.api.daily_energy_at
+                    or now
+                )
+            if tz is None:
+                tz = response_completion.tzinfo
+            self.api.daily_energy_date = (
+                response_completion.astimezone(tz).date()
+            )
         except Exception as exc:
             # Never break HEMS because
             # of a stats refresh.
