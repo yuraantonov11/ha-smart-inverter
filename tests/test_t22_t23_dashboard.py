@@ -142,6 +142,9 @@ SENSOR_PY = os.path.join(_REPO_ROOT, "sensor.py")
 SERVICES_PY = os.path.join(
     _REPO_ROOT, "services", "__init__.py"
 )
+PREDICTIVE_PY = os.path.join(
+    _REPO_ROOT, "hems", "predictive_control.py"
+)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -317,6 +320,8 @@ def _load_registration_helpers() -> dict:
         "_auto_install_dashboard",
         "_install_flow_card",
         "_register_lovelace_dashboard",
+        "_read_metadata_snapshot",
+        "_rollback_dashboard_content",
     )
     shared: dict = {
         "__builtins__": __builtins__,
@@ -3609,6 +3614,271 @@ def test_r75_real_write_failure_propagates_to_service() -> None:
             "emitted; events="
             f"{captured_bus_events!r}"
         )
+
+
+
+def test_r92_rollback_preserves_existing_sidecar_content() -> None:
+    """R9.2: when ``_write_dashboards_metadata_atomic`` raises
+    AFTER the content file was already written, the
+    rollback MUST restore the previous content from the
+    ``.bak`` file. The previous implementation called
+    ``os.unlink(target_path)`` unconditionally, which
+    destroyed an already-registered sidecar that this
+    operation had just tried to UPDATE.
+
+    Failure contract:
+      * the previous content survives byte-for-byte
+      * the ``.bak`` is removed so the next update
+        starts from a clean slate
+      * the metadata is NOT modified (the original
+        registration list is preserved)
+      * the production helper re-raises the underlying
+        OSError
+    """
+    import sys as _sys
+    import types
+
+    helpers = _load_registration_helpers()
+    real_write_content = helpers[
+        "_write_dashboard_atomic"
+    ]
+    real_read_metadata = helpers.get(
+        "_read_metadata_snapshot",
+        _read_metadata_snapshot,
+    )
+    metadata_call_count = {"n": 0}
+
+    def _raising_metadata_write(
+        target_path, payload
+    ):
+        metadata_call_count["n"] += 1
+        raise OSError(
+            "[INJECTED] dashboards metadata write failure"
+        )
+
+    # ── Real filesystem
+    # pre-state: pre-existing
+    # sidecar with a known
+    # content + metadata entry.
+    tmp_root = tempfile.mkdtemp(
+        prefix="r92_rollback_"
+    )
+    storage = os.path.join(tmp_root, ".storage")
+    os.makedirs(storage, exist_ok=True)
+    entry_id = "01M3XWJ8R92ROLLBACK000000000"
+    import hashlib as _hl
+    entry_hash = _hl.md5(
+        entry_id.encode("utf-8")
+    ).hexdigest()[:16]
+    sidecar_id = f"powmr_energy_{entry_hash}"
+    sidecar_path = os.path.join(
+        storage, f"lovelace.{sidecar_id}"
+    )
+    user_content = {
+        "title": "USER PRIOR",
+        "views": [
+            {"title": "OLD VIEW 1"},
+            {"title": "OLD VIEW 2"},
+        ],
+    }
+    with open(sidecar_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "key": f"lovelace.{sidecar_id}",
+                "version": 1,
+                "data": {"config": user_content},
+            },
+            f,
+        )
+    with open(sidecar_path) as f:
+        before_content_bytes = f.read()
+    dash_reg_path = os.path.join(
+        storage, "lovelace_dashboards"
+    )
+    with open(dash_reg_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "version": 1,
+                "data": {"items": [
+                    {
+                        "id": sidecar_id,
+                        "url_path": f"powmr-{entry_hash}",
+                        "title": "OLD TITLE",
+                    },
+                ]},
+            },
+            f,
+        )
+    with open(dash_reg_path) as f:
+        before_metadata_bytes = f.read()
+    hass_obj = _FakeHass(
+        config_dir=tmp_root,
+        entries=[
+            _FakeConfigEntry(entry_id, title="R92")
+        ],
+        states={},
+        services=_FakeServiceReg(),
+    )
+    hass_obj.data["powmr_inverter"] = {
+        entry_id: {
+            "dashboard_migration_opt_in": True,
+        }
+    }
+    entry = hass_obj.config_entries.async_entries(
+        "powmr_inverter"
+    )[0]
+    # Load every helper
+    # ``_register_lovelace_dashboard``
+    # transitively needs.
+    # ``_load_registration_helpers``
+    # already grabs the
+    # function bodies but
+    # ``_register_lovelace_dashboard``
+    # body itself refers to
+    # other helpers by name
+    # in its scope. We
+    # therefore re-exec
+    # ``_register_lovelace_dashboard``
+    # in a namespace that
+    # ALSO contains the
+    # other helpers AND the
+    # wrapped metadata
+    # writer.
+    captured_logs: list = []
+    target_helpers = (
+        "_update_dashboard_content",
+        "_register_lovelace_dashboard",
+    )
+    exec_ns: dict = {
+        "__builtins__": __builtins__,
+        "json": json,
+        "os": os,
+        "shutil": shutil,
+        "hashlib": hashlib,
+        "tempfile": tempfile,
+        "logging": __import__("logging"),
+        "DOMAIN": "powmr_inverter",
+        "HomeAssistant": object,
+        "ServiceCall": object,
+        "ConfigEntry": object,
+        "callback": lambda *a, **k: None,
+        "_LOGGER": _CapturingLogger(captured_logs),
+    }
+    # Pull in the loaded
+    # helpers and override
+    # the metadata writer.
+    exec_ns.update(helpers)
+    exec_ns[
+        "_write_dashboards_metadata_atomic"
+    ] = _raising_metadata_write
+    # Now exec
+    # ``_register_lovelace_dashboard``
+    # in this namespace. It
+    # resolves
+    # ``_update_dashboard_content``
+    # via exec_ns (we loaded
+    # it above).
+    body = ast.unparse(
+        _function_node(
+            _parse(INIT_PY),
+            "_register_lovelace_dashboard",
+        )
+    )
+    # Also exec
+    # ``_update_dashboard_content``
+    # because it is a top-
+    # level function in the
+    # same file and is
+    # referenced by name in
+    # the body. Our
+    # exec_ns already has
+    # it from helpers, but
+    # the body might have a
+    # local rebinding — exec
+    # the helper explicitly.
+    update_body = ast.unparse(
+        _function_node(
+            _parse(INIT_PY),
+            "_update_dashboard_content",
+        )
+    )
+    exec(compile(update_body, INIT_PY, "exec"), exec_ns)
+    exec(
+        compile(body, INIT_PY, "exec"), exec_ns
+    )
+    register_fn = exec_ns[
+        "_register_lovelace_dashboard"
+    ]
+    raised = None
+    try:
+        _run(register_fn(
+            hass_obj,
+            entry,
+            {
+                "title": "NEW TITLE",
+                "views": [{"title": "NEW VIEW"}],
+            },
+        ))
+    except OSError as exc:
+        raised = exc
+    assert raised is not None, (
+        "R9.2: _register_lovelace_dashboard must "
+        "re-raise the OSError to the caller; "
+        "no exception surfaced"
+    )
+    assert isinstance(raised, OSError), (
+        "R9.2: raised exception must be OSError; "
+        f"got {type(raised).__name__}: {raised!r}"
+    )
+    assert (
+        "INJECTED" in str(raised)
+    ), (
+        "R9.2: the OSError must be the wrapped "
+        "metadata writer failure; got "
+        f"{str(raised)!r}"
+    )
+    assert metadata_call_count["n"] >= 1, (
+        "R9.2: the wrapped metadata writer must "
+        "have been invoked; got "
+        f"call count {metadata_call_count['n']}"
+    )
+    with open(sidecar_path) as f:
+        after_content_bytes = f.read()
+    assert (
+        after_content_bytes == before_content_bytes
+    ), (
+        "R9.2: existing sidecar content was "
+        "destroyed by the rollback; "
+        "expected byte-for-byte preservation. "
+        "before="
+        f"{before_content_bytes!r} "
+        "after="
+        f"{after_content_bytes!r}"
+    )
+    current = json.loads(after_content_bytes)
+    assert (
+        current["data"]["config"]["title"]
+        == "USER PRIOR"
+    ), (
+        "R9.2: content title was changed to "
+        f"{current['data']['config']['title']!r}; "
+        "expected USER PRIOR (the previous content)"
+    )
+    bak_path = sidecar_path + ".bak"
+    assert not os.path.exists(bak_path), (
+        "R9.2: rollback must remove the ``.bak`` "
+        f"after restoring; bak still at {bak_path}"
+    )
+    with open(dash_reg_path) as f:
+        after_metadata_bytes = f.read()
+    assert (
+        after_metadata_bytes == before_metadata_bytes
+    ), (
+        "R9.2: metadata was modified despite the "
+        "writer failure; before="
+        f"{before_metadata_bytes!r} after="
+        f"{after_metadata_bytes!r}"
+    )
 
 
 def _run_all() -> None:

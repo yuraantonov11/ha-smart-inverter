@@ -23,6 +23,28 @@ DEFAULT_OPTIONS = {
 }
 
 
+class _ZeroCalibrationMetrics:
+    """Sentinel for the
+    ``_read_calibrator_metrics_safe``
+    fallback. Mirrors the
+    ``CalibrationMetrics``
+    dataclass so attribute
+    access matches the real
+    type. Audit T22 round 9
+    (R9.1) — must be defined
+    at module level so the
+    engine's ``evaluate`` init
+    can fall back to
+    ``samples=0,
+    confidence_factor=0.0``
+    when the calibrator is not
+    yet wired (coordinator
+    startup, predictive assist
+    disabled)."""
+    sample_count = 0
+    confidence_factor = 0.0
+
+
 def parse_predictive_options(options):
     """Validate UI options without silently coercing invalid values."""
     result = {key: options.get(key, value) for key, value in DEFAULT_OPTIONS.items()}
@@ -98,15 +120,91 @@ class PredictiveControlEngine(HemsEngine):
         if not self._manual_override_until or self._manual_override_until <= now:
             self._predictive_user_target_soc = None
         mode = self.predictive_tuning.predictive_mode
+        # Audit T22 round 9 (R9.1): the
+        # init dict MUST publish
+        # ``readiness``,
+        # ``real_pairs``, and
+        # ``model_quality`` from the
+        # very first evaluate cycle.
+        # Earlier rounds left these
+        # keys missing whenever the
+        # hint-proposal path did not
+        # run (manual_override_hold,
+        # hems_auto_off,
+        # inverter_offline) and the
+        # AI view rows resolved to
+        # ``None``. The calibrator is
+        # independent of the engine's
+        # decision pipeline, so its
+        # metrics are valid even when
+        # the engine skips planning.
+        metrics = self._read_calibrator_metrics_safe()
         self.predictive_decision_state = {
             "mode": mode.title(), "output_priority": None, "charger_priority": None,
             "target_soc": self._predictive_user_target_soc, "reason": "planner_unavailable",
             "confidence": 0.0, "samples": 0, "applied": False,
+            "real_pairs": metrics.sample_count,
+            "model_quality": metrics.confidence_factor,
+            "readiness": False,
             "override_pending_until": self._manual_override_until.isoformat() if self._manual_override_until and self._manual_override_until > now else None,
         }
         decision = super().evaluate(**kwargs)
         self.predictive_decision_state["execution_reason"] = decision.reason
+        # Audit T22 round 9 (R9.1):
+        # even if the planner
+        # returned ``(None, None)``
+        # because of hold/off, the
+        # accumulated calibrator
+        # samples and the
+        # confidence_factor are
+        # still meaningful and must
+        # remain visible. Re-publish
+        # them here so the sensor
+        # always exposes the
+        # cumulative learning
+        # signal, not just the
+        # latest decision attempt.
+        samples_now = int(metrics.sample_count)
+        model_quality_now = float(metrics.confidence_factor)
+        try:
+            confidence_now = float(
+                getattr(self._last_predictive_hint, "confidence", 0.0) or 0.0
+            )
+        except (TypeError, ValueError):
+            confidence_now = 0.0
+        if not math.isfinite(confidence_now):
+            confidence_now = 0.0
+        if not math.isfinite(model_quality_now):
+            model_quality_now = 0.0
+        self.predictive_decision_state["samples"] = samples_now
+        self.predictive_decision_state["real_pairs"] = samples_now
+        self.predictive_decision_state["model_quality"] = model_quality_now
+        self.predictive_decision_state["confidence"] = confidence_now
         return decision
+
+    def _read_calibrator_metrics_safe(self):
+        """Read calibrator metrics, falling back to zero when unavailable.
+
+        Audit T22 round 9 (R9.1):
+        ``self._predictive_controller``
+        may be unbound during
+        coordinator startup or when
+        predictive assist is
+        disabled. Treat both as
+        ``samples=0,
+        confidence_factor=0.0``
+        rather than raising.
+        """
+        try:
+            controller = getattr(self, "_predictive_controller", None)
+            if controller is None:
+                return _ZeroCalibrationMetrics()
+            calibrator = getattr(controller, "calibrator", None)
+            if calibrator is None:
+                return _ZeroCalibrationMetrics()
+            return calibrator.metrics()
+        except (AttributeError, TypeError, ValueError):
+            return _ZeroCalibrationMetrics()
 
     def _evaluate_predictive(self, now, inputs):
         hint, plan = super()._evaluate_predictive(now, inputs)

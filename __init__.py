@@ -1706,16 +1706,40 @@ async def _register_lovelace_dashboard(
                 target_id,
             )
     except Exception as exc:
-        # Roll the content file
-        # back so we do not leave
-        # a dangling dashboard in
-        # the Lovelace sidebar.
+        # Roll back so we do not
+        # leave a dangling
+        # dashboard in the
+        # Lovelace sidebar.
+        # Audit T22 round 9
+        # (R9.2): ``_write_dashboard_atomic``
+        # already keeps a
+        # ``target_path + ".bak"``
+        # copy of the PREVIOUS
+        # content before the
+        # ``os.replace``. The
+        # rollback MUST restore
+        # the previous content
+        # from the ``.bak`` if
+        # the target already
+        # existed before this
+        # call. Removing the
+        # target unconditionally
+        # would clobber an
+        # already-registered
+        # sidecar that we just
+        # tried to update.
+        # Only when the target
+        # is a brand-new file
+        # (no ``.bak`` was ever
+        # created because the
+        # file did not exist
+        # before) do we delete
+        # the freshly written
+        # content.
         try:
             await hass.async_add_executor_job(
-                lambda: (
-                    os.unlink(dashboard_content_storage)
-                    if os.path.exists(dashboard_content_storage)
-                    else None
+                lambda: _rollback_dashboard_content(
+                    dashboard_content_storage
                 )
             )
         except OSError as rollback_exc:
@@ -1777,6 +1801,96 @@ def _read_metadata_snapshot(dashboards_storage: str) -> dict:
         }
     with open(dashboards_storage, "r") as f:
         return json.loads(f.read())
+
+
+def _rollback_dashboard_content(target_path: str) -> None:
+    """Roll back the content
+    file at ``target_path``
+    after a metadata write
+    failure.
+
+    Audit T22 round 9 (R9.2):
+    ``_write_dashboard_atomic``
+    keeps ``target_path +
+    ".bak"`` as a copy of the
+    PREVIOUS content (when
+    the file existed before
+    this call) right before
+    the ``os.replace`` that
+    installs the new content.
+    The previous
+    implementation called
+    ``os.unlink(target_path)``
+    unconditionally, which
+    clobbered an
+    already-registered
+    sidecar that this
+    operation had just
+    tried to UPDATE
+    (``already_listed=True``).
+    The fix is:
+
+      * If ``target_path +
+        ".bak"`` exists, the
+        target was a previously
+        registered dashboard.
+        Restore the ``.bak``
+        copy back to the
+        target path so the
+        previous content is
+        preserved byte-for-byte.
+        Then remove the
+        ``.bak`` so the next
+        update starts from a
+        clean slate.
+      * If the ``.bak`` does
+        not exist, the target
+        is a brand-new file
+        created by THIS
+        operation. Delete it
+        so we do not leave a
+        dangling content file
+        without a matching
+        metadata entry.
+
+    Idempotent: safe to call
+    multiple times.
+    """
+    bak_path = target_path + ".bak"
+    if os.path.exists(bak_path):
+        # The target existed
+        # before this operation;
+        # restore the previous
+        # content from the .bak
+        # copy.
+        try:
+            shutil.copyfile(bak_path, target_path)
+        finally:
+            # Always remove the
+            # .bak — it represents
+            # a previous state that
+            # the user no longer
+            # asked to keep. If we
+            # leave it, the next
+            # ``_write_dashboard_atomic``
+            # will overwrite it
+            # again, but it is
+            # cleaner to remove
+            # immediately.
+            try:
+                os.unlink(bak_path)
+            except OSError:
+                pass
+    else:
+        # The target was a new
+        # file created by this
+        # operation; remove it
+        # so we do not leave a
+        # dangling content file
+        # without matching
+        # metadata.
+        if os.path.exists(target_path):
+            os.unlink(target_path)
 
 
 async def _update_dashboard_content(
