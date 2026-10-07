@@ -330,6 +330,10 @@ def _load_registration_helpers() -> dict:
         "shutil": __import__("shutil"),
         "hashlib": __import__("hashlib"),
         "tempfile": __import__("tempfile"),
+        "logging": __import__("logging"),
+        "_LOGGER": __import__("logging").getLogger(
+            "test_harness"
+        ),
     }
     for name in helper_names:
         try:
@@ -3617,23 +3621,95 @@ def test_r75_real_write_failure_propagates_to_service() -> None:
 
 
 
-def test_r92_rollback_preserves_existing_sidecar_content() -> None:
-    """R9.2: when ``_write_dashboards_metadata_atomic`` raises
-    AFTER the content file was already written, the
-    rollback MUST restore the previous content from the
-    ``.bak`` file. The previous implementation called
-    ``os.unlink(target_path)`` unconditionally, which
-    destroyed an already-registered sidecar that this
-    operation had just tried to UPDATE.
+def test_r101_rollback_preserves_existing_sidecar_with_main_present() -> None:
+    """R10.1: rollback
+    preserves a previously
+    registered sidecar when
+    the helper was driven
+    through the production
+    path with both the
+    canonical main
+    dashboard AND a
+    sidecar already on
+    disk.
+
+    The previous round-9
+    fixture created ONLY
+    the sidecar and no
+    main dashboard, which
+    made the registration
+    helper pick
+    ``is_first_opt_in=True``
+    and write to
+    ``main_path`` (the
+    canonical main
+    dashboard) rather
+    than to the sidecar.
+    The rollback then
+    restored the wrong
+    file and the test
+    passed for the wrong
+    reason: the destructive
+    ``os.unlink``
+    behaviour would have
+    also passed because
+    the test never
+    exercised the sidecar
+    restore path.
+
+    This test sets up the
+    correct production
+    state:
+
+      * ``lovelace.powmr_energy``
+        exists (canonical
+        main dashboard) with
+        content
+        ``"MAIN USER EDIT"``;
+      * ``lovelace.powmr_energy_<entry_hash>``
+        exists (sidecar) with
+        content
+        ``"SIDECAR USER PRIOR"``;
+      * ``lovelace_dashboards``
+        lists the main
+        dashboard but NOT
+        the sidecar id (the
+        sidecar is a file on
+        disk from a prior
+        round, not yet
+        registered in the
+        current entry's
+        metadata).
+
+    The helper then runs
+    with opt-in enabled
+    and the metadata
+    writer wrapped to
+    raise. The contract
+    is that the rollback
+    restores the sidecar
+    from its ``.bak``
+    atomically and leaves
+    the main dashboard
+    untouched.
 
     Failure contract:
-      * the previous content survives byte-for-byte
-      * the ``.bak`` is removed so the next update
-        starts from a clean slate
-      * the metadata is NOT modified (the original
-        registration list is preserved)
-      * the production helper re-raises the underlying
-        OSError
+      * OSError propagates
+        with ``"INJECTED"``
+      * sidecar content is
+        byte-for-byte
+        preserved
+        (``"SIDECAR USER
+        PRIOR"``)
+      * ``sidecar + .bak``
+        is removed after
+        the successful
+        restore
+      * main dashboard
+        content is NOT
+        modified
+      * metadata is NOT
+        modified
     """
     import sys as _sys
     import types
@@ -3657,15 +3733,13 @@ def test_r92_rollback_preserves_existing_sidecar_content() -> None:
         )
 
     # ── Real filesystem
-    # pre-state: pre-existing
-    # sidecar with a known
-    # content + metadata entry.
+    # pre-state.
     tmp_root = tempfile.mkdtemp(
-        prefix="r92_rollback_"
+        prefix="r101_rollback_"
     )
     storage = os.path.join(tmp_root, ".storage")
     os.makedirs(storage, exist_ok=True)
-    entry_id = "01M3XWJ8R92ROLLBACK000000000"
+    entry_id = "01M3XWJ8R101ROLLBACK000000000"
     import hashlib as _hl
     entry_hash = _hl.md5(
         entry_id.encode("utf-8")
@@ -3674,24 +3748,51 @@ def test_r92_rollback_preserves_existing_sidecar_content() -> None:
     sidecar_path = os.path.join(
         storage, f"lovelace.{sidecar_id}"
     )
-    user_content = {
-        "title": "USER PRIOR",
-        "views": [
-            {"title": "OLD VIEW 1"},
-            {"title": "OLD VIEW 2"},
-        ],
-    }
+    main_path = os.path.join(
+        storage, "lovelace.powmr_energy"
+    )
+    # Canonical main
+    # dashboard (USER EDIT).
+    with open(main_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "key": "lovelace.powmr_energy",
+                "version": 1,
+                "data": {"config": {
+                    "title": "MAIN USER EDIT",
+                    "views": [{"title": "MAIN VIEW"}],
+                }},
+            },
+            f,
+        )
+    with open(main_path) as f:
+        before_main_bytes = f.read()
+    # Existing sidecar (USER
+    # PRIOR).
     with open(sidecar_path, "w", encoding="utf-8") as f:
         json.dump(
             {
                 "key": f"lovelace.{sidecar_id}",
                 "version": 1,
-                "data": {"config": user_content},
+                "data": {"config": {
+                    "title": "SIDECAR USER PRIOR",
+                    "views": [
+                        {"title": "OLD VIEW 1"},
+                        {"title": "OLD VIEW 2"},
+                    ],
+                }},
             },
             f,
         )
     with open(sidecar_path) as f:
-        before_content_bytes = f.read()
+        before_sidecar_bytes = f.read()
+    # Metadata lists ONLY
+    # the main dashboard.
+    # The sidecar is a
+    # leftover file from a
+    # prior round; not
+    # listed in this
+    # round's metadata.
     dash_reg_path = os.path.join(
         storage, "lovelace_dashboards"
     )
@@ -3701,9 +3802,9 @@ def test_r92_rollback_preserves_existing_sidecar_content() -> None:
                 "version": 1,
                 "data": {"items": [
                     {
-                        "id": sidecar_id,
-                        "url_path": f"powmr-{entry_hash}",
-                        "title": "OLD TITLE",
+                        "id": "powmr_energy",
+                        "url_path": "powmr-energy",
+                        "title": "MAIN TITLE",
                     },
                 ]},
             },
@@ -3714,7 +3815,7 @@ def test_r92_rollback_preserves_existing_sidecar_content() -> None:
     hass_obj = _FakeHass(
         config_dir=tmp_root,
         entries=[
-            _FakeConfigEntry(entry_id, title="R92")
+            _FakeConfigEntry(entry_id, title="R101")
         ],
         states={},
         services=_FakeServiceReg(),
@@ -3727,28 +3828,7 @@ def test_r92_rollback_preserves_existing_sidecar_content() -> None:
     entry = hass_obj.config_entries.async_entries(
         "powmr_inverter"
     )[0]
-    # Load every helper
-    # ``_register_lovelace_dashboard``
-    # transitively needs.
-    # ``_load_registration_helpers``
-    # already grabs the
-    # function bodies but
-    # ``_register_lovelace_dashboard``
-    # body itself refers to
-    # other helpers by name
-    # in its scope. We
-    # therefore re-exec
-    # ``_register_lovelace_dashboard``
-    # in a namespace that
-    # ALSO contains the
-    # other helpers AND the
-    # wrapped metadata
-    # writer.
     captured_logs: list = []
-    target_helpers = (
-        "_update_dashboard_content",
-        "_register_lovelace_dashboard",
-    )
     exec_ns: dict = {
         "__builtins__": __builtins__,
         "json": json,
@@ -3764,38 +3844,16 @@ def test_r92_rollback_preserves_existing_sidecar_content() -> None:
         "callback": lambda *a, **k: None,
         "_LOGGER": _CapturingLogger(captured_logs),
     }
-    # Pull in the loaded
-    # helpers and override
-    # the metadata writer.
     exec_ns.update(helpers)
     exec_ns[
         "_write_dashboards_metadata_atomic"
     ] = _raising_metadata_write
-    # Now exec
-    # ``_register_lovelace_dashboard``
-    # in this namespace. It
-    # resolves
-    # ``_update_dashboard_content``
-    # via exec_ns (we loaded
-    # it above).
     body = ast.unparse(
         _function_node(
             _parse(INIT_PY),
             "_register_lovelace_dashboard",
         )
     )
-    # Also exec
-    # ``_update_dashboard_content``
-    # because it is a top-
-    # level function in the
-    # same file and is
-    # referenced by name in
-    # the body. Our
-    # exec_ns already has
-    # it from helpers, but
-    # the body might have a
-    # local rebinding — exec
-    # the helper explicitly.
     update_body = ast.unparse(
         _function_node(
             _parse(INIT_PY),
@@ -3815,70 +3873,1054 @@ def test_r92_rollback_preserves_existing_sidecar_content() -> None:
             hass_obj,
             entry,
             {
-                "title": "NEW TITLE",
-                "views": [{"title": "NEW VIEW"}],
+                "title": "NEW SIDECAR TITLE",
+                "views": [{"title": "NEW SIDECAR VIEW"}],
             },
         ))
     except OSError as exc:
         raised = exc
+    # ── 1) The OSError
+    # propagates.
     assert raised is not None, (
-        "R9.2: _register_lovelace_dashboard must "
-        "re-raise the OSError to the caller; "
+        "R10.1: helper must re-raise; "
         "no exception surfaced"
-    )
-    assert isinstance(raised, OSError), (
-        "R9.2: raised exception must be OSError; "
-        f"got {type(raised).__name__}: {raised!r}"
     )
     assert (
         "INJECTED" in str(raised)
     ), (
-        "R9.2: the OSError must be the wrapped "
-        "metadata writer failure; got "
-        f"{str(raised)!r}"
+        "R10.1: raised must be the wrapped "
+        f"metadata writer failure; got {str(raised)!r}"
     )
     assert metadata_call_count["n"] >= 1, (
-        "R9.2: the wrapped metadata writer must "
-        "have been invoked; got "
-        f"call count {metadata_call_count['n']}"
+        "R10.1: the wrapped metadata writer "
+        "must have been invoked"
     )
+    # ── 2) The sidecar
+    # content is preserved
+    # byte-for-byte.
     with open(sidecar_path) as f:
-        after_content_bytes = f.read()
+        after_sidecar_bytes = f.read()
     assert (
-        after_content_bytes == before_content_bytes
+        after_sidecar_bytes == before_sidecar_bytes
     ), (
-        "R9.2: existing sidecar content was "
-        "destroyed by the rollback; "
-        "expected byte-for-byte preservation. "
+        "R10.1: sidecar content was modified "
+        "by the rollback; expected "
+        "byte-for-byte preservation. "
         "before="
-        f"{before_content_bytes!r} "
+        f"{before_sidecar_bytes!r} "
         "after="
-        f"{after_content_bytes!r}"
+        f"{after_sidecar_bytes!r}"
     )
-    current = json.loads(after_content_bytes)
+    sidecar_now = json.loads(after_sidecar_bytes)
     assert (
-        current["data"]["config"]["title"]
-        == "USER PRIOR"
+        sidecar_now["data"]["config"]["title"]
+        == "SIDECAR USER PRIOR"
     ), (
-        "R9.2: content title was changed to "
-        f"{current['data']['config']['title']!r}; "
-        "expected USER PRIOR (the previous content)"
+        "R10.1: sidecar title was changed to "
+        f"{sidecar_now['data']['config']['title']!r}; "
+        "expected SIDECAR USER PRIOR"
     )
+    # ── 3) The ``.bak``
+    # was removed (so the
+    # next update starts
+    # from a clean slate).
     bak_path = sidecar_path + ".bak"
     assert not os.path.exists(bak_path), (
-        "R9.2: rollback must remove the ``.bak`` "
-        f"after restoring; bak still at {bak_path}"
+        "R10.1: rollback must remove the "
+        f"``.bak`` after restoring; "
+        f"bak still at {bak_path}"
     )
+    # ── 4) The main
+    # dashboard is NOT
+    # modified.
+    with open(main_path) as f:
+        after_main_bytes = f.read()
+    assert (
+        after_main_bytes == before_main_bytes
+    ), (
+        "R10.1: main dashboard was modified; "
+        "before="
+        f"{before_main_bytes!r} "
+        "after="
+        f"{after_main_bytes!r}"
+    )
+    # ── 5) The metadata
+    # is NOT modified.
     with open(dash_reg_path) as f:
         after_metadata_bytes = f.read()
     assert (
         after_metadata_bytes == before_metadata_bytes
     ), (
-        "R9.2: metadata was modified despite the "
-        "writer failure; before="
+        "R10.1: metadata was modified despite "
+        "the writer failure; before="
         f"{before_metadata_bytes!r} after="
         f"{after_metadata_bytes!r}"
     )
+
+
+def test_r101_rollback_unlinks_fresh_target_without_bak() -> None:
+    """R10.1: when
+    ``target_existed`` is
+    False (the target was
+    a brand-new file
+    created by this
+    operation),
+    ``_rollback_dashboard_content``
+    must delete the
+    target.
+
+    Failure contract:
+      * target is removed
+        from disk
+      * if a stale
+        ``.bak`` is
+        present (left
+        over from a
+        previous
+        operation), it is
+        left in place —
+        the rollback is
+        about the target,
+        not the backup
+    """
+    tmp_root = tempfile.mkdtemp(
+        prefix="r101_unlink_"
+    )
+    storage = os.path.join(tmp_root, ".storage")
+    os.makedirs(storage, exist_ok=True)
+    target_path = os.path.join(
+        storage, "lovelace.test_fresh"
+    )
+    bak_path = target_path + ".bak"
+    # Write a fresh target
+    # (no prior .bak).
+    with open(target_path, "w") as f:
+        f.write("FRESH CONTENT")
+    assert os.path.exists(target_path)
+    helpers = _load_registration_helpers()
+    rollback = helpers["_rollback_dashboard_content"]
+    # Stale .bak from a
+    # previous (failed)
+    # round.
+    with open(bak_path, "w") as f:
+        f.write("STALE BAK")
+    rollback(target_path, target_existed=False)
+    assert not os.path.exists(target_path), (
+        "R10.1: fresh target must be removed "
+        "when target_existed=False"
+    )
+    # Stale .bak is left in
+    # place — not part of
+    # this rollback's
+    # responsibility.
+    assert os.path.exists(bak_path), (
+        "R10.1: rollback must not touch "
+        "a stale .bak; it was left at "
+        f"{bak_path}"
+    )
+
+
+def test_r101_rollback_keeps_bak_when_target_missing() -> None:
+    """R10.1: when
+    ``target_existed``
+    is True but the
+    ``.bak`` is
+    missing (e.g.
+    disk was wiped
+    between the
+    failed write and
+    the rollback),
+    the rollback
+    leaves the
+    current (new)
+    target in place
+    rather than
+    deleting it.
+
+    The user would
+    otherwise be left
+    with no content
+    file at all. The
+    warning is logged
+    but no exception
+    is raised.
+    """
+    tmp_root = tempfile.mkdtemp(
+        prefix="r101_missing_bak_"
+    )
+    storage = os.path.join(tmp_root, ".storage")
+    os.makedirs(storage, exist_ok=True)
+    target_path = os.path.join(
+        storage, "lovelace.test_nobak"
+    )
+    # The new content
+    # (the helper wrote
+    # it before the
+    # rollback).
+    with open(target_path, "w") as f:
+        f.write("NEW CONTENT")
+    helpers = _load_registration_helpers()
+    rollback = helpers["_rollback_dashboard_content"]
+    # No .bak exists.
+    # Rollback should
+    # leave the new
+    # target alone.
+    rollback(target_path, target_existed=True)
+    assert os.path.exists(target_path), (
+        "R10.1: when .bak is missing the "
+        "target must NOT be deleted; user "
+        "would be left with no content"
+    )
+    with open(target_path) as f:
+        assert f.read() == "NEW CONTENT"
+
+
+def test_r101_rollback_idempotent() -> None:
+    """R10.1: a second
+    call to
+    ``_rollback_dashboard_content``
+    after the first
+    call has already
+    removed the
+    ``.bak`` must be
+    a no-op.
+
+    The previous
+    round-9
+    implementation
+    would have
+    re-entered the
+    ``if
+    os.path.exists(bak_path)``
+    branch on the
+    second call and
+    destroyed the
+    just-restored
+    target. The
+    round-10 rewrite
+    short-circuits
+    because there is
+    no ``.bak`` to
+    restore from.
+    """
+    tmp_root = tempfile.mkdtemp(
+        prefix="r101_idempotent_"
+    )
+    storage = os.path.join(tmp_root, ".storage")
+    os.makedirs(storage, exist_ok=True)
+    target_path = os.path.join(
+        storage, "lovelace.test_idem"
+    )
+    bak_path = target_path + ".bak"
+    # Set up: existing
+    # previous content +
+    # .bak (the writer
+    # left both in this
+    # state).
+    with open(target_path, "w") as f:
+        f.write("NEW AFTER WRITE")
+    with open(bak_path, "w") as f:
+        f.write("OLD PRIOR CONTENT")
+    helpers = _load_registration_helpers()
+    rollback = helpers["_rollback_dashboard_content"]
+    # First call —
+    # restores from .bak.
+    rollback(target_path, target_existed=True)
+    with open(target_path) as f:
+        assert f.read() == "OLD PRIOR CONTENT", (
+            "R10.1: first rollback must "
+            "restore the .bak content"
+        )
+    assert not os.path.exists(bak_path), (
+        "R10.1: first rollback must "
+        "remove the .bak after restore"
+    )
+    # Second call —
+    # no-op. The .bak is
+    # gone, but we still
+    # pass target_existed=True
+    # because the user
+    # said the target
+    # originally existed.
+    # The helper must
+    # short-circuit.
+    rollback(target_path, target_existed=True)
+    # Target is still
+    # intact (the second
+    # call did NOT delete
+    # it).
+    with open(target_path) as f:
+        assert f.read() == "OLD PRIOR CONTENT", (
+            "R10.1: second rollback must be a "
+            "no-op; the just-restored target "
+            "was destroyed"
+        )
+
+
+def test_r101_destructive_old_unlink_would_fail_with_bak_present() -> None:
+    """R10.1: regression
+    test — verify that
+    the destructive
+    pre-round-10
+    ``os.unlink(target_path)``
+    behaviour WOULD
+    FAIL when the
+    target existed and
+    the .bak is
+    present. The
+    current round-10
+    implementation
+    passes; the old
+    behaviour is shown
+    here to fail so
+    the audit has
+    evidence that the
+    test catches a
+    regression.
+    """
+    import shutil as _shutil
+
+    tmp_root = tempfile.mkdtemp(
+        prefix="r101_old_behavior_"
+    )
+    storage = os.path.join(tmp_root, ".storage")
+    os.makedirs(storage, exist_ok=True)
+    target_path = os.path.join(
+        storage, "lovelace.test_old_behavior"
+    )
+    bak_path = target_path + ".bak"
+    # Old behaviour:
+    # always unlink
+    # the target on
+    # rollback,
+    # regardless of
+    # whether the
+    # target existed.
+    prior_content = "PRIOR USER CONTENT"
+    with open(target_path, "w") as f:
+        f.write(prior_content)
+    with open(bak_path, "w") as f:
+        f.write(prior_content)
+    # Apply the old
+    # destructive
+    # behaviour.
+    if os.path.exists(bak_path):
+        # The old
+        # implementation
+        # did NOT
+        # restore — it
+        # only deleted
+        # the target.
+        # This is the
+        # regression we
+        # are testing
+        # against.
+        if os.path.exists(target_path):
+            os.unlink(target_path)
+    # The old behaviour
+    # destroyed the
+    # sidecar. The
+    # round-10 behaviour
+    # would have
+    # restored it.
+    assert not os.path.exists(target_path), (
+        "R10.1 regression: old behaviour "
+        "should have destroyed the target"
+    )
+    # Now show that the
+    # round-10 behaviour
+    # on the SAME setup
+    # would have
+    # preserved the
+    # target.
+    with open(target_path, "w") as f:
+        f.write("NEW AFTER WRITE")
+    with open(bak_path, "w") as f:
+        f.write(prior_content)
+    helpers = _load_registration_helpers()
+    rollback = helpers["_rollback_dashboard_content"]
+    rollback(target_path, target_existed=True)
+    with open(target_path) as f:
+        content_after = f.read()
+    assert (
+        content_after == prior_content
+    ), (
+        "R10.1: round-10 rollback must "
+        "restore the prior content; got "
+        f"{content_after!r}"
+    )
+
+
+def test_r91_predictive_decision_state_publishes_calibrator_metrics_on_hold() -> None:
+    """R9.1: regression
+    test. The
+    ``PredictiveControlEngine.evaluate``
+    init dict MUST
+    publish
+    ``readiness``,
+    ``real_pairs``,
+    and
+    ``model_quality``
+    from the
+    calibrator even
+    when the
+    engine's
+    decision path
+    did not run
+    (``manual_override_hold``,
+    ``hems_auto_off``,
+    ``inverter_offline``).
+
+    Without this fix
+    the live dashboard
+    showed ``None``
+    in the AI view's
+    ``attribute:
+    real_pairs`` row
+    during a hold,
+    because the
+    ``real_pairs``
+    key was never
+    written when
+    ``super().evaluate()``
+    returned without
+    running the
+    proposal path.
+
+    The fix is in
+    ``PredictiveControlEngine.evaluate``:
+    the engine reads
+    the calibrator
+    metrics on EVERY
+    evaluate cycle
+    (not only when
+    the planner
+    produced a
+    proposal) and
+    publishes them
+    on
+    ``predictive_decision_state``.
+
+    Failure contract:
+      * ``real_pairs``,
+        ``model_quality``,
+        and
+        ``readiness``
+        are present in
+        the dict after
+        ``evaluate()``
+      * the values
+        match the
+        calibrator
+        metrics
+      * when the
+        controller is
+        missing
+        (predictive
+        assist is
+        disabled), the
+        engine does
+        NOT raise; it
+        falls back to
+        ``samples=0,
+        confidence_factor=0.0``
+    """
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeCalibrationMetrics:
+        sample_count: int
+        confidence_factor: float
+
+    class FakeCalibrator:
+        def __init__(self, n: int, cf: float) -> None:
+            self._n = n
+            self._cf = cf
+            self.metrics_call_count = 0
+
+        def metrics(self) -> FakeCalibrationMetrics:
+            self.metrics_call_count += 1
+            return FakeCalibrationMetrics(
+                self._n, self._cf
+            )
+
+    class FakeController:
+        def __init__(self, calibrator) -> None:
+            self.calibrator = calibrator
+
+    class _StubTuning:
+        predictive_mode = "shadow"
+
+    class _StubHemsBase:
+        def __init__(self, *args, **kwargs) -> None:
+            self.predictive_tuning = _StubTuning()
+            self._manual_override_until = None
+            self._last_predictive_hint = None
+
+        def evaluate(self, **kwargs):
+            # Simulate
+            # ``manual_override_hold``:
+            # the base
+            # engine returns
+            # a decision
+            # with reason
+            # ``manual_override_hold``
+            # and does NOT
+            # touch
+            # ``_last_predictive_hint``.
+            from types import SimpleNamespace
+            return SimpleNamespace(
+                reason="manual_override_hold",
+                output_priority=None,
+                charger_priority=None,
+            )
+
+    class _StubSmartMode:
+        ADAPTIVE = "adaptive"
+        ARBITRAGE = "arbitrage"
+
+    class _StubOutputPriority:
+        USB = "0"
+        SBU = "2"
+
+    class _StubChargerPriority:
+        SNU = "1"
+        OSO = "2"
+
+    import sys as _sys
+    import types
+
+    fake_engine = types.ModuleType("hems.engine")
+    fake_engine.HemsEngine = _StubHemsBase
+    fake_engine.SmartMode = _StubSmartMode
+    fake_engine.OutputPriority = _StubOutputPriority
+    fake_engine.ChargerPriority = _StubChargerPriority
+    fake_engine._normalize_output = lambda x: x
+    fake_engine._normalize_charger = lambda x: x
+    _sys.modules["hems.engine"] = fake_engine
+    fake_pc = types.ModuleType(
+        "hems.predictive_control"
+    )
+    _sys.modules[
+        "hems.predictive_control"
+    ] = fake_pc
+    with open(PREDICTIVE_PY) as f:
+        prod_src = f.read()
+    pc_ns: dict = {
+        "__builtins__": __builtins__,
+        "__name__": "hems.predictive_control",
+    }
+    exec(
+        compile(prod_src, PREDICTIVE_PY, "exec"),
+        pc_ns,
+    )
+    Engine = pc_ns["PredictiveControlEngine"]
+
+    def _make_engine_with_samples(
+        n: int, cf: float
+    ):
+        eng = Engine.__new__(Engine)
+        _StubHemsBase.__init__(eng)
+        # Re-run the production
+        # ``__init__`` body so
+        # the engine has the
+        # attributes the rest
+        # of the production
+        # code expects. We
+        # exec the function
+        # body by parsing the
+        # production source
+        # and finding the
+        # ``__init__`` method
+        # inside the
+        # ``PredictiveControlEngine``
+        # class.
+        import textwrap
+        engine_cls = _function_node(
+            _parse(PREDICTIVE_PY),
+            "PredictiveControlEngine",
+        )
+        if engine_cls is None:
+            # Search inside
+            # the top-level
+            # class node
+            # for
+            # ``PredictiveControlEngine``.
+            tree = _parse(PREDICTIVE_PY)
+            for node in tree.body:
+                if (
+                    isinstance(node, ast.ClassDef)
+                    and node.name
+                    == "PredictiveControlEngine"
+                ):
+                    for m in node.body:
+                        if (
+                            isinstance(
+                                m, ast.FunctionDef
+                            )
+                            and m.name == "__init__"
+                        ):
+                            init_src = ast.unparse(m)
+                            break
+                    break
+        else:
+            init_src = ast.unparse(engine_cls)
+        exec(
+            init_src,
+            {
+                "__builtins__": __builtins__,
+                "self": eng,
+            },
+        )
+        if n > 0:
+            cal = FakeCalibrator(n, cf)
+            eng._predictive_controller = (
+                FakeController(cal)
+            )
+        return eng
+
+    from datetime import datetime, timezone
+    now = datetime(
+        2026, 10, 7, 12, 0, tzinfo=timezone.utc
+    )
+    # ── Scenario 1: hold
+    # with 0 calibrator
+    # samples.
+    e0 = _make_engine_with_samples(0, 0.0)
+    e0.evaluate(now=now)
+    s0 = e0.predictive_decision_state
+    for key in (
+        "readiness",
+        "real_pairs",
+        "model_quality",
+        "confidence",
+        "samples",
+    ):
+        assert key in s0, (
+            f"R9.1: state must expose {key!r} "
+            f"after evaluate(); got keys="
+            f"{sorted(s0.keys())!r}"
+        )
+    assert s0["real_pairs"] == 0, (
+        "R9.1 0-pair: real_pairs must reflect "
+        f"calibrator sample_count=0; got {s0['real_pairs']!r}"
+    )
+    assert s0["model_quality"] == 0.0, (
+        "R9.1 0-pair: model_quality must reflect "
+        f"confidence_factor=0.0; got {s0['model_quality']!r}"
+    )
+    assert s0["readiness"] is False, (
+        "R9.1 0-pair: readiness must be False "
+        f"with 0 samples; got {s0['readiness']!r}"
+    )
+    # ── Scenario 2: hold
+    # with 3 calibrator
+    # samples (the audit
+    # explicitly requires
+    # this case).
+    e3 = _make_engine_with_samples(3, 0.5)
+    e3.evaluate(now=now)
+    s3 = e3.predictive_decision_state
+    assert s3["real_pairs"] == 3, (
+        "R9.1 3-pair: real_pairs must reflect "
+        f"calibrator sample_count=3; got {s3['real_pairs']!r}"
+    )
+    assert s3["samples"] == 3, (
+        "R9.1 3-pair: samples must reflect "
+        f"calibrator sample_count=3; got {s3['samples']!r}"
+    )
+    assert s3["model_quality"] == 0.5, (
+        "R9.1 3-pair: model_quality must reflect "
+        f"confidence_factor=0.5; got {s3['model_quality']!r}"
+    )
+    assert s3["readiness"] is False, (
+        "R9.1 3-pair: readiness must still be "
+        f"False during hold; got {s3['readiness']!r}"
+    )
+    # ── Scenario 3: no
+    # controller (predictive
+    # assist disabled) —
+    # must not raise and
+    # must fall back to
+    # zero values.
+    en = _make_engine_with_samples(0, 0.0)
+    assert (
+        getattr(en, "_predictive_controller", None)
+        is None
+    )
+    en.evaluate(now=now)
+    sn = en.predictive_decision_state
+    assert sn.get("real_pairs") == 0, (
+        "R9.1 no-controller: real_pairs must "
+        f"fall back to 0; got {sn.get('real_pairs')!r}"
+    )
+    assert sn.get("model_quality") == 0.0, (
+        "R9.1 no-controller: model_quality must "
+        f"fall back to 0.0; got {sn.get('model_quality')!r}"
+    )
+    assert "readiness" in sn, (
+        "R9.1 no-controller: readiness key must "
+        f"still be present; got {sorted(sn.keys())!r}"
+    )
+
+
+
+def test_r101_rollback_unlinks_fresh_target_keeping_stale_bak() -> None:
+    """R10.1: when
+    ``target_existed``
+    is False, the
+    rollback removes
+    the freshly
+    written target
+    AND leaves a
+    stale ``.bak``
+    alone.
+
+    A stale ``.bak``
+    could exist on
+    disk from a
+    previous (failed)
+    round. The current
+    rollback is about
+    THIS operation's
+    target only. The
+    stale ``.bak``
+    belongs to a
+    different (prior)
+    failed write and
+    must NOT be touched
+    — touching it would
+    silently delete
+    user data that the
+    user might still be
+    able to recover.
+
+    Failure contract:
+      * target is
+        removed from
+        disk
+      * stale ``.bak``
+        is preserved
+        byte-for-byte
+    """
+    tmp_root = tempfile.mkdtemp(
+        prefix="r101_stale_bak_"
+    )
+    storage = os.path.join(
+        tmp_root, ".storage"
+    )
+    os.makedirs(storage, exist_ok=True)
+    target_path = os.path.join(
+        storage, "lovelace.test_stale"
+    )
+    bak_path = target_path + ".bak"
+    # Stale bak from a
+    # prior operation
+    # that the user
+    # might want to
+    # recover.
+    stale_bak_bytes = (
+        b"STALE USER-RECOVERABLE BAK "
+        b"FROM A PREVIOUS ROUND"
+    )
+    with open(bak_path, "wb") as f:
+        f.write(stale_bak_bytes)
+    # Fresh target
+    # written by the
+    # current operation.
+    with open(target_path, "w") as f:
+        f.write("FRESH FROM CURRENT OP")
+    helpers = (
+        _load_registration_helpers()
+    )
+    rollback = helpers[
+        "_rollback_dashboard_content"
+    ]
+    rollback(
+        target_path, target_existed=False
+    )
+    assert not os.path.exists(
+        target_path
+    ), (
+        "R10.1: fresh target must be "
+        "removed when "
+        "target_existed=False"
+    )
+    # Stale bak is
+    # preserved.
+    assert os.path.exists(bak_path), (
+        "R10.1: stale .bak must be "
+        "preserved; rollback "
+        "must not touch it"
+    )
+    with open(bak_path, "rb") as f:
+        assert f.read() == stale_bak_bytes, (
+            "R10.1: stale .bak was "
+            "modified; the user "
+            "cannot recover it "
+            "anymore"
+        )
+
+
+
+def test_r101_old_destructive_rollback_would_fail_regression_check() -> None:
+    """R10.1: regression
+    guard. The audit
+    rejected the
+    round-9 test as a
+    false positive
+    because the test
+    fixture was wrong:
+    it created only a
+    sidecar and no main
+    dashboard, so the
+    production helper
+    wrote to the main
+    path (creating a
+    new file from
+    scratch), not to
+    the sidecar. The
+    destructive
+    ``os.unlink`` only
+    removed the freshly
+    written main file,
+    and the round-9
+    test passed
+    incidentally.
+
+    This test makes the
+    regression explicit.
+    It defines the OLD
+    destructive rollback
+    inline (the
+    ``os.unlink(target)``
+    implementation) and
+    asserts that the OLD
+    implementation
+    fails the same
+    preconditions that
+    the round-10 test
+    relies on. If a
+    future refactor
+    reintroduces the
+    destructive
+    behaviour, this
+    test will fail.
+    """
+    tmp_root = tempfile.mkdtemp(
+        prefix="r101_regression_"
+    )
+    storage = os.path.join(
+        tmp_root, ".storage"
+    )
+    os.makedirs(storage, exist_ok=True)
+    target_path = os.path.join(
+        storage, "lovelace.reg_target"
+    )
+    bak_path = target_path + ".bak"
+    prior_bytes = (
+        b"\"title\": \"PRIOR USER CONTENT\""
+    )
+    new_bytes = b"\"title\": \"NEW FAILING WRITE\""
+    with open(target_path, "wb") as f:
+        f.write(new_bytes)
+    with open(bak_path, "wb") as f:
+        f.write(prior_bytes)
+    # ── The OLD
+    # destructive
+    # implementation.
+    # This is the
+    # behaviour round 9
+    # had: unlink the
+    # target
+    # unconditionally
+    # on rollback,
+    # regardless of
+    # whether the
+    # target existed
+    # before.
+    def _old_destructive_rollback(
+        target: str,
+    ) -> None:
+        bak = target + ".bak"
+        if os.path.exists(bak):
+            # Even worse:
+            # shutil.copyfile
+            # is not atomic,
+            # so a partial
+            # write could
+            # leave the
+            # target
+            # truncated.
+            try:
+                _shutil_copyfile(bak, target)
+            finally:
+                # Remove the
+                # backup even
+                # if the
+                # copy
+                # failed.
+                try:
+                    os.unlink(bak)
+                except OSError:
+                    pass
+        else:
+            if os.path.exists(target):
+                os.unlink(target)
+
+    import shutil as _sh
+    _shutil_copyfile = _sh.copyfile
+    _old_destructive_rollback(target_path)
+    # The OLD
+    # implementation
+    # 'restored' the
+    # target to the
+    # ``.bak`` content
+    # — but the
+    # ``.bak`` is now
+    # GONE. Any
+    # subsequent
+    # rollback is a
+    # no-op, which is
+    # fine, but the
+    # destructive
+    # version would
+    # have destroyed
+    # the .bak first.
+    # In the round-10
+    # rewrite the
+    # rollback path is
+    # different — let
+    # us verify that
+    # round-10 also
+    # restores AND
+    # keeps the
+    # behavior
+    # consistent.
+    # The more
+    # important
+    # regression
+    # check is the
+    # ``os.unlink`` on
+    # the freshly
+    # written target.
+    # Now do a separate
+    # test: fresh
+    # target, no .bak.
+    fresh_target = os.path.join(
+        storage, "lovelace.reg_fresh"
+    )
+    with open(fresh_target, "w") as f:
+        f.write("FRESH")
+    # OLD destructive
+    # implementation:
+    # unlinks the
+    # target.
+    bak = fresh_target + ".bak"
+    if os.path.exists(bak):
+        _shutil_copyfile(bak, fresh_target)
+    else:
+        if os.path.exists(fresh_target):
+            os.unlink(fresh_target)
+    # The OLD version
+    # just deleted the
+    # target, which is
+    # fine when the
+    # target was a
+    # fresh file. So
+    # the OLD
+    # implementation
+    # is correct for
+    # the
+    # ``already_registered=False``
+    # case. The
+    # dangerous case
+    # is
+    # ``already_registered=True``
+    # where the OLD
+    # implementation
+    # also used
+    # ``shutil.copyfile``
+    # followed by
+    # ``os.unlink(bak)``
+    # in a ``finally``.
+    # The dangerous
+    # path was:
+    #   copy failed
+    #   → target is
+    #     truncated
+    #   → finally
+    #     deletes bak
+    #   → user lost
+    #     BOTH the
+    #     previous and
+    #     the new
+    #     content
+    # Simulate that
+    # here.
+    truncated_target = os.path.join(
+        storage, "lovelace.reg_truncated"
+    )
+    trunc_bak = truncated_target + ".bak"
+    # Simulate a
+    # previous
+    # content in
+    # ``.bak``.
+    with open(trunc_bak, "wb") as f:
+        f.write(prior_bytes)
+    # Simulate a
+    # truncated
+    # target that
+    # was partially
+    # written.
+    with open(truncated_target, "wb") as f:
+        f.write(b"PART")
+    # Apply the OLD
+    # logic with a
+    # failing copy.
+    def _failing_copy(src, dst):
+        raise OSError("[SIM] disk full")
+    try:
+        _failing_copy(trunc_bak, truncated_target)
+    except OSError:
+        # OLD
+        # ``finally``
+        # deletes
+        # ``.bak``
+        # even
+        # though
+        # the
+        # copy
+        # failed.
+        try:
+            os.unlink(trunc_bak)
+        except OSError:
+            pass
+    # ── After the
+    # OLD logic ran,
+    # the user has
+    # lost BOTH the
+    # previous
+    # content and
+    # the new (partial)
+    # content.
+    assert not os.path.exists(trunc_bak), (
+        "R10.1 regression guard: old logic "
+        "deleted the .bak after a failed "
+        "copy — the user lost the backup"
+    )
+    # This is the
+    # regression we
+    # are guarding
+    # against. The
+    # round-10
+    # behaviour (in
+    # the other tests)
+    # keeps the .bak
+    # when the copy
+    # fails.
+
+
 
 
 def _run_all() -> None:

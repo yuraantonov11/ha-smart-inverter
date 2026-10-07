@@ -1739,7 +1739,26 @@ async def _register_lovelace_dashboard(
         try:
             await hass.async_add_executor_job(
                 lambda: _rollback_dashboard_content(
-                    dashboard_content_storage
+                    dashboard_content_storage,
+                    # Audit R10.1: the
+                    # caller already
+                    # knows whether the
+                    # target existed
+                    # before this
+                    # operation from
+                    # ``already_registered``.
+                    # The presence of
+                    # ``.bak`` is NOT a
+                    # reliable indicator
+                    # (a stale ``.bak``
+                    # from an earlier
+                    # failure, or a
+                    # missing ``.bak``
+                    # after a disk wipe,
+                    # would otherwise
+                    # mislead the
+                    # rollback).
+                    bool(already_registered),
                 )
             )
         except OSError as rollback_exc:
@@ -1803,94 +1822,173 @@ def _read_metadata_snapshot(dashboards_storage: str) -> dict:
         return json.loads(f.read())
 
 
-def _rollback_dashboard_content(target_path: str) -> None:
+def _rollback_dashboard_content(
+    target_path: str, target_existed: bool
+) -> None:
     """Roll back the content
     file at ``target_path``
     after a metadata write
     failure.
 
-    Audit T22 round 9 (R9.2):
-    ``_write_dashboard_atomic``
-    keeps ``target_path +
-    ".bak"`` as a copy of the
-    PREVIOUS content (when
-    the file existed before
-    this call) right before
-    the ``os.replace`` that
-    installs the new content.
-    The previous
-    implementation called
-    ``os.unlink(target_path)``
-    unconditionally, which
-    clobbered an
-    already-registered
-    sidecar that this
-    operation had just
-    tried to UPDATE
-    (``already_listed=True``).
-    The fix is:
+    Audit T22 round 9 / 10
+    (R9.2 → R10.1): the
+    rollback MUST be atomic
+    so a crash mid-rollback
+    does not leave the
+    target in a partial
+    state. The previous
+    round-9 implementation
+    used ``shutil.copyfile``
+    (non-atomic — a partial
+    write could leave the
+    target as truncated
+    JSON), and removed the
+    ``.bak`` in a ``finally``
+    even when the copy had
+    failed (so the user
+    lost BOTH the previous
+    content and the
+    backup). The round-10
+    rewrite:
 
-      * If ``target_path +
-        ".bak"`` exists, the
-        target was a previously
-        registered dashboard.
-        Restore the ``.bak``
-        copy back to the
-        target path so the
-        previous content is
-        preserved byte-for-byte.
-        Then remove the
-        ``.bak`` so the next
-        update starts from a
-        clean slate.
-      * If the ``.bak`` does
-        not exist, the target
-        is a brand-new file
-        created by THIS
-        operation. Delete it
-        so we do not leave a
-        dangling content file
-        without a matching
-        metadata entry.
-
-    Idempotent: safe to call
-    multiple times.
+      * Restores through a
+        ``.tmp`` file in the
+        same directory
+        followed by
+        ``os.replace`` so the
+        target is replaced in
+        a single atomic step.
+        The previous content
+        on disk is never
+        observed in a partial
+        state.
+      * Keeps the ``.bak``
+        when the restore
+        FAILS, so a manual
+        recovery is still
+        possible.
+      * Removes the ``.bak``
+        only after the
+        ``os.replace`` of the
+        restored file
+        succeeded.
+      * Is idempotent: a
+        second call when the
+        ``.bak`` is no longer
+        present is a no-op.
+      * Does NOT use the
+        presence of ``.bak``
+        as the indicator that
+        the target existed
+        before the call. That
+        information is passed
+        explicitly via
+        ``target_existed``,
+        which the caller
+        already knows from
+        ``already_registered``.
     """
     bak_path = target_path + ".bak"
-    if os.path.exists(bak_path):
-        # The target existed
-        # before this operation;
-        # restore the previous
-        # content from the .bak
-        # copy.
-        try:
-            shutil.copyfile(bak_path, target_path)
-        finally:
-            # Always remove the
-            # .bak — it represents
-            # a previous state that
-            # the user no longer
-            # asked to keep. If we
-            # leave it, the next
-            # ``_write_dashboard_atomic``
-            # will overwrite it
-            # again, but it is
-            # cleaner to remove
-            # immediately.
-            try:
-                os.unlink(bak_path)
-            except OSError:
-                pass
-    else:
-        # The target was a new
-        # file created by this
-        # operation; remove it
-        # so we do not leave a
-        # dangling content file
-        # without matching
-        # metadata.
+    if not target_existed:
+        # Brand-new file: the
+        # current operation
+        # created it. There is
+        # no previous content
+        # to restore. Remove
+        # the freshly written
+        # target so we do not
+        # leave a dangling
+        # content file without
+        # matching metadata.
         if os.path.exists(target_path):
-            os.unlink(target_path)
+            try:
+                os.unlink(target_path)
+            except OSError as exc:
+                _LOGGER.error(
+                    "Rollback: failed to remove "
+                    "freshly written target %s: %s",
+                    target_path, exc,
+                )
+        return
+    # target_existed is True.
+    # The previous content
+    # is in ``.bak`` (if the
+    # writer kept it). If
+    # the ``.bak`` is
+    # missing — for example
+    # because the disk was
+    # wiped between the
+    # failed write and the
+    # rollback — we keep the
+    # current (new) target on
+    # disk rather than
+    # deleting it, because
+    # the user could be left
+    # with no content file
+    # at all.
+    if not os.path.exists(bak_path):
+        _LOGGER.warning(
+            "Rollback: %s expected to exist "
+            "(target_existed=True) but is missing; "
+            "leaving the current target in place",
+            bak_path,
+        )
+        return
+    # Atomic restore: write
+    # to a sibling temp
+    # file, then ``os.replace``
+    # over the target. If
+    # the copy fails, the
+    # ``.bak`` is preserved.
+    target_dir = os.path.dirname(
+        os.path.abspath(target_path)
+    )
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=target_dir,
+        prefix=".lovelace.rollback.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(tmp_fd, "wb") as tmp_f:
+            with open(bak_path, "rb") as bak_f:
+                shutil.copyfileobj(bak_f, tmp_f)
+        os.replace(tmp_path, target_path)
+    except OSError as exc:
+        # Preserve the
+        # ``.bak`` for manual
+        # recovery. Clean up
+        # the temp file if it
+        # was created.
+        _LOGGER.error(
+            "Rollback: failed to restore %s from %s: %s; "
+            "preserving the .bak for manual recovery",
+            target_path, bak_path, exc,
+        )
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return
+    # Restore succeeded.
+    # The ``.bak`` is now
+    # safe to remove: the
+    # target holds the same
+    # bytes as the ``.bak``
+    # used to. If the
+    # ``.bak`` removal
+    # fails, log and
+    # continue — the next
+    # ``_write_dashboard_atomic``
+    # will overwrite the
+    # ``.bak`` anyway.
+    try:
+        os.unlink(bak_path)
+    except OSError as exc:
+        _LOGGER.warning(
+            "Rollback: failed to remove %s after "
+            "successful restore: %s",
+            bak_path, exc,
+        )
 
 
 async def _update_dashboard_content(
