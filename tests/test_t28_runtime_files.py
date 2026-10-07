@@ -57,28 +57,89 @@ def _run_git_check_ignore(paths: list[str]) -> dict[str, str]:
     Uses
     ``git check-ignore``
     for ground truth.
-    """
+
+    T28 round 3: the
+    previous code passed
+    paths as ``argv`` and
+    parsed ``stdout`` line
+    by line. On Windows
+    the shell escapes
+    backslashes inside
+    quoted paths, so a
+    path like
+    ``C:\\path with space\\foo.json``
+    round-tripped through
+    git becomes
+    ``C:\\path with space\\foo.json``
+    in ``stdout`` but
+    ``C:\\\\path with space\\\\foo.json``
+    in ``argv`` after
+    Python's ``subprocess``
+    normalises it. The
+    audit explicitly
+    demanded the
+    NUL-separated
+    variant. Git reads
+    ``-z`` to emit
+    output records
+    separated by
+    ``\x00`` and reads
+    ``-z`` from stdin
+    to consume
+    NUL-separated
+    paths. We pass
+    paths via
+    ``stdin`` (input)
+    as NUL bytes so
+    no shell quoting
+    can corrupt the
+    path."""
     if not paths:
         return {}
+    payload = b"\x00".join(
+        p.encode("utf-8") for p in paths
+    ) + b"\x00"
     r = subprocess.run(
-        ["git", "check-ignore", "-v"] + paths,
+        ["git", "check-ignore", "-v", "-z", "--stdin"],
         cwd=REPO_ROOT,
+        input=payload,
         capture_output=True,
-        text=True,
+        # ``text=True``
+        # would corrupt
+        # the NUL
+        # separators —
+        # read bytes and
+        # decode per
+        # record.
+        text=False,
     )
     out: dict[str, str] = {}
-    for line in r.stdout.split("\n"):
-        if not line or line.startswith("#"):
+    # Git's
+    # ``-z`` output
+    # is a flat
+    # sequence of
+    # NUL-separated
+    # fields, four
+    # per ignored
+    # path:
+    #   <source>
+    #   <linenum>
+    #   <pattern>
+    #   <path>
+    fields = [
+        f.decode("utf-8", errors="replace")
+        for f in r.stdout.split(b"\x00")
+    ]
+    for i in range(0, len(fields) - 3, 4):
+        source, linenum, pattern, path = (
+            fields[i],
+            fields[i + 1],
+            fields[i + 2],
+            fields[i + 3],
+        )
+        if not source or not path:
             continue
-        parts = line.split("\t")
-        if len(parts) == 2:
-            pattern, path = parts
-            # pattern includes
-            # the source +
-            # linenum, e.g.
-            # ``.gitignore:5:*.log``
-            _, _, pat = pattern.partition(":")
-            out[path] = pat
+        out[path] = pattern
     return out
 
 
@@ -485,31 +546,58 @@ class TestT28SpecificRuntimePaths(unittest.TestCase):
         *specific*
         filename in the
         ``hems/`` folder
-        (not a subdir)."""
-        import shutil
-        # The pattern is
-        # ``hems/cloud_hourly_*.json`` —
-        # direct child of
-        # ``hems/``. We
-        # create the file
-        # in the right
-        # location to
-        # exercise the
-        # pattern.
-        sub = REPO_ROOT / "hems" / "._t28_cloud"
-        sub.mkdir(parents=True, exist_ok=True)
-        try:
-            # Use the
-            # correct
-            # location:
-            # ``hems/cloud_hourly_<id>.json``.
-            target = (
-                REPO_ROOT
-                / "hems"
-                / "cloud_hourly_01M3XWJ8DRYDQC8A0NCPRVB53N.json"
+        (not a subdir).
+
+        T28 round 3: the
+        file is written
+        directly under
+        ``hems/`` —
+        production never
+        nests it in a
+        subdir. We create
+        it in the right
+        location to
+        exercise the
+        pattern. ``git
+        check-ignore``
+        only returns
+        records for paths
+        that are in the
+        index, so we
+        stage the file
+        before checking."""
+        from contextlib import contextmanager
+        @contextmanager
+        def _staged(path):
+            """Add ``path`` to
+            the git index so
+            ``check-ignore``
+            returns a record
+            for it. Always
+            unstage and
+            unlink at the
+            end."""
+            subprocess.run(
+                ["git", "add", str(path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
             )
-            target.touch()
             try:
+                yield
+            finally:
+                subprocess.run(
+                    ["git", "reset", str(path)],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                )
+        target = (
+            REPO_ROOT
+            / "hems"
+            / "cloud_hourly_01M3XWJ8DRYDQC8A0NCPRVB53N.json"
+        )
+        target.touch()
+        try:
+            with _staged(target):
                 ignored = _run_git_check_ignore(
                     [str(target)]
                 )
@@ -522,10 +610,9 @@ class TestT28SpecificRuntimePaths(unittest.TestCase):
                     "history cache could be "
                     "committed.",
                 )
-            finally:
-                target.unlink()
         finally:
-            shutil.rmtree(sub, ignore_errors=True)
+            if target.exists():
+                target.unlink()
 
     def test_real_forecast_pairs_per_entry_subdir_ignored(self) -> None:
         """The integration
@@ -533,61 +620,82 @@ class TestT28SpecificRuntimePaths(unittest.TestCase):
         ``hems/<entry_id>/real_forecast_pairs.json``
         — a per-entry
         subdir."""
+        from contextlib import contextmanager
+        @contextmanager
+        def _staged(path):
+            subprocess.run(
+                ["git", "add", str(path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+            )
+            try:
+                yield
+            finally:
+                subprocess.run(
+                    ["git", "reset", str(path)],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                )
         import shutil
-        # The pattern is
-        # ``hems/*/real_forecast_pairs.json``
-        # — direct child
-        # of any
-        # subdirectory of
-        # ``hems/``. We
-        # exercise it by
-        # creating the
-        # subdir + file.
         sub = REPO_ROOT / "hems" / "._t28_rfp_entry"
-        (sub / "01M3XWJ8DRYDQC8A0NCPRVB53N").mkdir(
-            parents=True, exist_ok=True
-        )
+        sub.mkdir(parents=True, exist_ok=True)
         try:
             target = (
                 sub
                 / "01M3XWJ8DRYDQC8A0NCPRVB53N"
                 / "real_forecast_pairs.json"
             )
+            target.parent.mkdir(
+                parents=True, exist_ok=True
+            )
             target.touch()
             try:
-                ignored = _run_git_check_ignore(
-                    [str(target)]
-                )
-                self.assertIn(
-                    str(target),
-                    ignored,
-                    "hems/*/real_forecast_pairs.json "
-                    "is not in .gitignore.",
-                )
+                with _staged(target):
+                    ignored = _run_git_check_ignore(
+                        [str(target)]
+                    )
+                    self.assertIn(
+                        str(target),
+                        ignored,
+                        "hems/**/real_forecast_pairs.json "
+                        "is not in .gitignore.",
+                    )
             finally:
-                target.unlink()
+                if target.exists():
+                    target.unlink()
         finally:
             shutil.rmtree(sub, ignore_errors=True)
 
     def test_pv_fact_pairs_per_entry_ignored(self) -> None:
         """The integration
         writes
-        ``hems/pv_fact_pairs_<entry_id>.json``."""
-        import shutil
-        # The pattern is
-        # ``hems/pv_fact_pairs_*.json``
-        # — direct child
-        # of ``hems/``.
-        sub = REPO_ROOT / "hems" / "._t28_pvfp"
-        sub.mkdir(parents=True, exist_ok=True)
-        try:
-            target = (
-                REPO_ROOT
-                / "hems"
-                / "pv_fact_pairs_01M3XWJ8DRYDQC8A0NCPRVB53N.json"
+        ``hems/pv_fact_pairs_<entry_id>.json``
+        — direct child of
+        ``hems/``."""
+        from contextlib import contextmanager
+        @contextmanager
+        def _staged(path):
+            subprocess.run(
+                ["git", "add", str(path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
             )
-            target.touch()
             try:
+                yield
+            finally:
+                subprocess.run(
+                    ["git", "reset", str(path)],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                )
+        target = (
+            REPO_ROOT
+            / "hems"
+            / "pv_fact_pairs_01M3XWJ8DRYDQC8A0NCPRVB53N.json"
+        )
+        target.touch()
+        try:
+            with _staged(target):
                 ignored = _run_git_check_ignore(
                     [str(target)]
                 )
@@ -597,10 +705,61 @@ class TestT28SpecificRuntimePaths(unittest.TestCase):
                     "hems/pv_fact_pairs_*.json "
                     "is not in .gitignore.",
                 )
-            finally:
-                target.unlink()
         finally:
-            shutil.rmtree(sub, ignore_errors=True)
+            if target.exists():
+                target.unlink()
+
+    def test_legacy_pv_fact_pairs_json_ignored(self) -> None:
+        """T28 round 3:
+        ``pv_coordinator``
+        reads the bare
+        ``pv_fact_pairs.json``
+        (no ``_<id>``
+        suffix) on
+        upgrade. This
+        pattern must be
+        in the
+        ``.gitignore``
+        or the legacy
+        file would leak
+        into the repo on
+        first run."""
+        from contextlib import contextmanager
+        @contextmanager
+        def _staged(path):
+            subprocess.run(
+                ["git", "add", str(path)],
+                cwd=REPO_ROOT,
+                capture_output=True,
+            )
+            try:
+                yield
+            finally:
+                subprocess.run(
+                    ["git", "reset", str(path)],
+                    cwd=REPO_ROOT,
+                    capture_output=True,
+                )
+        target = (
+            REPO_ROOT / "hems" / "pv_fact_pairs.json"
+        )
+        target.touch()
+        try:
+            with _staged(target):
+                ignored = _run_git_check_ignore(
+                    [str(target)]
+                )
+                self.assertIn(
+                    str(target),
+                    ignored,
+                    "hems/pv_fact_pairs.json "
+                    "is not in .gitignore — "
+                    "the legacy file would "
+                    "leak into the repo.",
+                )
+        finally:
+            if target.exists():
+                target.unlink()
 
     def test_fixtures_remain_tracked(self) -> None:
         """Fixtures and

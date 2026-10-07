@@ -67,7 +67,23 @@ HA_VERSION
 # ``**`` matches one or more path components; the previous ``*``
 # pattern only matched a single level and missed
 # ``hems/<entry_id>/real_forecast_pairs.json``.
+# T28 round 3: the
+# legacy
+# ``pv_coordinator``
+# reads the bare
+# ``pv_fact_pairs.json``
+# (no ``_<id>``
+# suffix) on
+# upgrade —
+# include both
+# shapes so the
+# file does not
+# leak into the
+# repo on first
+# run.
+hems/pv_fact_pairs.json
 hems/pv_fact_pairs_*.json
+hems/pv_fact_pairs.json.tmp
 hems/pv_fact_pairs_*.json.tmp
 hems/cloud_hourly_*.json
 hems/cloud_hourly_*.json.tmp

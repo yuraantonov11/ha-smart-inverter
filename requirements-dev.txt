@@ -1,0 +1,44 @@
+# Development-only dependencies.
+#
+# The Home Assistant integration runs on the user's HA
+# installation. ``manifest.json`` lists only the *runtime*
+# dependencies (``aiohttp``, ``cryptography``). The integration
+# code does **not** import ``pyyaml`` — only the test
+# suite does, to read the recommended ``automations/*.yaml``
+# files for verification.
+#
+# T28 round 3: the test
+# suite (specifically
+# ``test_t24_command_paths``,
+# ``test_t24_automations``,
+# ``test_t28_runtime_files``)
+# now parses YAML in
+# tests only. PyYAML is
+# not part of the
+# production path and
+# is **not** added to
+# ``manifest.json``.
+#
+# To install the test
+# environment:
+#
+#     python3 -m pip install -r requirements-dev.txt
+#
+# A reproducible
+# alternative is
+# ``uv pip install
+# -r requirements-dev.txt``
+# (no virtualenv
+# required).
+#
+# Versions are pinned
+# to a known-compatible
+# floor. ``pyyaml>=6.0``
+# is the lowest version
+# that ships with HA's
+# core test images;
+# ``hermes-agent`` and
+# most modern CI runners
+# use 6.0.1+.
+
+pyyaml>=6.0,<7.0
