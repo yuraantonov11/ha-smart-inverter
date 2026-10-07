@@ -329,13 +329,31 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         # ── Schedule Rules ────────────────────────────────────────────
         self._schedule_rules = ScheduleRulesService()
-        rules_data = entry.data.get("schedule_rules", {})
+        # T25: prefer the
+        # runtime options
+        # payload (the path
+        # the service uses to
+        # persist add / delete
+        # operations), then
+        # fall back to the
+        # legacy entry.data
+        # blob (used by older
+        # builds before the
+        # audit added
+        # ``_persist_schedule_rules``).
+        rules_data = entry.options.get("schedule_rules")
+        if not rules_data:
+            rules_data = entry.data.get("schedule_rules", {})
         if rules_data:
             self._schedule_rules.load_from_dict(rules_data)
 
         # ── Demand Forecast ───────────────────────────────────────────
         self._demand_forecast = DemandForecastService()
-        demand_data = entry.data.get("demand_forecast_profile", {})
+        demand_data = entry.options.get("demand_forecast_profile")
+        if not demand_data:
+            demand_data = entry.data.get(
+                "demand_forecast_profile", {}
+            )
         if demand_data:
             self._demand_forecast.load_from_dict(demand_data)
 
@@ -354,6 +372,26 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             in_low_state=soh_data.get("in_low_state", False),
             install_date=install_date,
         )
+        # T25: if the audit
+        # has already written
+        # a cycle_count into
+        # options (after a
+        # successful track_soc
+        # in a prior run),
+        # prefer that value
+        # over the entry.data
+        # snapshot. This
+        # gives the live
+        # tracker priority
+        # over the original
+        # install value.
+        soh_options_blob = entry.options.get("battery_soh")
+        if (
+            isinstance(soh_options_blob, dict)
+            and soh_options_blob.get("cycle_count")
+            is not None
+        ):
+            self._battery_soh.load_from_dict(soh_options_blob)
 
         # ── Auto House Load Reserve ───────────────────────────────────
         self._auto_house_reserve_enabled: bool = entry.options.get("auto_house_load_reserve", False)
@@ -926,10 +964,23 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # ── Update demand forecast with current load ───────────────────
         load_power = raw.get("loadPower", 0.0)
         self._demand_forecast.update_ewma(now, load_power)
+        # T25: throttled
+        # persistence of the
+        # EWMA load profile so
+        # the learning survives
+        # an HA restart.
+        self._maybe_persist_demand_forecast(now)
 
         # ── Track battery SoH ─────────────────────────────────────────
         if not soc_unknown:
             self._battery_soh.track_soc(corrected_soc)
+            # T25: throttled
+            # persistence of the
+            # cycle_count and
+            # install_date so the
+            # SoH state survives an
+            # HA restart.
+            self._maybe_persist_battery_soh(now)
 
         # ── Auto-tune house load reserve ──────────────────────────────
         self._maybe_auto_tune_house_reserve(load_power, now)
@@ -2073,6 +2124,211 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 self._energy_state_dirty = False
             return ok
         return self._persist_energy_state(now, force=False)
+
+    # ═══════════════════════════════════════════════════════════════
+    # T25: per-entry persistence for schedule rules, SoH, demand profile
+    # ═══════════════════════════════════════════════════════════════
+
+    # Throttle intervals
+    _SOH_PERSIST_MIN_INTERVAL_S = 30
+    _DEMAND_PERSIST_MIN_INTERVAL_S = 60
+
+    def _persist_schedule_rules(self) -> bool:
+        """T25: persist the
+        schedule-rules
+        registry to
+        ``entry.options`` so
+        add / delete / update
+        / toggle survive an
+        HA restart.
+
+        The service stores
+        its serialised form
+        under
+        ``STORAGE_KEY = "schedule_rules_v1"``,
+        which we forward to
+        HA unchanged. The
+        same path is used by
+        ``load_from_dict``
+        in ``__init__``.
+        """
+        if self._entry is None or self.hass is None:
+            return False
+        try:
+            blob = self._schedule_rules.save_to_dict()
+            new_opts = dict(self._entry.options)
+            new_opts["schedule_rules"] = blob
+            self.hass.config_entries.async_update_entry(
+                self._entry, options=new_opts
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "persist schedule rules failed: %s", exc
+            )
+            return False
+
+    def _persist_battery_soh(self) -> bool:
+        """T25: persist the
+        SoH tracker's
+        ``cycle_count``,
+        ``in_low_state``,
+        and ``install_date``
+        to
+        ``entry.options["battery_soh"]``
+        so the values
+        survive a restart.
+
+        Persistence is
+        rate-limited by
+        ``_maybe_persist_battery_soh``
+        to avoid waking HA
+        storage listeners
+        on every polling
+        cycle.
+        """
+        if self._entry is None or self.hass is None:
+            return False
+        try:
+            blob = self._battery_soh.to_dict()
+            new_opts = dict(self._entry.options)
+            new_opts["battery_soh"] = blob
+            self.hass.config_entries.async_update_entry(
+                self._entry, options=new_opts
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "persist battery soh failed: %s", exc
+            )
+            return False
+
+    def _maybe_persist_battery_soh(
+        self, now: datetime | None = None
+    ) -> bool:
+        """Throttled
+        ``_persist_battery_soh``
+        wrapper.
+
+        The audit
+        explicitly
+        forbids
+        per-cycle
+        ``async_update_entry``
+        calls (which wake
+        HA storage
+        listeners and
+        race with the
+        energy-state
+        writer). The
+        throttle window
+        is
+        ``_SOH_PERSIST_MIN_INTERVAL_S``
+        (30 s).
+        """
+        if now is None:
+            now = datetime.now()
+        last = getattr(
+            self, "_last_soh_persist_at", None
+        )
+        if last is not None and (
+            now - last
+        ).total_seconds() < self._SOH_PERSIST_MIN_INTERVAL_S:
+            return False
+        ok = self._persist_battery_soh()
+        if ok:
+            self._last_soh_persist_at = now
+        return ok
+
+    def _persist_demand_forecast(self) -> bool:
+        """T25: persist the
+        EWMA load profile
+        to
+        ``entry.options["demand_forecast_profile"]``
+        so the learning
+        survives a restart.
+        """
+        if self._entry is None or self.hass is None:
+            return False
+        try:
+            blob = self._demand_forecast.to_dict()
+            new_opts = dict(self._entry.options)
+            new_opts["demand_forecast_profile"] = blob
+            self.hass.config_entries.async_update_entry(
+                self._entry, options=new_opts
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "persist demand forecast failed: %s", exc
+            )
+            return False
+
+    def _maybe_persist_demand_forecast(
+        self, now: datetime | None = None
+    ) -> bool:
+        """Throttled
+        ``_persist_demand_forecast``
+        wrapper.
+
+        60-second window
+        so a 5 s polling
+        cycle does not
+        generate 12
+        ``async_update_entry``
+        calls per minute.
+        """
+        if now is None:
+            now = datetime.now()
+        last = getattr(
+            self, "_last_demand_persist_at", None
+        )
+        if last is not None and (
+            now - last
+        ).total_seconds() < self._DEMAND_PERSIST_MIN_INTERVAL_S:
+            return False
+        ok = self._persist_demand_forecast()
+        if ok:
+            self._last_demand_persist_at = now
+        return ok
+
+    def _restore_battery_soh(self, blob: Any) -> None:
+        """T25: hydrate the
+        in-memory SoH from
+        ``entry.options["battery_soh"]``
+        at startup. Malformed
+        blobs are silently
+        ignored (the
+        tracker starts at
+        zero; the next
+        valid sample will
+        correct the state)."""
+        if not blob or not isinstance(blob, dict):
+            return
+        try:
+            self._battery_soh.load_from_dict(blob)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "restore battery soh failed: %s", exc
+            )
+
+    def _restore_demand_forecast(self, blob: Any) -> None:
+        """T25: hydrate the
+        EWMA load profile
+        from
+        ``entry.options["demand_forecast_profile"]``
+        at startup.
+        Malformed blobs are
+        ignored."""
+        if not blob or not isinstance(blob, dict):
+            return
+        try:
+            self._demand_forecast.load_from_dict(blob)
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug(
+                "restore demand forecast failed: %s",
+                exc,
+            )
 
     def _restore_energy_state(self, blob: Any) -> None:
         """Hydrate in-memory counters from a previously persisted blob.

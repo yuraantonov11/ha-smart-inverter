@@ -225,12 +225,36 @@ async def async_register_services(hass: HomeAssistant) -> None:
             priority=call.data.get("priority", 5),
         )
         coordinator.schedule_rules.add_rule(rule)
+        # T25: persist the
+        # registry so the new
+        # rule survives an HA
+        # restart. The
+        # coordinator is the
+        # single owner of the
+        # schedule_rules
+        # write path.
+        if hasattr(coordinator, "_persist_schedule_rules"):
+            try:
+                coordinator._persist_schedule_rules()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug(
+                    "persist schedule rule failed: %s",
+                    exc,
+                )
         _LOGGER.info("Service: added schedule rule '%s'", rule.name)
 
     async def handle_delete_schedule_rule(call: ServiceCall) -> None:
         api, coordinator = await _get_api(call)
         rule_id = call.data["rule_id"]
         coordinator.schedule_rules.delete_rule(rule_id)
+        if hasattr(coordinator, "_persist_schedule_rules"):
+            try:
+                coordinator._persist_schedule_rules()
+            except Exception as exc:  # noqa: BLE001
+                _LOGGER.debug(
+                    "persist schedule rule delete failed: %s",
+                    exc,
+                )
         _LOGGER.info("Service: deleted schedule rule %s", rule_id)
 
     hass.services.async_register(
