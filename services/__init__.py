@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
+import os
 
 import voluptuous as vol
 
@@ -481,5 +482,127 @@ async def async_register_services(hass: HomeAssistant) -> None:
             vol.Required("action"): vol.In(["approve", "reject", "modify"]),
             vol.Optional("duration_min", default=30): vol.All(int, vol.Range(min=1, max=1440)),
             vol.Optional("new_target_soc"): vol.All(int, vol.Range(min=20, max=100)),
+        }),
+    )
+
+    async def handle_migrate_dashboard(
+        call: ServiceCall
+    ) -> None:
+        """One-shot opt-in to overwrite
+        the Smart Solar dashboard.
+
+        Audit T23 round 6 (R6.2):
+        a documented way for the
+        user to enable a fresh
+        install of the AI view.
+        Without this service the
+        user has no path to opt
+        in — the integration's
+        ``async_setup_entry``
+        skips dashboard generation
+        when the file exists, so
+        the existing user edit is
+        preserved but the new AI
+        view never lands.
+
+        Usage::
+
+            action: powmr_inverter.migrate_dashboard
+            data:
+              entry_id: 01M3XWJ8DRYDQC8A0NCPRVB53N  # optional
+              confirm: true  # required safeguard
+
+        The handler:
+          * requires ``confirm=true``
+            in the call data so
+            accidental triggers
+            do not overwrite the
+            dashboard;
+          * sets
+            ``hass.data[DOMAIN][entry_id]
+            ["dashboard_migration_opt_in"] = True``
+            for the matching entry
+            only;
+          * invokes the integration's
+            dashboard installer via
+            the already-loaded module
+            object — we avoid the
+            circular
+            ``__init__ ↔ services``
+            import by going through
+            ``sys.modules``;
+          * the registration helper
+            resets the flag back
+            to False after a
+            successful migration
+            (one-shot).
+        """
+        confirm = bool(call.data.get("confirm", False))
+        if not confirm:
+            raise ValueError(
+                "migrate_dashboard requires "
+                "confirm=true (one-shot opt-in)."
+            )
+        requested = call.data.get("entry_id")
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if not entries:
+            raise ValueError(
+                "No powmr_inverter config entries loaded."
+            )
+        target_entries = [
+            e for e in entries
+            if requested is None or e.entry_id == requested
+        ]
+        if not target_entries:
+            raise ValueError(
+                f"Unknown entry_id={requested!r}; "
+                f"loaded ids: {sorted(e.entry_id for e in entries)}"
+            )
+        # Resolve the integration
+        # module via sys.modules to
+        # avoid the circular import
+        # ``__init__ ↔ services``.
+        import sys as _sys
+        mod = _sys.modules.get(
+            "custom_components.powmr_inverter"
+        )
+        if mod is None:
+            raise ValueError(
+                "powmr_inverter module not loaded; "
+                "this service is unavailable until "
+                "the integration is set up."
+            )
+        auto_install = getattr(
+            mod, "_auto_install_dashboard", None
+        )
+        if auto_install is None:
+            raise ValueError(
+                "_auto_install_dashboard missing in "
+                "powmr_inverter module; cannot migrate."
+            )
+        loaded = hass.data.setdefault(DOMAIN, {})
+        for entry in target_entries:
+            bundle = loaded.setdefault(entry.entry_id, {})
+            bundle["dashboard_migration_opt_in"] = True
+            await auto_install(hass, entry)
+            backup_path = os.path.join(
+                hass.config.config_dir,
+                ".storage",
+                "lovelace.powmr_energy.bak",
+            )
+            _LOGGER.info(
+                "Dashboard migration complete for entry=%s; "
+                "backup at %s; opt-in flag reset.",
+                entry.entry_id,
+                backup_path,
+            )
+
+    hass.services.async_register(
+        DOMAIN,
+        "migrate_dashboard",
+        handle_migrate_dashboard,
+        schema=vol.Schema({
+            vol.Optional("entry_id"): str,
+            vol.Required("confirm"): bool,
         }),
     )

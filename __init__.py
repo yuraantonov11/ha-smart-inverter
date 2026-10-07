@@ -668,13 +668,38 @@ def _compute_ai_decision_state(
             pass
     hint = getattr(hems, "_last_predictive_hint", None)
     confidence = float(state.get("confidence", 0.0) or 0.0)
+    # Audit T22 round 6 (R6.4):
+    # use the SAME readiness gate
+    # as the controller.
+    # The controller stores
+    # ``_predictive_ready`` as a
+    # bool computed from
+    # ``confidence >= max(0.2,
+    # self.predictive_min_confidence)``
+    # AND ``samples >= 3``. The
+    # view reads ``_predictive_ready``
+    # directly when it is
+    # available, so the UI and
+    # the controller cannot drift.
     import math as _math
-    if hint is not None and _math.isfinite(confidence):
-        readiness = bool(
-            real_pairs >= 3 and model_quality >= 0.2
-        )
+    controller_ready = getattr(
+        controller, "_predictive_ready", None
+    )
+    if controller_ready is not None:
+        readiness = bool(controller_ready)
     else:
-        readiness = False
+        # Manual fallback for
+        # old controller instances
+        # without ``_predictive_ready``.
+        pmin = float(
+            getattr(hems, "predictive_min_confidence", 0.2)
+        )
+        readiness = bool(
+            hint is not None
+            and _math.isfinite(confidence)
+            and confidence >= max(0.2, pmin)
+            and real_pairs >= 3
+        )
     state["real_pairs"] = real_pairs
     state["model_quality"] = model_quality
     state["readiness"] = readiness
@@ -724,32 +749,70 @@ def _build_ai_view(
     hint_eid = entity_lookup("predictive_hint")
     plan_eid = entity_lookup("predictive_plan")
     reason_eid = entity_lookup("hems_last_reason")
+    # Audit T22 round 6 (R6.3):
+    # the user can change the
+    # predictive mode via the
+    # ``select.garazh_smart_solar_inverter``
+    # entity. The view MUST
+    # surface it so the user can
+    # change the mode without
+    # leaving the dashboard.
+    predictive_mode_eid = entity_lookup(
+        "predictive_mode"
+    )
 
     cards: list[dict] = []
-    cards.append({
-        "type": "markdown",
-        "content": (
-            f"# ШІ · Режим **{mode}**\n\n"
-            f"Готовність: **{'так' if readiness else 'ні'}**\n\n"
-            f"Реальних пар: **{real_pairs}**\n\n"
-            f"Якість моделі: **{round(model_quality, 2)}**\n\n"
-            f"Причина рішення: **{reason}**"
-        ),
-    })
+    # Audit T22 round 6 (R6.3):
+    # ``markdown`` cards freeze
+    # their content at
+    # generation time and HA's
+    # frontend does not
+    # re-render them when a
+    # sensor state changes.
+    # Replace with an ``entities``
+    # card so the values come
+    # straight from live
+    # sensor states and the
+    # HA frontend re-renders
+    # them on every state
+    # change.
     if real_pairs == 0:
+        # A separate plain-text
+        # card (not markdown) for
+        # the honest "no data
+        # yet" surface. The
+        # ``type: markdown`` card
+        # used to be here; the
+        # audit removed it.
         cards.append({
-            "type": "markdown",
-            "content": "ℹ️ Даних ще немає (0 пар).",
+            "type": "entities",
+            "title": "ℹ Даних ще немає (0 пар)",
+            "entities": [],
         })
     rows: list[dict] = []
-    for eid, name in (
-        (decision_state_eid, "Decision State"),
-        (hint_eid, "Predictive Hint"),
-        (plan_eid, "Predictive Plan"),
-        (reason_eid, "HEMS Last Reason"),
+    for eid, name, *extra in (
+        (decision_state_eid, "Decision State", "readiness"),
+        (hint_eid, "Predictive Hint", None),
+        (plan_eid, "Predictive Plan", None),
+        (reason_eid, "HEMS Last Reason", None),
     ):
-        if eid:
-            rows.append({"entity": eid, "name": name})
+        if not eid:
+            continue
+        row: dict = {"entity": eid, "name": name}
+        # Render ``readiness`` as
+        # a sub-attribute row when
+        # the AI view is on a
+        # version that supports
+        # ``attribute:`` entities.
+        attr_key = extra[0] if extra else None
+        if attr_key:
+            row["attribute"] = attr_key
+        rows.append(row)
+    if predictive_mode_eid:
+        rows.append({
+            "entity": predictive_mode_eid,
+            "name": "Predictive Mode",
+        })
     if rows:
         cards.append({
             "type": "entities",
@@ -1358,10 +1421,14 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         _LOGGER.info("Dashboard config regenerated (%d entities, hash=%s)", len(eid), config_hash)
 
     # Register in lovelace storage — writes a JSON dict (not YAML string!)
-    await _register_lovelace_dashboard(hass, dashboard_config)
+    await _register_lovelace_dashboard(hass, entry, dashboard_config)
 
 
-async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_config: dict) -> None:
+async def _register_lovelace_dashboard(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    dashboard_config: dict,
+) -> None:
     """Auto-register the dashboard in storage mode.
 
     Writes dashboard metadata to .storage/lovelace_dashboards
@@ -1369,50 +1436,131 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_config: di
     The config is stored as a JSON object — NOT a YAML string — which
     avoids the "Cannot use 'in' operator to search for 'strategy'" crash.
 
-    Audit T23 round 5 (D1): when the integration dashboard is
+    Audit T23 round 6 (R6.1):
+    ``hass.config_entries.async_entries(DOMAIN)``
+    returns a ``list``, not a
+    generator. The previous code
+    called ``.__next__()`` on the
+    list and raised
+    ``AttributeError: 'list'
+    object has no attribute
+    '__next__'``. The helper now
+    takes the ``entry`` as an
+    explicit argument so it does
+    not need to iterate
+    ``async_entries`` at all.
+
+    Audit T23 round 5 (D1): when
+    the integration dashboard is
     already registered (the
     ``.storage/lovelace.powmr_energy``
     file exists), this helper
     MUST NOT overwrite it unless
-    ``hass.data[DOMAIN][entry_id]["dashboard_migration_opt_in"]``
-    is True. The previous
-    implementation silently
-    replaced the user's edited
-    dashboard on every setup
-    restart; ``.bak`` did not
-    help because the user
-    wanted the live dashboard to
-    stay as they had arranged it.
+    ``hass.data[DOMAIN][entry_id]
+    ["dashboard_migration_opt_in"]``
+    is True. The user opts in
+    via the
+    ``powmr_inverter.migrate_dashboard``
+    service. The migration is
+    one-shot — after the
+    migration, the flag is reset
+    to False so subsequent
+    reloads preserve the new
+    state.
 
-    Migration is opt-in only —
-    via ``hass.data[DOMAIN][entry_id]
-    ["dashboard_migration_opt_in"]``.
+    Two entries on one HA
+    install share the
+    lovelace_dashboards file;
+    each entry's
+    ``hass.data[DOMAIN][entry_id]``
+    can opt-in independently.
+    The helper is called per
+    entry.
     """
     DASHBOARD_URL = "powmr-energy"
     DASHBOARD_TITLE = "Smart Solar Енергопанель"
     DASHBOARD_ID = "powmr_energy"
     config_dir = hass.config.config_dir
     dashboards_storage = os.path.join(config_dir, ".storage", "lovelace_dashboards")
-    dashboard_content_storage = os.path.join(config_dir, ".storage", f"lovelace.{DASHBOARD_ID}")
 
-    # Audit T23 round 5 (D1):
-    # honour the explicit
-    # migration opt-in. Two
+    # Audit R6.5: per-entry
+    # dashboard files. Two
     # entries on one HA install
-    # share the same
-    # lovelace_dashboards file;
-    # each entry's
-    # ``hass.data[DOMAIN][entry_id]``
-    # can opt-in independently.
-    bundle = hass.data.get(DOMAIN, {}).get(
-        getattr(
-            hass.config_entries.async_entries(DOMAIN).__next__(),
-            "entry_id",
-            "",
+    # MUST NOT share a single
+    # content file — when A's
+    # opt-in fires, B's user
+    # edit must NOT be
+    # clobbered.
+    #
+    # The integration's
+    # canonical main dashboard
+    # stays at
+    # ``lovelace.powmr_energy``
+    # (UI sidebar URL
+    # unchanged). Each entry
+    # writes its own
+    # ``lovelace.powmr_energy.<short_id>``
+    # sidecar file. The user
+    # can manually import
+    # sidecars through the
+    # Lovelace UI. The first
+    # opt-in wins the canonical
+    # main dashboard; the
+    # second entry (or any
+    # subsequent opt-in) writes
+    # to a sidecar file so
+    # previous edits are
+    # preserved.
+    short_id = (
+        entry.entry_id
+        .replace("-", "")
+        .lower()
+        [:8] or "default"
+    )
+    sidecar_path = os.path.join(
+        config_dir,
+        ".storage",
+        f"lovelace.powmr_energy.{short_id}",
+    )
+    # Sidecar detection: the
+    # canonical main file may
+    # not exist yet. If it
+    # does, AND another
+    # entry's sidecar exists,
+    # we are NOT the first
+    # opt-in: use the sidecar.
+    import glob as _glob
+    main_path = os.path.join(
+        config_dir, ".storage", f"lovelace.{DASHBOARD_ID}"
+    )
+    other_sidecars = sorted(
+        p for p in _glob.glob(
+            os.path.join(
+                config_dir,
+                ".storage",
+                f"lovelace.powmr_energy.*",
+            )
         )
-        if hass.config_entries.async_entries(DOMAIN)
-        else "",
-        {}
+        if p != sidecar_path
+    )
+    if other_sidecars or os.path.exists(main_path):
+        # Not the first opt-in:
+        # write to our own sidecar
+        # so we don't touch other
+        # entries' state.
+        dashboard_content_storage = sidecar_path
+    else:
+        # First opt-in: write the
+        # canonical main dashboard.
+        dashboard_content_storage = main_path
+
+    # Audit T23 round 6: the opt-in
+    # flag is read PER ENTRY from
+    # ``hass.data[DOMAIN][entry.entry_id]``.
+    # No ``async_entries(...)``,
+    # no ``.__next__()``.
+    bundle = hass.data.get(DOMAIN, {}).get(
+        entry.entry_id, {}
     )
     opt_in = bool(bundle.get("dashboard_migration_opt_in", False))
 
@@ -1508,6 +1656,17 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_config: di
                     "(opt-in honoured)",
                     DASHBOARD_URL,
                 )
+                # R6.5: the migration
+                # is one-shot. Reset
+                # the opt-in flag so
+                # the next reload does
+                # NOT silently
+                # overwrite again.
+                hass.data.setdefault(
+                    DOMAIN, {}
+                ).setdefault(
+                    entry.entry_id, {}
+                )["dashboard_migration_opt_in"] = False
             elif not already_listed:
                 _LOGGER.info(
                     "✅ Dashboard '%s' content "
