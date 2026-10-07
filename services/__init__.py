@@ -485,6 +485,195 @@ async def async_register_services(hass: HomeAssistant) -> None:
         }),
     )
 
+    # T25 round 3:
+    # ``services/control.py``
+    # (a legacy *second*
+    # registry) defined
+    # ``add_schedule_rule``
+    # and
+    # ``delete_schedule_rule``
+    # handlers, but that
+    # module was never
+    # imported by
+    # ``__init__.py`` — so
+    # the handlers were
+    # dead code and the
+    # REST service list
+    # did not include
+    # them. We now
+    # register the
+    # schedule handlers
+    # in this *active*
+    # registry and route
+    # them through
+    # ``_resolve_entry``
+    # so multi-entry
+    # installations are
+    # isolated.
+    async def handle_add_schedule_rule(call: ServiceCall) -> None:
+        """Add a schedule
+        rule via service
+        call.
+
+        T25 round 3: the
+        only ownership path
+        for
+        ``coordinator.schedule_rules``
+        is the coordinator
+        itself. This
+        handler is a thin
+        façade that
+        constructs the
+        ``ScheduleRule``,
+        delegates to
+        ``add_rule``, and
+        persists the
+        registry through
+        the coordinator's
+        ``_persist_schedule_rules``
+        helper. We use
+        ``_resolve_entry``
+        so multi-entry
+        installations do
+        not race each
+        other."""
+        api, coordinator = await _get_api(call)
+        from ..hems.schedule_rules import (
+            ScheduleRule,
+        )
+        rule = ScheduleRule(
+            name=call.data.get("name", ""),
+            days_of_week=call.data.get(
+                "days_of_week", [1, 2, 3, 4, 5]
+            ),
+            start_hour=call.data.get(
+                "start_hour", 0
+            ),
+            start_minute=call.data.get(
+                "start_minute", 0
+            ),
+            end_hour=call.data.get(
+                "end_hour", 23
+            ),
+            end_minute=call.data.get(
+                "end_minute", 0
+            ),
+            mode=_MODE_VALUE.get(
+                call.data.get(
+                    "mode", "adaptive"
+                ),
+                0,
+            ),
+            enabled=call.data.get(
+                "enabled", True
+            ),
+            priority=call.data.get(
+                "priority", 5
+            ),
+        )
+        coordinator.schedule_rules.add_rule(rule)
+        # T25: persist the
+        # registry so the
+        # new rule
+        # survives an HA
+        # restart.
+        ok = coordinator._persist_schedule_rules()
+        if not ok:
+            _LOGGER.error(
+                "Service: failed to persist "
+                "schedule rule '%s'",
+                rule.name,
+            )
+            raise ValueError(
+                "Failed to persist schedule rule"
+            )
+        _LOGGER.info(
+            "Service: added schedule rule '%s'",
+            rule.name,
+        )
+
+    async def handle_delete_schedule_rule(
+        call: ServiceCall
+    ) -> None:
+        """Delete a schedule
+        rule via service
+        call.
+
+        T25 round 3:
+        identical
+        routing /
+        persistence to
+        ``handle_add_schedule_rule``
+        so the
+        coordinator
+        remains the
+        sole write
+        owner of the
+        schedule
+        registry."""
+        api, coordinator = await _get_api(call)
+        rule_id = call.data["rule_id"]
+        coordinator.schedule_rules.delete_rule(rule_id)
+        ok = coordinator._persist_schedule_rules()
+        if not ok:
+            _LOGGER.error(
+                "Service: failed to persist "
+                "schedule rule delete %s",
+                rule_id,
+            )
+            raise ValueError(
+                "Failed to persist "
+                "schedule rule deletion"
+            )
+        _LOGGER.info(
+            "Service: deleted schedule rule %s",
+            rule_id,
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        "add_schedule_rule",
+        handle_add_schedule_rule,
+        schema=vol.Schema({
+            vol.Optional("entry_id"): str,
+            vol.Required("name"): str,
+            vol.Optional(
+                "days_of_week",
+                default=[1, 2, 3, 4, 5],
+            ): list,
+            vol.Optional(
+                "start_hour", default=0
+            ): vol.All(int, vol.Range(min=0, max=23)),
+            vol.Optional(
+                "start_minute", default=0
+            ): vol.All(int, vol.Range(min=0, max=59)),
+            vol.Optional(
+                "end_hour", default=23
+            ): vol.All(int, vol.Range(min=0, max=23)),
+            vol.Optional(
+                "end_minute", default=0
+            ): vol.All(int, vol.Range(min=0, max=59)),
+            vol.Optional(
+                "mode", default="adaptive"
+            ): vol.In(["adaptive", "arbitrage", "storm"]),
+            vol.Optional(
+                "enabled", default=True
+            ): bool,
+            vol.Optional(
+                "priority", default=5
+            ): vol.All(int, vol.Range(min=0, max=10)),
+        }),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "delete_schedule_rule",
+        handle_delete_schedule_rule,
+        schema=vol.Schema({
+            vol.Optional("entry_id"): str,
+            vol.Required("rule_id"): str,
+        }),
+    )
+
     async def handle_migrate_dashboard(
         call: ServiceCall
     ) -> None:

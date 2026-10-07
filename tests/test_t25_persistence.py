@@ -126,8 +126,27 @@ class TestScheduleRulesPersistence(unittest.TestCase):
         self.assertIn("save_to_dict", src_text)
 
     def test_services_call_persist_helper(self) -> None:
+        # T25 round 3: the
+        # legacy
+        # ``services/control.py``
+        # was a separate,
+        # never-imported
+        # registry. We
+        # removed it and
+        # folded the
+        # schedule
+        # handlers into
+        # ``services/__init__.py``,
+        # which is the
+        # *active*
+        # registry
+        # imported by
+        # ``__init__.py``.
+        # The test must
+        # pin the new
+        # ownership.
         services_src = _read_source(
-            "services/control.py"
+            "services/__init__.py"
         )
         for handle in (
             "handle_add_schedule_rule",
@@ -137,7 +156,7 @@ class TestScheduleRulesPersistence(unittest.TestCase):
         self.assertIn(
             "_persist_schedule_rules",
             services_src,
-            "services/control.py must call "
+            "services/__init__.py must call "
             "coordinator._persist_schedule_rules "
             "after every add / delete so "
             "the registry survives restart.",
@@ -402,9 +421,29 @@ class TestScheduleServicesSingleRegistry(unittest.TestCase):
     ``coordinator._schedule_rules``."""
 
     def test_no_duplicate_schedule_registry(self) -> None:
+        # T25 round 3:
+        # there is one
+        # schedule
+        # registry:
+        # ``coordinator._schedule_rules``
+        # (the
+        # ``ScheduleRulesService``
+        # instance). The
+        # legacy
+        # ``services/control.py``
+        # was a *second*
+        # registry that
+        # was never
+        # imported; we
+        # removed it and
+        # pinned the
+        # single
+        # active
+        # registry in
+        # ``services/__init__.py``.
         coord_src = _read_source("coordinator.py")
         services_src = _read_source(
-            "services/control.py"
+            "services/__init__.py"
         )
         self.assertIn("_schedule_rules", coord_src)
         for bad in (

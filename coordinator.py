@@ -2493,35 +2493,57 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # ``*_persist_at``
         # timestamp.
         now = datetime.now()
-        for helper in (
-            "_maybe_persist_battery_soh",
-            "_maybe_persist_demand_forecast",
-        ):
+        # Map helper -> throttle anchor.
+        # T25 round 3: the
+        # previous
+        # ``helper.replace(...)``
+        # construction was
+        # *wrong* — the
+        # helpers read
+        # ``_last_soh_persist_at``
+        # and
+        # ``_last_demand_persist_at``
+        # (NOT
+        # ``_last_battery_soh_persist_at``
+        # / ``_last_demand_forecast_persist_at``).
+        # ``setattr`` against
+        # a non-existent
+        # attribute does
+        # nothing because
+        # the throttler reads
+        # the *actual* name,
+        # so the throttle
+        # window never
+        # opened. We now
+        # use a hard-coded
+        # mapping.
+        anchor_for: dict[str, str | None] = {
+            "_maybe_persist_battery_soh":
+                "_last_soh_persist_at",
+            "_maybe_persist_demand_forecast":
+                "_last_demand_persist_at",
+        }
+        for helper, anchor_attr in anchor_for.items():
             fn = getattr(self, helper, None)
             if fn is None:
                 continue
             try:
-                # The
-                # ``_maybe_*``
-                # helpers honour
-                # the throttle by
-                # design. To
-                # bypass it on
-                # shutdown we call
-                # the underlying
-                # ``_persist_*``
-                # with ``force=True``
-                # where
-                # supported,
-                # otherwise we
-                # rewind the
+                # Clear the
                 # throttle anchor
-                # so the call is
-                # not skipped.
-                anchor_attr = helper.replace(
-                    "_maybe_persist_", "_last_"
-                ) + "_persist_at"
-                setattr(self, anchor_attr, None)
+                # so the helper
+                # is *not* skipped
+                # by its throttle
+                # check. We assign
+                # ``None`` (which
+                # the helpers
+                # treat as "never
+                # persisted"). The
+                # helper will then
+                # re-set the anchor
+                # after a
+                # successful write.
+                if anchor_attr is not None:
+                    setattr(self, anchor_attr, None)
                 fn(now)
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug(
