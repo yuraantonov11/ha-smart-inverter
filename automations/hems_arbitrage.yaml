@@ -1,39 +1,58 @@
 # ============================================================================
-# ADVISORY AUTOMATION — coordinator owns the decision pipeline
+# ADVISORY AUTOMATION — monitoring-only
 # ============================================================================
-# This YAML is a recommended example. The actual HEMS engine
-# runs in the Python coordinator (``_run_hems_engine``) and
-# is the single source of truth for control decisions. This
-# automation only adds supplementary logging, notifications,
-# or scheduled overrides (e.g. night arbitrage trigger).
+# T24 round 3: this
+# automation is
+# *monitoring-only*.
+# It does NOT
+# write any
+# inverter state.
+# The night/day
+# arbitrage response
+# (output=USB, charger=SNU
+# at night, output=SBU,
+# charger=OSO during day)
+# is the coordinator's
+# responsibility.
 #
-# Entity IDs below assume the device name
-# ``garazh_smart_solar_inverter`` (the live prefix in your
-# setup). If you renamed the device, update each entity_id.
+# This YAML fires
+# notifications at
+# the configured
+# transition times so
+# you have an audit
+# trail in HA's
+# logbook outside the
+# coordinator's own
+# debug log.
 #
-# Placeholders you must fill in:
-#   * ``notify.mobile_app_phone`` — replace with the
-#     notification service id from your mobile_app
-#     integration, or remove the notify actions.
+# Recommended setup
+# is to disable this
+# YAML — the
+# coordinator already
+# logs every
+# arbitrage
+# transition. The
+# notification here
+# is for users who
+# want a phone push.
 #
-# Coordinator safety guards still apply: HEMS_AUTO_MODE off,
-# HEMS in monitor-only mode, or a missing sensor all cancel
-# the write. The coordinator's ``check_keepalive`` and
-# ``_track_battery_activity`` are the only entities that
-# may issue a control command; this automation may issue
-# a ``select.select_option`` request but the coordinator
-# can still reject it via the circuit breaker.
+# Legacy control
+# automation
+# (output=USB,
+# charger=SNU,
+# etc.) has been
+# moved to
+# ``legacy_hems_arbitrage_control.yaml``
+# and is *dormant* —
+# do NOT enable it
+# unless you have a
+# documented reason.
 # ============================================================================
 
-# ============================================================================
-# HEMS Night Arbitrage Automation
-# ============================================================================
-# Charge battery from grid during cheap night tariff (23:00–07:00),
-# then use battery during expensive daytime.
-# ============================================================================
-
-alias: "HEMS — Night Arbitrage"
-description: "Charge battery at night (cheap tariff), use during day"
+alias: "HEMS — Night Arbitrage (advisory notifications)"
+description: |
+  Send a mobile push at night-tariff transition points.
+  No inverter state is written.
 mode: single
 
 trigger:
@@ -46,52 +65,45 @@ condition:
   - condition: state
     entity_id: select.garazh_smart_solar_inverter_hems_smart_mode
     state: "Arbitrage"
-  - condition: state
-    entity_id: switch.garazh_smart_solar_inverter_hems_auto_mode
-    state: "on"
 
 action:
   - variables:
       hour: "{{ now().hour }}"
 
-  # ── Night starts (23:00): switch to grid charge ──
   - if:
       - condition: template
         value_template: "{{ hour == 23 }}"
     then:
-      - service: select.select_option
-        target:
-          entity_id: select.garazh_smart_solar_inverter_output_priority
+      - service: notify.mobile_app_phone
         data:
-          option: "USB (Grid First)"
-      - service: select.select_option
-        target:
-          entity_id: select.garazh_smart_solar_inverter_charger_priority
-        data:
-          option: "SNU (Solar + Utility)"
+          title: "🌙 Arbitrage — night window"
+          message: >
+            Cheap-tariff window starts. Coordinator will drive grid charging.
+          data:
+            push:
+              sound: "default"
+
       - service: logbook.log
         data:
           name: "HEMS Arbitrage"
-          message: "Night mode — grid charging enabled"
+          message: "Night window — coordinator will drive grid charging"
           domain: Inverter_inverter
 
-  # ── Day starts (07:00): switch to solar priority ──
   - if:
       - condition: template
         value_template: "{{ hour == 7 }}"
     then:
-      - service: select.select_option
-        target:
-          entity_id: select.garazh_smart_solar_inverter_output_priority
+      - service: notify.mobile_app_phone
         data:
-          option: "SBU (Solar/Battery First)"
-      - service: select.select_option
-        target:
-          entity_id: select.garazh_smart_solar_inverter_charger_priority
-        data:
-          option: "OSO (Solar Only)"
+          title: "☀ Arbitrage — day window"
+          message: >
+            Expensive-tariff window starts. Coordinator will switch to solar priority.
+          data:
+            push:
+              sound: "default"
+
       - service: logbook.log
         data:
           name: "HEMS Arbitrage"
-          message: "Day mode — solar + battery priority"
+          message: "Day window — coordinator will switch to solar priority"
           domain: Inverter_inverter

@@ -441,19 +441,32 @@ class TestT24GuardPreventsSpuriousCommand(unittest.TestCase):
         )
 
 
-class TestT24GridOutageRequiresAutoMode(unittest.TestCase):
-    """T24 round 2: the
+class TestT24GridOutageIsNotificationOnly(unittest.TestCase):
+    """T24 round 3: the
     grid-outage
-    automation's
-    auto-Storm command
-    must be guarded by
-    ``switch.*_hems_auto_mode``
-    being on. The audit
-    forbids writing
-    when HEMS is in
-    monitor-only mode."""
+    automation is
+    notification-only.
 
-    def test_guard_present_and_evaluates_correctly(self) -> None:
+    The audit
+    explicitly
+    removed the
+    ``switch.<device>_hems_auto_mode``
+    guard because the
+    automation no
+    longer *writes*
+    anything — Storm
+    mode handling is
+    the coordinator's
+    job. The test
+    pins the contract:
+    the action block
+    must NOT call
+    ``select.select_option``
+    for any
+    output/charger
+    priority entity."""
+
+    def test_no_select_option_in_grid_outage(self) -> None:
         path = (
             REPO_ROOT
             / "automations"
@@ -461,44 +474,59 @@ class TestT24GridOutageRequiresAutoMode(unittest.TestCase):
         )
         with open(path) as f:
             text = f.read()
-        # The guard
-        # string must be
-        # present.
+        self.assertNotIn(
+            "select.select_option",
+            text,
+            "grid_outage_alert.yaml must "
+            "NOT issue select.select_option "
+            "— Storm-mode handling is the "
+            "coordinator's responsibility. "
+            "The auto-Storm action was "
+            "removed in the audit round 3 "
+            "follow-up.",
+        )
+
+    def test_uses_inverted_is_outage_variable(self) -> None:
+        """The grid outage
+        variable must
+        equal
+        ``trigger.to_state.state == 'off'``
+        — ``'on'`` means
+        the grid is
+        PRESENT
+        (restored), not
+        absent."""
+        path = (
+            REPO_ROOT
+            / "automations"
+            / "grid_outage_alert.yaml"
+        )
+        with open(path) as f:
+            text = f.read()
+        # The outage
+        # branch must
+        # compare to
+        # ``'off'``,
+        # not ``'on'``.
         self.assertIn(
-            "switch.garazh_smart_solar_inverter_hems_auto_mode",
-            text
+            "trigger.to_state.state == 'off'",
+            text,
+            "grid_outage_alert.yaml is_outage "
+            "must compare against 'off' "
+            "(binary sensor: off = grid "
+            "absent, on = grid present). "
+            "The previous code compared to "
+            "'on' which made the outage "
+            "notification fire on grid "
+            "recovery.",
         )
-        # When the
-        # switch is off,
-        # the action must
-        # not fire.
-        hass = _FakeHass()
-        hass.set_state(
-            "switch.garazh_smart_solar_inverter_hems_auto_mode",
-            "off",
-        )
-        # The
-        # ``states(...) == 'on'``
-        # check.
-        self.assertFalse(
-            _evaluate_template(
-                hass,
-                "{{ states('switch.garazh_smart_solar_inverter_hems_auto_mode') == 'on' }}",
-            )
-        )
-        # And when
-        # the switch is
-        # on, the guard
-        # passes.
-        hass.set_state(
-            "switch.garazh_smart_solar_inverter_hems_auto_mode",
-            "on",
-        )
-        self.assertTrue(
-            _evaluate_template(
-                hass,
-                "{{ states('switch.garazh_smart_solar_inverter_hems_auto_mode') == 'on' }}",
-            )
+        self.assertNotIn(
+            "trigger.to_state.state == 'on'",
+            text,
+            "grid_outage_alert.yaml must NOT "
+            "compare is_outage against 'on' — "
+            "'on' means grid present (restored), "
+            "not grid outage.",
         )
 
 

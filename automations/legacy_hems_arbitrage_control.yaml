@@ -1,0 +1,159 @@
+# ============================================================================
+# DORMANT AUTOMATION — DO NOT ENABLE
+# ============================================================================
+# ADVISORY AUTOMATION — coordinator owns the decision pipeline.
+# This YAML is a legacy control automation that is preserved for historical
+# reference but must NOT be enabled. The Python coordinator is the sole
+# owner of HEMS control decisions. Placeholders you must fill in
+# (if you ever enable this file):
+#   * ``notify.mobile_app_phone`` — replace with the notification service
+#     id from your mobile_app integration.
+# Entity IDs assume ``garazh_smart_solar_inverter`` — the live prefix in
+# your setup. If you renamed the device, update each entity_id.
+# ============================================================================
+# This is the *legacy*
+# Arbitrage-mode
+# control automation
+# that was shipped in
+# earlier versions of
+# this integration. It
+# issued
+# ``select.select_option``
+# calls to the inverter
+# directly. That path is
+# now handled by the
+# Python coordinator
+# (``_run_hems_engine``).
+#
+# Why this is dormant:
+#
+#     * ``select.select_option``
+#       on the
+#       output/charger
+#       priority
+#       entities calls
+#       the inverter API
+#       *immediately* —
+#       the coordinator
+#       guards (manual
+#       hold, circuit
+#       breaker, BMS,
+#       reserve SOC,
+#       storm hard floor,
+#       hysteresis, the
+#       smart-mode
+#       transition logic)
+#       are not
+#       consulted.
+#       Two writers race
+#       each other.
+#     * The audit
+#       explicitly
+#       required that
+#       *only the
+#       coordinator*
+#       issues control
+#       commands while
+#       ``hems_auto_mode``
+#       is on.
+#
+# What to do:
+#
+#     * If you imported
+#       this YAML into HA
+#       and it is enabled,
+#       *disable* it
+#       immediately.
+#     * If you want the
+#       legacy behaviour
+#       for a documented
+#       reason (e.g.
+#       ``hems_auto_mode``
+#       off AND you
+#       understand the
+#       safety trade-off),
+#       remove the
+#       ``condition``
+#       short-circuit
+#       below and rename
+#       the file. The
+#       audit does not
+#       allow this
+#       automation to be
+#       enabled by
+#       default.
+# ============================================================================
+
+alias: "DORMANT legacy — HEMS Night Arbitrage control (do not enable)"
+description: |
+  DORMANT — legacy control automation. The Python coordinator owns the
+  HEMS decision pipeline. This file is preserved for historical reference
+  and must not be enabled. The ``{{ false }}`` condition below ensures
+  the automation never fires; if you delete that condition, the
+  automation will race the coordinator on every arbitrage tick.
+mode: single
+
+trigger:
+  - platform: time
+    at: "23:00:00"
+  - platform: time
+    at: "07:00:00"
+
+condition:
+  # Short-circuit:
+  # the trigger fires
+  # but the
+  # automation
+  # never runs.
+  - condition: template
+    value_template: "{{ false }}"
+
+action:
+  - variables:
+      hour: "{{ now().hour }}"
+
+  # Legacy block —
+  # disabled by the
+  # ``{{ false }}``
+  # condition above.
+  - if:
+      - condition: state
+        entity_id: select.garazh_smart_solar_inverter_hems_smart_mode
+        state: "Arbitrage"
+      - condition: state
+        entity_id: switch.garazh_smart_solar_inverter_hems_auto_mode
+        state: "on"
+      - condition: template
+        value_template: "{{ hour == 23 }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.garazh_smart_solar_inverter_output_priority
+        data:
+          option: "USB (Grid First)"
+      - service: select.select_option
+        target:
+          entity_id: select.garazh_smart_solar_inverter_charger_priority
+        data:
+          option: "SNU (Solar + Utility)"
+
+  - if:
+      - condition: state
+        entity_id: select.garazh_smart_solar_inverter_hems_smart_mode
+        state: "Arbitrage"
+      - condition: state
+        entity_id: switch.garazh_smart_solar_inverter_hems_auto_mode
+        state: "on"
+      - condition: template
+        value_template: "{{ hour == 7 }}"
+    then:
+      - service: select.select_option
+        target:
+          entity_id: select.garazh_smart_solar_inverter_output_priority
+        data:
+          option: "SBU (Solar/Battery First)"
+      - service: select.select_option
+        target:
+          entity_id: select.garazh_smart_solar_inverter_charger_priority
+        data:
+          option: "OSO (Solar Only)"
