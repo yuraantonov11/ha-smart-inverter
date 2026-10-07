@@ -8,6 +8,7 @@ load patterns, then converts to probabilistic p25/p50/p75/p90 forecasts.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -151,6 +152,40 @@ class DemandForecastService:
         hour". ``self._profile``
         keeps the values
         that did parse.
+
+        T26 round 3:
+        shared validation
+        also rejects
+        ``NaN``,
+        ``Infinity``,
+        and a value
+        outside the
+        physical W range
+        ``[0, 60000]``.
+        A negative
+        demand value
+        would let the
+        engine plan
+        for *negative*
+        consumption,
+        which is
+        physically
+        impossible and
+        was the bug
+        the audit
+        demanded we
+        close. We
+        tolerate a
+        generous upper
+        bound (60 kW)
+        because some
+        sites draw
+        30 kW peaks
+        and the
+        integration
+        also models
+        grid charge
+        draw.
         """
         if not data:
             return
@@ -167,6 +202,15 @@ class DemandForecastService:
                 # profile.
                 continue
             if not 0 <= hour <= 23:
+                continue
+            # Reject NaN,
+            # infinities, and
+            # values outside
+            # the physical W
+            # range.
+            if not math.isfinite(value):
+                continue
+            if value < 0 or value > 60000:
                 continue
             loaded[hour] = value
         # Merge: do not

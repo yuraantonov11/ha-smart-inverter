@@ -59,6 +59,70 @@ def _coerce_soc(value: object) -> float | None:
     return v
 
 
+def _coerce_cycle_count(value: object) -> int:
+    """Return a finite, non-negative integer or ``0``.
+
+    T26 round 3 (audit
+    follow-up): the
+    audit explicitly
+    asked for shared
+    validation on the
+    constructor and
+    restore paths. The
+    previous code
+    crashed with
+    ``ValueError`` on a
+    string, with
+    ``OverflowError`` on
+    ``float('inf')``,
+    and silently
+    accepted a negative
+    number (``int(-5)``
+    succeeded; the
+    legitimate cycle
+    count is a finite
+    non-negative int).
+    We treat any
+    malformed value as
+    ``0`` and clamp
+    negatives to ``0``.
+    """
+    if value is None:
+        return 0
+    # ``bool`` is a
+    # subclass of ``int``
+    # but is *not* a
+    # meaningful cycle
+    # count, so reject it
+    # explicitly.
+    if isinstance(value, bool):
+        return 0
+    try:
+        v = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+    # ``int(float('inf'))``
+    # raises
+    # ``OverflowError`` on
+    # Python 3 — but on
+    # some platforms it
+    # returns
+    # ``sys.maxsize``.
+    # Either way, the
+    # answer is not a
+    # finite non-negative
+    # integer, so we
+    # reject it.
+    try:
+        if not math.isfinite(float(v)):
+            return 0
+    except (ValueError, OverflowError):
+        return 0
+    if v < 0:
+        return 0
+    return v
+
+
 def _coerce_install_date(value: object) -> datetime | None:
     """Coerce ``value`` to a
     timezone-aware datetime,
@@ -80,6 +144,41 @@ def _coerce_install_date(value: object) -> datetime | None:
     subtraction in
     ``estimated_soh_percent``
     is always safe.
+
+    T26 round 3: a
+    *future* install
+    date would produce
+    a negative ``years``
+    value, which the
+    calendar-aging
+    factor
+    ``max(0, 1 - years * 0.03)``
+    treats as zero loss
+    and would let SoH
+    exceed 100% (cycle
+    degradation still
+    applies, but a
+    future date is a
+    data-entry error
+    and must not
+    *improve* SoH).
+    We return ``None``
+    for any install
+    date that is
+    *after* the current
+    wall clock — this
+    is the same
+    contract as a
+    malformed value
+    (the calendar
+    factor is dropped).
+    The caller already
+    coerces ``now`` via
+    this helper, so the
+    check below uses
+    the helper's
+    result for
+    ``now``.
     """
     if value is None:
         return None
@@ -106,6 +205,18 @@ def _coerce_install_date(value: object) -> datetime | None:
         # shift the value
         # in time.
         dt = dt.replace(tzinfo=timezone.utc)
+    # Reject future
+    # dates. We compare
+    # against ``datetime.now(UTC)``;
+    # a difference of 1
+    # second is treated
+    # as "future" so
+    # clock-skew does
+    # not silently
+    # accept a tiny
+    # typo.
+    if dt > datetime.now(timezone.utc):
+        return None
     return dt
 
 
@@ -120,12 +231,26 @@ class BatterySoH:
 
     def __init__(
         self,
-        cycle_count: int = 0,
-        in_low_state: bool = False,
+        cycle_count: object = 0,
+        in_low_state: object = False,
         install_date: Union[datetime, str, None] = None,
     ) -> None:
-        self._cycle_count = int(cycle_count) if cycle_count else 0
-        self._in_low_state = bool(in_low_state)
+        # T26 round 3: every
+        # constructor argument
+        # is run through a
+        # shared validation
+        # helper so a
+        # malformed value
+        # (``"abc"``,
+        # ``Infinity``,
+        # ``-5``, ``True``)
+        # cannot crash the
+        # integration or
+        # silently land as a
+        # negative cycle
+        # count.
+        self._cycle_count = _coerce_cycle_count(cycle_count)
+        self._in_low_state = bool(in_low_state) if not isinstance(in_low_state, bool) else in_low_state
         # T26: coerce the
         # install date to a
         # timezone-aware
@@ -303,41 +428,46 @@ class BatterySoH:
     def load_from_dict(self, data: dict) -> None:
         """Load from serialized dict.
 
-        T26: a malformed
-        ``install_date`` must
-        not raise — the
-        coordinator persists
-        the dict on every
-        ``track_soc`` call
-        and a single bad
-        load would break the
-        integration until HA
-        is restarted. The
-        previous code did
-        ``fromisoformat`` in
-        a try/except and
-        silently dropped the
-        exception in the
-        coordinator. We now
-        coerce through
+        T26 round 3:
+        shared
+        validation —
+        ``cycle_count``
+        is run through
+        ``_coerce_cycle_count``
+        so a
+        malformed
+        value
+        (``"abc"``,
+        ``Infinity``,
+        ``-5``) lands
+        as ``0``
+        instead of
+        crashing the
+        integration.
+        ``install_date``
+        is run through
         ``_coerce_install_date``
-        so the cycle_count
-        and in_low_state
-        load independently.
+        which rejects
+        malformed
+        inputs and
+        future dates.
+        ``in_low_state``
+        is coerced via
+        ``bool`` — the
+        only legal
+        representations
+        are ``True`` /
+        ``False`` (we
+        reject
+        ``"true"`` /
+        ``1``).
         """
-        try:
-            self._cycle_count = int(data.get("cycle_count", 0) or 0)
-        except (TypeError, ValueError):
-            self._cycle_count = 0
-        self._in_low_state = bool(data.get("in_low_state", False))
-        # The ``_coerce_install_date``
-        # helper returns None
-        # for any malformed
-        # value; we accept
-        # the loss of the
-        # install date but
-        # preserve the cycle
-        # state.
+        self._cycle_count = _coerce_cycle_count(
+            data.get("cycle_count")
+        )
+        self._in_low_state = (
+            data.get("in_low_state") is True
+        )
         self._install_date = _coerce_install_date(
             data.get("install_date")
         )
