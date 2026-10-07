@@ -1,4 +1,31 @@
 # ============================================================================
+# ADVISORY AUTOMATION — coordinator owns the decision pipeline
+# ============================================================================
+# This YAML is a recommended example. The actual HEMS engine
+# runs in the Python coordinator (``_run_hems_engine``) and
+# is the single source of truth for control decisions. This
+# automation only adds supplementary logging, notifications,
+# or scheduled overrides (e.g. night arbitrage trigger).
+#
+# Entity IDs below assume the device name
+# ``garazh_smart_solar_inverter`` (the live prefix in your
+# setup). If you renamed the device, update each entity_id.
+#
+# Placeholders you must fill in:
+#   * ``notify.mobile_app_phone`` — replace with the
+#     notification service id from your mobile_app
+#     integration, or remove the notify actions.
+#
+# Coordinator safety guards still apply: HEMS_AUTO_MODE off,
+# HEMS in monitor-only mode, or a missing sensor all cancel
+# the write. The coordinator's ``check_keepalive`` and
+# ``_track_battery_activity`` are the only entities that
+# may issue a control command; this automation may issue
+# a ``select.select_option`` request but the coordinator
+# can still reject it via the circuit breaker.
+# ============================================================================
+
+# ============================================================================
 # Low Battery Alert
 # ============================================================================
 # Sends notification when battery SOC drops below 25%.
@@ -10,14 +37,14 @@ mode: single
 
 trigger:
   - platform: state
-    entity_id: binary_sensor.inverter_low_battery
+    entity_id: binary_sensor.garazh_smart_solar_inverter_low_battery
     from: "off"
     to: "on"
 
 action:
   - variables:
-      soc: "{{ states('sensor.inverter_battery_soc_corrected') | float(0) }}"
-      load: "{{ states('sensor.inverter_load_power') | float(0) }}"
+      soc: "{{ states('sensor.garazh_smart_solar_inverter_battery_soc_corrected') | float(0) }}"
+      load: "{{ states('sensor.garazh_smart_solar_inverter_load_power') | float(0) }}"
 
   - service: notify.mobile_app_phone
     data:

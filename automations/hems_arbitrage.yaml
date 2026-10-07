@@ -1,4 +1,31 @@
 # ============================================================================
+# ADVISORY AUTOMATION — coordinator owns the decision pipeline
+# ============================================================================
+# This YAML is a recommended example. The actual HEMS engine
+# runs in the Python coordinator (``_run_hems_engine``) and
+# is the single source of truth for control decisions. This
+# automation only adds supplementary logging, notifications,
+# or scheduled overrides (e.g. night arbitrage trigger).
+#
+# Entity IDs below assume the device name
+# ``garazh_smart_solar_inverter`` (the live prefix in your
+# setup). If you renamed the device, update each entity_id.
+#
+# Placeholders you must fill in:
+#   * ``notify.mobile_app_phone`` — replace with the
+#     notification service id from your mobile_app
+#     integration, or remove the notify actions.
+#
+# Coordinator safety guards still apply: HEMS_AUTO_MODE off,
+# HEMS in monitor-only mode, or a missing sensor all cancel
+# the write. The coordinator's ``check_keepalive`` and
+# ``_track_battery_activity`` are the only entities that
+# may issue a control command; this automation may issue
+# a ``select.select_option`` request but the coordinator
+# can still reject it via the circuit breaker.
+# ============================================================================
+
+# ============================================================================
 # HEMS Night Arbitrage Automation
 # ============================================================================
 # Charge battery from grid during cheap night tariff (23:00–07:00),
@@ -17,10 +44,10 @@ trigger:
 
 condition:
   - condition: state
-    entity_id: select.inverter_smart_mode
+    entity_id: select.garazh_smart_solar_inverter_hems_smart_mode
     state: "Arbitrage"
   - condition: state
-    entity_id: switch.inverter_hems_auto_mode
+    entity_id: switch.garazh_smart_solar_inverter_hems_auto_mode
     state: "on"
 
 action:
@@ -34,12 +61,12 @@ action:
     then:
       - service: select.select_option
         target:
-          entity_id: select.inverter_output_priority
+          entity_id: select.garazh_smart_solar_inverter_output_priority
         data:
           option: "USB (Grid First)"
       - service: select.select_option
         target:
-          entity_id: select.inverter_charger_priority
+          entity_id: select.garazh_smart_solar_inverter_charger_priority
         data:
           option: "SNU (Solar + Utility)"
       - service: logbook.log
@@ -55,12 +82,12 @@ action:
     then:
       - service: select.select_option
         target:
-          entity_id: select.inverter_output_priority
+          entity_id: select.garazh_smart_solar_inverter_output_priority
         data:
           option: "SBU (Solar/Battery First)"
       - service: select.select_option
         target:
-          entity_id: select.inverter_charger_priority
+          entity_id: select.garazh_smart_solar_inverter_charger_priority
         data:
           option: "OSO (Solar Only)"
       - service: logbook.log

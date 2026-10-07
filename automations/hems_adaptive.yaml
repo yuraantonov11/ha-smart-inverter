@@ -1,4 +1,31 @@
 # ============================================================================
+# ADVISORY AUTOMATION — coordinator owns the decision pipeline
+# ============================================================================
+# This YAML is a recommended example. The actual HEMS engine
+# runs in the Python coordinator (``_run_hems_engine``) and
+# is the single source of truth for control decisions. This
+# automation only adds supplementary logging, notifications,
+# or scheduled overrides (e.g. night arbitrage trigger).
+#
+# Entity IDs below assume the device name
+# ``garazh_smart_solar_inverter`` (the live prefix in your
+# setup). If you renamed the device, update each entity_id.
+#
+# Placeholders you must fill in:
+#   * ``notify.mobile_app_phone`` — replace with the
+#     notification service id from your mobile_app
+#     integration, or remove the notify actions.
+#
+# Coordinator safety guards still apply: HEMS_AUTO_MODE off,
+# HEMS in monitor-only mode, or a missing sensor all cancel
+# the write. The coordinator's ``check_keepalive`` and
+# ``_track_battery_activity`` are the only entities that
+# may issue a control command; this automation may issue
+# a ``select.select_option`` request but the coordinator
+# can still reject it via the circuit breaker.
+# ============================================================================
+
+# ============================================================================
 # HEMS Adaptive Mode — Monitoring Automation
 # ============================================================================
 # The main HEMS decision engine now runs inside the coordinator (Python).
@@ -20,17 +47,17 @@ trigger:
 
 condition:
   - condition: state
-    entity_id: switch.powmr_inverter_hems_auto_mode
+    entity_id: switch.garazh_smart_solar_inverter_hems_auto_mode
     state: "on"
 
 action:
   - variables:
-      soc: "{{ states('sensor.powmr_inverter_battery_soc_corrected') | float(50) }}"
-      pv: "{{ states('sensor.powmr_inverter_pv_power') | float(0) }}"
-      load: "{{ states('sensor.powmr_inverter_load_power') | float(0) }}"
+      soc: "{{ states('sensor.garazh_smart_solar_inverter_battery_soc_corrected') | float(50) }}"
+      pv: "{{ states('sensor.garazh_smart_solar_inverter_pv_power') | float(0) }}"
+      load: "{{ states('sensor.garazh_smart_solar_inverter_load_power') | float(0) }}"
       surplus: "{{ pv - load }}"
-      current_output: "{{ state_attr('select.powmr_inverter_output_priority', 'option') }}"
-      current_charger: "{{ state_attr('select.powmr_inverter_charger_priority', 'option') }}"
+      current_output: "{{ states('select.garazh_smart_solar_inverter_output_priority') }}"
+      current_charger: "{{ states('select.garazh_smart_solar_inverter_charger_priority') }}"
 
   # Log current HEMS state every 5 minutes (when minute is 0 or 5 or 10...)
   - if:

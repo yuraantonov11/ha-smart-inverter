@@ -1,4 +1,31 @@
 # ============================================================================
+# ADVISORY AUTOMATION — coordinator owns the decision pipeline
+# ============================================================================
+# This YAML is a recommended example. The actual HEMS engine
+# runs in the Python coordinator (``_run_hems_engine``) and
+# is the single source of truth for control decisions. This
+# automation only adds supplementary logging, notifications,
+# or scheduled overrides (e.g. night arbitrage trigger).
+#
+# Entity IDs below assume the device name
+# ``garazh_smart_solar_inverter`` (the live prefix in your
+# setup). If you renamed the device, update each entity_id.
+#
+# Placeholders you must fill in:
+#   * ``notify.mobile_app_phone`` — replace with the
+#     notification service id from your mobile_app
+#     integration, or remove the notify actions.
+#
+# Coordinator safety guards still apply: HEMS_AUTO_MODE off,
+# HEMS in monitor-only mode, or a missing sensor all cancel
+# the write. The coordinator's ``check_keepalive`` and
+# ``_track_battery_activity`` are the only entities that
+# may issue a control command; this automation may issue
+# a ``select.select_option`` request but the coordinator
+# can still reject it via the circuit breaker.
+# ============================================================================
+
+# ============================================================================
 # Grid Outage Notifications
 # ============================================================================
 # Sends mobile push notifications when grid goes down / comes back.
@@ -11,19 +38,19 @@ mode: single
 
 trigger:
   - platform: state
-    entity_id: binary_sensor.inverter_grid_outage
+    entity_id: binary_sensor.garazh_smart_solar_inverter_grid_available
     from: "off"
     to: "on"
   - platform: state
-    entity_id: binary_sensor.inverter_grid_outage
+    entity_id: binary_sensor.garazh_smart_solar_inverter_grid_available
     from: "on"
     to: "off"
 
 action:
   - variables:
       is_outage: "{{ trigger.to_state.state == 'on' }}"
-      grid_v: "{{ states('sensor.inverter_grid_voltage') | float(0) }}"
-      soc: "{{ states('sensor.inverter_battery_soc_corrected') | float(0) }}"
+      grid_v: "{{ states('sensor.garazh_smart_solar_inverter_grid_voltage') | float(0) }}"
+      soc: "{{ states('sensor.garazh_smart_solar_inverter_battery_soc_corrected') | float(0) }}"
 
   # ── Grid outage ──
   - if:
@@ -45,15 +72,20 @@ action:
             ttl: 0
             priority: "high"
 
-      # Auto-activate Storm mode if in Adaptive mode
+      # Auto-activate Storm mode only if HEMS is in auto mode
+      # (HEMS_AUTO_MODE off means monitor-only — the
+      # coordinator has the final say).
       - if:
           - condition: state
-            entity_id: select.inverter_smart_mode
+            entity_id: switch.garazh_smart_solar_inverter_hems_auto_mode
+            state: "on"
+          - condition: state
+            entity_id: select.garazh_smart_solar_inverter_hems_smart_mode
             state: "Adaptive"
         then:
           - service: select.select_option
             target:
-              entity_id: select.inverter_smart_mode
+              entity_id: select.garazh_smart_solar_inverter_hems_smart_mode
             data:
               option: "Storm"
           - service: logbook.log
