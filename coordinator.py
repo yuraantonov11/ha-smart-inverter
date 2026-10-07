@@ -2474,6 +2474,74 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                     err,
                 )
 
+        # T25: flush the
+        # throttled
+        # persistence
+        # helpers. Without
+        # this, a change
+        # made within the
+        # last 30 s (SoH)
+        # or 60 s (demand
+        # profile) would be
+        # lost on unload
+        # because the
+        # throttle window
+        # never opened
+        # again. We force a
+        # write regardless
+        # of the last
+        # ``*_persist_at``
+        # timestamp.
+        now = datetime.now()
+        for helper in (
+            "_maybe_persist_battery_soh",
+            "_maybe_persist_demand_forecast",
+        ):
+            fn = getattr(self, helper, None)
+            if fn is None:
+                continue
+            try:
+                # The
+                # ``_maybe_*``
+                # helpers honour
+                # the throttle by
+                # design. To
+                # bypass it on
+                # shutdown we call
+                # the underlying
+                # ``_persist_*``
+                # with ``force=True``
+                # where
+                # supported,
+                # otherwise we
+                # rewind the
+                # throttle anchor
+                # so the call is
+                # not skipped.
+                anchor_attr = helper.replace(
+                    "_maybe_persist_", "_last_"
+                ) + "_persist_at"
+                setattr(self, anchor_attr, None)
+                fn(now)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug(
+                    "%s failed during coordinator shutdown: %s",
+                    helper, err,
+                )
+        # Schedule rules
+        # are persisted
+        # immediately by
+        # the service
+        # handlers — no
+        # throttle to
+        # bypass. We do
+        # not need to call
+        # ``_persist_schedule_rules``
+        # here because
+        # there is no
+        # pending in-memory
+        # state to flush.
+
 
 class HistoryCoordinator(DataUpdateCoordinator):
     """Coordinator that polls historical data from the inverter API every 15 minutes.

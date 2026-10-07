@@ -203,6 +203,23 @@ class _StubCoordinator:
         self._battery_soh = SimpleNamespace(
             track_soc=lambda *a, **k: None,
         )
+        # T25: persist call
+        # stubs — production
+        # coordinator wires
+        # these to the
+        # throttled helpers.
+        # The stub's
+        # behaviour is a
+        # no-op because the
+        # T01 path runs
+        # without a real
+        # config entry.
+        self._maybe_persist_battery_soh = (
+            lambda *a, **k: None
+        )
+        self._maybe_persist_demand_forecast = (
+            lambda *a, **k: None
+        )
         # Forecast & calibrator
         self.forecast_tomorrow_kwh = 1.0
         self.forecast_day_after_kwh = 1.0

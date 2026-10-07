@@ -146,10 +146,61 @@ class ScheduleRulesService:
         return list(self._rules)
 
     def load_from_dict(self, data: dict[str, Any]) -> None:
-        """Load rules from a serialized dict (from HA storage)."""
+        """Load rules from a serialized dict (from HA storage).
+
+        T25 round 2: a
+        malformed payload
+        (wrong shape, mixed
+        types in the list)
+        must not raise. The
+        audit's contract is
+        that an HA restart
+        that picked up a
+        partially-corrupt
+        blob leaves the
+        service with a
+        known-clean rule
+        list (the bad
+        entries are
+        dropped)."""
+        if not isinstance(data, dict):
+            return
         rules_raw = data.get(self.STORAGE_KEY, [])
-        self._rules = [ScheduleRule.from_dict(r) for r in rules_raw]
-        _LOGGER.info("ScheduleRules: loaded %d rules", len(self._rules))
+        if not isinstance(rules_raw, list):
+            _LOGGER.warning(
+                "ScheduleRules: expected list, "
+                "got %s — starting empty",
+                type(rules_raw).__name__,
+            )
+            self._rules = []
+            return
+        loaded: list[ScheduleRule] = []
+        for entry in rules_raw:
+            if not isinstance(entry, dict):
+                # Skip non-dict
+                # entries; the
+                # next valid rule
+                # still loads.
+                continue
+            try:
+                loaded.append(
+                    ScheduleRule.from_dict(entry)
+                )
+            except Exception as err:  # noqa: BLE001
+                # A single bad
+                # rule must not
+                # kill the whole
+                # load.
+                _LOGGER.debug(
+                    "ScheduleRules: skipped "
+                    "malformed rule: %s",
+                    err,
+                )
+        self._rules = loaded
+        _LOGGER.info(
+            "ScheduleRules: loaded %d rules",
+            len(self._rules),
+        )
 
     def save_to_dict(self) -> dict[str, Any]:
         """Serialize rules for HA storage."""

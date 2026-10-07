@@ -132,9 +132,50 @@ class DemandForecastService:
         return cls(profile=profile if profile else None)
 
     def load_from_dict(self, data: dict[str, Any]) -> None:
-        """Load profile from serialized dict."""
-        if data:
-            self._profile = {int(k): float(v) for k, v in data.items()}
+        """Load profile from serialized dict.
+
+        T25 round 2: a
+        single bad value
+        (e.g. ``"abc"``)
+        must not crash the
+        integration. The
+        audit's contract is
+        that persistence is
+        *survivable*: a
+        malformed entry in
+        the blob skips that
+        bucket, and a
+        missing key is
+        silently treated as
+        "no update for that
+        hour". ``self._profile``
+        keeps the values
+        that did parse.
+        """
+        if not data:
+            return
+        loaded: dict[int, float] = {}
+        for k, v in data.items():
+            try:
+                hour = int(k)
+                value = float(v)
+            except (TypeError, ValueError):
+                # Skip this
+                # bucket; keep
+                # whatever was
+                # already in the
+                # profile.
+                continue
+            if not 0 <= hour <= 23:
+                continue
+            loaded[hour] = value
+        # Merge: do not
+        # clobber the
+        # default profile;
+        # overlay the
+        # parsed values.
+        if loaded:
+            self._profile.update(loaded)
 
 
 from typing import Any  # noqa: E402
