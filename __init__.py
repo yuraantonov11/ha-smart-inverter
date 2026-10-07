@@ -514,18 +514,43 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # BEFORE registering the
         # extra JS URL.
         installed_www = www_dir
-        _flow_bust = _compute_assets_cache_bust(
-            installed_www, ["k-flow-card.js"]
+
+        def _hash_assets() -> dict:
+            # Audit T23 round 5
+            # follow-up: the
+            # synchronous file read
+            # in
+            # ``_compute_assets_cache_bust``
+            # would otherwise block
+            # the HA event loop. We
+            # run the four hash
+            # calls inside a single
+            # executor-job closure.
+            return {
+                "flow": _compute_assets_cache_bust(
+                    installed_www, ["k-flow-card.js"]
+                ),
+                "forecast": _compute_assets_cache_bust(
+                    installed_www, ["forecast-card.js"]
+                ),
+                "ph": _compute_assets_cache_bust(
+                    installed_www, ["power-history-card.js"]
+                ),
+                "te": _compute_assets_cache_bust(
+                    installed_www, ["total-energy-card.js"]
+                ),
+                "pc": _compute_assets_cache_bust(
+                    installed_www, ["pv-comparison-card.js"]
+                ),
+            }
+
+        hashes = await hass.async_add_executor_job(
+            _hash_assets
         )
-        _forecast_bust = _compute_assets_cache_bust(
-            installed_www, ["forecast-card.js"]
-        )
-        _ph_bust = _compute_assets_cache_bust(
-            installed_www, ["power-history-card.js"]
-        )
-        _te_bust = _compute_assets_cache_bust(
-            installed_www, ["total-energy-card.js"]
-        )
+        _flow_bust = hashes["flow"]
+        _forecast_bust = hashes["forecast"]
+        _ph_bust = hashes["ph"]
+        _te_bust = hashes["te"]
         # pv-comparison-card.js has
         # never been hashed because
         # it lived only in the
@@ -534,9 +559,7 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # asset is missing on disk,
         # do NOT silently register
         # it with the empty-hash.
-        _pc_bust = _compute_assets_cache_bust(
-            installed_www, ["pv-comparison-card.js"]
-        )
+        _pc_bust = hashes["pc"]
         add_extra_js_url(hass, f"{resource_url}?v={_flow_bust}")
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
@@ -844,9 +867,24 @@ def _compute_assets_cache_bust(
         if not os.path.exists(path):
             continue
         with open(path, "rb") as f:
+            # Audit T23 round 5
+            # follow-up: this is a
+            # sync I/O helper. The
+            # caller
+            # (``_install_flow_card``)
+            # runs it inside an
+            # ``hass.async_add_executor_job``
+            # so the event loop is
+            # not blocked. We
+            # deliberately do NOT
+            # touch ``pathlib`` here
+            # because the round-trip
+            # hash must match the
+            # bytes the browser sees.
+            data = f.read()
             h.update(name.encode("utf-8"))
             h.update(b"\x00")
-            h.update(f.read())
+            h.update(data)
             h.update(b"\x00")
     return h.hexdigest()[:8]
 
