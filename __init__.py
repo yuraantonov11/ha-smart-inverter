@@ -613,9 +613,8 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
 def _compute_ai_decision_state(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict:
-    """Compute the AI view's
-    decision_state from the LIVE
-    engine.
+    """Read the live engine state
+    for the AI view.
 
     Audit T22 round 5 (D2):
     ``hass.data[DOMAIN][entry_id]``
@@ -625,13 +624,25 @@ def _compute_ai_decision_state(
     engine lives at
     ``coordinator._hems``.
 
-    The function is called every
-    time the dashboard is
-    regenerated, so the AI view
-    surfaces the current sample
-    count, confidence, and
-    readiness — not a snapshot
-    from a previous refresh.
+    Audit T22 round 7 (R7.1):
+    the engine is the single
+    source of truth. We do NOT
+    recompute ``readiness`` /
+    ``real_pairs`` /
+    ``model_quality`` here —
+    ``hems/predictive_control.py``
+    publishes them on
+    ``predictive_decision_state``
+    on every evaluate cycle,
+    and the
+    ``PredictiveDecisionStateSensor``
+    surfaces them through
+    ``extra_state_attributes``.
+    The helper returns a
+    read-only copy of that
+    state, so the dashboard
+    helper always sees the
+    most-recent publish.
     """
     bundle = hass.data.get(DOMAIN, {}).get(
         entry.entry_id, {}
@@ -654,56 +665,7 @@ def _compute_ai_decision_state(
             "model_quality": 0.0,
             "reason": "hems_unbound",
         }
-    state = hems.predictive_decision_state.copy()
-    controller = getattr(hems, "_predictive_controller", None)
-    calibrator = getattr(controller, "calibrator", None)
-    real_pairs = 0
-    model_quality = 0.0
-    if calibrator is not None:
-        try:
-            metrics = calibrator.metrics()
-            real_pairs = int(metrics.sample_count)
-            model_quality = float(metrics.confidence_factor)
-        except (AttributeError, TypeError, ValueError):
-            pass
-    hint = getattr(hems, "_last_predictive_hint", None)
-    confidence = float(state.get("confidence", 0.0) or 0.0)
-    # Audit T22 round 6 (R6.4):
-    # use the SAME readiness gate
-    # as the controller.
-    # The controller stores
-    # ``_predictive_ready`` as a
-    # bool computed from
-    # ``confidence >= max(0.2,
-    # self.predictive_min_confidence)``
-    # AND ``samples >= 3``. The
-    # view reads ``_predictive_ready``
-    # directly when it is
-    # available, so the UI and
-    # the controller cannot drift.
-    import math as _math
-    controller_ready = getattr(
-        controller, "_predictive_ready", None
-    )
-    if controller_ready is not None:
-        readiness = bool(controller_ready)
-    else:
-        # Manual fallback for
-        # old controller instances
-        # without ``_predictive_ready``.
-        pmin = float(
-            getattr(hems, "predictive_min_confidence", 0.2)
-        )
-        readiness = bool(
-            hint is not None
-            and _math.isfinite(confidence)
-            and confidence >= max(0.2, pmin)
-            and real_pairs >= 3
-        )
-    state["real_pairs"] = real_pairs
-    state["model_quality"] = model_quality
-    state["readiness"] = readiness
-    return state
+    return hems.predictive_decision_state.copy()
 
 
 def _build_ai_view(
@@ -762,52 +724,67 @@ def _build_ai_view(
     )
 
     cards: list[dict] = []
-    # Audit T22 round 6 (R6.3):
-    # ``markdown`` cards freeze
-    # their content at
-    # generation time and HA's
-    # frontend does not
-    # re-render them when a
-    # sensor state changes.
-    # Replace with an ``entities``
-    # card so the values come
-    # straight from live
-    # sensor states and the
-    # HA frontend re-renders
-    # them on every state
-    # change.
-    if real_pairs == 0:
-        # A separate plain-text
-        # card (not markdown) for
-        # the honest "no data
-        # yet" surface. The
-        # ``type: markdown`` card
-        # used to be here; the
-        # audit removed it.
-        cards.append({
-            "type": "entities",
-            "title": "ℹ Даних ще немає (0 пар)",
-            "entities": [],
-        })
+    # Audit T22 round 7 (R7.2):
+    # the previous code emitted a
+    # frozen literal
+    # ``"ℹ Даних ще немає (0 пар)"``
+    # title at generation time.
+    # Once the engine accumulated
+    # samples the user still saw
+    # ``(0 пар)`` until the
+    # dashboard was regenerated.
+    # The view is reactive — it
+    # MUST NOT embed a literal
+    # sample count anywhere. The
+    # ``attribute: real_pairs``
+    # row on the ``predictive_decision_state``
+    # sensor (added below) is the
+    # single source of truth; the
+    # HA frontend re-renders it
+    # on every state change.
     rows: list[dict] = []
-    for eid, name, *extra in (
-        (decision_state_eid, "Decision State", "readiness"),
-        (hint_eid, "Predictive Hint", None),
-        (plan_eid, "Predictive Plan", None),
-        (reason_eid, "HEMS Last Reason", None),
+    # Audit T22 round 7 (R7):
+    # the engine publishes
+    # ``readiness``, ``real_pairs``,
+    # ``model_quality`` and
+    # ``reason`` on
+    # ``predictive_decision_state``
+    # (see
+    # ``hems/predictive_control.py``).
+    # The AI view surfaces all
+    # four as ``attribute`` rows
+    # on the
+    # ``predictive_decision_state``
+    # sensor so the user sees
+    # live values that the HA
+    # frontend re-renders on
+    # every refresh. Decision
+    # State itself is also
+    # surfaced as a separate
+    # entity.
+    decision_rows = (
+        ("readiness", "Готовність"),
+        ("real_pairs", "Реальних пар"),
+        ("model_quality", "Якість моделі"),
+        ("confidence", "Впевненість"),
+        ("reason", "Причина рішення"),
+    )
+    for attr_key, label in decision_rows:
+        if not decision_state_eid:
+            break
+        rows.append({
+            "entity": decision_state_eid,
+            "name": label,
+            "attribute": attr_key,
+        })
+    for eid, name in (
+        (hint_eid, "Predictive Hint"),
+        (plan_eid, "Predictive Plan"),
+        (reason_eid, "HEMS Last Reason"),
     ):
         if not eid:
             continue
-        row: dict = {"entity": eid, "name": name}
-        # Render ``readiness`` as
-        # a sub-attribute row when
-        # the AI view is on a
-        # version that supports
-        # ``attribute:`` entities.
-        attr_key = extra[0] if extra else None
-        if attr_key:
-            row["attribute"] = attr_key
-        rows.append(row)
+        rows.append({"entity": eid, "name": name})
     if predictive_mode_eid:
         rows.append({
             "entity": predictive_mode_eid,
@@ -1483,76 +1460,79 @@ async def _register_lovelace_dashboard(
     config_dir = hass.config.config_dir
     dashboards_storage = os.path.join(config_dir, ".storage", "lovelace_dashboards")
 
-    # Audit R6.5: per-entry
-    # dashboard files. Two
-    # entries on one HA install
-    # MUST NOT share a single
-    # content file — when A's
-    # opt-in fires, B's user
-    # edit must NOT be
-    # clobbered.
-    #
-    # The integration's
-    # canonical main dashboard
-    # stays at
-    # ``lovelace.powmr_energy``
-    # (UI sidebar URL
-    # unchanged). Each entry
-    # writes its own
-    # ``lovelace.powmr_energy.<short_id>``
-    # sidecar file. The user
-    # can manually import
-    # sidecars through the
-    # Lovelace UI. The first
-    # opt-in wins the canonical
-    # main dashboard; the
-    # second entry (or any
-    # subsequent opt-in) writes
-    # to a sidecar file so
-    # previous edits are
-    # preserved.
-    short_id = (
-        entry.entry_id
-        .replace("-", "")
-        .lower()
-        [:8] or "default"
-    )
+    # Audit R7.4: per-entry
+    # dashboard file names use
+    # a full-content hash of the
+    # entry_id, NOT a truncated
+    # prefix. Two entry IDs
+    # whose first 8 characters
+    # collides after ``[:8]``
+    # must still get distinct
+    # files.
+    import hashlib as _hashlib_d
+    entry_hash = _hashlib_d.md5(
+        entry.entry_id.encode("utf-8")
+    ).hexdigest()[:16]
+    sidecar_id = f"powmr_energy_{entry_hash}"
     sidecar_path = os.path.join(
         config_dir,
         ".storage",
-        f"lovelace.powmr_energy.{short_id}",
+        f"lovelace.{sidecar_id}",
     )
-    # Sidecar detection: the
-    # canonical main file may
-    # not exist yet. If it
-    # does, AND another
-    # entry's sidecar exists,
-    # we are NOT the first
-    # opt-in: use the sidecar.
-    import glob as _glob
+    # The first opt-in wins the
+    # canonical main dashboard;
+    # subsequent entries write
+    # to their own sidecar.
     main_path = os.path.join(
         config_dir, ".storage", f"lovelace.{DASHBOARD_ID}"
     )
-    other_sidecars = sorted(
-        p for p in _glob.glob(
-            os.path.join(
-                config_dir,
-                ".storage",
-                f"lovelace.powmr_energy.*",
-            )
-        )
-        if p != sidecar_path
+    sidecar_glob = os.path.join(
+        config_dir,
+        # Audit R7.4: sidecar
+        # files use
+        # ``lovelace.powmr_energy_<md5>``.
+        # The glob must include
+        # both the legacy
+        # ``.`` separator (round 6
+        # before R7.4) and the
+        # new ``_`` separator
+        # so entries that migrated
+        # with round 6 are still
+        # detected.
+        ".storage",
+        "lovelace.powmr_energy*",
     )
-    if other_sidecars or os.path.exists(main_path):
+    import glob as _glob
+    other_sidecars = sorted(
+        p for p in _glob.glob(sidecar_glob)
+        if p != sidecar_path
+        and not p.endswith(".bak")
+    )
+    is_first_opt_in = (
+        not other_sidecars
+        and not os.path.exists(main_path)
+    )
+    if is_first_opt_in:
+        # First opt-in: write the
+        # canonical main dashboard
+        # and use the canonical id
+        # + url_path.
+        dashboard_content_storage = main_path
+        active_id = DASHBOARD_ID
+        active_url = DASHBOARD_URL
+        active_title = DASHBOARD_TITLE
+    else:
         # Not the first opt-in:
         # write to our own sidecar
-        # so we don't touch other
-        # entries' state.
+        # and use a unique id +
+        # url_path so the user
+        # can navigate to it.
         dashboard_content_storage = sidecar_path
-    else:
-        # First opt-in: write the
-        # canonical main dashboard.
-        dashboard_content_storage = main_path
+        active_id = sidecar_id
+        active_url = f"powmr-{entry_hash}"
+        active_title = (
+            f"Smart Solar · {entry.title or entry.entry_id[:8]}"
+        )
 
     # Audit T23 round 6: the opt-in
     # flag is read PER ENTRY from
@@ -1600,20 +1580,38 @@ async def _register_lovelace_dashboard(
         existing_payload = await hass.async_add_executor_job(_read_or_init)
         items = existing_payload.get("data", {}).get("items", [])
 
+        # Audit R7.3: register
+        # THIS entry's sidecar
+        # dashboard in the
+        # Lovelace metadata with a
+        # unique ``url_path`` and
+        # ``id`` so the sidecar is
+        # actually navigable. The
+        # canonical main dashboard
+        # is registered with
+        # ``DASHBOARD_ID`` and
+        # ``DASHBOARD_URL``; a
+        # sidecar uses ``active_id``
+        # / ``active_url`` derived
+        # from the entry's content
+        # hash.
+        target_id = active_id
+        target_url = active_url
+        target_title = active_title
         already_listed = any(
-            item.get("url_path") == DASHBOARD_URL
+            item.get("id") == target_id
             for item in items
         )
 
         if not already_listed:
             items.append({
-                "id": DASHBOARD_ID,
+                "id": target_id,
                 "icon": "mdi:solar-power",
-                "title": DASHBOARD_TITLE,
+                "title": target_title,
                 "show_in_sidebar": True,
                 "require_admin": False,
                 "mode": "storage",
-                "url_path": DASHBOARD_URL,
+                "url_path": target_url,
             })
             existing_payload["data"]["items"] = items
 
@@ -1624,15 +1622,15 @@ async def _register_lovelace_dashboard(
 
             await hass.async_add_executor_job(_write_metadata)
             _LOGGER.info(
-                "✅ Dashboard '%s' metadata "
+                "✅ Dashboard '%s' (id=%s, url=%s) "
                 "registered atomically",
-                DASHBOARD_TITLE,
+                target_title, target_id, target_url,
             )
         else:
             _LOGGER.debug(
-                "Dashboard %s already listed; "
+                "Dashboard id=%s already listed; "
                 "metadata not modified",
-                DASHBOARD_URL,
+                target_id,
             )
 
         # Step 3: Write dashboard config content.
@@ -1648,13 +1646,16 @@ async def _register_lovelace_dashboard(
         # restart.
         if not already_registered or opt_in:
             await _update_dashboard_content(
-                hass, dashboard_content_storage, dashboard_config
+                hass,
+                dashboard_content_storage,
+                dashboard_config,
+                dashboard_id=active_id,
             )
             if already_registered and opt_in:
                 _LOGGER.info(
                     "Dashboard %s migrated "
                     "(opt-in honoured)",
-                    DASHBOARD_URL,
+                    target_url,
                 )
                 # R6.5: the migration
                 # is one-shot. Reset
@@ -1671,7 +1672,7 @@ async def _register_lovelace_dashboard(
                 _LOGGER.info(
                     "✅ Dashboard '%s' content "
                     "written (first install)",
-                    DASHBOARD_TITLE,
+                    target_title,
                 )
 
     except Exception as exc:
@@ -1692,6 +1693,15 @@ async def _update_dashboard_content(
     ``json.dump`` overwrote the file in place.
     """
     def _write():
+        # The ``key`` field MUST
+        # match the ``id`` in
+        # ``lovelace_dashboards``
+        # so HA can pair them.
+        # Audit R7.3: the caller
+        # passes the same
+        # ``dashboard_id`` we
+        # use to register the
+        # sidecar metadata entry.
         data = {
             "key": f"lovelace.{dashboard_id}",
             "version": 1,

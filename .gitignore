@@ -57,3 +57,11 @@ HA_VERSION
 # Per-inverter learning state (runtime data, not source).
 hems/pv_fact_pairs*.json*
 hems/*/real_forecast_pairs.json*
+
+# Test harness files —
+# regenerated automatically by
+# the test on every run. Not
+# required for the integration
+# to function. Do NOT commit.
+tests/.harness/
+tests/__pycache__/

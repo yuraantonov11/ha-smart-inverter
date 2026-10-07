@@ -537,24 +537,49 @@ async def async_register_services(hass: HomeAssistant) -> None:
             successful migration
             (one-shot).
         """
+        # Audit T22 round 7 (R7.5):
+        # the handler MUST use
+        # ``try/finally`` to reset
+        # the opt-in flag on every
+        # exit path. The previous
+        # implementation logged
+        # ``migration complete``
+        # AFTER the helper raised,
+        # which left the flag
+        # stuck at ``True`` and
+        # silently clobbered
+        # future dashboards. We
+        # also raise on ambiguity
+        # so the user cannot
+        # trigger a multi-entry
+        # migration by accident.
+        from homeassistant.exceptions import (
+            ServiceValidationError,
+        )
         confirm = bool(call.data.get("confirm", False))
         if not confirm:
-            raise ValueError(
+            raise ServiceValidationError(
                 "migrate_dashboard requires "
                 "confirm=true (one-shot opt-in)."
             )
         requested = call.data.get("entry_id")
         entries = hass.config_entries.async_entries(DOMAIN)
         if not entries:
-            raise ValueError(
+            raise ServiceValidationError(
                 "No powmr_inverter config entries loaded."
+            )
+        if requested is None and len(entries) > 1:
+            raise ServiceValidationError(
+                "Multiple config entries loaded; "
+                "specify entry_id to disambiguate. "
+                f"Loaded ids: {sorted(e.entry_id for e in entries)}"
             )
         target_entries = [
             e for e in entries
             if requested is None or e.entry_id == requested
         ]
         if not target_entries:
-            raise ValueError(
+            raise ServiceValidationError(
                 f"Unknown entry_id={requested!r}; "
                 f"loaded ids: {sorted(e.entry_id for e in entries)}"
             )
@@ -567,7 +592,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "custom_components.powmr_inverter"
         )
         if mod is None:
-            raise ValueError(
+            raise ServiceValidationError(
                 "powmr_inverter module not loaded; "
                 "this service is unavailable until "
                 "the integration is set up."
@@ -576,25 +601,96 @@ async def async_register_services(hass: HomeAssistant) -> None:
             mod, "_auto_install_dashboard", None
         )
         if auto_install is None:
-            raise ValueError(
+            raise ServiceValidationError(
                 "_auto_install_dashboard missing in "
                 "powmr_inverter module; cannot migrate."
             )
         loaded = hass.data.setdefault(DOMAIN, {})
+        # Track per-entry results so
+        # the bus event carries an
+        # honest outcome.
+        results: list[dict] = []
         for entry in target_entries:
             bundle = loaded.setdefault(entry.entry_id, {})
+            # Audit R7.5: the
+            # opt-in flag MUST
+            # reset to False on
+            # every exit path,
+            # including failures.
             bundle["dashboard_migration_opt_in"] = True
-            await auto_install(hass, entry)
-            backup_path = os.path.join(
-                hass.config.config_dir,
-                ".storage",
-                "lovelace.powmr_energy.bak",
-            )
-            _LOGGER.info(
-                "Dashboard migration complete for entry=%s; "
-                "backup at %s; opt-in flag reset.",
-                entry.entry_id,
-                backup_path,
+            entry_result = {
+                "entry_id": entry.entry_id,
+                "ok": False,
+                "error": None,
+            }
+            try:
+                await auto_install(hass, entry)
+                entry_result["ok"] = True
+                backup_path = os.path.join(
+                    hass.config.config_dir,
+                    ".storage",
+                    "lovelace.powmr_energy.bak",
+                )
+                _LOGGER.info(
+                    "Dashboard migration complete for entry=%s; "
+                    "backup at %s; opt-in flag reset.",
+                    entry.entry_id,
+                    backup_path,
+                )
+            except Exception as exc:
+                # Audit R7.5:
+                # propagate the
+                # failure to the
+                # bus so the
+                # dashboard
+                # caller can
+                # surface it. The
+                # flag is reset in
+                # finally.
+                entry_result["error"] = str(exc)
+                _LOGGER.error(
+                    "Dashboard migration FAILED for entry=%s: %s",
+                    entry.entry_id, exc,
+                )
+            finally:
+                # Audit R7.5: the
+                # flag MUST reset
+                # on every exit
+                # path — success
+                # AND failure. The
+                # audit rejects any
+                # implementation
+                # that only resets
+                # on success.
+                bundle["dashboard_migration_opt_in"] = False
+            results.append(entry_result)
+        # Emit a bus event so the
+        # caller can subscribe to
+        # the outcome. The audit
+        # requires a clear
+        # success/failure signal
+        # — ``hass.bus.async_fire``
+        # is the supported HA
+        # API for service outcome
+        # notifications.
+        hass.bus.async_fire(
+            f"{DOMAIN}_dashboard_migration_complete",
+            {"results": results},
+        )
+        if not all(r["ok"] for r in results):
+            # At least one entry
+            # failed; raise so the
+            # HA UI surfaces the
+            # error and the next
+            # reload does NOT
+            # silently re-run the
+            # partial migration.
+            failed_ids = [
+                    r["entry_id"] for r in results if not r["ok"]
+                ]
+            raise ServiceValidationError(
+                "Dashboard migration failed for entries: "
+                f"{failed_ids}"
             )
 
     hass.services.async_register(

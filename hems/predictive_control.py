@@ -113,20 +113,74 @@ class PredictiveControlEngine(HemsEngine):
         controller = getattr(self, "_predictive_controller", None)
         proposal = getattr(controller, "last_decision", None) if plan is not None else None
         self._last_predictive_decision = proposal
+        # Audit T22 round 7 (R7.1):
+        # the engine is the single
+        # source of truth for
+        # ``readiness``,
+        # ``real_pairs``, and
+        # ``model_quality``. The
+        # ``PredictiveDecisionStateSensor``
+        # reads
+        # ``extra_state_attributes``
+        # from
+        # ``predictive_decision_state``
+        # so we MUST publish these
+        # keys on every evaluate
+        # cycle. Without this the
+        # AI view's ``attribute``
+        # rows would resolve to
+        # missing keys and the
+        # HA frontend would show
+        # ``undefined``.
+        confidence = 0.0
+        samples = 0
+        model_quality = 0.0
+        self._predictive_ready = False
         if hint is None or proposal is None:
+            self.predictive_decision_state.update(
+                output_priority=None,
+                charger_priority=None,
+                target_soc=None,
+                reason="no_hint",
+                confidence=0.0,
+                samples=0,
+                real_pairs=0,
+                model_quality=0.0,
+                readiness=False,
+            )
             return None, plan
         try:
             metrics = controller.calibrator.metrics()
             confidence = float(hint.confidence)
-            samples = metrics.sample_count
-            self._predictive_ready = (math.isfinite(confidence) and confidence >= max(0.2, self.predictive_min_confidence) and samples >= 3)
+            samples = int(metrics.sample_count)
+            model_quality = float(metrics.confidence_factor)
+            self._predictive_ready = (
+                math.isfinite(confidence)
+                and confidence >= max(
+                    0.2, self.predictive_min_confidence
+                )
+                and samples >= 3
+            )
         except (AttributeError, TypeError, ValueError):
             confidence, samples = 0.0, 0
+            model_quality = 0.0
         self.predictive_decision_state.update(
             output_priority={"0": "USB", "2": "SBU"}.get(proposal.output_priority),
             charger_priority={"1": "SNU", "2": "OSO"}.get(proposal.charger_priority),
-            target_soc=hint.target_soc_morning, reason=proposal.reason,
-            confidence=confidence if math.isfinite(confidence) else 0.0, samples=samples,
+            target_soc=hint.target_soc_morning,
+            reason=proposal.reason,
+            confidence=confidence if math.isfinite(confidence) else 0.0,
+            samples=samples,
+            # Audit T22 round 7 (R7.1):
+            # publish the engine
+            # gate so the sensor
+            # surfaces it. The AI
+            # view's ``attribute``
+            # rows resolve directly
+            # to these keys.
+            real_pairs=samples,
+            model_quality=model_quality,
+            readiness=self._predictive_ready,
         )
         # Compute a true baseline without legacy hint side effects; the fresh
         # hint remains available for UI and the gated proposal below.
@@ -142,7 +196,9 @@ class PredictiveControlEngine(HemsEngine):
         self._last_predictive_inputs = None
         self.predictive_decision_state.update(mode=self.predictive_tuning.predictive_mode.title(),
                                              output_priority=None, charger_priority=None,
-                                             confidence=0.0, applied=False, reason=reason, execution_reason=reason)
+                                             confidence=0.0, samples=0, applied=False,
+                                             real_pairs=0, model_quality=0.0, readiness=False,
+                                             reason=reason, execution_reason=reason)
 
     def _finalize_decision(self, decision, now, inputs, entry_id=None):
         proposal = self._last_predictive_decision
