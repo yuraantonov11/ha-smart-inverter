@@ -494,32 +494,79 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
 
     try:
         from homeassistant.components.frontend import add_extra_js_url
-        # Audit T23: cache-bust version is derived from the
-        # SHA-256 of each asset's bytes. A static literal
-        # version does not guarantee the user's browser
-        # re-fetches the asset when only one of the bundled
-        # scripts changed.
-        www_dir = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "www",
-        )
+        # Audit T23 round 5 (D4):
+        # the cache-bust hash is
+        # computed against the
+        # **installed** asset, not
+        # the bundled package
+        # www. The previous code
+        # hashed the bundled
+        # directory which only
+        # ever contained a few
+        # assets, so the cards
+        # that lived only in the
+        # copy step got the
+        # SHA-256 of the empty
+        # string (``e3b0c442...``)
+        # in the Windows review.
+        # We compute the hash
+        # AFTER the copy step and
+        # BEFORE registering the
+        # extra JS URL.
+        installed_www = www_dir
         _flow_bust = _compute_assets_cache_bust(
-            www_dir, ["k-flow-card.js"]
+            installed_www, ["k-flow-card.js"]
         )
         _forecast_bust = _compute_assets_cache_bust(
-            www_dir, ["forecast-card.js"]
+            installed_www, ["forecast-card.js"]
         )
         _ph_bust = _compute_assets_cache_bust(
-            www_dir, ["power-history-card.js"]
+            installed_www, ["power-history-card.js"]
         )
         _te_bust = _compute_assets_cache_bust(
-            www_dir, ["total-energy-card.js"]
+            installed_www, ["total-energy-card.js"]
+        )
+        # pv-comparison-card.js has
+        # never been hashed because
+        # it lived only in the
+        # copy step. Audit T23
+        # round 5 (D4): when the
+        # asset is missing on disk,
+        # do NOT silently register
+        # it with the empty-hash.
+        _pc_bust = _compute_assets_cache_bust(
+            installed_www, ["pv-comparison-card.js"]
         )
         add_extra_js_url(hass, f"{resource_url}?v={_flow_bust}")
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
         add_extra_js_url(hass, f"{fc_url}?v={_forecast_bust}")
-        add_extra_js_url(hass, "/local/community/powmr-inverter/pv-comparison-card.js?v=2")
+        # pv-comparison: only
+        # register when the asset
+        # exists on disk. The
+        # previous ``?v=2`` static
+        # literal silently assumed
+        # the file was present; if
+        # the bundled copy is
+        # missing, the user's
+        # network panel saw a 404
+        # the integration never
+        # warned about.
+        pc_url = (
+            "/local/community/powmr-inverter/"
+            "pv-comparison-card.js"
+        )
+        if os.path.exists(
+            os.path.join(
+                installed_www, "pv-comparison-card.js"
+            )
+        ):
+            add_extra_js_url(hass, f"{pc_url}?v={_pc_bust}")
+        else:
+            _LOGGER.warning(
+                "pv-comparison-card.js not installed; "
+                "skipping frontend registration"
+            )
         # Power history chart card
         ph_url = "/local/community/powmr-inverter/power-history-card.js"
         add_extra_js_url(hass, f"{ph_url}?v={_ph_bust}")
@@ -528,8 +575,8 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         add_extra_js_url(hass, f"{te_url}?v={_te_bust}")
         _LOGGER.info(
             "Flow card + forecast card + power-history card + total-energy card registered "
-            "(cache-bust: flow=%s forecast=%s ph=%s te=%s)",
-            _flow_bust, _forecast_bust, _ph_bust, _te_bust,
+            "(cache-bust: flow=%s forecast=%s ph=%s te=%s pc=%s)",
+            _flow_bust, _forecast_bust, _ph_bust, _te_bust, _pc_bust,
         )
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
@@ -540,6 +587,77 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
 # ═══════════════════════════════════════════════════════════════════════
 
 # ── Audit T22 — AI view builder ───────────────────────────────
+def _compute_ai_decision_state(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> dict:
+    """Compute the AI view's
+    decision_state from the LIVE
+    engine.
+
+    Audit T22 round 5 (D2):
+    ``hass.data[DOMAIN][entry_id]``
+    is a dict whose ``"coordinator"``
+    key holds the actual
+    ``InverterCoordinator``. The
+    engine lives at
+    ``coordinator._hems``.
+
+    The function is called every
+    time the dashboard is
+    regenerated, so the AI view
+    surfaces the current sample
+    count, confidence, and
+    readiness — not a snapshot
+    from a previous refresh.
+    """
+    bundle = hass.data.get(DOMAIN, {}).get(
+        entry.entry_id, {}
+    )
+    coordinator = bundle.get("coordinator")
+    if coordinator is None:
+        return {
+            "mode": "Off",
+            "readiness": False,
+            "real_pairs": 0,
+            "model_quality": 0.0,
+            "reason": "coordinator_unbound",
+        }
+    hems = getattr(coordinator, "_hems", None)
+    if hems is None:
+        return {
+            "mode": "Off",
+            "readiness": False,
+            "real_pairs": 0,
+            "model_quality": 0.0,
+            "reason": "hems_unbound",
+        }
+    state = hems.predictive_decision_state.copy()
+    controller = getattr(hems, "_predictive_controller", None)
+    calibrator = getattr(controller, "calibrator", None)
+    real_pairs = 0
+    model_quality = 0.0
+    if calibrator is not None:
+        try:
+            metrics = calibrator.metrics()
+            real_pairs = int(metrics.sample_count)
+            model_quality = float(metrics.confidence_factor)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    hint = getattr(hems, "_last_predictive_hint", None)
+    confidence = float(state.get("confidence", 0.0) or 0.0)
+    import math as _math
+    if hint is not None and _math.isfinite(confidence):
+        readiness = bool(
+            real_pairs >= 3 and model_quality >= 0.2
+        )
+    else:
+        readiness = False
+    state["real_pairs"] = real_pairs
+    state["model_quality"] = model_quality
+    state["readiness"] = readiness
+    return state
+
+
 def _build_ai_view(
     entity_lookup,
     decision_state: dict,
@@ -700,13 +818,25 @@ def _compute_assets_cache_bust(
     still hash differently by
     position).
 
-    Audit T23: a single static
-    literal version (e.g.
+    Audit T23 round 4: a single
+    static literal version (e.g.
     ``?v=1.8.2``) does not
     guarantee the user's browser
     re-fetches the asset when only
     one of the bundled scripts
     changed.
+
+    Audit T23 round 5 (D4):
+    ``www_dir`` is the **installed**
+    www directory passed by the
+    caller
+    (``_install_flow_card`` uses
+    ``hass.config.config_dir/www/community/powmr-inverter``).
+    Hashing the bundled package
+    www silently returns the
+    SHA-256-of-empty-bytes for
+    every asset that is not also
+    shipped inside the package.
     """
     h = hashlib.sha256()
     for name in asset_names:
@@ -719,6 +849,62 @@ def _compute_assets_cache_bust(
             h.update(f.read())
             h.update(b"\x00")
     return h.hexdigest()[:8]
+
+
+def _write_dashboards_metadata_atomic(
+    storage_path: str, payload: dict
+) -> None:
+    """Atomic writer for
+    ``.storage/lovelace_dashboards``.
+
+    Audit T23 round 5 (D5):
+    the previous direct
+    ``open(...).write(json.dumps(...))``
+    overwrote the metadata file in
+    place; a missing parent file
+    crashed the registration step,
+    and a mid-write crash left a
+    half-written file.
+
+    This writer:
+      * creates ``storage_path``
+        if it does not exist
+        (writes the payload via a
+        default empty
+        ``data.items == []``
+        skeleton, atomic);
+      * writes the new payload to
+        a tempfile in the same
+        directory and uses
+        ``os.replace`` for the
+        atomic move;
+      * backs up the existing file
+        to ``<storage_path>.bak``
+        before replacing.
+    """
+    target_dir = os.path.dirname(
+        os.path.abspath(storage_path)
+    )
+    os.makedirs(target_dir, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=target_dir,
+        prefix=".lovelace_dashboards.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+        if os.path.exists(storage_path):
+            shutil.copyfile(
+                storage_path, storage_path + ".bak"
+            )
+        os.replace(tmp_path, storage_path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 
 def _tile(entity: str, name: str, icon: str) -> dict:
@@ -1114,60 +1300,9 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
     # view is honest even on fresh
     # install (samples == 0 → "no
     # data yet" tile).
-    hems = getattr(hass.data.get(DOMAIN, {}).get(
-        entry.entry_id
-    ), "_hems", None)
-    if hems is None:
-        # Fall back to a default
-        # decision state when the
-        # HEMS engine is not yet
-        # bound.
-        decision_state: dict = {
-            "mode": "Off",
-            "readiness": False,
-            "real_pairs": 0,
-            "model_quality": 0.0,
-            "reason": "hems_unbound",
-        }
-    else:
-        decision_state = (
-            hems.predictive_decision_state.copy()
-        )
-        # Compute readiness from the
-        # last hint + calibrator so
-        # the view does not rely on
-        # the audit-required boolean
-        # being explicitly set.
-        controller = getattr(
-            hems, "_predictive_controller", None
-        )
-        calibrator = getattr(
-            controller, "calibrator", None
-        )
-        real_pairs = 0
-        model_quality = 0.0
-        if calibrator is not None:
-            try:
-                metrics = calibrator.metrics()
-                real_pairs = int(metrics.sample_count)
-                model_quality = float(
-                    metrics.confidence_factor
-                )
-            except (AttributeError, TypeError, ValueError):
-                pass
-        hint = getattr(hems, "_last_predictive_hint", None)
-        confidence = float(
-            decision_state.get("confidence", 0.0) or 0.0
-        )
-        import math as _math
-        readiness = bool(
-            _math.isfinite(confidence)
-            and real_pairs >= 3
-            and model_quality >= 0.2
-        ) if hint is not None else False
-        decision_state["real_pairs"] = real_pairs
-        decision_state["model_quality"] = model_quality
-        decision_state["readiness"] = readiness
+    decision_state = _compute_ai_decision_state(
+        hass, entry
+    )
     views.append(_build_ai_view(_e, decision_state))
 
     # ── Assemble final config dict ───────────────────────────────
@@ -1195,6 +1330,25 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_config: di
     and the actual dashboard config to .storage/lovelace.powmr_energy.
     The config is stored as a JSON object — NOT a YAML string — which
     avoids the "Cannot use 'in' operator to search for 'strategy'" crash.
+
+    Audit T23 round 5 (D1): when the integration dashboard is
+    already registered (the
+    ``.storage/lovelace.powmr_energy``
+    file exists), this helper
+    MUST NOT overwrite it unless
+    ``hass.data[DOMAIN][entry_id]["dashboard_migration_opt_in"]``
+    is True. The previous
+    implementation silently
+    replaced the user's edited
+    dashboard on every setup
+    restart; ``.bak`` did not
+    help because the user
+    wanted the live dashboard to
+    stay as they had arranged it.
+
+    Migration is opt-in only —
+    via ``hass.data[DOMAIN][entry_id]
+    ["dashboard_migration_opt_in"]``.
     """
     DASHBOARD_URL = "powmr-energy"
     DASHBOARD_TITLE = "Smart Solar Енергопанель"
@@ -1203,36 +1357,69 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_config: di
     dashboards_storage = os.path.join(config_dir, ".storage", "lovelace_dashboards")
     dashboard_content_storage = os.path.join(config_dir, ".storage", f"lovelace.{DASHBOARD_ID}")
 
-    # Step 1: Check if already registered
+    # Audit T23 round 5 (D1):
+    # honour the explicit
+    # migration opt-in. Two
+    # entries on one HA install
+    # share the same
+    # lovelace_dashboards file;
+    # each entry's
+    # ``hass.data[DOMAIN][entry_id]``
+    # can opt-in independently.
+    bundle = hass.data.get(DOMAIN, {}).get(
+        getattr(
+            hass.config_entries.async_entries(DOMAIN).__next__(),
+            "entry_id",
+            "",
+        )
+        if hass.config_entries.async_entries(DOMAIN)
+        else "",
+        {}
+    )
+    opt_in = bool(bundle.get("dashboard_migration_opt_in", False))
+
+    # Step 1: Check if already registered AND not opt-in
+    already_registered = False
     try:
-        def _check():
-            if not os.path.exists(dashboards_storage):
-                return False
-            with open(dashboards_storage, "r") as f:
-                data = json.loads(f.read())
-            for item in data.get("data", {}).get("items", []):
-                if item.get("url_path") == DASHBOARD_URL:
-                    return True
-            return False
-        if await hass.async_add_executor_job(_check):
-            # Already registered — just update the content
-            await _update_dashboard_content(hass, dashboard_content_storage, dashboard_config)
-            _LOGGER.debug("Dashboard %s already registered, content updated", DASHBOARD_URL)
+        def _check() -> bool:
+            return os.path.exists(dashboard_content_storage)
+
+        already_registered = await hass.async_add_executor_job(_check)
+        if already_registered and not opt_in:
+            # D1: existing user dashboard
+            # is preserved byte-for-byte.
+            _LOGGER.debug(
+                "Dashboard %s already registered; "
+                "no opt-in, leaving existing "
+                "dashboard untouched",
+                DASHBOARD_URL,
+            )
             return
     except Exception as exc:
         _LOGGER.debug("Dashboard check failed: %s", exc)
 
-    # Step 2: Register metadata
+    # Step 2: Register metadata (atomic writer; safe if missing)
     try:
-        def _register():
+        def _read_or_init():
+            if not os.path.exists(dashboards_storage):
+                return {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {"items": []},
+                }
             with open(dashboards_storage, "r") as f:
-                data = json.loads(f.read())
+                return json.loads(f.read())
 
-            items = data.get("data", {}).get("items", [])
-            for item in items:
-                if item.get("url_path") == DASHBOARD_URL:
-                    return True  # concurrent registration
+        existing_payload = await hass.async_add_executor_job(_read_or_init)
+        items = existing_payload.get("data", {}).get("items", [])
 
+        already_listed = any(
+            item.get("url_path") == DASHBOARD_URL
+            for item in items
+        )
+
+        if not already_listed:
             items.append({
                 "id": DASHBOARD_ID,
                 "icon": "mdi:solar-power",
@@ -1242,19 +1429,53 @@ async def _register_lovelace_dashboard(hass: HomeAssistant, dashboard_config: di
                 "mode": "storage",
                 "url_path": DASHBOARD_URL,
             })
-            data["data"]["items"] = items
+            existing_payload["data"]["items"] = items
 
-            with open(dashboards_storage, "w") as f:
-                json.dump(data, f, indent=2)
-            return True
+            def _write_metadata():
+                _write_dashboards_metadata_atomic(
+                    dashboards_storage, existing_payload
+                )
 
-        result = await hass.async_add_executor_job(_register)
-        if result:
-            # Step 3: Write dashboard config content
-            await _update_dashboard_content(hass, dashboard_content_storage, dashboard_config)
-            _LOGGER.info("✅ Dashboard '%s' auto-registered (storage mode, no YAML)", DASHBOARD_TITLE)
+            await hass.async_add_executor_job(_write_metadata)
+            _LOGGER.info(
+                "✅ Dashboard '%s' metadata "
+                "registered atomically",
+                DASHBOARD_TITLE,
+            )
         else:
-            _LOGGER.debug("Dashboard already registered (concurrent)")
+            _LOGGER.debug(
+                "Dashboard %s already listed; "
+                "metadata not modified",
+                DASHBOARD_URL,
+            )
+
+        # Step 3: Write dashboard config content.
+        # D1 (final guard): only
+        # write when the dashboard
+        # was not already
+        # registered, OR when the
+        # user explicitly opted
+        # in. The previous code
+        # always overwrote and
+        # the user's edits were
+        # lost on the next setup
+        # restart.
+        if not already_registered or opt_in:
+            await _update_dashboard_content(
+                hass, dashboard_content_storage, dashboard_config
+            )
+            if already_registered and opt_in:
+                _LOGGER.info(
+                    "Dashboard %s migrated "
+                    "(opt-in honoured)",
+                    DASHBOARD_URL,
+                )
+            elif not already_listed:
+                _LOGGER.info(
+                    "✅ Dashboard '%s' content "
+                    "written (first install)",
+                    DASHBOARD_TITLE,
+                )
 
     except Exception as exc:
         _LOGGER.warning("Dashboard auto-register failed: %s", exc)
