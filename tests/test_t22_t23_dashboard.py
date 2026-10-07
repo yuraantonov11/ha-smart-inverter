@@ -340,6 +340,41 @@ def _load_registration_helpers() -> dict:
         if name in shared
     }
 
+def _read_metadata_snapshot(dashboards_storage):
+    """Test-side mirror of
+    ``_read_metadata_snapshot``
+    in
+    ``__init__.py``. Reads
+    the metadata file as a
+    JSON object or returns
+    an empty stub when the
+    file is missing.
+
+    The production code is
+    ``_exec_function``-extracted
+    into a namespace that
+    does NOT include the
+    module-level
+    ``_read_metadata_snapshot``;
+    this helper is injected
+    at every call site that
+    needs the
+    ``_register_lovelace_dashboard``
+    behaviour.
+    """
+    if not os.path.exists(dashboards_storage):
+        return {
+            "version": 1,
+            "minor_version": 1,
+            "key_version": 1,
+            "data": {"items": []},
+        }
+    with open(dashboards_storage, "r") as f:
+        return json.loads(f.read())
+
+
+
+
 
 # ─────────────────────────────────────────────────────────────
 # Fake harness — replaces HA
@@ -1074,6 +1109,7 @@ def test_r73_sidecar_dashboard_is_registered_in_metadata() -> None:
                 "_LOGGER": _FakeLogger(),
                 "DOMAIN": "powmr_inverter",
                 "extra_modules": helpers,
+                "_read_metadata_snapshot": _read_metadata_snapshot,
             },
         )
         real = ns["_register_lovelace_dashboard"]
@@ -1215,6 +1251,7 @@ def test_r74_two_entries_with_same_prefix_get_distinct_sidecars() -> None:
                 "_LOGGER": _FakeLogger(),
                 "DOMAIN": "powmr_inverter",
                 "extra_modules": helpers,
+                "_read_metadata_snapshot": _read_metadata_snapshot,
             },
         )
         real = ns["_register_lovelace_dashboard"]
@@ -1270,73 +1307,453 @@ def test_r74_two_entries_with_same_prefix_get_distinct_sidecars() -> None:
 # ─────────────────────────────────────────────────────────────
 
 
-def test_r75_service_handler_resets_flag_on_failure() -> None:
-    """R7.5: when the helper
-    raises an exception during
-    the migration, the handler
-    MUST reset the opt-in flag
-    in ``finally`` so the user
-    can retry, and MUST NOT log
-    "migration complete".
+def _extract_handler_into_harness(
+    service_name: str,
+) -> str:
+    """Extract the production
+    ``handle_<service>``
+    closure into
+    ``tests/.harness/handle_<service>.py``
+    and return the harness
+    file path. The handler
+    is exec'd by the caller
+    through ``compile(...) +
+    exec(...)`` so tracebacks
+    attribute to a real
+    on-disk filename, not to
+    ``<string>``.
+
+    Audit R7.5 rejects the
+    legacy source-text-only
+    tests — they were passing
+    on ``try / finally``
+    literal presence but
+    never executed the real
+    handler. The harness
+    pattern lets the test
+    drive the full
+    production path.
     """
     mod = _parse(SERVICES_PY)
-    fn = _function_node(
+    register_node = _function_node(
         mod, "async_register_services"
     )
-    assert fn is not None
-    src = _function_source(SERVICES_PY, fn)
-    # The handler must use
-    # ``try / finally`` to
-    # guarantee the flag
-    # reset.
-    # Check that the migrate
-    # handler wraps the call
-    # in ``try: ... finally:``
-    # or ``async with``.
-    handler_src = _extract_handler(src, "migrate_dashboard")
-    assert handler_src is not None, (
-        "R7.5: migrate_dashboard "
-        "handler missing in services"
+    assert register_node is not None, (
+        f"R7.5: async_register_services missing "
+        f"(service={service_name})"
     )
-    assert (
-        "try:" in handler_src
-        and "finally:" in handler_src
-    ), (
-        "R7.5: handler must use "
-        "try/finally to reset the "
-        "flag on every exit path; "
-        "got:\n" + handler_src
+    handler_node = None
+    for child in register_node.body:
+        if (
+            isinstance(
+                child, ast.AsyncFunctionDef
+            )
+            and child.name
+            == f"handle_{service_name}"
+        ):
+            handler_node = child
+            break
+    assert handler_node is not None, (
+        f"R7.5: handle_{service_name} closure "
+        f"missing inside async_register_services"
+    )
+    body = ast.unparse(handler_node)
+    harness_dir = os.path.join(
+        _REPO_ROOT, "tests", ".harness"
+    )
+    os.makedirs(harness_dir, exist_ok=True)
+    harness_path = os.path.join(
+        harness_dir, f"handle_{service_name}.py"
+    )
+    with open(harness_path, "w", encoding="utf-8") as f:
+        f.write(
+            "# Auto-extracted from "
+            "services/__init__.py by\n"
+            "# tests/test_t22_t23_dashboard.py "
+            f"for behavioural R7.5 "
+            f"{service_name!r} regression.\n"
+            "# Tracebacks MUST attribute to this "
+            "filename.\n"
+            "\n"
+        )
+        f.write(body)
+        f.write("\n")
+    return harness_path
+
+
+def _exec_migrate_handler(
+    harness_path: str,
+    hass_obj,
+    call_data,
+    custom_components_mod,
+) -> "tuple[Any, list, list, Any]":
+    """Compile and exec the
+    extracted handler, then
+    invoke it with the given
+    ``hass`` and ``call``.
+
+    Returns ``(raised,
+    captured_logs,
+    captured_bus_events,
+    handler)``. The handler
+    itself is returned so the
+    caller can invoke it again
+    (e.g. for repeated-migration
+    tests).
+    """
+    captured_logs: list = []
+    captured_bus_events: list = []
+    hass_obj.bus.events = captured_bus_events
+    # Re-establish module-level
+    # stubs so the harness's
+    # ``from homeassistant.exceptions``
+    # resolves.
+    import sys as _sys
+    import types
+    _ha_mod = types.ModuleType("homeassistant")
+    _ha_exc = types.ModuleType(
+        "homeassistant.exceptions"
+    )
+    _ha_exc.ServiceValidationError = (
+        _ServiceValidationError
+    )
+    _ha_mod.exceptions = _ha_exc
+    _sys.modules["homeassistant"] = _ha_mod
+    _sys.modules[
+        "homeassistant.exceptions"
+    ] = _ha_exc
+    # Stub
+    # ``custom_components.powmr_inverter``
+    # if a custom one is not
+    # provided.
+    if custom_components_mod is None:
+        _cc_pkg = types.ModuleType(
+            "custom_components"
+        )
+        custom_components_mod = types.ModuleType(
+            "custom_components.powmr_inverter"
+        )
+        _sys.modules[
+            "custom_components"
+        ] = _cc_pkg
+        _sys.modules[
+            "custom_components.powmr_inverter"
+        ] = custom_components_mod
+    ns = {
+        "__builtins__": __builtins__,
+        "json": json,
+        "os": os,
+        "logging": __import__("logging"),
+        "hass": hass_obj,
+        "DOMAIN": "powmr_inverter",
+        "HomeAssistant": object,
+        "ServiceCall": object,
+        "ServiceValidationError": (
+            _ServiceValidationError
+        ),
+        "_LOGGER": _CapturingLogger(captured_logs),
+    }
+    with open(harness_path) as f:
+        compiled = compile(
+            f.read(), harness_path, "exec"
+        )
+    exec(compiled, ns)
+    handler = ns[f"handle_migrate_dashboard"]
+    call = _FakeServiceCall(call_data)
+    raised = None
+    try:
+        _run(handler(call))
+    except _ServiceValidationError as exc:
+        raised = exc
+    except Exception as exc:
+        raised = exc
+    return (
+        raised,
+        captured_logs,
+        captured_bus_events,
+        handler,
+    )
+
+
+def test_r75_service_handler_resets_flag_on_failure() -> None:
+    """R7.5: handler flag reset.
+
+    Drives the REAL handler
+    end-to-end with a stub
+    installer that raises.
+    Asserts that the
+    opt-in flag is reset
+    AFTER the installer
+    raised — i.e. the
+    ``finally`` clause ran.
+    The legacy source-text
+    test was passing on
+    literal ``try / finally``
+    presence but never
+    executed the handler.
+
+    Failure contract:
+      * ``dashboard_migration_opt_in``
+        is reset to ``False``
+        regardless of the
+        installer outcome.
+      * The success-only log
+        message
+        ``"Dashboard migration complete"``
+        is NOT emitted on
+        failure.
+      * A failure bus event
+        with ``ok=False`` OR a
+        raised
+        ``ServiceValidationError``
+        surfaces to the
+        caller.
+    """
+    import sys as _sys
+    import types
+    handler_path = _extract_handler_into_harness(
+        "migrate_dashboard"
+    )
+    _cc_pkg = types.ModuleType("custom_components")
+    _cc_mod = types.ModuleType(
+        "custom_components.powmr_inverter"
+    )
+    def _raising_install(hass, entry):
+        raise RuntimeError(
+            "raised: simulated install failure"
+        )
+    _cc_mod._auto_install_dashboard = (
+        _raising_install
+    )
+    _sys.modules["custom_components"] = _cc_pkg
+    _sys.modules[
+        "custom_components.powmr_inverter"
+    ] = _cc_mod
+    hass_obj = _FakeHass(
+        config_dir="/tmp/x",
+        entries=[_FakeConfigEntry("entry_a")],
+        states={},
+        services=_FakeServiceReg(),
+    )
+    hass_obj.data["powmr_inverter"] = {
+        "entry_a": {
+            "dashboard_migration_opt_in": True,
+        }
+    }
+    raised, captured_logs, captured_events, _handler = (
+        _exec_migrate_handler(
+            handler_path,
+            hass_obj,
+            {
+                "entry_id": "entry_a",
+                "confirm": True,
+            },
+            _cc_mod,
+        )
+    )
+    # Failure contract: the
+    # service must report
+    # failure to the caller
+    # (raised OR bus event).
+    failure_signalled = (
+        raised is not None
+    ) or any(
+        event_data
+        and event_data.get("results")
+        and any(
+            r.get("ok") is False
+            for r in event_data["results"]
+        )
+        for _et, event_data in captured_events
+    )
+    assert failure_signalled, (
+        "R7.5 handler reset: failure "
+        "must be signalled via raised "
+        "exception or bus event; "
+        f"raised={raised!r}, events="
+        f"{captured_events!r}"
+    )
+    # Flag MUST reset to False
+    # after failure — the
+    # ``finally`` clause ran.
+    bundle = hass_obj.data["powmr_inverter"][
+        "entry_a"
+    ]
+    assert bundle.get(
+        "dashboard_migration_opt_in"
+    ) is False, (
+        "R7.5 handler reset: opt-in "
+        "flag must reset to False "
+        "after failure; got "
+        f"{bundle!r}"
+    )
+    # No success-only log line.
+    success_logs = [
+        msg
+        for level, msg in captured_logs
+        if level == "info"
+        and "Dashboard migration complete"
+        in msg
+    ]
+    assert not success_logs, (
+        "R7.5 handler reset: handler "
+        "logged success even though "
+        "installer raised; "
+        f"logs={captured_logs!r}"
     )
 
 
 def test_r75_service_handler_raises_on_no_entry_id_with_multi_entries() -> None:
-    """R7.5: the resolver refuses
-    to migrate ALL entries when
-    the call omits ``entry_id``
-    and more than one entry is
-    loaded. The handler must
-    raise a
-    ``ServiceValidationError``-
-    like exception.
+    """R7.5: ambiguity rejection.
+
+    Drives the REAL handler
+    with TWO entries loaded
+    and a service call that
+    omits ``entry_id``. The
+    handler MUST raise
+    ``ServiceValidationError``
+    and MUST NOT migrate any
+    entry (no installer
+    invocation, no
+    ``.bak`` writes, no
+    metadata changes).
+
+    The legacy source-text
+    test was passing on
+    literal ``raise`` presence
+    but never executed the
+    handler. The new test
+    asserts the behaviour:
+
+      * ``ServiceValidationError``
+        surfaces.
+      * NO installer call
+        happens (captor
+        records zero calls).
+      * Both entries' opt-in
+        flags stay untouched
+        (handler exited BEFORE
+        the per-entry loop).
     """
-    mod = _parse(SERVICES_PY)
-    fn = _function_node(mod, "async_register_services")
-    src = _function_source(SERVICES_PY, fn)
-    handler_src = _extract_handler(src, "migrate_dashboard")
-    assert handler_src is not None
-    # The handler must check
-    # for multiple entries and
-    # reject the ambiguity.
-    assert (
-        "raise " in handler_src
-        or "ValueError" in handler_src
-    ), (
-        "R7.5: handler must raise "
-        "an exception when multiple "
-        "entries are loaded and "
-        "entry_id is not specified; "
-        "got:\n" + handler_src
+    import sys as _sys
+    import types
+    handler_path = _extract_handler_into_harness(
+        "migrate_dashboard"
     )
+    install_calls: list = []
+    _cc_pkg = types.ModuleType("custom_components")
+    _cc_mod = types.ModuleType(
+        "custom_components.powmr_inverter"
+    )
+    def _recording_install(hass, entry):
+        install_calls.append(entry.entry_id)
+        # If the handler actually
+        # invokes the installer
+        # when ambiguous, the
+        # test fails. This
+        # confirms the handler
+        # rejected BEFORE
+        # calling us.
+        raise AssertionError(
+            "installer was called despite "
+            "ambiguous entry_id"
+        )
+    _cc_mod._auto_install_dashboard = (
+        _recording_install
+    )
+    _sys.modules["custom_components"] = _cc_pkg
+    _sys.modules[
+        "custom_components.powmr_inverter"
+    ] = _cc_mod
+    # Two entries, both
+    # eligible for migration.
+    hass_obj = _FakeHass(
+        config_dir="/tmp/x",
+        entries=[
+            _FakeConfigEntry(
+                "01M3XWJ8DRYDQC8A0NCPRVB53N"
+            ),
+            _FakeConfigEntry(
+                "01M3XWJ8ZZZZZZZZZZZZZZZZZZZ"
+            ),
+        ],
+        states={},
+        services=_FakeServiceReg(),
+    )
+    hass_obj.data["powmr_inverter"] = {
+        "01M3XWJ8DRYDQC8A0NCPRVB53N": {
+            "dashboard_migration_opt_in": True,
+        },
+        "01M3XWJ8ZZZZZZZZZZZZZZZZZZZ": {
+            "dashboard_migration_opt_in": True,
+        },
+    }
+    raised, _captured_logs, _captured_events, _h = (
+        _exec_migrate_handler(
+            handler_path,
+            hass_obj,
+            {
+                # No entry_id —
+                # ambiguity.
+                "confirm": True,
+            },
+            _cc_mod,
+        )
+    )
+    assert raised is not None, (
+        "R7.5 ambiguity: handler MUST "
+        "raise when ``entry_id`` is "
+        "missing AND multiple entries "
+        "are loaded; no exception was "
+        "raised"
+    )
+    assert isinstance(
+        raised, _ServiceValidationError
+    ), (
+        "R7.5 ambiguity: handler must "
+        "raise ServiceValidationError; "
+        f"got {type(raised).__name__}: "
+        f"{raised!r}"
+    )
+    assert (
+        "Multiple" in str(raised)
+        or "specify" in str(raised)
+        or "entry_id" in str(raised)
+    ), (
+        "R7.5 ambiguity: error message "
+        "must mention the multiple "
+        "entries and the missing "
+        "entry_id; got "
+        f"{str(raised)!r}"
+    )
+    # Installer MUST NOT have
+    # been called.
+    assert install_calls == [], (
+        "R7.5 ambiguity: handler called "
+        "the installer even though "
+        "the resolver rejected "
+        f"ambiguity; got {install_calls}"
+    )
+    # Both opt-in flags
+    # unchanged — the handler
+    # exited before the
+    # per-entry loop.
+    for entry_id in (
+        "01M3XWJ8DRYDQC8A0NCPRVB53N",
+        "01M3XWJ8ZZZZZZZZZZZZZZZZZZZ",
+    ):
+        bundle = hass_obj.data[
+            "powmr_inverter"
+        ][entry_id]
+        assert bundle.get(
+            "dashboard_migration_opt_in"
+        ) is True, (
+            "R7.5 ambiguity: handler "
+            "touched opt-in flag of "
+            f"{entry_id} despite "
+            "rejection; got "
+            f"{bundle!r}"
+        )
 
 
 def test_r75_service_handler_does_not_log_completion_on_failure() -> None:
@@ -2469,6 +2886,7 @@ def test_r75_repeated_migration_isolation() -> None:
                     lambda *a, **kw: "test_cache"
                 ),
                 "extra_modules": _load_registration_helpers(),
+                "_read_metadata_snapshot": _read_metadata_snapshot,
             },
         )
         register = ns["_register_lovelace_dashboard"]
@@ -2651,6 +3069,545 @@ def test_r75_repeated_migration_isolation() -> None:
             "was clobbered on "
             "repeated migration; "
             f"got {main_after_3!r}"
+        )
+
+
+
+def test_r75_real_write_failure_propagates_to_service() -> None:
+    """R7.5: real writer failure.
+
+    Injects an OSError into the
+    REAL production
+    ``_write_dashboard_atomic``
+    helper — not into a
+    fake installer that
+    raises immediately. The
+    audit REJECTS the previous
+    test design where the
+    installer raise masked
+    the writer behaviour:
+    the previous run left
+    ``metadata`` listing the
+    new dashboard while
+    ``content`` was never
+    written (a dangling
+    registration).
+
+    The end-to-end
+    ``service → installer →
+    registration → metadata``
+    chain must satisfy:
+
+      1. ``_register_lovelace_dashboard``
+         re-raises the
+         ``OSError`` to the
+         caller (the service
+         handler).
+      2. The previous
+         ``lovelace.powmr_energy``
+         content is preserved
+         byte-for-byte (the
+         user's USER EDIT
+         survives).
+      3. The
+         ``lovelace_dashboards``
+         metadata file is NOT
+         modified — it still
+         lists the original
+         main dashboard only,
+         NOT a dangling entry.
+      4. The
+         ``dashboard_migration_opt_in``
+         flag is reset to
+         ``False``.
+      5. The handler does NOT
+         log
+         ``"Dashboard migration complete"``
+         and does NOT emit a
+         success bus event.
+      6. A failure bus event
+         with ``ok=False`` is
+         emitted.
+    """
+    import sys as _sys
+    import types
+    import traceback
+    import asyncio
+
+    # ── Set up the production
+    # handler via the same
+    # extraction pattern as
+    # the rest of the R7.5
+    # suite.
+    mod = _parse(SERVICES_PY)
+    register_node = _function_node(
+        mod, "async_register_services"
+    )
+    assert register_node is not None
+    handler_node = None
+    for child in register_node.body:
+        if (
+            isinstance(
+                child, ast.AsyncFunctionDef
+            )
+            and child.name
+            == "handle_migrate_dashboard"
+        ):
+            handler_node = child
+            break
+    assert handler_node is not None
+    body = ast.unparse(handler_node)
+    harness_dir = os.path.join(
+        _REPO_ROOT, "tests", ".harness"
+    )
+    os.makedirs(harness_dir, exist_ok=True)
+    handler_file = os.path.join(
+        harness_dir,
+        "handle_migrate_dashboard.py",
+    )
+    with open(handler_file, "w", encoding="utf-8") as f:
+        f.write(
+            "# Auto-extracted from services/__init__.py.\n"
+            "\n"
+        )
+        f.write(body)
+        f.write("\n")
+    # Stub the third-party
+    # modules the handler
+    # imports at runtime.
+    _ha_mod = types.ModuleType("homeassistant")
+    _ha_exc = types.ModuleType(
+        "homeassistant.exceptions"
+    )
+    _ha_exc.ServiceValidationError = (
+        _ServiceValidationError
+    )
+    _ha_mod.exceptions = _ha_exc
+    _sys.modules["homeassistant"] = _ha_mod
+    _sys.modules[
+        "homeassistant.exceptions"
+    ] = _ha_exc
+    # ── Real filesystem
+    # pre-state: existing
+    # USER EDIT dashboard.
+    tmp_root = tempfile.mkdtemp(
+        prefix="r75_realwrite_"
+    )
+    storage = os.path.join(tmp_root, ".storage")
+    os.makedirs(storage, exist_ok=True)
+    main_path = os.path.join(
+        storage, "lovelace.powmr_energy"
+    )
+    user_content = {
+        "title": "USER EDIT",
+        "views": [{"title": "ORIGINAL"}],
+    }
+    with open(main_path, "w", encoding="utf-8") as f:
+        json.dump(user_content, f)
+    dash_reg_path = os.path.join(
+        storage, "lovelace_dashboards"
+    )
+    with open(dash_reg_path, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "version": 1,
+                "data": {"items": [
+                    {
+                        "id": "powmr_energy",
+                        "url_path": "powmr-energy",
+                    },
+                ]},
+            },
+            f,
+        )
+    with open(main_path) as f:
+        before_main_bytes = f.read()
+    with open(dash_reg_path) as f:
+        before_metadata_bytes = f.read()
+    # The stub installer
+    # invokes the REAL
+    # ``_register_lovelace_dashboard``
+    # via the integration
+    # module. The integration
+    # module's
+    # ``_write_dashboard_atomic``
+    # is wrapped to raise
+    # ``OSError`` so the
+    # failure surfaces at the
+    # writer, not at a fake
+    # installer.
+    _cc_pkg = types.ModuleType("custom_components")
+    _cc_mod = types.ModuleType(
+        "custom_components.powmr_inverter"
+    )
+    # Import the production
+    # ``_register_lovelace_dashboard``
+    # by execing the
+    # production module and
+    # monkey-patching the
+    # writer. This is the
+    # real path the audit
+    # demands — not a
+    # stub.
+    _sys.path.insert(0, _REPO_ROOT)
+    # Strip pre-existing
+    # custom_components
+    # modules so the in-test
+    # stub wins.
+    for name in list(_sys.modules):
+        if name == "custom_components":
+            del _sys.modules[name]
+        elif name.startswith("custom_components."):
+            del _sys.modules[name]
+    _sys.modules["custom_components"] = _cc_pkg
+    _sys.modules[
+        "custom_components.powmr_inverter"
+    ] = _cc_mod
+    # Now drive the integration
+    # module via ``ast.unparse``
+    # on its top-level
+    # functions — we wrap the
+    # ``_write_dashboard_atomic``
+    # symbol so the production
+    # ``_register_lovelace_dashboard``
+    # actually calls a
+    # ``_write_dashboard_atomic``
+    # that raises. To do this
+    # without importing the
+    # full module (which
+    # needs HA / voluptuous),
+    # we exec the production
+    # ``_init__.py`` module
+    # body in an isolated
+    # namespace, then call
+    # the function from that
+    # namespace with the
+    # patched writer.
+    with open(INIT_PY, encoding="utf-8") as f:
+        init_src = f.read()
+    init_mod = ast.parse(init_src)
+    # Collect helper function
+    # names that
+    # ``_register_lovelace_dashboard``
+    # needs at module level:
+    # ``_write_dashboard_atomic``,
+    # ``_write_dashboards_metadata_atomic``,
+    # ``_update_dashboard_content``,
+    # ``_compute_assets_cache_bust``,
+    # ``_read_metadata_snapshot``.
+    needed = {
+        "_write_dashboard_atomic",
+        "_write_dashboards_metadata_atomic",
+        "_update_dashboard_content",
+        "_compute_assets_cache_bust",
+        "_read_metadata_snapshot",
+    }
+    captured = {}
+    for node in init_mod.body:
+        if (
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name in needed
+        ):
+            captured[node.name] = ast.unparse(node)
+    # Build a tiny harness
+    # module that defines
+    # all captured helpers and
+    # a wrapped
+    # ``_write_dashboard_atomic``
+    # that raises OSError on
+    # the FIRST call only.
+    real_writer_path = os.path.join(
+        harness_dir, "_register_real_writer_harness.py"
+    )
+    wrapped_writer = (
+        "def _write_dashboard_atomic(target_path, payload):\n"
+        "    raise OSError(\"[INJECTED] dashboard write failure\")\n\n"
+    )
+    body = wrapped_writer
+    for name, src_code in captured.items():
+        if name == "_write_dashboard_atomic":
+            continue  # wrapped version wins
+        body += src_code + "\n\n"
+    body += (
+        "# ``_register_lovelace_dashboard`` lives below — we\n"
+        "# capture it too so the\n"
+        "# service handler calls\n"
+        "# the production body.\n"
+        + captured.get(
+            "_register_lovelace_dashboard",
+            "pass",
+        )
+        + "\n"
+    )
+    with open(real_writer_path, "w", encoding="utf-8") as f:
+        f.write(
+            "# Auto-generated by "
+            "test_r75_real_write_failure_propagates_to_service.\n"
+            "# Wraps the REAL production "
+            "_write_dashboard_atomic with\n"
+            "# an OSError-raising stub to\n"
+            "# validate that the diagnostic\n"
+            "# surface reaches the service "
+            "handler.\n"
+            "\n"
+            + body
+        )
+    with open(real_writer_path) as f:
+        harness_ns = {
+            "__builtins__": __builtins__,
+            "json": json,
+            "os": os,
+            "shutil": shutil,
+            "hashlib": hashlib,
+            "tempfile": tempfile,
+            "logging": __import__("logging"),
+            "HomeAssistant": object,
+            "ConfigEntry": object,
+            "DOMAIN": "powmr_inverter",
+        }
+        exec(
+            compile(f.read(), real_writer_path, "exec"),
+            harness_ns,
+        )
+    # Install the harness's
+    # helpers onto the
+    # integration module stub
+    # so the service handler
+    # resolves them through
+    # ``sys.modules``.
+    for name in (
+        "_write_dashboard_atomic",
+        "_write_dashboards_metadata_atomic",
+        "_update_dashboard_content",
+        "_compute_assets_cache_bust",
+        "_read_metadata_snapshot",
+        "_register_lovelace_dashboard",
+    ):
+        if name in harness_ns:
+            setattr(_cc_mod, name, harness_ns[name])
+
+    # The service handler
+    # looks up ``_auto_install_dashboard``
+    # on the integration
+    # module. Wrap the
+    # production
+    # ``_register_lovelace_dashboard``
+    # (from the harness) as a
+    # sync shim that the
+    # handler can ``await``.
+    # ``_register_lovelace_dashboard``
+    # already does the file
+    # I/O via
+    # ``async_add_executor_job``,
+    # so a thin async wrapper
+    # is enough. The wrapper
+    # propagates the OSError
+    # raised by the wrapped
+    # writer.
+    async def _auto_install_dashboard(hass, entry):
+        await harness_ns["_register_lovelace_dashboard"](
+            hass, entry, {
+                "title": "Auto-installed by service",
+                "views": [],
+            }
+        )
+
+    _cc_mod._auto_install_dashboard = (
+        _auto_install_dashboard
+    )
+    # ── Plain handler namespace ─────
+    captured_logs = []
+    captured_bus_events = []
+    hass_obj = _FakeHass(
+        config_dir=tmp_root,
+        entries=[_FakeConfigEntry("entry_a")],
+        states={},
+        services=_FakeServiceReg(),
+    )
+    hass_obj.bus.events = captured_bus_events
+    ns = {
+        "__builtins__": __builtins__,
+        "json": json,
+        "os": os,
+        "logging": __import__("logging"),
+        "hass": hass_obj,
+        "DOMAIN": "powmr_inverter",
+        "HomeAssistant": object,
+        "ServiceCall": object,
+        "ServiceValidationError": (
+            _ServiceValidationError
+        ),
+        "_LOGGER": _CapturingLogger(captured_logs),
+    }
+    try:
+        with open(handler_file) as f:
+            compiled = compile(
+                f.read(), handler_file, "exec"
+            )
+        exec(compiled, ns)
+    except NameError as exc:
+        tb = traceback.format_exc()
+        assert False, (
+            "R7.5 real-write: handler "
+            "extraction failed: "
+            f"{exc}\n{tb}"
+        )
+    handler = ns["handle_migrate_dashboard"]
+    call = _FakeServiceCall(
+        {"entry_id": "entry_a", "confirm": True}
+    )
+    hass_obj.data["powmr_inverter"] = {
+        "entry_a": {
+            "dashboard_migration_opt_in": True,
+        }
+    }
+    raised = None
+    try:
+        _run(handler(call))
+    except BaseException as exc:
+        raised = exc
+    # ── Assertions (ALL FOUR AT ONCE) ─────
+    # (1) Service reports failure.
+    failure_signalled = (
+        raised is not None
+    ) or any(
+        event_data
+        and event_data.get("results")
+        and any(
+            r.get("ok") is False
+            for r in event_data["results"]
+        )
+        for _et, event_data in captured_bus_events
+    )
+    assert failure_signalled, (
+        "R7.5 real-write: handler must "
+        "report failure; raised="
+        f"{raised!r}; bus="
+        f"{captured_bus_events!r}"
+    )
+    # (2) Previous content
+    # preserved verbatim.
+    with open(main_path) as f:
+        after_main_bytes = f.read()
+    assert (
+        after_main_bytes == before_main_bytes
+    ), (
+        "R7.5 real-write: existing "
+        "content was modified "
+        f"({after_main_bytes!r} != "
+        f"{before_main_bytes!r})"
+    )
+    # (3) Metadata NOT modified —
+    # no dangling registration.
+    with open(dash_reg_path) as f:
+        after_metadata = json.load(f)
+    items_after = after_metadata["data"]["items"]
+    ids_after = {
+        item.get("id") for item in items_after
+    }
+    assert ids_after == {"powmr_energy"}, (
+        "R7.5 real-write: metadata "
+        "must not list a dangling "
+        "dashboard after write "
+        f"failure; got ids={ids_after}"
+    )
+    # No new content file was
+    # written.
+    new_files = sorted(
+        f for f in os.listdir(storage)
+        if f.startswith("lovelace.powmr_energy")
+        and not f.endswith(".bak")
+        and f != "lovelace.powmr_energy"
+    )
+    assert new_files == [], (
+        "R7.5 real-write: a new "
+        "sidecar file was created "
+        "despite write failure; "
+        f"got {new_files}"
+    )
+    # (4) Opt-in flag resets.
+    bundle = hass_obj.data[
+        "powmr_inverter"
+    ]["entry_a"]
+    assert bundle.get(
+        "dashboard_migration_opt_in"
+    ) is False, (
+        "R7.5 real-write: opt-in "
+        "flag must reset after "
+        f"failure; got {bundle!r}"
+    )
+    # (5) No success log line
+    # and no success-only
+    # bus event.
+    success_logs = [
+        msg
+        for level, msg in captured_logs
+        if level == "info"
+        and "Dashboard migration complete"
+        in msg
+    ]
+    assert not success_logs, (
+        "R7.5 real-write: handler "
+        "logged success even "
+        "though write failed; "
+        f"captured={captured_logs!r}"
+    )
+    # (6) Either a failure
+    # bus event with ok=False
+    # OR the ServiceValidationError
+    # surfaced.
+    if raised is None:
+        assert any(
+            event_data
+            and event_data.get("results")
+            and any(
+                r.get("ok") is False
+                for r in event_data["results"]
+            )
+            for _et, event_data in captured_bus_events
+        ), (
+            "R7.5 real-write: no "
+            "failure bus event "
+            "emitted; events="
+            f"{captured_bus_events!r}"
+        )
+    # (5) No success log line
+    # and no success-only
+    # bus event.
+    success_logs = [
+        msg
+        for level, msg in captured_logs
+        if level == "info"
+        and "Dashboard migration complete"
+        in msg
+    ]
+    assert not success_logs, (
+        "R7.5 real-write: handler "
+        "logged success even "
+        "though write failed; "
+        f"captured={captured_logs!r}"
+    )
+    # (6) Either a failure
+    # bus event with ok=False
+    # OR the ServiceValidationError
+    # surfaced.
+    if raised is None:
+        # Look for an event
+        # whose payload marks
+        # ok=False.
+        assert any(
+            event_data
+            and event_data.get("results")
+            and any(
+                r.get("ok") is False
+                for r in event_data["results"]
+            )
+            for _et, event_data in captured_bus_events
+        ), (
+            "R7.5 real-write: no "
+            "failure bus event "
+            "emitted; events="
+            f"{captured_bus_events!r}"
         )
 
 

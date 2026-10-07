@@ -772,10 +772,37 @@ def _build_ai_view(
     for attr_key, label in decision_rows:
         if not decision_state_eid:
             break
+        # Audit T22 round 8 (R8.1):
+        # the ``entities`` card
+        # requires ``type:
+        # attribute`` to render
+        # a sensor attribute as
+        # the row's primary
+        # value. The previous
+        # ``entity + attribute``
+        # form silently rendered
+        # the sensor's STATE,
+        # not the attribute, so
+        # every row showed the
+        # same value. The
+        # ``type: attribute``
+        # schema is documented
+        # at
+        # https://www.home-assistant.io/dashboards/entities/
+        # — a row is a dict with
+        # ``entity`` and
+        # ``attribute`` keys and
+        # a ``type: attribute``
+        # discriminator so the
+        # frontend reads the
+        # attribute value, not
+        # the state.
         rows.append({
+            "type": "attribute",
             "entity": decision_state_eid,
-            "name": label,
             "attribute": attr_key,
+            "name": label,
+            "icon": "mdi:brain",
         })
     for eid, name in (
         (hint_eid, "Predictive Hint"),
@@ -1564,45 +1591,91 @@ async def _register_lovelace_dashboard(
     except Exception as exc:
         _LOGGER.debug("Dashboard check failed: %s", exc)
 
-    # Step 2: Register metadata (atomic writer; safe if missing)
-    try:
-        def _read_or_init():
-            if not os.path.exists(dashboards_storage):
-                return {
-                    "version": 1,
-                    "minor_version": 1,
-                    "key_version": 1,
-                    "data": {"items": []},
-                }
-            with open(dashboards_storage, "r") as f:
-                return json.loads(f.read())
+    # Step 2: Read the existing
+    # ``lovelace_dashboards``
+    # metadata snapshot. We
+    # capture the existing
+    # payload BEFORE we touch
+    # either the content file
+    # or the metadata file so we
+    # can roll back atomically
+    # on either write failure.
+    # Audit R7.5 rejects dangling
+    # registration — the
+    # metadata MUST NOT list a
+    # dashboard whose content
+    # file does not exist on
+    # disk.
+    existing_payload = await hass.async_add_executor_job(
+        lambda: _read_metadata_snapshot(dashboards_storage)
+    )
+    items = existing_payload.get(
+        "data", {}
+    ).get("items", [])
 
-        existing_payload = await hass.async_add_executor_job(_read_or_init)
-        items = existing_payload.get("data", {}).get("items", [])
+    # Audit R7.3: register
+    # THIS entry's sidecar
+    # dashboard in the
+    # Lovelace metadata with a
+    # unique ``url_path`` and
+    # ``id`` so the sidecar is
+    # actually navigable. The
+    # canonical main dashboard
+    # is registered with
+    # ``DASHBOARD_ID`` and
+    # ``DASHBOARD_URL``; a
+    # sidecar uses ``active_id``
+    # / ``active_url`` derived
+    # from the entry's content
+    # hash.
+    target_id = active_id
+    target_url = active_url
+    target_title = active_title
+    already_listed = any(
+        item.get("id") == target_id
+        for item in items
+    )
 
-        # Audit R7.3: register
-        # THIS entry's sidecar
-        # dashboard in the
-        # Lovelace metadata with a
-        # unique ``url_path`` and
-        # ``id`` so the sidecar is
-        # actually navigable. The
-        # canonical main dashboard
-        # is registered with
-        # ``DASHBOARD_ID`` and
-        # ``DASHBOARD_URL``; a
-        # sidecar uses ``active_id``
-        # / ``active_url`` derived
-        # from the entry's content
-        # hash.
-        target_id = active_id
-        target_url = active_url
-        target_title = active_title
-        already_listed = any(
-            item.get("id") == target_id
-            for item in items
+    # Step 3 (audit R7.5):
+    # write the content file
+    # FIRST. If the content
+    # write raises, no metadata
+    # is touched and the caller
+    # sees a clean failure with
+    # no dangling registration.
+    # The previous code wrote
+    # metadata first then
+    # content, which left a
+    # dangling registration on
+    # content failure — the
+    # sidebar would show a
+    # dashboard that 404s.
+    if not already_registered or opt_in:
+        await _update_dashboard_content(
+            hass,
+            dashboard_content_storage,
+            dashboard_config,
+            dashboard_id=active_id,
         )
+    else:
+        # D1: already registered
+        # AND no opt-in. Leave
+        # everything untouched.
+        return
 
+    # Step 4: only after the
+    # content write succeeded,
+    # append the metadata entry.
+    # If this raises, remove the
+    # freshly written content
+    # file so the dashboard
+    # does not appear in the
+    # sidebar without a
+    # resolvable content
+    # payload. Re-raise so the
+    # service handler sees
+    # ``ok=False``.
+    try:
         if not already_listed:
             items.append({
                 "id": target_id,
@@ -1615,7 +1688,7 @@ async def _register_lovelace_dashboard(
             })
             existing_payload["data"]["items"] = items
 
-            def _write_metadata():
+            def _write_metadata() -> None:
                 _write_dashboards_metadata_atomic(
                     dashboards_storage, existing_payload
                 )
@@ -1632,51 +1705,78 @@ async def _register_lovelace_dashboard(
                 "metadata not modified",
                 target_id,
             )
-
-        # Step 3: Write dashboard config content.
-        # D1 (final guard): only
-        # write when the dashboard
-        # was not already
-        # registered, OR when the
-        # user explicitly opted
-        # in. The previous code
-        # always overwrote and
-        # the user's edits were
-        # lost on the next setup
-        # restart.
-        if not already_registered or opt_in:
-            await _update_dashboard_content(
-                hass,
-                dashboard_content_storage,
-                dashboard_config,
-                dashboard_id=active_id,
-            )
-            if already_registered and opt_in:
-                _LOGGER.info(
-                    "Dashboard %s migrated "
-                    "(opt-in honoured)",
-                    target_url,
-                )
-                # R6.5: the migration
-                # is one-shot. Reset
-                # the opt-in flag so
-                # the next reload does
-                # NOT silently
-                # overwrite again.
-                hass.data.setdefault(
-                    DOMAIN, {}
-                ).setdefault(
-                    entry.entry_id, {}
-                )["dashboard_migration_opt_in"] = False
-            elif not already_listed:
-                _LOGGER.info(
-                    "✅ Dashboard '%s' content "
-                    "written (first install)",
-                    target_title,
-                )
-
     except Exception as exc:
-        _LOGGER.warning("Dashboard auto-register failed: %s", exc)
+        # Roll the content file
+        # back so we do not leave
+        # a dangling dashboard in
+        # the Lovelace sidebar.
+        try:
+            await hass.async_add_executor_job(
+                lambda: (
+                    os.unlink(dashboard_content_storage)
+                    if os.path.exists(dashboard_content_storage)
+                    else None
+                )
+            )
+        except OSError as rollback_exc:
+            _LOGGER.error(
+                "Content rollback failed after "
+                "metadata write raised: %s",
+                rollback_exc,
+            )
+        _LOGGER.error(
+            "Dashboard auto-register failed "
+            "(metadata write raised): %s",
+            exc,
+        )
+        raise
+
+    if already_registered and opt_in:
+        _LOGGER.info(
+            "Dashboard %s migrated "
+            "(opt-in honoured)",
+            target_url,
+        )
+        # R6.5: the migration
+        # is one-shot. Reset
+        # the opt-in flag so
+        # the next reload does
+        # NOT silently
+        # overwrite again.
+        hass.data.setdefault(
+            DOMAIN, {}
+        ).setdefault(
+            entry.entry_id, {}
+        )["dashboard_migration_opt_in"] = False
+    elif not already_listed:
+        _LOGGER.info(
+            "✅ Dashboard '%s' content "
+            "written (first install)",
+            target_title,
+        )
+
+
+def _read_metadata_snapshot(dashboards_storage: str) -> dict:
+    """Read the existing
+    ``lovelace_dashboards``
+    metadata snapshot, or
+    return a fresh empty
+    payload when the file
+    does not exist.
+
+    Module-level helper so the
+    ``async_add_executor_job``
+    closure stays small.
+    """
+    if not os.path.exists(dashboards_storage):
+        return {
+            "version": 1,
+            "minor_version": 1,
+            "key_version": 1,
+            "data": {"items": []},
+        }
+    with open(dashboards_storage, "r") as f:
+        return json.loads(f.read())
 
 
 async def _update_dashboard_content(
