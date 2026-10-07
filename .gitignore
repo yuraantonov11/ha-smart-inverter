@@ -13,10 +13,18 @@ htmlcov/
 
 # Backup files
 *.bak
+*.bak_*
 *.backup
-*~
 *.swp
 *.tmp
+*~
+*.journal
+*.sqlite-journal
+*-journal
+*.sqlite-wal
+*-wal
+*.sqlite-shm
+*-shm
 
 # Секрети
 **/secrets.yaml
@@ -54,9 +62,17 @@ desktop.ini
 ha_run.lock
 HA_VERSION
 
-# Per-inverter learning state (runtime data, not source).
-hems/pv_fact_pairs*.json*
-hems/*/real_forecast_pairs.json*
+# Per-inverter learning state — runtime data, not source.
+# Narrow patterns: only the actual filenames the integration writes.
+# ``**`` matches one or more path components; the previous ``*``
+# pattern only matched a single level and missed
+# ``hems/<entry_id>/real_forecast_pairs.json``.
+hems/pv_fact_pairs_*.json
+hems/pv_fact_pairs_*.json.tmp
+hems/cloud_hourly_*.json
+hems/cloud_hourly_*.json.tmp
+hems/**/real_forecast_pairs.json
+hems/**/real_forecast_pairs.json.tmp
 
 # Test harness files —
 # regenerated automatically by
