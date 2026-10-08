@@ -415,6 +415,30 @@ class _FakeConfigEntries:
             if getattr(e, "domain", None) == domain
         ]
 
+    # R10.6: production now
+    # routes dashboard
+    # binding writes
+    # through
+    # ``hass.config_entries.async_update_entry``.
+    # This is the
+    # in-place equivalent
+    # of the real HA
+    # behaviour: the
+    # entry's options
+    # are replaced and
+    # its ``options``
+    # attribute re-bound
+    # to the new
+    # ``dict`` (legacy
+    # tests use plain
+    # ``dict`` — no
+    # proxy).
+    async def async_update_entry(
+        self, entry, *, options=None, **kw
+    ):
+        if options is not None:
+            entry.options = dict(options)
+
 
 class _FakeServiceCall:
     def __init__(self, data):
@@ -5193,6 +5217,520 @@ def test_r101_old_destructive_rollback_would_fail_regression_check() -> None:
     # fails.
 
 
+
+
+
+
+
+# ───────────────────────────────────────────────────────────────
+# R10.6 — Юра round 4
+# follow-up.
+#
+# HA 2026.10.0b0 makes
+# ``ConfigEntry.options``
+# a read-only
+# ``MappingProxyType``.
+# Direct mutation
+# raises ``TypeError``.
+# Production must use
+# ``hass.config_entries.async_update_entry``.
+#
+# Additional R10.6
+# defects:
+#   * fresh install →
+#     second setup
+#     creates sidecar
+#     → TWO dashboards.
+#     Binding MUST be
+#     written in the
+#     first-install
+#     branch.
+#   * stale binding →
+#     previous code
+#     falls through to
+#     ``main`` and
+#     overwrites user
+#     content. Stale
+#     binding MUST NOT
+#     allow a write to
+#     main.
+# ───────────────────────────────────────────────────────────────
+
+
+class _ReadOnlyOptionsEntry:
+    """R10.6 fake
+    config entry
+    whose
+    ``options`` is
+    a
+    ``MappingProxyType``
+    — mirroring HA
+    2026.10.0b0.
+    """
+
+    def __init__(
+        self,
+        entry_id,
+        initial_options,
+        domain="powmr_inverter",
+    ):
+        import types as _t
+        self.entry_id = entry_id
+        self.domain = domain
+        self.title = entry_id
+        self._options_src = dict(initial_options)
+        self.options = _t.MappingProxyType(
+            self._options_src
+        )
+
+
+class _RecordingConfigEntries:
+    """R10.6 fake
+    ``hass.config_entries``
+    that records
+    every
+    ``async_update_entry``
+    call.
+    """
+
+    def __init__(self, entries):
+        self._entries = entries
+        self.update_calls = []
+
+    def async_entries(
+        self, domain=None, *args, **kw
+    ):
+        if domain is None:
+            return list(self._entries)
+        return [
+            e for e in self._entries
+            if getattr(e, "domain", None) == domain
+        ]
+
+    async def async_update_entry(
+        self, entry, *, options=None, **kw
+    ):
+        self.update_calls.append(
+            (entry.entry_id, dict(options or {}))
+        )
+        if options is None:
+            return
+        entry._options_src.update(options)
+        import types as _t
+        entry.options = _t.MappingProxyType(
+            entry._options_src
+        )
+
+
+class _ReadOnlyHass(_FakeHass):
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        entries = kw.get(
+            "entries",
+            getattr(
+                self.config_entries,
+                "_entries",
+                [],
+            ),
+        )
+        self.config_entries = (
+            _RecordingConfigEntries(entries)
+        )
+
+
+def test_r106_dashboard_must_not_mutate_read_only_options() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry,
+                {"title": "FRESH", "views": []},
+            )
+        )
+        update_calls = (
+            hass.config_entries.update_calls
+        )
+        assert any(
+            "lovelace_dashboard_url_path"
+            in (opts or {})
+            for _eid, opts in update_calls
+        ), (
+            "R10.6: production must persist the "
+            "binding via "
+            "hass.config_entries.async_update_entry "
+            f"(got calls: {update_calls!r})"
+        )
+
+
+def test_r106_fresh_install_then_repeated_setup_one_dashboard() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry,
+                {"title": "FRESH-1", "views": []},
+            )
+        )
+        _run(
+            real(
+                hass,
+                entry,
+                {"title": "FRESH-2", "views": []},
+            )
+        )
+        files = sorted(
+            f for f in os.listdir(storage)
+            if f.startswith("lovelace.powmr_energy")
+            and not f.endswith(".bak")
+        )
+        assert "lovelace.powmr_energy" in files
+        sidecars = [
+            f for f in files
+            if f != "lovelace.powmr_energy"
+        ]
+        assert sidecars == [], (
+            "R10.6 fresh install: repeated setup "
+            "must NOT create a sidecar; got "
+            f"{sidecars!r}"
+        )
+
+
+def test_r106_restore_from_persisted_options() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "data": {
+                        "config": {"title": "MAIN"},
+                    },
+                },
+                f,
+            )
+        # Mirror the
+        # ``lovelace_dashboards``
+        # metadata file — HA
+        # always populates
+        # this in production.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": "powmr_energy",
+                            "url_path": "powmr-energy",
+                            "title": "MAIN",
+                            "show_in_sidebar": True,
+                        }],
+                    },
+                },
+                f,
+            )
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry,
+                {"title": "RESTORE", "views": []},
+            )
+        )
+        files = sorted(
+            f for f in os.listdir(storage)
+            if f.startswith("lovelace.powmr_energy")
+            and not f.endswith(".bak")
+        )
+        sidecars = [
+            f for f in files
+            if f != "lovelace.powmr_energy"
+        ]
+        assert sidecars == [], (
+            "R10.6 restore: bound entry must NOT "
+            "spawn a sidecar; got "
+            f"{sidecars!r}"
+        )
+
+
+def test_r106_stale_binding_does_not_overwrite_main() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "data": {
+                        "config": {
+                            "title": "USER CONTENT",
+                        },
+                    },
+                },
+                f,
+            )
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-deadd00d",
+            },
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry,
+                {"title": "STALE", "views": []},
+            )
+        )
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+        ) as f:
+            after = json.load(f)
+        assert (
+            after["data"]["config"]["title"]
+            == "USER CONTENT"
+        ), (
+            "R10.6 stale-binding: production "
+            "must NOT touch main when the "
+            "binding is stale"
+        )
+        files = sorted(
+            f for f in os.listdir(storage)
+            if f.startswith("lovelace.powmr_energy")
+            and not f.endswith(".bak")
+        )
+        sidecars = [
+            f for f in files
+            if f != "lovelace.powmr_energy"
+        ]
+        assert len(sidecars) == 1, (
+            "R10.6 stale-binding: a sidecar "
+            f"must exist; got {sidecars!r}"
+        )
+
+
+def test_r106_two_entries_isolated_dashboards() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        entry_a = _ReadOnlyOptionsEntry(
+            "01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            initial_options={},
+        )
+        entry_b = _ReadOnlyOptionsEntry(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry_a, entry_b],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry_a.entry_id: {},
+            entry_b.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry_a,
+                {"title": "A", "views": []},
+            )
+        )
+        _run(
+            real(
+                hass,
+                entry_b,
+                {"title": "B", "views": []},
+            )
+        )
+        binding_a = entry_a.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        binding_b = entry_b.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        assert binding_a is not None
+        assert binding_b is not None
+        assert binding_a != binding_b
+        files = sorted(
+            f for f in os.listdir(storage)
+            if f.startswith("lovelace.powmr_energy")
+            and not f.endswith(".bak")
+        )
+        # Two distinct
+        # dashboards: one
+        # entry claims the
+        # canonical main,
+        # the other gets a
+        # sidecar. Both are
+        # isolated through
+        # per-entry bindings.
+        assert "lovelace.powmr_energy" in files
+        sidecars = [
+            f for f in files
+            if f != "lovelace.powmr_energy"
+        ]
+        assert len(sidecars) == 1, (
+            "R10.6 isolation: the second entry "
+            f"must own a distinct sidecar; got "
+            f"{sidecars!r}"
+        )
+        # And the sidecar's
+        # binding is the one
+        # for entry_b, not
+        # entry_a. The file
+        # name is
+        # ``lovelace.powmr_energy_<hash>``
+        # and the binding is
+        # ``powmr-<hash>``.
+        sidecar_hash = (
+            sidecars[0]
+            .replace("lovelace.powmr_energy_", "")
+        )
+        assert binding_b == f"powmr-{sidecar_hash}", (
+            "R10.6 isolation: sidecar's binding "
+            f"(hash={sidecar_hash!r}) must match "
+            f"entry_b ({binding_b!r})"
+        )
 
 
 def _run_all() -> None:

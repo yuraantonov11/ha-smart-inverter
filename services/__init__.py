@@ -708,125 +708,57 @@ async def async_register_services(hass: HomeAssistant) -> None:
     # so multi-entry
     # installations are
     # isolated.
-    async def handle_add_schedule_rule(call: ServiceCall) -> None:
+    async def handle_add_schedule_rule(
+        call: ServiceCall,
+    ) -> None:
         """Add a schedule
         rule via service
         call.
 
-        T25 round 3: the
-        only ownership path
-        for
-        ``coordinator.schedule_rules``
-        is the coordinator
-        itself. This
-        handler is a thin
-        façade that
-        constructs the
-        ``ScheduleRule``,
-        delegates to
-        ``add_rule``, and
-        persists the
-        registry through
-        the coordinator's
-        ``_persist_schedule_rules``
-        helper. We use
-        ``_resolve_entry``
-        so multi-entry
-        installations do
-        not race each
-        other."""
+        Round 4 (T25): the
+        handler is a *thin
+        façade* — it resolves
+        the coordinator
+        through ``_get_api``
+        and delegates to the
+        module-level
+        ``_add_schedule_rule_impl``
+        which owns the
+        snapshot / mutate /
+        persist / rollback
+        contract. We do NOT
+        inline the persistence
+        logic here — that
+        would let a regression
+        silently revert to the
+        pre-round-4 behaviour
+        where a failed persist
+        left the new rule in
+        memory and the user
+        saw no ``ServiceValidationError``.
+        """
         api, coordinator = await _get_api(call)
-        from ..hems.schedule_rules import (
-            ScheduleRule,
-        )
-        rule = ScheduleRule(
-            name=call.data.get("name", ""),
-            days_of_week=call.data.get(
-                "days_of_week", [1, 2, 3, 4, 5]
-            ),
-            start_hour=call.data.get(
-                "start_hour", 0
-            ),
-            start_minute=call.data.get(
-                "start_minute", 0
-            ),
-            end_hour=call.data.get(
-                "end_hour", 23
-            ),
-            end_minute=call.data.get(
-                "end_minute", 0
-            ),
-            mode=_MODE_VALUE.get(
-                call.data.get(
-                    "mode", "adaptive"
-                ),
-                0,
-            ),
-            enabled=call.data.get(
-                "enabled", True
-            ),
-            priority=call.data.get(
-                "priority", 5
-            ),
-        )
-        coordinator.schedule_rules.add_rule(rule)
-        # T25: persist the
-        # registry so the
-        # new rule
-        # survives an HA
-        # restart.
-        ok = coordinator._persist_schedule_rules()
-        if not ok:
-            _LOGGER.error(
-                "Service: failed to persist "
-                "schedule rule '%s'",
-                rule.name,
-            )
-            raise ValueError(
-                "Failed to persist schedule rule"
-            )
-        _LOGGER.info(
-            "Service: added schedule rule '%s'",
-            rule.name,
-        )
+        await _add_schedule_rule_impl(call, coordinator)
 
     async def handle_delete_schedule_rule(
-        call: ServiceCall
+        call: ServiceCall,
     ) -> None:
         """Delete a schedule
         rule via service
         call.
 
-        T25 round 3:
-        identical
-        routing /
-        persistence to
-        ``handle_add_schedule_rule``
-        so the
-        coordinator
-        remains the
-        sole write
-        owner of the
-        schedule
-        registry."""
+        Round 4 (T25): thin
+        façade — same pattern
+        as
+        ``handle_add_schedule_rule``.
+        Delegates to
+        ``_delete_schedule_rule_impl``
+        so the snapshot /
+        rollback contract is
+        identical to add.
+        """
         api, coordinator = await _get_api(call)
-        rule_id = call.data["rule_id"]
-        coordinator.schedule_rules.delete_rule(rule_id)
-        ok = coordinator._persist_schedule_rules()
-        if not ok:
-            _LOGGER.error(
-                "Service: failed to persist "
-                "schedule rule delete %s",
-                rule_id,
-            )
-            raise ValueError(
-                "Failed to persist "
-                "schedule rule deletion"
-            )
-        _LOGGER.info(
-            "Service: deleted schedule rule %s",
-            rule_id,
-        )
+        await _delete_schedule_rule_impl(call, coordinator)
 
     hass.services.async_register(
         DOMAIN,

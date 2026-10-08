@@ -1579,13 +1579,41 @@ async def _register_lovelace_dashboard(
         "lovelace_dashboard_url_path"
     )
 
+    # Round 4 follow-up
+    # (R10.6): ``entry.options``
+    # is a read-only
+    # ``MappingProxyType`` in HA
+    # 2026.10.0b0. Direct
+    # item assignment raises
+    # ``TypeError``. We
+    # accumulate the binding
+    # to persist in
+    # ``must_persist_binding``
+    # and route the write
+    # through
+    # ``hass.config_entries.async_update_entry``
+    # below.
+    must_persist_binding: str | None = None
+    # Defaults for the
+    # resolve phase.
+    # R10.6: every branch
+    # below MUST overwrite
+    # these before the
+    # write phase.
+    dashboard_content_storage: str = ""
+    active_id: str = ""
+    active_url: str = ""
+    active_title: str = (
+        f"Smart Solar · {entry.title or entry.entry_id[:8]}"
+    )
+    is_first_opt_in: bool = False
+
     if own_sidecar_exists:
         # Idempotent: this
         # ``entry_id`` already
         # has its sidecar
-        # registered. Reuse
-        # it.
-        dashboard_content_storage: str = sidecar_path
+        # registered. Reuse it.
+        dashboard_content_storage = sidecar_path
         active_id: str = sidecar_id
         active_url: str = f"powmr-{entry_hash}"
         active_title: str = (
@@ -1597,17 +1625,31 @@ async def _register_lovelace_dashboard(
         # second dashboard even
         # if the disk file is
         # deleted out-of-band.
-        entry.options[
-            "lovelace_dashboard_url_path"
-        ] = active_url
+        # R10.6: ``entry.options``
+        # is a read-only
+        # ``MappingProxyType`` —
+        # route through
+        # ``async_update_entry``.
+        if persisted_path != active_url:
+            must_persist_binding = active_url
     elif persisted_path is not None:
         # We have a binding from
         # a prior entry.options.
-        # Look up the matching
-        # dashboard by url_path
-        # and reuse its id.
+        # R10.6: if the binding
+        # no longer matches a
+        # registered dashboard,
+        # we MUST NOT fall
+        # through to ``main``
+        # (that would overwrite
+        # another entry's user
+        # content). The
+        # ``binding_is_stale``
+        # branch below routes
+        # the request to a
+        # fresh sidecar instead.
         match_id: str | None = None
         match_title = ""
+        binding_is_stale = False
         try:
             existing_payload = (
                 await hass.async_add_executor_job(
@@ -1627,86 +1669,109 @@ async def _register_lovelace_dashboard(
                     break
         except Exception:
             match_id = None
+            binding_is_stale = True
         if match_id is not None:
-            # Found an existing
-            # dashboard with our
-            # persisted url_path —
-            # reuse it.
             content_path = os.path.join(
                 config_dir,
                 ".storage",
                 f"lovelace.{match_id}",
             )
             if os.path.exists(content_path):
+                # Live binding —
+                # reuse the
+                # dashboard.
                 dashboard_content_storage = content_path
                 active_id = match_id
                 active_url = persisted_path
                 active_title = match_title
                 is_first_opt_in = False
             else:
-                # Stale binding; fall
-                # through to the
-                # default logic.
-                is_first_opt_in = (
-                    not all_sidecars
-                    and not os.path.exists(main_path)
-                )
-                dashboard_content_storage = main_path
-                active_id = DASHBOARD_ID
-                active_url = DASHBOARD_URL
-                active_title = DASHBOARD_TITLE
+                # Stale binding:
+                # url_path is in
+                # metadata but the
+                # content file is
+                # gone. R10.6: do
+                # NOT touch
+                # ``main``; route
+                # to a fresh
+                # sidecar.
+                binding_is_stale = True
         else:
-            is_first_opt_in = (
-                not all_sidecars
-                and not os.path.exists(main_path)
+            # Stale binding:
+            # ``persisted_path``
+            # does not match any
+            # registered
+            # dashboard. R10.6:
+            # do NOT touch
+            # ``main``; route to
+            # a fresh sidecar.
+            binding_is_stale = True
+        if binding_is_stale:
+            # R10.6: pick a
+            # sidecar to avoid
+            # overwriting
+            # another entry's
+            # main.
+            dashboard_content_storage = sidecar_path
+            active_id = sidecar_id
+            active_url = f"powmr-{entry_hash}"
+            active_title = (
+                f"Smart Solar · {entry.title or entry.entry_id[:8]}"
             )
+            is_first_opt_in = False
+            if persisted_path != active_url:
+                must_persist_binding = active_url
+    else:
+        # No binding. R10.6:
+        # if ``main`` does NOT
+        # exist yet (truly
+        # fresh install) write
+        # ``main`` and record
+        # the binding. If
+        # ``main`` already
+        # exists (legacy /
+        # another entry),
+        # create a sidecar
+        # instead and record
+        # the sidecar's
+        # binding.
+        if not os.path.exists(main_path):
+            is_first_opt_in = True
             dashboard_content_storage = main_path
             active_id = DASHBOARD_ID
             active_url = DASHBOARD_URL
             active_title = DASHBOARD_TITLE
-    else:
-        is_first_opt_in = (
-            not all_sidecars
-            and not os.path.exists(main_path)
-        )
-        dashboard_content_storage = main_path
-        active_id = DASHBOARD_ID
-        active_url = DASHBOARD_URL
-        active_title = DASHBOARD_TITLE
+            if persisted_path != active_url:
+                must_persist_binding = active_url
+        else:
+            dashboard_content_storage = sidecar_path
+            active_id = sidecar_id
+            active_url = f"powmr-{entry_hash}"
+            active_title = (
+                f"Smart Solar · {entry.title or entry.entry_id[:8]}"
+            )
+            is_first_opt_in = False
+            if persisted_path != active_url:
+                must_persist_binding = active_url
 
-    if is_first_opt_in:
-        # First opt-in: write the
-        # canonical main dashboard
-        # and use the canonical id
-        # + url_path.
-        # (Variables already set
-        # above.)
-        pass
-    elif not own_sidecar_exists and persisted_path is None:
-        # Not the first opt-in
-        # AND no sidecar exists
-        # for this entry: write
-        # to our own sidecar
-        # and use a unique id +
-        # url_path. This is the
-        # only path that may
-        # create a new dashboard
-        # — it requires BOTH the
-        # main dashboard to be
-        # present (legacy /
-        # different entry) AND
-        # no sidecar for this
-        # entry_id to exist.
-        dashboard_content_storage = sidecar_path
-        active_id = sidecar_id
-        active_url = f"powmr-{entry_hash}"
-        active_title = (
-            f"Smart Solar · {entry.title or entry.entry_id[:8]}"
+    # R10.6: persist the
+    # binding via
+    # ``hass.config_entries.async_update_entry``.
+    # ``entry.options`` is a
+    # read-only
+    # ``MappingProxyType`` in
+    # HA 2026.10.0b0; direct
+    # ``entry.options[...] = ...``
+    # raises ``TypeError``.
+    if must_persist_binding is not None:
+        await hass.config_entries.async_update_entry(
+            entry,
+            options={
+                **dict(entry.options),
+                "lovelace_dashboard_url_path":
+                    must_persist_binding,
+            },
         )
-        # Persist the binding.
-        entry.options[
-            "lovelace_dashboard_url_path"
-        ] = active_url
 
     # Audit T23 round 6: the opt-in
     # flag is read PER ENTRY from

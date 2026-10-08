@@ -42,3 +42,34 @@
 # use 6.0.1+.
 
 pyyaml>=6.0,<7.0
+# T25 round 4 (Юра): the
+# ``services/__init__.py``
+# module imports
+# ``voluptuous`` at module
+# level. Tests that
+# exercise the real
+# schema registration
+# require this dependency
+# in the test environment.
+# Production ``manifest.json``
+# is unchanged — voluptuous
+# ships with Home Assistant
+# at runtime, so the
+# integration never lists
+# it.
+voluptuous>=0.13.1,<1.0
+# T25 round 4: tests
+# that exercise the real
+# service registration
+# path need
+# ``homeassistant`` stubs
+# (``ServiceRegistry``,
+# ``ServiceCall``,
+# ``ServiceValidationError``).
+# We test against the
+# narrow subset of HA's
+# public API; ``>=2024.1``
+# is the minimum that
+# provides the symbols we
+# use.
+homeassistant>=2024.1.0

@@ -280,8 +280,22 @@ class TestScheduleServiceRollback(unittest.TestCase):
     production bug behind
     a synthetic API."""
 
-    REPO_ROOT = (
-        "/opt/data/powmr-ai-work/powmr_inverter"
+    # R10.6: ``REPO_ROOT``
+    # is derived from
+    # ``__file__`` instead
+    # of being hard-coded.
+    # The hard-coded path
+    # broke the suite on
+    # Юра's Windows
+    # checkout and on any
+    # other machine where
+    # the workspace is not
+    # at that exact
+    # location.
+    import os as _os_root
+    import pathlib as _pl_root
+    REPO_ROOT = str(
+        _pl_root.Path(__file__).resolve().parent.parent
     )
 
     @classmethod
@@ -291,15 +305,19 @@ class TestScheduleServiceRollback(unittest.TestCase):
         import types as _types
         import importlib.util as _ilu
 
-        # ``cd /tmp`` so the
-        # integration's
-        # ``select.py``
-        # entity does not
-        # shadow stdlib
-        # ``select``/
-        # ``selectors`` on
-        # Windows.
-        _os.chdir("/tmp")
+        # R10.6: the
+        # ``os.chdir("/tmp")``
+        # workaround was a
+        # ``select.py`` shadow
+        # hack. The
+        # ``importlib`` loader
+        # below uses absolute
+        # paths so we no
+        # longer need a global
+        # ``chdir``. Tests
+        # that write to the
+        # filesystem use
+        # ``tempfile`` instead.
 
         if "powmr_inverter" not in _sys.modules:
             pkg = _types.ModuleType("powmr_inverter")
@@ -1851,9 +1869,20 @@ class TestScheduleServiceRealRegistration(
         import sys as _sys
         import types as _types
 
-        _os.chdir("/tmp")
-        REPO_ROOT = (
-            "/opt/data/powmr-ai-work/powmr_inverter"
+        # R10.6: no
+        # ``os.chdir`` —
+        # absolute paths in
+        # ``importlib``.
+        # R10.6: derive
+        # ``REPO_ROOT`` from
+        # ``__file__`` of the
+        # test module so the
+        # suite works on
+        # Windows / non-canonical
+        # checkouts.
+        import pathlib as _pl
+        REPO_ROOT = str(
+            _pl.Path(__file__).resolve().parent.parent
         )
         if "powmr_inverter" not in _sys.modules:
             pkg = _types.ModuleType("powmr_inverter")
@@ -2235,9 +2264,20 @@ class TestScheduleServiceRollbackAllSixScenarios(
         import importlib.util as _ilu
         import os as _os
 
-        _os.chdir("/tmp")
-        REPO_ROOT = (
-            "/opt/data/powmr-ai-work/powmr_inverter"
+        # R10.6: no
+        # ``os.chdir`` —
+        # absolute paths in
+        # ``importlib``.
+        # R10.6: derive
+        # ``REPO_ROOT`` from
+        # ``__file__`` of the
+        # test module so the
+        # suite works on
+        # Windows / non-canonical
+        # checkouts.
+        import pathlib as _pl
+        REPO_ROOT = str(
+            _pl.Path(__file__).resolve().parent.parent
         )
         if "powmr_inverter" not in _sys.modules:
             pkg = _t.ModuleType("powmr_inverter")
@@ -2415,6 +2455,507 @@ class TestScheduleServiceRollbackAllSixScenarios(
                 "schedule_rules",
                 coord.entry.options,
             )
+
+
+# ───────────────────────────────────────────────────────────────
+# R10.5 — captured
+# handlers (the ones
+# registered with
+# ``hass.services.async_register``)
+# must roll back on
+# failed persist. The
+# previous T25 tests
+# drove the module-level
+# ``_add_schedule_rule_impl``
+# directly, which
+# bypassed the active
+# handler. The active
+# handler had inline
+# logic with no
+# snapshot / rollback
+# and raised
+# ``ValueError``, not
+# ``ServiceValidationError``.
+# This regression
+# exercises the *captured*
+# handler so the same
+# defect cannot recur.
+# ───────────────────────────────────────────────────────────────
+
+
+class TestCapturedHandlerRollback(
+    unittest.TestCase,
+):
+    """Юра round 4 follow-up:
+    the service handler
+    registered through
+    ``hass.services.async_register``
+    must roll back on
+    failed persist. We
+    capture the handler
+    via a fake registry
+    and call it directly
+    — bypassing
+    ``_add_schedule_rule_impl``
+    so the regression
+    detects a
+    regression in the
+    *active* handler, not
+    the impl.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        # Re-use the
+        # service module
+        # loaded by
+        # ``TestScheduleServiceRollbackAllSixScenarios``
+        # (the test class
+        # that owns
+        # ``setUpClass``
+        # in this file)
+        # so we only build
+        # the import graph
+        # once across the
+        # whole suite.
+        TestScheduleServiceRollbackAllSixScenarios.setUpClass()
+        cls._svc = (
+            TestScheduleServiceRollbackAllSixScenarios
+            ._services_module
+        )
+
+    def _make_hass(self, coord):
+        """Build a fake
+        ``hass`` whose
+        ``_resolve_entry``
+        hands back our fake
+        coordinator AND
+        whose
+        ``hass.services.async_register``
+        captures handlers
+        + schemas.
+        """
+        from hems.schedule_rules import (
+            ScheduleRulesService,
+        )
+
+        class _FakeApi:
+            def __init__(self, c):
+                self._c = c
+
+        class _Registry:
+            def __init__(self):
+                self.records: list = []
+
+            def async_register(
+                self,
+                domain,
+                name,
+                handler,
+                schema=None,
+            ):
+                self.records.append(
+                    (domain, name, handler, schema)
+                )
+
+        class _FakeConfigEntries:
+            def __init__(self):
+                self._coord = coord
+
+            async def async_entries(
+                self, domain
+            ):
+                # Round-4
+                # design: a
+                # single entry
+                # is enough
+                # for these
+                # tests; if
+                # the handler
+                # asks for a
+                # different
+                # domain we
+                # filter
+                # accordingly.
+                if domain == self._svc.DOMAIN:
+                    class _E:
+                        def __init__(self):
+                            self.entry_id = "test-entry"
+                            self.title = (
+                                "test inverter"
+                            )
+                    return [_E()]
+
+                return []
+
+        class _FakeHass:
+            def __init__(self):
+                self.services = _Registry()
+                self.config_entries = (
+                    _FakeConfigEntries()
+                )
+                self.data: dict = {}
+                self.bus = type(
+                    "_Bus",
+                    (),
+                    {"async_fire": staticmethod(
+                        lambda *a, **kw: None
+                    )},
+                )()
+
+        return _FakeHass()
+
+    def _capture_handler(
+        self, name: str, coord
+    ):
+        """Run
+        ``async_register_services``
+        with a fake hass
+        whose
+        ``_resolve_entry``
+        resolves to ``coord``.
+        Return the handler
+        and its schema for
+        the given service
+        name.
+        """
+        import asyncio
+
+        hass = self._make_hass(coord)
+
+        # Patch
+        # ``_resolve_entry``
+        # so the
+        # nested
+        # ``_get_api``
+        # inside
+        # ``async_register_services``
+        # returns our
+        # ``(api, coord)``.
+        # Production's
+        # ``_resolve_entry``
+        # is a *synchronous*
+        # function — keep
+        # the fake sync so
+        # the ``async def
+        # _get_api`` wrapper
+        # returns the tuple
+        # directly (no
+        # unpack-of-coroutine
+        # trap).
+        class _FakeApi:
+            def __init__(self, c):
+                self._c = c
+
+        captured = {}
+
+        def _fake_resolve(h, call):
+            captured["call"] = call
+            return _FakeApi(coord), coord
+
+        self._svc._resolve_entry = _fake_resolve
+
+        asyncio.run(
+            self._svc.async_register_services(hass)
+        )
+
+        for domain, n, handler, schema in (
+            hass.services.records
+        ):
+            if domain == self._svc.DOMAIN and n == name:
+                return handler, schema
+
+        self.fail(
+            f"{name} handler not registered"
+        )
+
+    def test_add_handler_rolls_back_on_failed_persist(
+        self,
+    ) -> None:
+        """Active
+        ``add_schedule_rule``
+        handler must roll
+        back the in-memory
+        registry and raise
+        ``ServiceValidationError``
+        when persist
+        fails — NOT
+        ``ValueError``.
+        """
+
+        from hems.schedule_rules import (
+            ScheduleRulesService,
+            ScheduleRule,
+        )
+
+        class _FakeEntry:
+            def __init__(self):
+                self.options: dict = {}
+
+        class _FakeCoord:
+            def __init__(self):
+                self.schedule_rules = (
+                    ScheduleRulesService()
+                )
+                self.entry = _FakeEntry()
+                self._persist_calls = 0
+
+            def _persist_schedule_rules(
+                self,
+            ) -> bool:
+                self._persist_calls += 1
+                # Simulate
+                # write
+                # failure.
+                return False
+
+        coord = _FakeCoord()
+        seed = ScheduleRule(
+            name="seed",
+            days_of_week=[1, 2, 3, 4, 5],
+            start_hour=0, start_minute=0,
+            end_hour=23, end_minute=0,
+            mode=0, priority=5,
+        )
+        coord.schedule_rules.add_rule(seed)
+
+        handler, schema = (
+            self._capture_handler(
+                "add_schedule_rule", coord
+            )
+        )
+
+        class _Call:
+            def __init__(self, data):
+                self.data = data
+
+        # Apply schema so we
+        # validate the
+        # *registered* contract.
+        validated = schema(
+            {
+                "name": "should-not-stick",
+                "days_of_week": [1, 2, 3],
+                "start_hour": 0,
+                "end_hour": 23,
+                "mode": "adaptive",
+                "enabled": True,
+                "priority": 5,
+            }
+        )
+
+        import asyncio
+
+        with self.assertRaises(
+            self._svc.ServiceValidationError
+        ):
+            asyncio.run(handler(_Call(validated)))
+
+        # Registry must
+        # contain ONLY the
+        # seed. The failed
+        # add must NOT have
+        # stuck.
+        rules_after = (
+            coord.schedule_rules.save_to_dict()
+        )
+        names = {
+            r["name"]
+            for r in rules_after[
+                "schedule_rules_v1"
+            ]
+        }
+        self.assertIn(
+            "seed", names,
+            "seed rule must remain",
+        )
+        self.assertNotIn(
+            "should-not-stick", names,
+            "handler must roll back the new rule "
+            "on failed persist",
+        )
+        # ``entry.options``
+        # must NOT be
+        # mutated.
+        self.assertNotIn(
+            "schedule_rules",
+            coord.entry.options,
+            "handler must not touch entry.options "
+            "when persist fails",
+        )
+
+    def test_delete_handler_rolls_back_on_failed_persist(
+        self,
+    ) -> None:
+        """Active
+        ``delete_schedule_rule``
+        handler must restore
+        the deleted rule
+        when persist fails.
+        """
+        from hems.schedule_rules import (
+            ScheduleRulesService,
+            ScheduleRule,
+        )
+
+        class _FakeEntry:
+            def __init__(self):
+                self.options: dict = {}
+
+        class _FakeCoord:
+            def __init__(self):
+                self.schedule_rules = (
+                    ScheduleRulesService()
+                )
+                self.entry = _FakeEntry()
+
+            def _persist_schedule_rules(
+                self,
+            ) -> bool:
+                return False
+
+        coord = _FakeCoord()
+        seed = ScheduleRule(
+            name="keep",
+            days_of_week=[1, 2, 3, 4, 5],
+            start_hour=0, start_minute=0,
+            end_hour=23, end_minute=0,
+            mode=0, priority=5,
+        )
+        coord.schedule_rules.add_rule(seed)
+        seed_id = seed.id
+
+        handler, schema = (
+            self._capture_handler(
+                "delete_schedule_rule", coord
+            )
+        )
+
+        class _Call:
+            def __init__(self, data):
+                self.data = data
+
+        validated = schema({"rule_id": seed_id})
+
+        import asyncio
+
+        with self.assertRaises(
+            self._svc.ServiceValidationError
+        ):
+            asyncio.run(handler(_Call(validated)))
+
+        # Rule must still
+        # be present.
+        rules_after = (
+            coord.schedule_rules.save_to_dict()
+        )
+        names = {
+            r["name"]
+            for r in rules_after[
+                "schedule_rules_v1"
+            ]
+        }
+        self.assertIn(
+            "keep", names,
+            "delete handler must restore the rule "
+            "on failed persist",
+        )
+
+    def test_add_handler_logs_no_completion_on_failure(
+        self,
+    ) -> None:
+        """Successful ``info``
+        log MUST NOT be
+        emitted when the
+        handler aborts on
+        persist failure.
+        """
+        from hems.schedule_rules import (
+            ScheduleRulesService,
+            ScheduleRule,
+        )
+
+        class _FakeEntry:
+            def __init__(self):
+                self.options: dict = {}
+
+        class _FakeCoord:
+            def __init__(self):
+                self.schedule_rules = (
+                    ScheduleRulesService()
+                )
+                self.entry = _FakeEntry()
+
+            def _persist_schedule_rules(
+                self,
+            ) -> bool:
+                return False
+
+        coord = _FakeCoord()
+        seed = ScheduleRule(
+            name="s",
+            days_of_week=[1],
+            start_hour=0, start_minute=0,
+            end_hour=23, end_minute=0,
+            mode=0, priority=5,
+        )
+        coord.schedule_rules.add_rule(seed)
+
+        handler, schema = (
+            self._capture_handler(
+                "add_schedule_rule", coord
+            )
+        )
+
+        class _Call:
+            def __init__(self, data):
+                self.data = data
+
+        import asyncio
+        import logging as _logging
+
+        captured_records: list = []
+
+        class _ListHandler(_logging.Handler):
+            def emit(self, record):
+                captured_records.append(
+                    self.format(record)
+                )
+
+        handler_logger = _logging.getLogger(
+            "custom_components.powmr_inverter.services"
+        )
+        handler_logger.addHandler(_ListHandler())
+        try:
+            with self.assertRaises(
+                self._svc.ServiceValidationError
+            ):
+                asyncio.run(
+                    handler(
+                        _Call(
+                            schema(
+                                {
+                                    "name": "x",
+                                    "days_of_week": [1],
+                                    "start_hour": 0,
+                                    "end_hour": 23,
+                                    "mode": "adaptive",
+                                    "enabled": True,
+                                    "priority": 5,
+                                }
+                            )
+                        )
+                    )
+                )
+        finally:
+            handler_logger.handlers.clear()
+
+        joined = "\n".join(captured_records)
+        self.assertNotIn(
+            "added schedule rule", joined,
+            "no success log on failed persist; "
+            f"got: {joined!r}",
+        )
 
 
 if __name__ == "__main__":
