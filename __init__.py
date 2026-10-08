@@ -98,6 +98,23 @@ async def _async_options_updated(
 
 _FRONTEND_REGISTERED = False
 
+# R10.6 (round 6):
+# module-level
+# constants for the
+# canonical main
+# dashboard. Lifted
+# from
+# ``_register_lovelace_dashboard``
+# so
+# ``_ensure_dashboard_binding``
+# can resolve the
+# same path without
+# duplicating magic
+# strings.
+_DASHBOARD_URL = "powmr-energy"
+_DASHBOARD_TITLE = "Smart Solar Енергопанель"
+_DASHBOARD_ID = "powmr_energy"
+
 
 def _get_debug_logging_module():
     """Resolve the ``hems.debug_logging`` module from
@@ -303,6 +320,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _auto_install_dashboard(hass, entry)
         else:
             _LOGGER.debug("Dashboard already exists, skipping auto-install to preserve user edits")
+
+        # R10.6 (round 6): the binding MUST be persisted on EVERY
+        # ``async_setup_entry`` call, not just on the first install
+        # path. The previous logic skipped the dashboard path entirely
+        # when ``lovelace.powmr_energy`` existed, leaving
+        # ``entry.options`` empty for entries that did NOT go through
+        # ``_auto_install_dashboard``. We extract the binding
+        # resolution into a tiny helper that reuses the same logic as
+        # the "already registered" branch in
+        # ``_register_lovelace_dashboard`` so a restart with an
+        # existing dashboard always records the binding.
+        await _ensure_dashboard_binding(hass, entry)
 
         return True
 
@@ -1481,9 +1510,6 @@ async def _register_lovelace_dashboard(
     The helper is called per
     entry.
     """
-    DASHBOARD_URL = "powmr-energy"
-    DASHBOARD_TITLE = "Smart Solar Енергопанель"
-    DASHBOARD_ID = "powmr_energy"
     config_dir = hass.config.config_dir
     dashboards_storage = os.path.join(config_dir, ".storage", "lovelace_dashboards")
 
@@ -1511,7 +1537,7 @@ async def _register_lovelace_dashboard(
     # subsequent entries write
     # to their own sidecar.
     main_path = os.path.join(
-        config_dir, ".storage", f"lovelace.{DASHBOARD_ID}"
+        config_dir, ".storage", f"lovelace.{_DASHBOARD_ID}"
     )
     sidecar_glob = os.path.join(
         config_dir,
@@ -1738,9 +1764,9 @@ async def _register_lovelace_dashboard(
         if not os.path.exists(main_path):
             is_first_opt_in = True
             dashboard_content_storage = main_path
-            active_id = DASHBOARD_ID
-            active_url = DASHBOARD_URL
-            active_title = DASHBOARD_TITLE
+            active_id = _DASHBOARD_ID
+            active_url = _DASHBOARD_URL
+            active_title = _DASHBOARD_TITLE
             if persisted_path != active_url:
                 must_persist_binding = active_url
         else:
@@ -1819,12 +1845,99 @@ async def _register_lovelace_dashboard(
         if already_registered and not opt_in:
             # D1: existing user dashboard
             # is preserved byte-for-byte.
+            # R10.6 (round 6): the
+            # binding MUST still be
+            # recorded so the next
+            # reload reuses the
+            # existing dashboard
+            # verbatim instead of
+            # taking the
+            # "own_sidecar_exists"
+            # / "is_first_opt_in"
+            # path. The previous
+            # code returned early
+            # without persisting the
+            # binding, leaving
+            # ``entry.options``
+            # empty on the live
+            # registrar and forcing
+            # the next reload to
+            # re-derive the path —
+            # which is fragile and
+            # can misclassify the
+            # sidecar. We persist
+            # the binding ONLY when
+            # the live content
+            # matches the resolved
+            # target (so a corrupted
+            # or unrelated file on
+            # disk is never bound
+            # to a wrong
+            # ``url_path``).
             _LOGGER.debug(
                 "Dashboard %s already registered; "
-                "no opt-in, leaving existing "
+                "no opt-in, persisting binding "
+                "and leaving existing "
                 "dashboard untouched",
-                DASHBOARD_URL,
+                _DASHBOARD_URL,
             )
+            # Verify the live
+            # content really is
+            # the dashboard we
+            # expect (i.e. the
+            # file at
+            # ``dashboard_content_storage``
+            # is a real
+            # dashboard, not an
+            # orphan with the
+            # same name). We
+            # compare the file's
+            # ``key`` field (the
+            # canonical
+            # ``lovelace.<id>``
+            # identifier HA
+            # writes) to the
+            # expected
+            # ``active_id`` and
+            # only then persist
+            # the binding.
+            def _verify_content() -> bool:
+                try:
+                    with open(
+                        dashboard_content_storage,
+                        "r",
+                    ) as _f:
+                        data = json.loads(_f.read())
+                    return (
+                        data.get("key")
+                        == f"lovelace.{active_id}"
+                    )
+                except (OSError, ValueError):
+                    return False
+
+            content_matches = (
+                await hass.async_add_executor_job(
+                    _verify_content
+                )
+            )
+            if (
+                content_matches
+                and persisted_path != active_url
+            ):
+                # Persist the
+                # binding
+                # through the
+                # sync
+                # config-entries
+                # callback.
+                hass.config_entries.async_update_entry(
+                    entry,
+                    options={
+                        **dict(entry.options),
+                        "lovelace_dashboard_url_path":
+                            active_url,
+                    },
+                )
             return
     except Exception as exc:
         _LOGGER.debug("Dashboard check failed: %s", exc)
@@ -1860,8 +1973,8 @@ async def _register_lovelace_dashboard(
     # actually navigable. The
     # canonical main dashboard
     # is registered with
-    # ``DASHBOARD_ID`` and
-    # ``DASHBOARD_URL``; a
+    # ``_DASHBOARD_ID`` and
+    # ``_DASHBOARD_URL``; a
     # sidecar uses ``active_id``
     # / ``active_url`` derived
     # from the entry's content
@@ -2071,6 +2184,175 @@ async def _register_lovelace_dashboard(
                     must_persist_binding,
             },
         )
+
+
+async def _ensure_dashboard_binding(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> None:
+    """R10.6 (round 6):
+    persist the
+    ``lovelace_dashboard_url_path``
+    binding on EVERY
+    setup — even when
+    the canonical main
+    dashboard already
+    exists and
+    ``_auto_install_dashboard``
+    is skipped.
+
+    The helper resolves
+    the live dashboard
+    path the same way
+    the top of
+    ``_register_lovelace_dashboard``
+    does (main vs
+    sidecar) and writes
+    the binding through
+    the sync
+    ``hass.config_entries.async_update_entry``
+    callback in HA
+    2026.10.0b0.
+
+    Behaviour:
+
+    * No main, no
+      sidecar, no
+      binding → nothing
+      to do; the next
+      ``_auto_install_dashboard``
+      run will create
+      the canonical
+      main and the
+      binding at the
+      end of
+      ``_register_lovelace_dashboard``.
+    * Main exists with
+      matching ``key``
+      field → persist
+      ``powmr-energy``.
+    * Sidecar exists
+      for THIS entry
+      with matching
+      ``key`` → persist
+      ``powmr-<hash>``.
+    * Stale or
+      mismatched file
+      on disk → do NOT
+      persist (the next
+      full
+      ``_register_lovelace_dashboard``
+      run will sort
+      things out).
+
+    The helper does NOT
+    write or modify any
+    file on disk. It
+    only reads the
+    content and
+    metadata to verify
+    the binding target
+    and updates
+    ``entry.options``
+    if and only if the
+    live state matches
+    the resolved
+    binding.
+    """
+
+    config_dir = hass.config.config_dir
+    dashboards_storage = os.path.join(
+        config_dir, ".storage", "lovelace_dashboards"
+    )
+    main_path = os.path.join(
+        config_dir,
+        ".storage",
+        f"lovelace.{_DASHBOARD_ID}",
+    )
+    _hashlib_d = __import__("hashlib")
+    entry_hash = _hashlib_d.md5(
+        entry.entry_id.encode("utf-8")
+    ).hexdigest()[:16]
+    sidecar_id = f"powmr_energy_{entry_hash}"
+    sidecar_path = os.path.join(
+        config_dir,
+        ".storage",
+        f"lovelace.{sidecar_id}",
+    )
+
+    persisted_path = entry.options.get(
+        "lovelace_dashboard_url_path"
+    )
+
+    # R10.6 (round 6):
+    # the resolution is
+    # the same as in
+    # ``_register_lovelace_dashboard``:
+    # the sidecar (if it
+    # exists) wins over
+    # the canonical
+    # main, because a
+    # previous
+    # ``_auto_install_dashboard``
+    # already created
+    # the sidecar for
+    # THIS entry and the
+    # canonical main may
+    # belong to a
+    # different entry.
+    if os.path.exists(sidecar_path):
+        target_path = sidecar_path
+        target_id = sidecar_id
+        target_url = f"powmr-{entry_hash}"
+    elif os.path.exists(main_path):
+        target_path = main_path
+        target_id = _DASHBOARD_ID
+        target_url = _DASHBOARD_URL
+    else:
+        # No dashboard
+        # exists yet. Do
+        # nothing; the
+        # first-install
+        # path will handle
+        # binding.
+        return
+
+    # Verify the file is
+    # actually a
+    # dashboard (i.e. the
+    # ``key`` field
+    # matches the
+    # resolved id). This
+    # is the same
+    # ``already
+    # registered`` guard
+    # the full
+    # ``_register_lovelace_dashboard``
+    # uses on its early
+    # return.
+    def _verify() -> bool:
+        try:
+            with open(target_path, "r") as _f:
+                data = json.loads(_f.read())
+            return data.get("key") == f"lovelace.{target_id}"
+        except (OSError, ValueError):
+            return False
+
+    content_matches = await hass.async_add_executor_job(
+        _verify
+    )
+    if not content_matches:
+        return
+
+    if persisted_path == target_url:
+        return
+
+    hass.config_entries.async_update_entry(
+        entry,
+        options={
+            **dict(entry.options),
+            "lovelace_dashboard_url_path": target_url,
+        },
+    )
 
 
 def _read_metadata_snapshot(dashboards_storage: str) -> dict:
