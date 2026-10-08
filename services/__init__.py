@@ -5,10 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import logging
 import os
+from typing import Any
 
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import (
+    ServiceValidationError,
+)
 
 from ..const import DOMAIN
 
@@ -187,6 +191,200 @@ def _resolve_entry(
         entry = next(e for e in entries if e.entry_id == loaded_ids[0])
     data = loaded[entry.entry_id]
     return data["api"], data["coordinator"]
+
+
+def _validate_days_of_week(
+    value: Any,
+) -> list[int]:
+    """T25 round 4: validate
+    that ``days_of_week``
+    is a non-empty list of
+    integers in the range
+    1..7 (ISO weekday
+    numbering). Reject empty
+    lists, non-int entries,
+    and out-of-range values
+    with a
+    ``ServiceValidationError``
+    that voluptuous will
+    propagate.
+    """
+    if not isinstance(value, list):
+        raise ServiceValidationError(
+            "days_of_week must be a list of "
+            "integers in 1..7"
+        )
+    if not value:
+        raise ServiceValidationError(
+            "days_of_week must be non-empty"
+        )
+    out: list[int] = []
+    for v in value:
+        if isinstance(v, bool) or not isinstance(
+            v, int
+        ):
+            raise ServiceValidationError(
+                f"days_of_week entry {v!r} must "
+                "be an integer in 1..7"
+            )
+        if v < 1 or v > 7:
+            raise ServiceValidationError(
+                f"days_of_week entry {v} out of "
+                "range 1..7"
+            )
+        out.append(int(v))
+    return out
+
+
+def _validate_priority(value: Any) -> int:
+    """T25 round 4: validate
+    that ``priority`` is an
+    integer in 1..10. Reject
+    zero, eleven, non-int.
+    """
+    if isinstance(value, bool) or not isinstance(
+        value, int
+    ):
+        raise ServiceValidationError(
+            f"priority {value!r} must be an "
+            "integer in 1..10"
+        )
+    if value < 1 or value > 10:
+        raise ServiceValidationError(
+            f"priority {value} out of range 1..10"
+        )
+    return int(value)
+
+
+async def _add_schedule_rule_impl(
+    call: ServiceCall,
+    coordinator: Any,
+) -> None:
+    """Round 4 (T25): atomic
+    add for schedule rules.
+
+    Snapshots the in-memory
+    registry, mutates it,
+    and calls the
+    coordinator's persist
+    helper. On persist
+    failure the registry is
+    restored from the
+    snapshot and a
+    ``ServiceValidationError``
+    is raised so the HA UI
+    surfaces the error and
+    the entry options stay
+    unchanged.
+    """
+    from ..hems.schedule_rules import (
+        ScheduleRule,
+    )
+    snapshot = (
+        coordinator.schedule_rules.save_to_dict()
+    )
+    rule = ScheduleRule(
+        name=call.data.get("name", ""),
+        days_of_week=call.data.get(
+            "days_of_week", [1, 2, 3, 4, 5]
+        ),
+        start_hour=call.data.get(
+            "start_hour", 0
+        ),
+        start_minute=call.data.get(
+            "start_minute", 0
+        ),
+        end_hour=call.data.get(
+            "end_hour", 23
+        ),
+        end_minute=call.data.get(
+            "end_minute", 0
+        ),
+        mode=_MODE_VALUE.get(
+            call.data.get(
+                "mode", "adaptive"
+            ),
+            0,
+        ),
+        enabled=call.data.get(
+            "enabled", True
+        ),
+        priority=call.data.get(
+            "priority", 5
+        ),
+    )
+    coordinator.schedule_rules.add_rule(rule)
+    ok = coordinator._persist_schedule_rules()
+    if not ok:
+        # Rollback the
+        # in-memory
+        # mutation. The
+        # entry.options
+        # were NOT
+        # touched (persist
+        # only writes when
+        # it succeeds).
+        coordinator.schedule_rules.load_from_dict(
+            snapshot
+        )
+        _LOGGER.error(
+            "Service: failed to persist schedule "
+            "rule '%s'; in-memory registry rolled "
+            "back to snapshot.",
+            rule.name,
+        )
+        raise ServiceValidationError(
+            "Failed to persist schedule rule "
+            f"'{rule.name}'; in-memory registry "
+            "restored from snapshot."
+        )
+    _LOGGER.info(
+        "Service: added schedule rule '%s'",
+        rule.name,
+    )
+
+
+async def _delete_schedule_rule_impl(
+    call: ServiceCall,
+    coordinator: Any,
+) -> None:
+    """Round 4 (T25): atomic
+    delete for schedule rules.
+    Snapshots the in-memory
+    registry, deletes the
+    requested rule, and
+    calls the coordinator's
+    persist helper. On
+    persist failure the
+    registry is restored
+    from the snapshot.
+    """
+    snapshot = (
+        coordinator.schedule_rules.save_to_dict()
+    )
+    rule_id = call.data["rule_id"]
+    coordinator.schedule_rules.delete_rule(rule_id)
+    ok = coordinator._persist_schedule_rules()
+    if not ok:
+        coordinator.schedule_rules.load_from_dict(
+            snapshot
+        )
+        _LOGGER.error(
+            "Service: failed to persist schedule "
+            "rule delete %s; in-memory registry "
+            "rolled back to snapshot.",
+            rule_id,
+        )
+        raise ServiceValidationError(
+            "Failed to persist schedule rule "
+            f"deletion (rule_id={rule_id}); "
+            "in-memory registry restored from "
+            "snapshot."
+        )
+    _LOGGER.info(
+        "Service: deleted schedule rule %s",
+        rule_id,
+    )
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -640,7 +838,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             vol.Optional(
                 "days_of_week",
                 default=[1, 2, 3, 4, 5],
-            ): list,
+            ): _validate_days_of_week,
             vol.Optional(
                 "start_hour", default=0
             ): vol.All(int, vol.Range(min=0, max=23)),
@@ -661,7 +859,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             ): bool,
             vol.Optional(
                 "priority", default=5
-            ): vol.All(int, vol.Range(min=0, max=10)),
+            ): _validate_priority,
         }),
     )
     hass.services.async_register(

@@ -142,76 +142,233 @@ class T18DebugLoggingTests(TestCase):
     # ── 2. event loop is never blocked, even on a slow filesystem ──
 
     def test_t18_02_event_loop_not_blocked(self) -> None:
-        """Audit T18 follow-up: even when
-        the filesystem is slow, the event
-        loop must keep ticking while the
-        bounded worker handles the write
-        in the background.
+        """Audit T18 follow-up round 4: the
+        previous round 3 test asserted a
+        *frequency* threshold (``>= 30
+        heartbeats in 0.5 s``). That is a
+        wall-clock assertion: it depends on
+        the scheduler granularity of the
+        host, which is ~10 ms on most
+        platforms but ~15 ms on Windows
+        where the test observed 28
+        heartbeats (a *false* positive).
 
-        This is a real async test: we
-        launch the work via ``asyncio``
-        and assert the loop runs several
-        heartbeats during the slow write.
-        """
+        Round 4 (this version) replaces the
+        frequency threshold with a real
+        *production* exercise of the bounded
+        worker:
+
+        1. Call ``debug_logging.log_evaluation``
+           from the event loop. The
+           production ``log_evaluation``
+           enqueues the payload onto the
+           real ``_DebugLogWorker`` via
+           ``_get_worker().enqueue``.
+        2. Patch the production
+           ``debug_logging._write_line``
+           with a stand-in that blocks for
+           ``1.5 s`` while signalling two
+           ``asyncio.Event``s to the running
+           loop. The real worker thread
+           (``powmr-debug-log-N``) executes
+           the patched writer from the
+           *worker pool* — exactly the path
+           the audit demanded.
+        3. A heartbeat task in the event
+           loop ticks every 20 ms; it must
+           make progress *during* the
+           blocked worker write. The
+           contract is not "exactly N
+           ticks" but "the loop *does*
+           tick while the worker is
+           blocked". ``>= 1`` is the floor.
+
+        This is a pure production exercise:
+        no fake ``threading.Thread`` is
+        spawned by the test, the worker
+        thread is the real
+        ``_DebugLogWorker._serve``."""
+
         import asyncio as _asyncio
+        import threading as _threading
 
         log_path = self._tmpdir / "async_loop.log"
         debug_logging.set_log_path(log_path)
 
-        # Slow the writer so the queue
-        # holds the record for a while.
         original_write = debug_logging._write_line
+        # ``threading.Event`` is the
+        # right primitive here: the
+        # production worker thread does
+        # NOT own an asyncio loop, so we
+        # cannot use ``asyncio.Event``
+        # from the worker side. We
+        # poll from the asyncio loop
+        # using ``asyncio.Event`` as
+        # the *poll* target via
+        # ``loop.run_in_executor``.
+        started = _threading.Event()
+        completed = _threading.Event()
+
         def slow_write(path, line):
+            # This runs on the
+            # *real* worker
+            # thread, NOT a
+            # test-spawned
+            # thread. The audit
+            # demanded the
+            # production worker
+            # be exercised. We
+            # use a
+            # ``threading.Event``
+            # for the
+            # worker→loop
+            # signalling so we
+            # don't depend on
+            # the worker thread
+            # having a running
+            # loop.
+            started.set()
+            # Block for 1.5 s
+            # on the worker
+            # thread. The
+            # asyncio loop (in
+            # the main thread)
+            # must keep
+            # ticking.
             time.sleep(1.5)
+            completed.set()
             return original_write(path, line)
+
         debug_logging._write_line = slow_write
+        # Make sure the
+        # global worker
+        # exists; the
+        # production
+        # ``log_evaluation``
+        # will pick it up
+        # on the first
+        # call and reuse it
+        # for every
+        # subsequent call.
+        debug_logging._get_worker()
         try:
-            debug_logging.log_evaluation(
-                timestamp=datetime(2026, 6, 15, 10, 0, 0),
-                inputs={
-                    "smart_mode": 0,
-                    "soc": 60.0,
-                    "pv_power": 100.0,
-                    "load_power": 200.0,
-                },
-                decision=HemsDecision(
-                    output_priority="2",
-                    charger_priority="2",
-                    reason="async-loop",
-                    skip=False,
-                ),
-                applied={"output_priority": "2", "charger_priority": "2"},
-                skip_reason=None,
-            )
+            heartbeat_ticks: list[int] = []
 
-            async def _heartbeat_check() -> int:
-                beat_count = 0
-                loop_start = _asyncio.get_event_loop().time()
-                # _heartbeat_loop runs for 0.5s;
-                # if the event loop is blocked
-                # by a synchronous file write,
-                # we will not reach the expected
-                # tick count.
-                while (
-                    _asyncio.get_event_loop().time() - loop_start
-                    < 0.5
-                ):
-                    beat_count += 1
-                    await _asyncio.sleep(0.01)
-                return beat_count
+            async def _heartbeat_loop() -> None:
+                tick = 0
+                # Tick until the
+                # worker has
+                # *finished*
+                # — i.e. while
+                # the worker
+                # is busy in
+                # ``time.sleep``.
+                while not completed.is_set():
+                    heartbeat_ticks.append(tick)
+                    tick += 1
+                    await _asyncio.sleep(0.02)
 
-            beat_count = _asyncio.run(_heartbeat_check())
-            self.assertGreaterEqual(
-                beat_count,
-                30,
-                msg=(
-                    f"event loop heartbeat stalled: "
-                    f"only {beat_count} heartbeats in 0.5s"
-                ),
-            )
+            async def _drive_test() -> None:
+                loop = _asyncio.get_running_loop()
+                bg = _asyncio.create_task(
+                    _heartbeat_loop()
+                )
+                # Real production
+                # call: enqueues
+                # onto the real
+                # worker pool.
+                # The patched
+                # ``_write_line``
+                # fires when the
+                # worker thread
+                # picks up the
+                # payload.
+                debug_logging.log_evaluation(
+                    timestamp=datetime(
+                        2026, 6, 15, 10, 0, 0
+                    ),
+                    inputs={
+                        "smart_mode": 0,
+                        "soc": 60.0,
+                        "pv_power": 100.0,
+                        "load_power": 200.0,
+                    },
+                    decision=HemsDecision(
+                        output_priority="2",
+                        charger_priority="2",
+                        reason="async-loop",
+                        skip=False,
+                    ),
+                    applied={
+                        "output_priority": "2",
+                        "charger_priority": "2",
+                    },
+                    skip_reason=None,
+                )
+                # Wait for the
+                # production
+                # worker to
+                # *start* the
+                # blocked write.
+                # ``threading.Event.wait``
+                # is blocking so we
+                # dispatch it to
+                # the executor.
+                try:
+                    await _asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, started.wait
+                        ),
+                        timeout=10.0,
+                    )
+                except _asyncio.TimeoutError:
+                    raise
+                ticks_before = len(heartbeat_ticks)
+                # Wait for the
+                # blocked worker
+                # write to
+                # complete
+                # (1.5 s of
+                # sleep).
+                await _asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, completed.wait
+                    ),
+                    timeout=10.0,
+                )
+                ticks_after = len(heartbeat_ticks)
+                # The heartbeat
+                # loop must
+                # have observed
+                # at least one
+                # tick during
+                # the blocked
+                # window. ``>= 1``
+                # is the floor
+                # — any positive
+                # number proves
+                # the loop was
+                # not blocked.
+                self.assertGreaterEqual(
+                    ticks_after - ticks_before,
+                    1,
+                    msg=(
+                        "Event loop made no progress "
+                        f"while the production worker "
+                        f"was blocked: {ticks_before} → "
+                        f"{ticks_after} heartbeats. "
+                        "The bounded worker must not "
+                        "block the event loop."
+                    ),
+                )
+                await bg
+
+            _asyncio.run(_drive_test())
         finally:
             try:
-                debug_logging._worker.drain(timeout=5.0)
+                worker = debug_logging._get_worker()
+                if worker is not None:
+                    worker.drain(timeout=5.0)
             except Exception:
                 pass
             debug_logging._write_line = original_write

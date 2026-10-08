@@ -1530,36 +1530,183 @@ async def _register_lovelace_dashboard(
         "lovelace.powmr_energy*",
     )
     import glob as _glob
-    other_sidecars = sorted(
+    # ``all_sidecars`` includes
+    # OUR sidecar so we can
+    # detect a previous registration
+    # for the SAME ``entry_id``.
+    # Audit round 4: reload and
+    # migration must NOT create a
+    # duplicate dashboard for the
+    # same ``entry_id``. The previous
+    # implementation excluded our
+    # own sidecar (``p != sidecar_path``)
+    # and computed ``is_first_opt_in``
+    # from "any other sidecar exists";
+    # that meant every setup after
+    # the canonical ``main_path``
+    # existed (legacy migration, R7)
+    # was treated as a *new* entry and
+    # silently produced a *second*
+    # dashboard pointing at the same
+    # inverter. We now:
+    # 1. Read the persistent binding
+    #    from
+    #    ``entry.options["lovelace_dashboard_url_path"]``
+    #    — if it matches our
+    #    ``sidecar_path`` or
+    #    ``main_path`` we reuse it
+    #    and skip the create step.
+    # 2. If a sidecar for OUR
+    #    ``entry_id`` already exists
+    #    on disk, reuse it
+    #    (idempotent registration).
+    # 3. Only when ``main_path``
+    #    exists AND belongs to a
+    #    *different* ``entry_id`` do
+    #    we write a separate sidecar.
+    all_sidecars = sorted(
         p for p in _glob.glob(sidecar_glob)
-        if p != sidecar_path
-        and not p.endswith(".bak")
+        if not p.endswith(".bak")
     )
-    is_first_opt_in = (
-        not other_sidecars
-        and not os.path.exists(main_path)
+    own_sidecar_exists = os.path.exists(sidecar_path)
+
+    # Per-entry persistent binding
+    # stored in ``entry.options``.
+    # The setup path writes this
+    # once; subsequent setups reuse
+    # it verbatim.
+    persisted_path = entry.options.get(
+        "lovelace_dashboard_url_path"
     )
+
+    if own_sidecar_exists:
+        # Idempotent: this
+        # ``entry_id`` already
+        # has its sidecar
+        # registered. Reuse
+        # it.
+        dashboard_content_storage: str = sidecar_path
+        active_id: str = sidecar_id
+        active_url: str = f"powmr-{entry_hash}"
+        active_title: str = (
+            f"Smart Solar · {entry.title or entry.entry_id[:8]}"
+        )
+        is_first_opt_in = False
+        # Persist the binding so
+        # we never create a
+        # second dashboard even
+        # if the disk file is
+        # deleted out-of-band.
+        entry.options[
+            "lovelace_dashboard_url_path"
+        ] = active_url
+    elif persisted_path is not None:
+        # We have a binding from
+        # a prior entry.options.
+        # Look up the matching
+        # dashboard by url_path
+        # and reuse its id.
+        match_id: str | None = None
+        match_title = ""
+        try:
+            existing_payload = (
+                await hass.async_add_executor_job(
+                    lambda: _read_metadata_snapshot(
+                        dashboards_storage
+                    )
+                )
+            )
+            for it in existing_payload.get(
+                "data", {}
+            ).get("items", []):
+                if it.get("url_path") == persisted_path:
+                    match_id = it.get("id")
+                    match_title = it.get("title", "") or (
+                        entry.title or entry.entry_id[:8]
+                    )
+                    break
+        except Exception:
+            match_id = None
+        if match_id is not None:
+            # Found an existing
+            # dashboard with our
+            # persisted url_path —
+            # reuse it.
+            content_path = os.path.join(
+                config_dir,
+                ".storage",
+                f"lovelace.{match_id}",
+            )
+            if os.path.exists(content_path):
+                dashboard_content_storage = content_path
+                active_id = match_id
+                active_url = persisted_path
+                active_title = match_title
+                is_first_opt_in = False
+            else:
+                # Stale binding; fall
+                # through to the
+                # default logic.
+                is_first_opt_in = (
+                    not all_sidecars
+                    and not os.path.exists(main_path)
+                )
+                dashboard_content_storage = main_path
+                active_id = DASHBOARD_ID
+                active_url = DASHBOARD_URL
+                active_title = DASHBOARD_TITLE
+        else:
+            is_first_opt_in = (
+                not all_sidecars
+                and not os.path.exists(main_path)
+            )
+            dashboard_content_storage = main_path
+            active_id = DASHBOARD_ID
+            active_url = DASHBOARD_URL
+            active_title = DASHBOARD_TITLE
+    else:
+        is_first_opt_in = (
+            not all_sidecars
+            and not os.path.exists(main_path)
+        )
+        dashboard_content_storage = main_path
+        active_id = DASHBOARD_ID
+        active_url = DASHBOARD_URL
+        active_title = DASHBOARD_TITLE
+
     if is_first_opt_in:
         # First opt-in: write the
         # canonical main dashboard
         # and use the canonical id
         # + url_path.
-        dashboard_content_storage = main_path
-        active_id = DASHBOARD_ID
-        active_url = DASHBOARD_URL
-        active_title = DASHBOARD_TITLE
-    else:
-        # Not the first opt-in:
-        # write to our own sidecar
+        # (Variables already set
+        # above.)
+        pass
+    elif not own_sidecar_exists and persisted_path is None:
+        # Not the first opt-in
+        # AND no sidecar exists
+        # for this entry: write
+        # to our own sidecar
         # and use a unique id +
-        # url_path so the user
-        # can navigate to it.
+        # url_path. This is the
+        # only path that may
+        # create a new dashboard
+        # — it requires BOTH the
+        # main dashboard to be
+        # present (legacy /
+        # different entry) AND
+        # no sidecar for this
+        # entry_id to exist.
         dashboard_content_storage = sidecar_path
         active_id = sidecar_id
         active_url = f"powmr-{entry_hash}"
         active_title = (
             f"Smart Solar · {entry.title or entry.entry_id[:8]}"
         )
+        # Persist the binding.
+        entry.options[
+            "lovelace_dashboard_url_path"
+        ] = active_url
 
     # Audit T23 round 6: the opt-in
     # flag is read PER ENTRY from

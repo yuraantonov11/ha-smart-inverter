@@ -62,30 +62,39 @@ def _coerce_soc(value: object) -> float | None:
 def _coerce_cycle_count(value: object) -> int:
     """Return a finite, non-negative integer or ``0``.
 
-    T26 round 3 (audit
+    T26 round 4 (audit
     follow-up): the
-    audit explicitly
-    asked for shared
-    validation on the
-    constructor and
-    restore paths. The
-    previous code
-    crashed with
-    ``ValueError`` on a
-    string, with
-    ``OverflowError`` on
-    ``float('inf')``,
-    and silently
-    accepted a negative
-    number (``int(-5)``
-    succeeded; the
-    legitimate cycle
-    count is a finite
-    non-negative int).
-    We treat any
-    malformed value as
-    ``0`` and clamp
-    negatives to ``0``.
+    audit re-tested the
+    round 3 helper and
+    reproduced
+    ``OverflowError``
+    for
+    ``float('inf')`` /
+    ``float('-inf')``.
+    The previous code
+    called ``int(value)``
+    *before* the
+    ``math.isfinite``
+    check, and
+    ``int(float('inf'))``
+    raises
+    ``OverflowError`` —
+    which the ``except
+    (TypeError,
+    ValueError)``
+    clause does *not*
+    catch. The fix is
+    to do the finite
+    check first, on
+    the raw value,
+    before any
+    conversion to
+    ``int``. ``NaN``
+    also returns
+    ``False`` from
+    ``isfinite`` so it
+    is rejected by the
+    same path.
     """
     if value is None:
         return 0
@@ -97,33 +106,99 @@ def _coerce_cycle_count(value: object) -> int:
     # explicitly.
     if isinstance(value, bool):
         return 0
+    # Step 1: check
+    # finiteness on the
+    # raw value *before*
+    # conversion. This
+    # catches
+    # ``float('inf')``,
+    # ``float('-inf')``,
+    # ``float('nan')``,
+    # and any
+    # mathematically
+    # ill-defined input.
+    try:
+        if not math.isfinite(float(value)):  # type: ignore[arg-type]
+            return 0
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    # Step 2: convert
+    # to int. The
+    # ``int(float)`` call
+    # is now safe because
+    # we already know
+    # the value is
+    # finite.
     try:
         v = int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
-    # ``int(float('inf'))``
-    # raises
-    # ``OverflowError`` on
-    # Python 3 — but on
-    # some platforms it
-    # returns
-    # ``sys.maxsize``.
-    # Either way, the
-    # answer is not a
-    # finite non-negative
-    # integer, so we
-    # reject it.
-    try:
-        if not math.isfinite(float(v)):
-            return 0
-    except (ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     if v < 0:
         return 0
     return v
 
 
-def _coerce_install_date(value: object) -> datetime | None:
+def _coerce_in_low_state(value: object) -> bool:
+    """Return a strict ``bool`` from ``value``.
+
+    T26 round 4 (audit
+    follow-up): the
+    constructor used
+    ``bool(value)``,
+    which is *truthy*
+    coercion — ``"false"``,
+    ``0``, ``[]``, etc.
+    all become
+    ``False`` but
+    ``"true"``,
+    ``"yes"``, ``1``,
+    and any
+    non-empty string
+    become ``True``.
+    The restore path
+    used ``is True``,
+    which accepts only
+    the literal
+    ``True``. The
+    asymmetry meant a
+    value loaded from
+    a YAML / JSON file
+    that said
+    ``in_low_state: yes``
+    would land as
+    ``True`` on first
+    write (via
+    ``bool("yes")``)
+    but then be
+    *dropped* on a
+    subsequent reload
+    via ``is True``.
+
+    The new contract
+    is strict: only
+    the literal
+    ``True`` is
+    ``True``; only
+    the literal
+    ``False`` is
+    ``False``;
+    everything else
+    is ``False`` (the
+    audit accepts that
+    any value that is
+    not the literal
+    ``True`` is the
+    "absent / not-in-
+    low-state"
+    condition).
+    """
+    return value is True
+
+
+def _coerce_install_date(
+    value: object,
+    now: datetime | None = None,
+) -> datetime | None:
     """Coerce ``value`` to a
     timezone-aware datetime,
     or None.
@@ -165,20 +240,45 @@ def _coerce_install_date(value: object) -> datetime | None:
     We return ``None``
     for any install
     date that is
-    *after* the current
-    wall clock — this
-    is the same
-    contract as a
-    malformed value
-    (the calendar
-    factor is dropped).
-    The caller already
-    coerces ``now`` via
-    this helper, so the
-    check below uses
-    the helper's
-    result for
-    ``now``.
+    *after* ``now`` —
+    the caller must
+    pass an explicit
+    ``now`` (default
+    ``datetime.now(UTC)``)
+    so the
+    determination is
+    deterministic. A
+    ``now`` of
+    ``None`` defaults
+    to the wall clock.
+
+    T26 round 4: the
+    previous
+    implementation
+    called
+    ``datetime.now(UTC)``
+    directly inside the
+    helper, ignoring
+    the controlled
+    ``now`` passed to
+    ``estimated_soh_percent``.
+    The audit
+    reproduced
+    ``cycle_count=500,
+    now=2025-01-01:
+    install_date=2026-01-01
+    → SoH=77.25``
+    (better than the
+    75.0 the cycle
+    damage alone would
+    give). The fix is
+    to thread ``now``
+    through the helper
+    so the calendar-
+    aging check is
+    consistent with
+    the aging
+    subtraction.
     """
     if value is None:
         return None
@@ -207,15 +307,23 @@ def _coerce_install_date(value: object) -> datetime | None:
         dt = dt.replace(tzinfo=timezone.utc)
     # Reject future
     # dates. We compare
-    # against ``datetime.now(UTC)``;
-    # a difference of 1
+    # against the
+    # *controlled* ``now``,
+    # not the wall clock,
+    # so the test can
+    # pin the answer.
+    # A difference of 1
     # second is treated
     # as "future" so
     # clock-skew does
     # not silently
     # accept a tiny
     # typo.
-    if dt > datetime.now(timezone.utc):
+    if now is None:
+        now = datetime.now(timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if dt > now:
         return None
     return dt
 
@@ -235,7 +343,7 @@ class BatterySoH:
         in_low_state: object = False,
         install_date: Union[datetime, str, None] = None,
     ) -> None:
-        # T26 round 3: every
+        # T26 round 4: every
         # constructor argument
         # is run through a
         # shared validation
@@ -243,22 +351,16 @@ class BatterySoH:
         # malformed value
         # (``"abc"``,
         # ``Infinity``,
-        # ``-5``, ``True``)
+        # ``-5``, ``True``,
+        # ``"true"``,
+        # future date)
         # cannot crash the
         # integration or
-        # silently land as a
-        # negative cycle
-        # count.
+        # silently land as
+        # an unexpected
+        # value.
         self._cycle_count = _coerce_cycle_count(cycle_count)
-        self._in_low_state = bool(in_low_state) if not isinstance(in_low_state, bool) else in_low_state
-        # T26: coerce the
-        # install date to a
-        # timezone-aware
-        # datetime so the
-        # subtraction is safe
-        # when the value was
-        # loaded from a naive
-        # ISO string.
+        self._in_low_state = _coerce_in_low_state(in_low_state)
         self._install_date = _coerce_install_date(install_date)
 
     @property
@@ -343,19 +445,65 @@ class BatterySoH:
             pass an explicit
             ``now`` to pin the
             answer.
+
+        T26 round 4: the
+        ``now`` argument
+        is threaded through
+        to ``_coerce_install_date``
+        so a *future*
+        install date (one
+        that is in the
+        future *relative to
+        the controlled
+        ``now``*) is
+        rejected. The
+        calendar-age
+        subtraction also
+        uses this ``now``
+        so a future
+        install_date does
+        not produce a
+        negative
+        ``years`` and
+        inflate SoH above
+        the cycle-only
+        baseline.
         """
         cycle_degrade = min(
             0.8, self._cycle_count / RATED_CYCLE_LIFE
         )
-        age_factor = 1.0
-        date = _coerce_install_date(install_date) or self._install_date
         if now is None:
             now = datetime.now(timezone.utc)
         elif now.tzinfo is None:
             now = now.replace(tzinfo=timezone.utc)
+        # Thread ``now``
+        # through the
+        # install-date
+        # validation so a
+        # future date is
+        # rejected
+        # consistently with
+        # the aging
+        # subtraction.
+        date = (
+            _coerce_install_date(install_date, now=now)
+            or self._install_date
+        )
+        age_factor = 1.0
         if date is not None:
+            # ``years`` is
+            # non-negative
+            # because
+            # ``_coerce_install_date``
+            # would have
+            # returned ``None``
+            # for a future
+            # date.
             years = (now - date).days / 365.0
-            age_factor = max(0.0, 1.0 - years * CALENDAR_AGING_PER_YEAR)
+            # Defensive:
+            # ``max(0, ...)``
+            # already in place.
+            age_factor = max(0.0, 1.0 - max(0.0, years) * CALENDAR_AGING_PER_YEAR)
         soh = (1.0 - cycle_degrade) * age_factor * 100.0
         return max(0.0, min(100.0, soh))
 
@@ -428,45 +576,33 @@ class BatterySoH:
     def load_from_dict(self, data: dict) -> None:
         """Load from serialized dict.
 
-        T26 round 3:
-        shared
-        validation —
-        ``cycle_count``
-        is run through
-        ``_coerce_cycle_count``
-        so a
-        malformed
-        value
-        (``"abc"``,
-        ``Infinity``,
-        ``-5``) lands
-        as ``0``
-        instead of
-        crashing the
-        integration.
-        ``install_date``
-        is run through
-        ``_coerce_install_date``
-        which rejects
-        malformed
-        inputs and
-        future dates.
-        ``in_low_state``
-        is coerced via
-        ``bool`` — the
-        only legal
-        representations
-        are ``True`` /
-        ``False`` (we
-        reject
-        ``"true"`` /
-        ``1``).
+        T26 round 4: shared
+        validation — every
+        field runs through
+        the same helper as
+        the constructor
+        (``_coerce_cycle_count``
+        /
+        ``_coerce_in_low_state``
+        /
+        ``_coerce_install_date``)
+        so the round-trip
+        is symmetric. A
+        value loaded from
+        a YAML / JSON file
+        is treated
+        identically to a
+        value passed to
+        the constructor —
+        no asymmetry
+        between write and
+        read paths.
         """
         self._cycle_count = _coerce_cycle_count(
             data.get("cycle_count")
         )
-        self._in_low_state = (
-            data.get("in_low_state") is True
+        self._in_low_state = _coerce_in_low_state(
+            data.get("in_low_state")
         )
         self._install_date = _coerce_install_date(
             data.get("install_date")

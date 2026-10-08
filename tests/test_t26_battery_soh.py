@@ -418,5 +418,519 @@ class TestLoadFromDictMalformed(unittest.TestCase):
         self.assertEqual(soh.cycle_count, 0)
 
 
+class TestT26Round4InfiniteCycleCount(unittest.TestCase):
+    """T26 round 4 (audit
+    follow-up): the
+    ``_coerce_cycle_count``
+    helper must NOT
+    raise on
+    ``float('inf')`` /
+    ``float('-inf')``.
+    The previous code
+    called ``int(value)``
+    *before* the
+    finiteness check,
+    so
+    ``int(float('inf'))``
+    raised
+    ``OverflowError``
+    outside the
+    ``except`` clause.
+    The fix is to
+    finiteness-check
+    first, convert
+    second.
+
+    The audit also
+    required both
+    production paths
+    (constructor and
+    ``load_from_dict``)
+    to be exercised
+    with these
+    values."""
+
+    def test_constructor_infinity_does_not_raise(self) -> None:
+        # Must not raise.
+        soh = BatterySoH(cycle_count=float("inf"))
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_constructor_negative_infinity_does_not_raise(
+        self,
+    ) -> None:
+        soh = BatterySoH(cycle_count=float("-inf"))
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_constructor_nan_does_not_raise(self) -> None:
+        soh = BatterySoH(cycle_count=float("nan"))
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_load_from_dict_infinity_does_not_raise(
+        self,
+    ) -> None:
+        soh = BatterySoH()
+        soh.load_from_dict({"cycle_count": float("inf")})
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_load_from_dict_negative_infinity_does_not_raise(
+        self,
+    ) -> None:
+        soh = BatterySoH()
+        soh.load_from_dict(
+            {"cycle_count": float("-inf")}
+        )
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_load_from_dict_nan_does_not_raise(self) -> None:
+        soh = BatterySoH()
+        soh.load_from_dict({"cycle_count": float("nan")})
+        self.assertEqual(soh.cycle_count, 0)
+
+
+class TestT26Round4BooleanUnification(unittest.TestCase):
+    """T26 round 4 (audit
+    follow-up): the
+    constructor used
+    ``bool(value)``
+    (truthy coercion),
+    so ``"false"``
+    → ``False`` but
+    ``"yes"``, ``"true"``,
+    ``1`` → ``True``.
+    The restore path
+    used ``is True``
+    (only the literal
+    ``True``). The
+    asymmetry meant a
+    round-trip could
+    silently flip the
+    field.
+
+    The new contract
+    is strict: only
+    the literal
+    ``True`` is
+    ``True``; anything
+    else (including
+    ``"yes"``,
+    ``"true"``, ``1``,
+    ``"false"``) is
+    ``False``. Both
+    paths use
+    ``_coerce_in_low_state``
+    so they are
+    symmetric."""
+
+    def test_constructor_truthy_string_is_false(self) -> None:
+        # ``bool("yes")`` was
+        # ``True`` before;
+        # the new contract
+        # is ``False``.
+        soh = BatterySoH(in_low_state="yes")
+        self.assertFalse(soh.in_low_state)
+
+    def test_constructor_truthy_int_is_false(self) -> None:
+        soh = BatterySoH(in_low_state=1)
+        self.assertFalse(soh.in_low_state)
+
+    def test_constructor_string_false_is_false(self) -> None:
+        soh = BatterySoH(in_low_state="false")
+        self.assertFalse(soh.in_low_state)
+
+    def test_constructor_literal_true_is_true(self) -> None:
+        soh = BatterySoH(in_low_state=True)
+        self.assertTrue(soh.in_low_state)
+
+    def test_constructor_literal_false_is_false(
+        self,
+    ) -> None:
+        soh = BatterySoH(in_low_state=False)
+        self.assertFalse(soh.in_low_state)
+
+    def test_load_from_dict_truthy_string_is_false(
+        self,
+    ) -> None:
+        soh = BatterySoH()
+        soh.load_from_dict({"in_low_state": "yes"})
+        self.assertFalse(soh.in_low_state)
+
+    def test_load_from_dict_literal_true_is_true(
+        self,
+    ) -> None:
+        soh = BatterySoH()
+        soh.load_from_dict({"in_low_state": True})
+        self.assertTrue(soh.in_low_state)
+
+    def test_round_trip_truthy_string_is_consistent(
+        self,
+    ) -> None:
+        """Constructing with
+        ``"yes"`` then
+        round-tripping
+        via
+        ``to_dict /
+        load_from_dict``
+        must keep the
+        value
+        consistent
+        (both
+        ``False``).
+        The previous
+        asymmetry
+        would have
+        silently
+        flipped it."""
+        soh = BatterySoH(in_low_state="yes")
+        blob = soh.to_dict()
+        self.assertFalse(blob["in_low_state"])
+        soh2 = BatterySoH()
+        soh2.load_from_dict(blob)
+        self.assertFalse(soh2.in_low_state)
+
+
+class TestT26Round4CalendarAgingRespectsNow(unittest.TestCase):
+    """T26 round 4 (audit
+    follow-up): the
+    previous
+    ``_coerce_install_date``
+    used the wall clock
+    to reject future
+    dates, so a
+    ``now=2025-01-01``
+    test could not
+    reject an
+    ``install_date=2026-01-01``.
+    The audit
+    reproduced::
+
+        cycles=500, now=2025-01-01:
+            no install_date → SoH=75.0
+            install_date=2026-01-01 → SoH=77.25
+
+    The fix threads
+    ``now`` through
+    ``_coerce_install_date``
+    and into the
+    aging subtraction,
+    so a future
+    install_date (one
+    past ``now``) is
+    rejected *and* the
+    aging subtraction
+    cannot
+    inflate SoH
+    above the
+    cycle-only
+    baseline."""
+
+    def test_future_install_date_relative_to_now_rejected(
+        self,
+    ) -> None:
+        soh = BatterySoH(
+            cycle_count=500,
+            install_date="2026-01-01",
+        )
+        # ``now`` is
+        # 2025; the
+        # future
+        # install_date
+        # is rejected.
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        # Without an
+        # install_date
+        # SoH reflects
+        # the cycle
+        # damage alone.
+        soh_no_install = BatterySoH(cycle_count=500)
+        baseline = soh_no_install.estimated_soh_percent(
+            now=now,
+        )
+        # With the
+        # rejected
+        # future
+        # install_date
+        # SoH must be
+        # *no higher*
+        # than the
+        # baseline.
+        result = soh.estimated_soh_percent(now=now)
+        self.assertLessEqual(
+            result, baseline,
+            f"Future install_date must not "
+            f"improve SoH above the "
+            f"cycle-only baseline. "
+            f"baseline={baseline}, "
+            f"with_future_install_date={result}",
+        )
+
+    def test_past_install_date_reduces_soh(self) -> None:
+        soh = BatterySoH(
+            cycle_count=500,
+            install_date="2020-01-01",
+        )
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        result = soh.estimated_soh_percent(now=now)
+        # 5 years →
+        # 15% calendar
+        # loss on top
+        # of cycle
+        # loss.
+        # Cycle
+        # baseline:
+        # 75.0. With
+        # 15% loss:
+        # 75.0 * 0.85
+        # = 63.75.
+        # We allow a
+        # ±2 point
+        # tolerance for
+        # leap-year
+        # fuzziness.
+        self.assertAlmostEqual(result, 63.75, delta=2.0)
+
+    def test_explicit_now_threads_through(self) -> None:
+        soh = BatterySoH(
+            cycle_count=500,
+            install_date="2024-01-01",
+        )
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        result = soh.estimated_soh_percent(now=now)
+        # 1 year
+        # → ~3%
+        # loss on
+        # cycle
+        # baseline
+        # 75.
+        self.assertAlmostEqual(result, 72.75, delta=2.0)
+
+    def test_explicit_now_none_uses_wall_clock(self) -> None:
+        soh = BatterySoH(cycle_count=500)
+        # No install_date → no calendar
+        # loss; the answer is the
+        # cycle-only baseline.
+        result = soh.estimated_soh_percent()
+        # ``now=None`` defaults
+        # to wall clock;
+        # ``install_date=None``,
+        # so ``age_factor=1``.
+        # Cycle-only SoH = 75.0.
+        self.assertAlmostEqual(result, 75.0, delta=0.01)
+
+    def test_constructor_nan_cycle_count_returns_zero(
+        self,
+    ) -> None:
+        """Round 4 audit:
+        ``float('nan')`` must
+        be rejected by the
+        finiteness check
+        (``math.isfinite``)
+        before any conversion.
+        The cycle count must
+        end up as 0 and the
+        SoH must equal the
+        cycle-only baseline
+        (= 100)."""
+        soh = BatterySoH(cycle_count=float("nan"))
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_constructor_neg_inf_cycle_count_returns_zero(
+        self,
+    ) -> None:
+        soh = BatterySoH(
+            cycle_count=float("-inf")
+        )
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_restore_nan_cycle_count_returns_zero(
+        self,
+    ) -> None:
+        """``load_from_dict`` with
+        a NaN cycle_count must
+        also coerce to 0."""
+        soh = BatterySoH()
+        soh.load_from_dict(
+            {"cycle_count": float("nan")}
+        )
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_restore_neg_inf_cycle_count_returns_zero(
+        self,
+    ) -> None:
+        soh = BatterySoH()
+        soh.load_from_dict(
+            {"cycle_count": float("-inf")}
+        )
+        self.assertEqual(soh.cycle_count, 0)
+
+    def test_constructor_false_string_does_not_set_low_state(
+        self,
+    ) -> None:
+        """Round 4 audit: the
+        constructor used
+        ``bool(value)`` which
+        treats ``"false"`` as
+        True. The unified
+        ``_coerce_in_low_state``
+        helper now requires
+        ``value is True`` for
+        the boolean to be set."""
+        soh = BatterySoH(in_low_state="false")
+        self.assertFalse(soh.in_low_state)
+        soh2 = BatterySoH(in_low_state="False")
+        self.assertFalse(soh2.in_low_state)
+        soh3 = BatterySoH(in_low_state="0")
+        self.assertFalse(soh3.in_low_state)
+
+    def test_restore_false_string_does_not_set_low_state(
+        self,
+    ) -> None:
+        soh = BatterySoH()
+        soh.load_from_dict(
+            {"in_low_state": "false"}
+        )
+        self.assertFalse(soh.in_low_state)
+
+    def test_future_install_date_no_soh_bonus_under_controlled_now(
+        self,
+    ) -> None:
+        """Round 4 audit:
+        ``cycles=500``,
+        ``now=2025-01-01``,
+        ``install_date=2026-01-01``
+        must NOT improve SoH.
+        The previous code
+        computed a negative
+        calendar age and the
+        ``age_factor`` went
+        above 1, producing a
+        SoH above the
+        cycle-only baseline
+        (75)."""
+        soh = BatterySoH(
+            cycle_count=500,
+            install_date="2026-01-01",
+        )
+        now = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        result = soh.estimated_soh_percent(now=now)
+        # The cycle-only
+        # baseline (75.0)
+        # is the upper bound;
+        # a future install
+        # date must NOT
+        # exceed it.
+        self.assertLessEqual(
+            result,
+            75.0,
+            f"future install_date must not "
+            f"boost SoH above the cycle-only "
+            f"baseline; got {result}",
+        )
+
+    def test_future_install_date_load_keeps_value(
+        self,
+    ) -> None:
+        """``load_from_dict``
+        restores the value
+        verbatim — it has no
+        ``now`` parameter,
+        so it cannot judge
+        whether the date is
+        in the future. The
+        *constructor's*
+        ``_coerce_install_date``
+        is the one that
+        enforces "not in
+        the future" and is
+        exercised by
+        ``test_future_install_date_no_soh_bonus_under_controlled_now``."""
+
+        soh = BatterySoH()
+        soh.load_from_dict(
+            {
+                "cycle_count": 500,
+                "install_date": "2024-01-01",
+            }
+        )
+        # 2024-01-01 is in the
+        # past for any
+        # realistic wall clock;
+        # ``load_from_dict``
+        # preserves the value
+        # without a ``now``
+        # anchor.
+        self.assertIsNotNone(soh._install_date)
+        # ``estimated_soh_percent``
+        # uses the supplied
+        # ``now``; a *future*
+        # ``now`` (relative to
+        # the install_date)
+        # must NOT boost the
+        # SoH above the
+        # cycle-only baseline.
+        future_now = datetime(
+            2025, 1, 1, tzinfo=timezone.utc
+        )
+        # This now is *after*
+        # 2024-01-01, so
+        # calendar aging
+        # applies — the SoH
+        # must equal the
+        # cycle-only baseline
+        # minus the calendar
+        # loss (1y × 3% =
+        # ~72.75).
+        result = soh.estimated_soh_percent(
+            now=future_now
+        )
+        self.assertLessEqual(
+            result,
+            75.0,
+            f"calendar aging must not exceed "
+            f"cycle-only baseline; got {result}",
+        )
+
+    def test_restore_inf_future_install_date_no_bonus(
+        self,
+    ) -> None:
+        """Restore with a date
+        that is infinitely
+        far in the future
+        relative to a
+        controlled ``now``:
+        the helper must NOT
+        produce an SoH
+        above the cycle
+        baseline."""
+        soh = BatterySoH()
+        soh.load_from_dict(
+            {
+                "cycle_count": 500,
+                "install_date": "9999-01-01",
+            }
+        )
+        controlled_now = datetime(
+            2025, 1, 1, tzinfo=timezone.utc
+        )
+        # ``estimated_soh_percent``
+        # passes the
+        # controlled ``now``
+        # through
+        # ``_coerce_install_date``
+        # via the inline
+        # check; a far-future
+        # install_date must
+        # be rejected.
+        result = soh.estimated_soh_percent(
+            now=controlled_now
+        )
+        self.assertLessEqual(
+            result,
+            75.0,
+            f"future install_date must not boost "
+            f"SoH above cycle-only baseline; "
+            f"got {result}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

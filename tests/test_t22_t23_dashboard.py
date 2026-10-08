@@ -1310,6 +1310,278 @@ def test_r74_two_entries_with_same_prefix_get_distinct_sidecars() -> None:
 
 
 # ─────────────────────────────────────────────────────────────
+# R10.4 — idempotent
+# entry→dashboard binding;
+# reload / repeated migration
+# must NOT create a second
+# dashboard for the same
+# ``entry_id``. Юра round 4:
+# the previous logic created
+# a new sidecar whenever the
+# canonical ``main_path``
+# existed, even for the same
+# ``entry_id``. The fix binds
+# each entry to a stable
+# dashboard via
+# ``entry.options["lovelace_dashboard_url_path"]``.
+# ─────────────────────────────────────────────────────────────
+
+
+def test_r104_repeated_setup_same_entry_creates_one_dashboard() -> None:
+    """R10.4: a single config
+    entry run through ``setup``
+    / ``migration`` /
+    ``setup`` must produce
+    exactly ONE dashboard. The
+    previous behaviour created
+    a second sidecar each time
+    ``main_path`` already
+    existed (which is the case
+    after the very first
+    setup)."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        # Pre-existing main
+        # dashboard (legacy /
+        # previous install).
+        main_path = os.path.join(
+            storage, "lovelace.powmr_energy"
+        )
+        with open(main_path, "w") as f:
+            json.dump(
+                {"data": {"config": {"title": "USER EDIT"}}},
+                f,
+            )
+        with open(
+            os.path.join(storage, "lovelace_dashboards"),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {"items": [{
+                        "id": "powmr_energy",
+                        "url_path": "powmr-energy",
+                        "show_in_sidebar": True,
+                    }]},
+                },
+                f,
+            )
+        entry = _FakeConfigEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N"
+        )
+        hass = _FakeHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {
+                "dashboard_migration_opt_in": True,
+            },
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY, "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        # First setup.
+        _run(
+            real(
+                hass, entry,
+                {"title": "FIRST", "views": []},
+            )
+        )
+        # Reload (simulate
+        # HA restart: the sidecar
+        # file persists, the
+        # metadata persists).
+        _run(
+            real(
+                hass, entry,
+                {"title": "SECOND", "views": []},
+            )
+        )
+        # Migration opt-in:
+        # third setup with
+        # new content.
+        _run(
+            real(
+                hass, entry,
+                {"title": "THIRD", "views": []},
+            )
+        )
+        # There must be
+        # EXACTLY ONE new
+        # dashboard besides
+        # ``lovelace.powmr_energy``
+        # (the legacy main).
+        sidecar_files = sorted(
+            f for f in os.listdir(storage)
+            if f.startswith("lovelace.powmr_energy")
+            and not f.endswith(".bak")
+            and f != "lovelace.powmr_energy"
+        )
+        assert len(sidecar_files) == 1, (
+            f"R10.4: repeated setup of one "
+            f"entry must NOT create more "
+            f"than one sidecar; got "
+            f"{sidecar_files}"
+        )
+        # The entry must have
+        # a stable binding.
+        binding = entry.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        assert binding is not None, (
+            "R10.4: entry.options must "
+            "carry the dashboard binding"
+        )
+        # The metadata must
+        # list only ONE entry
+        # for this inverter.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            )
+        ) as f:
+            items = json.load(f)["data"]["items"]
+        entry_items = [
+            it for it in items
+            if it.get("id") != "powmr_energy"
+            and it.get("id") != "map"
+            and it.get("id") != "my_home"
+        ]
+        assert len(entry_items) == 1, (
+            f"R10.4: metadata must list "
+            f"one dashboard per entry; "
+            f"got {[it.get('id') for it in entry_items]}"
+        )
+
+
+def test_r104_two_distinct_entries_get_independent_dashboards() -> None:
+    """R10.4: two different
+    config entries must keep
+    independent dashboards. A
+    sidecar for entry A must
+    never be reused for entry
+    B even if A's storage is
+    present."""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        main_path = os.path.join(
+            storage, "lovelace.powmr_energy"
+        )
+        with open(main_path, "w") as f:
+            json.dump(
+                {"data": {"config": {"title": "USER EDIT"}}},
+                f,
+            )
+        with open(
+            os.path.join(storage, "lovelace_dashboards"),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {"items": [{
+                        "id": "powmr_energy",
+                        "url_path": "powmr-energy",
+                        "show_in_sidebar": True,
+                    }]},
+                },
+                f,
+            )
+        entry_a = _FakeConfigEntry(
+            "01M3XWJ8AAAAAAAAAAAAAAAAAAAA"
+        )
+        entry_b = _FakeConfigEntry(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBB"
+        )
+        hass = _FakeHass(
+            config_dir=tmp,
+            entries=[entry_a, entry_b],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry_a.entry_id: {
+                "dashboard_migration_opt_in": True,
+            },
+            entry_b.entry_id: {
+                "dashboard_migration_opt_in": True,
+            },
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY, "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass, entry_a,
+                {"title": "A BOARD", "views": []},
+            )
+        )
+        _run(
+            real(
+                hass, entry_b,
+                {"title": "B BOARD", "views": []},
+            )
+        )
+        # Each entry has its
+        # own binding and its
+        # own content file.
+        binding_a = entry_a.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        binding_b = entry_b.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        assert binding_a is not None
+        assert binding_b is not None
+        assert binding_a != binding_b, (
+            f"R10.4: distinct entries must "
+            f"have distinct bindings; "
+            f"got A={binding_a} B={binding_b}"
+        )
+        sidecar_files = sorted(
+            f for f in os.listdir(storage)
+            if f.startswith("lovelace.powmr_energy")
+            and not f.endswith(".bak")
+            and f != "lovelace.powmr_energy"
+        )
+        assert len(sidecar_files) == 2, (
+            f"R10.4: two distinct entries "
+            f"must produce two sidecars; "
+            f"got {sidecar_files}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────
 # R7.5 — service handler:
 # flag reset, ambiguity,
 # failure propagation
