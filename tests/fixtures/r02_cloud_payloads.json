@@ -1,0 +1,63 @@
+{
+  "scenarios": [
+    {
+      "name": "A_old_timestamp_fresh_fetch",
+      "fetched_at": "2026-10-08T12:00:00+00:00",
+      "points": [
+        {"time": "2026-10-07", "value": 6.5, "isRealValue": true}
+      ],
+      "expected_outcome": "yesterday_actual_for_yesterday",
+      "expected_actual": {"2026-10-07": 6.5}
+    },
+    {
+      "name": "B_repeated_payload",
+      "fetched_at_first": "2026-10-08T10:00:00+00:00",
+      "fetched_at_second": "2026-10-08T12:00:00+00:00",
+      "points": [
+        {"time": "2026-10-07", "value": 6.5, "isRealValue": true}
+      ],
+      "expected_outcome": "yesterday_actual_idempotent",
+      "expected_actual": {"2026-10-07": 6.5}
+    },
+    {
+      "name": "C_missing_time_field",
+      "fetched_at": "2026-10-08T12:00:00+00:00",
+      "points": [
+        {"value": 6.5, "isRealValue": true}
+      ],
+      "expected_outcome": "point_rejected_invalid",
+      "expected_actual": {}
+    },
+    {
+      "name": "D_future_or_garbage_timestamp",
+      "fetched_at": "2026-10-08T12:00:00+00:00",
+      "points": [
+        {"time": "2099-12-31", "value": 6.5, "isRealValue": true},
+        {"time": "not-a-date", "value": 6.5, "isRealValue": true},
+        {"time": "", "value": 6.5, "isRealValue": true}
+      ],
+      "expected_outcome": "all_rejected_out_of_range_or_parse_error",
+      "expected_actual": {}
+    },
+    {
+      "name": "E_fresh_zero_at_night",
+      "fetched_at": "2026-10-08T22:00:00+00:00",
+      "points": [
+        {"time": "2026-10-08", "value": 0.0, "isRealValue": true}
+      ],
+      "expected_outcome": "today_actual_zero_valid",
+      "expected_actual": {"2026-10-08": 0.0}
+    },
+    {
+      "name": "F_same_value_no_new_evidence",
+      "fetched_at_first": "2026-10-08T08:00:00+00:00",
+      "fetched_at_second": "2026-10-08T10:00:00+00:00",
+      "points": [
+        {"time": "2026-10-08T07:00", "value": 0.0, "isRealValue": true},
+        {"time": "2026-10-08T07:30", "value": 0.0, "isRealValue": true}
+      ],
+      "expected_outcome": "yesterday_or_today_idempotent",
+      "expected_actual": {"2026-10-08": 0.0}
+    }
+  ]
+}
