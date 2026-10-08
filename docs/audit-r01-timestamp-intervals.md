@@ -268,9 +268,10 @@ actual_w=4.)` у тестах — це 5/4 kWh → 5000/4000 W-еквівале�
 | Етап | Поле | Timestamp | Одиниці | Interval |
 |------|------|-----------|---------|----------|
 | Open-Meteo request | `start_date`/`end_date` | local-day `YYYY-MM-DD` | date | `[start_date, end_date]` (inclusive) |
-| Open-Meteo response | `hourly.time` | epoch seconds UTC | time | `[t, t+1h)` per value |
-| Open-Meteo response | `hourly.shortwave_radiation` | W/m² preceding-hour mean | energy/area | mean of `[t, t+1h)` |
-| `complete_hourly_days` (rad) | `rows[].start` | epoch seconds UTC | time | `[instant, instant+1h)` |
+| Open-Meteo response | `hourly.time` | epoch seconds UTC | time | API timestamp `t` = END of `[t-1h, t)` per value (preceding-hour mean) |
+| Open-Meteo response | `hourly.shortwave_radiation` | W/m² preceding-hour mean | energy/area | mean of `[t-1h, t)` (the hour ENDING at `t`) |
+| Production `rows[].start` | `ts` (API timestamp) | epoch seconds UTC | time | **MISMATCH**: field is named "start" but stores END of `[t-1h, t)` interval. Documented: should be `t-1h`. |
+| `complete_hourly_days` (rad) | `rows[].start` (UTC ts) | epoch seconds UTC | time | groups by `ts.astimezone(tz).date()` = date at END of interval (potential off-by-one for hours near local midnight) |
 | HA recorder (HA 2026.10) | `period="day"` | `start`/`end` aware UTC | time | `[start, start+24h)` (or 23/25h DST) |
 | `daily_energy_deltas` | `endpoints[t+1h] = sum * scale` | aware UTC | kWh cumulative | end-aligned |
 | `fetch_hourly_pv_history_day` | `point["time"]` | ISO 8601 naive | time | parse as local, expect 00 or :30 |
@@ -288,8 +289,9 @@ actual_w=4.)` у тестах — це 5/4 kWh → 5000/4000 W-еквівале�
 (післязавтра), 2026-10-11 (через 3 дні). Кожен рядок — `{start, mean}`.
 
 - 2026-10-08: всі 24 нулів.
-- 2026-10-09: один ненульовий інтервал `[10:00 UTC, 11:00 UTC)` = 150 W/m²,
-  решта 23 нулів.
+- 2026-10-09: один ненульовий інтервал `[09:00 UTC, 10:00 UTC) = 150 W/m²,
+  решта 23 нулів. Це значення представляє годину, що закінчується о
+  `t=2026-10-09 10:00 UTC` (preceding hour mean).
 - 2026-10-10: всі 24 нулів.
 - 2026-10-11: всі 24 нулів.
 

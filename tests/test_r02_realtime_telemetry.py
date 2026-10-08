@@ -1,28 +1,16 @@
-"""R02 — realtime telemetry freshness investigation.
+"""R02 — realtime telemetry tests (synthetic payload).
 
-Audit R02 (round 2):
-  * Trace fetch_realtime_data → _try_realtime_endpoint → _parse_realtime_fields.
-  * For cleaned real payloads, document:
-    - endpoint
-    - received_at
-    - persisted time/sequence fields (if any)
-  * Confine the "no measured_at" conclusion to the actually
-    investigated responses.
-  * Fix the R02 fixtures:
-    - fetched_at is recorded in the fixture, not passed to the
-      production function.
-    - repeated-payload test invokes the parser only once.
-    - "future timestamp" is rejected via out-of-range, not by a
-      freshness policy.
-  * Add tests for: consecutive fetches of the same realtime payload;
-    missing/old timestamp; valid zero.
-
-The realtime endpoint (solar.siseli.com /api/deviceState/...) returns
-a JSON envelope with a nested ``deviceAttributeState`` map; each value
-is either a scalar or an object with ``value``/``valueDisplay`` keys.
-There is **no** ``measured_at`` / ``sequenceId`` / ``deviceTime`` in the
-documented payload schema; we document this fact from the test inputs
-below and from the live payloads we have seen.
+Audit R02 (round 3):
+  * These tests use a **synthetic** deviceAttributeState payload.
+  * They DO NOT prove the absence of ``measuredAt`` /
+    ``sequenceId` / ``deviceTime`` in **real** API responses.
+    For real-API conclusions, a separate **cleaned capture with
+    provenance** would be required. We do not have such a capture.
+  * The endpoint path is
+    ``/apis/deviceState/simple/energy/flow/v1`` (per
+    ``const.ENDPOINT_REALTIME``). Backend: ``solar.siseli.com``.
+  * The freshness policy (proposed, not implemented) is documented
+    in ``docs/audit-r02-cloud-freshness.md`` §8.
 """
 from __future__ import annotations
 

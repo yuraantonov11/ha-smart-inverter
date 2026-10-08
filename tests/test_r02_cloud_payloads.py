@@ -1,22 +1,19 @@
-"""R02 — historical (overview) cloud buckets freshness investigation.
+"""R02 — historical (overview) cloud buckets — **synthetic** payload tests.
 
-Audit R02 (round 2):
-  * The historical ``pvGeneratedEnergy`` and ``generationPower`` time
-    points are the OVERVIEW buckets (daily kWh, half-hour W) — a
-    separate contract from the realtime telemetry used by HEMS dispatch.
-  * The "fetched_at" in the fixture is a CLIENT-side concern; the
-    production function ``measured_pv_days`` does not accept it.
-  * The repeated-payload test must invoke the parser twice (or N times)
-    to confirm idempotence.
-  * The "future timestamp" rejection is a date-range check, not a
-    freshness policy.
-  * Add: repeated invocation of the same payload (N times), missing
-    timestamp, valid zero, and an explicit assertion that historical
-    buckets are not the source of dispatch freshness.
-
-These tests use production ``measured_pv_days`` /
-``measured_pv_hours`` directly — no mocks. The fixtures are
-representative of real responses (cleaned, no secrets).
+Audit R02 (round 3):
+  * These tests use a **synthetic** JSON payload authored in
+    ``tests/fixtures/r02_cloud_payloads.json``. They exercise
+    production ``measured_pv_days`` / ``measured_pv_hours`` with
+    that synthetic payload.
+  * They DO NOT prove the absence of ``measured_at`` /
+    ``sequenceId`` / ``deviceTime`` in **real** API responses.
+    For real-API conclusions, a separate **cleaned capture with
+    provenance** would be required. We do not have such a capture.
+  * The historical ``timePoints`` for daily kWh and half-hour W
+    are a separate contract from realtime telemetry. The realtime
+    path is in ``test_r02_realtime_telemetry.py``.
+  * The freshness policy (proposed, not implemented) is documented
+    in ``docs/audit-r02-cloud-freshness.md`` §8.
 """
 from __future__ import annotations
 

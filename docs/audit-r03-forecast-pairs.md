@@ -382,9 +382,8 @@ def calibration_pairs(self):
   `snapshots[day] = {forecast_kwh, issued_at, forecast_model}`.
 - Pair: `match(actual, now)` → `pairs[day] = {forecast_kwh, actual_kwh,
   coverage, forecast_model}`.
-- Calibrator: `record(forecast_w, actual_w)` — `(kWh, kWh)`. **Не**
-  kWh×1000; це energy у kWh (див. `ForecastCalibrator.__init__` з
-  `unit="kWh"`).
+- Calibrator: `record(forecast_w, actual_w)` — `(kWh, kWh)`. Одиниці
+  — kWh (див. `ForecastCalibrator.__init__` з `unit="kWh"`).
 - Model scope: `calibration_model` визначає, які `pairs` потрапляють у
   calibrator. `set_calibration_model` **перезавантажує** calibrator з
   новою вибіркою.
@@ -437,22 +436,31 @@ via `ssh root@192.168.1.220`):
 **Висновок по таблиці:** `samples=0` не є дефектом — для жодної з
 14 днів з повним `cloud_hourly` не було issued forecast. Issuance
 починається лише з 2026-10-08 (`forecast_tomorrow_kwh = 0.1` для
-2026-10-09 і `0.37` для 2026-10-10). **Це означає, що для отримання
-першого sample треба зачекати до 2026-10-10, коли день 2026-10-09
-завершиться** (або пізніше, якщо `daily_pv_energy` запізнюється).
+2026-10-09 і `0.37` для 2026-10-10).
 
-`pending_count` зменшився з 3 до 2 не тому, що snapshot «завершився»,
-а тому що `PvLearningCoordinatorMixin._save_real_forecast_pair` —
-єдина точка видачі — більше не викликається для 2026-10-09 (один
-pair утворився через накопичення `cloud_hourly` і `match` повернув
-`1` на наступний день). Snapshot для 2026-10-09 **зберігається** в
-journal; `used=True` блокує повторне врахування.
+**Невстановлене:** чи отримаємо ми перший sample **саме** для
+2026-10-09 — залежить від того, чи `calibration_model` залишиться
+`hourly_response_v1` (поточний стан) до завершення 2026-10-09. Якщо
+`calibration_model` переключиться на іншу `model family`, pair для
+2026-10-09 буде виключений з активного калібратора
+(`calibration_pairs()` фільтрує за `forecast_model ==
+calibration_model`). Існує також ризик, що `daily_pv_energy` для
+2026-10-09 запізниться, і pair утвориться пізніше очікуваного.
+Тому **не обіцяємо** перший sample саме для 2026-10-09 — лише
+фіксуємо, що для появи першого sample потрібно, щоб:
+1. issuance відбувся (це сталося 2026-10-08);
+2. день завершився (для 2026-10-09 — після 2026-10-09 23:59:59
+   `Europe/Kyiv`);
+3. `match` викликається після завершення дня (залежить від
+   `PvLearningCoordinatorMixin._save_real_forecast_pair` triggering
+   logic);
+4. `forecast_model` snapshot'а збігається з `calibration_model` на
+   момент `match`.
 
-**Причина відсутності sample для старих дат — відсутність
-issued forecast**, а не втрата snapshot'ів чи проблема persistence.
-Це підтверджується тим, що `cloud_hourly_*.json` має повні 24/24
-покриття для кожного з 14 днів, а `pv_fact_pairs_*.json` та journal
-— не мають жодного snapshot'а для цих днів.
+`pending_count` зменшився з 3 до 2 — без старих журналів ми не
+можемо встановити, чи це означає видалення snapshot'а, чи завершення
+пари. **Без старих backup'ів причина невстановлена** — див. §6
+"Підтверджені невизначеності".
 
 ### Підтверджені невизначеності
 
