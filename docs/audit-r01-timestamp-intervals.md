@@ -21,7 +21,7 @@ production-коді; лише документація, fixtures і переві
 ## 1. Маршрут
 
 ```
-Open-Meteo API (UTC unixtime)  →  rows[].start (epoch seconds UTC)
+| Open-Meteo API (UTC unixtime)  →  rows[].start (epoch seconds UTC, **= interval END**)
    ↓ get_archive_hourly_radiation / get_archive_radiation
 train_hourly_response / complete_hourly_days / daily_energy_deltas
    ↓ day_bounds(day, tz)
@@ -30,7 +30,7 @@ train_hourly_response / complete_hourly_days / daily_energy_deltas
    ↓ "interval [start, end)"  — exclusive end
 match(actual, now) → RealForecastPairs
    ↓
-ForecastCalibrator.record(forecast_w, actual_w)  — actual_w у kWh×1000
+ForecastCalibrator.record(forecast_w, actual_w)  — actual_w у kWh
    ↓
 adjust(forecast_w) — corrected daily forecast
 ```
@@ -63,10 +63,12 @@ hourly=shortwave_radiation
 Згідно з офіційною документацією Open-Meteo Archive API:
 
 - `timezone=UTC` + `timeformat=unixtime` → кожне значення `hourly.time` — це
-  Unix-epoch в **UTC секундах**, що відповідає початку інтервалу, який
+  Unix-epoch в **UTC секундах**, що відповідає **кінцю** інтервалу, який
   репрезентує значення `shortwave_radiation` (preceding hour mean).
 - Змінна `shortwave_radiation` — **preceding hour mean**, тобто
-  `time[00:00 UTC]` — це середнє за `[00:00 UTC, 01:00 UTC)`.
+  `time[t]` — це середнє за `[t-1h, t)`. Наприклад,
+  `time[2026-10-09 00:00 UTC]` — це середнє за
+  `[2026-10-08 23:00 UTC, 2026-10-09 00:00 UTC)`.
 
 Посилання:
 
@@ -76,6 +78,50 @@ hourly=shortwave_radiation
   `utc_offset_seconds`.
 
 Перевірка через `web_extract` підтвердила: `shortwave_radiation | Preceding hour mean | W/m²`.
+
+### Підтверджена невідповідність
+
+Production використовує `rows[].start = ts` (API timestamp, тобто **END**
+інтервалу), але семантика Open-Meteo — `[ts-1h, ts)`. Це означає, що у
+`rows[].start` поле **назване як початок інтервалу, але містить його кінець**.
+
+Конкретний випадок (відтворено через production `get_archive_radiation` із
+синтетичною HTTP-відповіддю):
+
+```
+API timestamp:                  2026-10-09 00:00 UTC
+Очікуваний початок інтервалу:   2026-10-08 23:00 UTC  (за Open-Meteo docs)
+Production rows[0].start:       2026-10-09 00:00 UTC  (= API timestamp)
+Production daily radiation:     {2026-10-08: 0.0, 2026-10-09: 0.150}
+```
+
+Тобто production:
+
+1. **Неправильно називає поле**: `rows[].start` зберігає `t` (end of
+   interval), а не `t-1h` (start of interval). Будь-який код, який
+   сприймає це поле буквально як «початок», отримає неправильний
+   інтервал.
+2. **Групує за `ts.astimezone(tz).date()`** — це дата на **кінці**
+   інтервалу, а не на його початку. Для годин поблизу локальної
+   півночі це може зсунути дату на 1.
+
+Зокрема, для `timezone=Europe/Kyiv` (UTC+3 в жовтні) і запиту
+`start_date=2026-10-08`:
+
+- `t=2026-10-08 00:00 UTC` (= 03:00 Kyiv) → interval `[02:00, 03:00) Kyiv Oct 8` — це
+  3-тя година Oct 8 (00:00–01:00, 01:00–02:00, 02:00–03:00). Production
+  групує за `ts.astimezone(Europe/Kyiv).date() = 2026-10-08` — **вірно**.
+- `t=2026-10-08 21:00 UTC` (= 00:00 Kyiv Oct 9) → interval `[23:00, 24:00) Kyiv Oct 8` —
+  це **остання година Oct 8 Kyiv**. Production групує за
+  `ts.astimezone(Europe/Kyiv).date() = 2026-10-09` — **НЕВІРНО**:
+  значення, яке представляє останню годину Oct 8, потрапляє в Oct 9.
+
+Аналогічна невідповідність існує у forecast path
+(`hems/forecast.py:_fetch_hourly` та `_build_hourly_forecast_rows`):
+`local_time = datetime.fromtimestamp(t, UTC).astimezone(ZoneInfo(tz_name))` —
+production групує за датою на **кінці** інтервалу, а не на початку.
+
+Детальніше про вплив на day-агрегацію та forecast — див. §11.
 
 ## 3. HA recorder
 
@@ -232,8 +278,8 @@ actual_w=4.)` у тестах — це 5/4 kWh → 5000/4000 W-еквівале�
 | `day_bounds(day, tz)` | `start`/`end` | aware UTC | time | `[00:00 local, 00:00 next-day local)` |
 | `complete_hourly_days` (PV) | `bucket[ts]` | aware UTC ts | W | one per local hour |
 | `PvLearningState.match` | `pairs[day]` | `YYYY-MM-DD` (string) | kWh | implicit: day = local calendar day |
-| `RealForecastPairs.record` | `record(forecast_w, actual_w)` | kWh×1000 (W-equiv) | energy | one sample = one day |
-| `ForecastCalibrator.record` | `_samples.append((fc, ac))` | W or kWh×1000 | energy | one sample per pair |
+| `RealForecastPairs.record` | `record(forecast_w, actual_w)` | kWh | energy | one sample = one day |
+| `ForecastCalibrator.record` | `_samples.append((fc, ac))` | kWh | energy | one sample per pair |
 
 ## 9. Synthetic fixture
 
@@ -320,41 +366,75 @@ actual_w=4.)` у тестах — це 5/4 kWh → 5000/4000 W-еквівале�
 
 ### Висновок
 
-**Часовий контракт у production — коректний і консистентний.** Від
-`Open-Meteo` через `complete_hourly_days` до `PvLearningState.match` і
-`RealForecastPairs.record` всі інтервали виражені в `aware UTC` і мають
-узгоджену семантику `[start, end)` з `end-exclusive`.
+**Production-контракт містить підтверджену невідповідність**, описана
+в §2 («Підтверджена невідповідність»):
 
-Жодного довільного зсуву години для наближення до `Siseli` (чи будь-якої
-іншої локальної зони) в production-коді немає. Файли `pv_learning.py:36–40`,
+- `rows[].start` зберігає **кінець** інтервалу (`ts`), а не його
+  початок (`ts - 1h`).
+- Day-групування робиться за `ts.astimezone(tz).date()` — це дата
+  **кінця** інтервалу, а не його початку.
+- Для годин **поблизу локальної півночі** (зокрема, в `Europe/Kyiv`
+  UTC+3 — це 21:00 UTC, 22:00 UTC, 23:00 UTC) значення, яке
+  представляє останню годину локального дня, потрапляє в **наступний
+  день**. Це стосується як archive-path, так і forecast-path
+  (`_fetch_hourly` → `_build_hourly_forecast_rows`).
+
+Відтворено через `tests/test_r01_reproduction_via_http.py` — production
+`get_archive_radiation` з синтетичною HTTP-відповіддю, що
+підтверджує: `rows[].start = t` (а не `t - 1h`).
+
+Окрім цієї невідповідності, **решта** маршруту — `[start, end)`
+exclusive end, `aware UTC`, DST коректно через IANA — є
+**консистентною** і працює правильно.
+
+Жодного довільного зсуву години для наближення до `Siseli` в
+production-коді немає. Файли `pv_learning.py:36–40`,
 `forecast.py:243–280`, `cloud_history.py:56–101` працюють через
 `ZoneInfo(self.timezone_name)` без ручних offset.
 
 ### Запропонована наступна зміна
 
-**Не потрібно.** R01 не знайшов production-дефекту, який потребував би
-виправлення. Усі додані перевірки (`tests/test_r01_dst_intervals.py` та
-`tests/test_r01_synthetic_one_nonzero_interval.py`) слугують freeze-guard'ами
-на випадок майбутньої регресії в `day_bounds` / `complete_hourly_days`.
+**Одна узгоджена зміна для всіх path** (archive, forecast, training,
+model provenance): **замінити `rows[].start = ts` на `rows[].start =
+ts - 3600`** у точці парсингу Open-Meteo response. Семантика стане
+коректною: поле `start` буде справді позначати початок інтервалу, а не
+його кінець. Day-групування через `ts.astimezone(tz).date()` тоді
+продовжить працювати (бо значення на 1h раніше належить до того ж
+дня для всіх годин окрім першої години локального дня; для першої
+години — `ts - 1h` дає попередній день, що є правильним).
 
-Якщо в майбутньому з'явиться потреба перевірити **delayed daily facts**
-(коли `daily_energy` запізнюється більше ніж на день), це належить до R03,
-а не до R01.
+Зворотна сумісність: `rows[].start` було б оновлено у всіх
+downstream-функціях (`complete_hourly_days`,
+`_build_hourly_forecast_rows`, `train_hourly_response` —
+`pv_coordinator.py`) єдиним patch'ем. Жодних змін у `day_bounds` чи
+`complete_hourly_days` (окрім можливої зміни `day` ключа) не
+потрібно — `day_bounds` оперує `day` як окремим параметром, не
+використовуючи `rows[].start`.
+
+**Не виконується** в цьому блоці. Production-код залишається
+незмінним.
 
 ### Критерії приймання для наступної зміни
 
-- Нові тести DST повинні:
-  - Використовувати `ZoneInfo("Europe/Kyiv")` через IANA, а не hand-rolled
-    таблиці.
-  - `set(hours) == expected` для повного дня, де `expected` обчислено з
-    `day_bounds(day, tz)` + `range(N)`.
-  - Покривати обидва переходи: `2026-03-29` (23h) і `2026-10-25` (25h).
+- Усі поточні `r01*` тести продовжують проходити (з оновленими
+  expectations для `rows[].start = ts - 1h`).
+- Новий тест: з synthetic HTTP-відповіддю для `t=2026-10-08 21:00
+  UTC` (= 00:00 Kyiv Oct 9, остання година Oct 8 Kyiv) —
+  `complete_hourly_days` групує в Oct 8, а не в Oct 9.
+- Новий тест: з synthetic HTTP-відповіддю для `t=2026-10-09 21:00
+  UTC` (= 00:00 Kyiv Oct 10) — `forecast[_build_hourly_forecast_rows]`
+  групує в Oct 9, а не в Oct 10.
+- Жодні інваріанти DST (23h / 25h) не порушуються.
+- Калібрувальні пари, що вже збережені в `pv_fact_pairs_*.json` —
+  не оновлюються (це нова історична basis, не стара).
 
 ### Нез'ясовано
 
 - **Siseli** — у `codebase` немає жодного згадування `"siseli"` чи
-  `"Siseli"`. Можливо, це внутрішнє позначення з вашого аудиту. Якщо
-  R01 мав на увазі, що production робить зсув на годину для наближення до
-  якоїсь зони, такого зсуву в коді немає.
-- Якщо аудит мав на увазі **calendar aging now mismatch** (T28), то це
-  fixed у round 4 (`test_t25_persistence.py::TestR106ReloadAfterSuccessfulSetup`).
+  `"Siseli"`. Можливо, це внутрішнє позначення з вашого аудиту. У
+  `api.py` є згадка про backend `solar.siseli.com` (це лише endpoint
+  base URL). Якщо R01 мав на увазі, що production робить зсув на
+  годину для наближення до якоїсь зони — такого зсуву в коді немає.
+- Конкретний чисельний вплив 1h-shift'а на `daily_radiation_sum` для
+  Oct 8/9 2026 ще не обчислено (потребує `production` `get_archive_radiation` з
+  реальним Open-Meteo response; наявні fixtures — синтетичні).

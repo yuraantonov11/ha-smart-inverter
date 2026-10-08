@@ -73,3 +73,27 @@ voluptuous>=0.13.1,<1.0
 # provides the symbols we
 # use.
 homeassistant>=2024.1.0
+# R01–R03 (round 2): the
+# timestamp/interval tests
+# (test_r01_dst_intervals,
+# test_r01_synthetic_*, and
+# the new R01 reproduction
+# tests) require ``tzdata``
+# on platforms where the OS
+# IANA database is older
+# than 2026a (e.g. some
+# Windows machines, some
+# Alpine Docker images). The
+# integration itself does
+# NOT depend on ``tzdata`` —
+# HA ships it on production
+# hosts — but tests need
+# reproducible IANA data
+# for the DST intervals
+# (23h/25h days) and
+# ``Europe/Kyiv`` transitions.
+# ``NoFallbackTZifWarning``
+# on Python < 3.13 requires
+# tzdata as a sibling to
+# ``zoneinfo``.
+tzdata>=2024.1

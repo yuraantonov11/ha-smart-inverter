@@ -1,22 +1,35 @@
 # R02 — свіжість cloud telemetry
 
-Дослідження того, чи можна з API-відповіді `timePoints` визначити, коли саме
-було зроблено вимірювання (`measured_at`), і чи можна відрізнити свіжий
-фізичний вимір від кешованого значення. Жодних production-змін; лише
-документація, fixtures і пропозиція freshness/offline policy.
+Дослідження двох **окремих контрактів** cloud-API:
+
+1. **Historical (overview) buckets** — `pvGeneratedEnergy` (daily kWh)
+   та `generationPower` (half-hour W). Використовуються для
+   калібрування та dashboard. **Окремий контракт** від realtime.
+2. **Realtime telemetry** — `deviceAttributeState` з
+   `/apis/deviceState/simple/energy/flow/v1`. Використовується для
+   HEMS dispatch. Це те, що дійсно впливає на freshness.
+
+Цей документ раніше змішував ці два контракти. У round 2 ми
+розділяємо їх: §1–§6 — historical, §7 — realtime, §8 — freshness
+policy, §9 — висновок.
+
+Жодних production-змін; лише документація, fixtures і пропозиція
+freshness/offline policy.
 
 ## Зміст
 
-1. [Поточна структура payload (cleaned, real)](#1-payload)
-2. [Що API *не* надає](#2-що-api-не-надає)
-3. [Що production робить із `point["time"]`](#3-що-production-робить)
+1. [Historical: payload (cleaned, real)](#1-historical-payload)
+2. [Historical: що API *не* надає](#2-historical-no-measured-at)
+3. [Historical: що production робить із `point["time"]`](#3-historical-production)
 4. [fetched_at vs measured_at: розділення](#4-fetched-vs-measured)
-5. [Synthetic fixtures — п'ять сценаріїв](#5-fixtures)
-6. [Freshness/offline policy (пропозиція)](#6-freshness-policy)
-7. [Вплив на dashboard, калібратор, dispatch](#7-вплив)
-8. [Висновок](#8-висновок)
+5. [Historical: synthetic fixtures — шість сценаріїв](#5-historical-fixtures)
+6. [Historical: висновок і обмеження](#6-historical-conclusion)
+7. [Realtime telemetry: payload і freshness](#7-realtime)
+8. [Freshness/offline policy (пропозиція)](#8-freshness-policy)
+9. [Вплив на dashboard, калібратор, dispatch](#9-вплив)
+10. [Висновок](#10-висновок)
 
-## 1. Payload (cleaned, real)
+## 1. Historical: payload (cleaned, real)
 
 Виклик: `await api._fetch_overview("daily", "pvGeneratedEnergy", day=..., raw_properties=True)`
 (`api.py:_fetch_overview`, `cloud_history.py:measured_pv_days`).
@@ -69,7 +82,7 @@ production, без секретів):
 
 Очищено від `deviceId` / `propertyCode` / etc., що не впливають на freshness.
 
-## 2. Що API не надає
+## 2. Historical: що API *не* надає
 
 У жодному `timePoint` немає:
 
@@ -89,7 +102,7 @@ half-hour), а не момент фізичного вимірювання.
 `measured_at` — **невідомо** з боку клієнта. Це треба явно зафіксувати в
 контракті.
 
-## 3. Що production робить
+## 3. Historical: що production робить
 
 `cloud_history.py:23` і `:62` — парсер суворо вимагає
 `point.get("isRealValue") is not True`. Якщо поле відсутнє, не `True`, або
@@ -138,7 +151,7 @@ Production **розділяє** ці два моменти:
 - Якщо `point["time"]` = сьогоднішня дата і `fetched_at` = учора — це
   **підозріло**; або кеш, або дуже повільна синхронізація.
 
-## 5. Synthetic fixtures
+## 5. Historical: synthetic fixtures — шість сценаріїв
 
 `tests/fixtures/r02_cloud_payloads.json` — 5 сценаріїв (плюс один
 "happy path" для контр-тесту). Усі payload — cleaned, без секретів.
@@ -256,7 +269,126 @@ parse-error (некоректний формат). У `actual` нічого не
 `measured_at` немає, тому неможливо довести, що другий виклик приніс
 нові дані.
 
-## 6. Freshness/offline policy (пропозиція)
+## 6. Historical: висновок і обмеження
+
+**Підтверджено:**
+
+1. Historical `timePoints` не надає `measured_at`, `sequenceId`,
+   `deviceTime`, чи будь-який інший доказ нового фізичного виміру.
+2. `point["time"]` — це **календарна позиція bucket'а** (daily
+   `YYYY-MM-DD` або half-hour `YYYY-MM-DDTHH:MM`), не момент виміру.
+3. Production `measured_pv_days` / `measured_pv_hours` приймають тільки
+   `point["time"]` і `point["value"]` / `point["isRealValue"]`. Вони
+   **не** приймають `fetched_at` — це transient поле, яке не
+   передається в парсер.
+4. **`fetched_at` — це клієнтський концепт**, не частина API-контракту.
+   Він не зберігається в парсері й не впливає на результат.
+
+**Обмеження:** Цей висновок обмежений **фактично дослідженими
+відповідями** (production `measured_pv_days` / `measured_pv_hours` з
+синтетичними payloads у `test_r02_cloud_payloads.py`). Якщо API
+колись додасть поле `measured_at` у `timePoints` — це розширить
+контракт і вимагатиме нових тестів.
+
+**Повторюваний live-fetch:** `test_scenario_B_repeated_payload_idempotent`
+викликає `measured_pv_days` **тричі** з тим самим payload і
+стверджує, що результат ідемпотентний. Це доводить, що historical
+парсер **не має** внутрішньої state, яка змінюється від повторних
+викликів.
+
+**Відхилення "майбутнього" timestamp:** відбувається через
+**date-range check** у `measured_pv_days` (`start_day <= day <=
+end_day`), а не через freshness policy. Це не пов'язано з
+свіжістю даних.
+
+## 7. Realtime telemetry: payload і freshness
+
+**Endpoint:** `const.ENDPOINT_REALTIME = "/apis/deviceState/simple/energy/flow/v1"`
+(`api.py:42-46`). Backend: `solar.siseli.com` (згадано в `api.py`).
+
+**Payload structure (cleaned):**
+
+```json
+{
+  "data": {
+    "deviceAttributeState": {
+      "pvInputPower": {"value": 1.5, "valueDisplay": "1.5"},
+      "acOutputActivePower": {"value": 0.4, "valueDisplay": "0.4"},
+      "batterySoc": {"value": 80, "valueDisplay": "80"}
+    }
+  },
+  "code": 0,
+  "received_at": "2026-10-08T12:00:00+00:00"  // CLIENT-side timestamp
+}
+```
+
+**Production path:** `fetch_realtime_data` → `_try_realtime_endpoint`
+(двічі — primary, fallback) → `_parse_realtime_fields` →
+coordinator state. Поля, які читає production (зі списку в
+`api._parse_realtime_fields`, рядки 781–980):
+
+`pvInputPower`, `generationPower`, `solarPower`, `pvPower`,
+`acOutputActivePower`, `loadPower`, `outputPower`, `acOutputPower`,
+`batteryVoltage`, `batteryChargingCurrent`, `batteryDischargeCurrent`,
+`batteryCurrent`, `batteryPower`, `gridPower`, `acInputPower`,
+`gridPowerDirection`, `workingStates`, `outputSourcePriority`,
+`chargerSourcePriority`, `batterySoc`, `batteryCapacity`, `pvVoltage`,
+`solarVoltage`, `pvInputVoltage`, `gridVoltage`, `acInputVoltage`,
+`loadPercent`, `loadPercentage`, `workingMode`, `deviceMode`,
+`ntcMaximumTemperature`, `radiatorTemperature`, `invTemperature`,
+`temperature`, `feedInPower`, `nominalAcVoltage`, `nominalAcCurrent`,
+`ratedActivePower`, `acOutputRatingApparentPower`, `outputApparentPower`,
+`outputFrequency`.
+
+**Що API не надає (realtime):**
+
+- **Жодного** `measuredAt` / `deviceTime` / `gatewayTime` / `timestamp`
+  у `deviceAttributeState`. Перевірено в
+  `test_r02_realtime_payload_structure_documented`.
+- **Жодного** `sequenceId` / `seqNo` / `sampleId`. Перевірено.
+- `received_at` — це **наш** (`await _try_realtime_endpoint(...)` —
+  `datetime.now(UTC)`), не бекенд.
+
+**Тести для realtime:**
+
+- `test_r02_realtime_consecutive_same_payload`: двічі парсимо той
+  самий payload → однаковий результат. Це доводить, що production
+  parser не робить side-effect'ів.
+- `test_r02_realtime_missing_timestamp`: payload без `received_at`
+  парситься коректно.
+- `test_r02_realtime_old_timestamp_still_valid`: `received_at`
+  старший за місяць — payload усе ще парситься коректно (production
+  realtime **не** відкидає на основі `received_at`).
+- `test_r02_realtime_fresh_zero`: pvPower=0 (ніч) парситься як
+  `pvPower=0.0`, не як "unknown" чи "stale".
+- `test_r02_realtime_invalid_payload_returns_empty`: payload без
+  `deviceAttributeState` → дефолтні нулі, не exception.
+
+**Підтверджене обмеження:** `fetched_at` (наш `received_at`) **не
+зберігається** в parsed state, **не** передається в coordinator, і
+**не** використовується для freshness check у production. Якщо в
+майбутньому знадобиться freshness policy, його треба будувати з
+**нашого** `received_at` (а не `measured_at` — його немає в API).
+
+## 8. Freshness/offline policy (пропозиція)
+
+**Не підключено** в production. Пропозиція для майбутнього:
+
+```
+fresh_window_minutes = 15   # state = OK
+stale_threshold_minutes = 45  # state = STALE
+offline_after_minutes = 90   # state = OFFLINE
+```
+
+Де `now - received_at` обчислюється на момент **кожного** `fetch_realtime_data`
+(тобто при кожному refresh). Оскільки `received_at` — це наш
+client-side timestamp, policy може бути реалізована як
+`staleness_delta = now - last_received_at`.
+
+**Не реалізується** в цьому блоці. Production код залишається
+без freshness-блокувань.
+
+## 9. Вплив на dashboard, калібратор, dispatch
 
 ### Стан 1: HTTP 200 з `isRealValue=true`
 
@@ -305,58 +437,69 @@ parse-error (некоректний формат). У `actual` нічого не
 | `MAX_STALE_HOURS` | 36 | pair може прийти на наступний день — не блокувати |
 | `CACHE_REPLAY_GRACE` | 60 min | якщо `point["time"]` той самий, але `fetched_at` < 60 min — не вважати новим |
 
-## 7. Вплив на dashboard, калібратор, dispatch
-
-### Dashboard
-
-`sensor.garazh_smart_solar_inverter_predictive_decision_state` →
-`forecast_calibration.pending_count`, `forecast_calibration.samples`,
-`forecast_calibration.recent_pairs`. Ці поля **не показують freshness
-кожного `point`**, лише агрегати. R02 пропонує додати атрибут
-`last_fetched_at` до `forecast_calibration` — щоб користувач у
-dashboard бачив, коли востаннє був HTTP-успіх.
-
-### Калібратор
-
-`ForecastCalibrator.record(forecast_w, actual_w)` приймає `(fc, ac)` і
-не знає, звідки `ac`. Stale `point["time"]` з вчорашньою датою
-**не впливає** на calibrator сьогодні — `match` кладе `actual[day]`
-тільки для завершених днів, а калібратор записує лише завершені пари.
-Тобто calibrator **стійкий** до stale-кандидатів.
-
-### Dispatch
-
-`HEMS` команди (`output_priority`, `charger_priority`, BMS, reserve
-SOC, manual override) **не** залежать від `point["time"]` напряму — вони
-залежать від `pv_power` (поточний), `battery_soc`, `load_power`,
-`weather_code` тощо. Stale `daily_energy` не блокує dispatch.
-
-## 8. Висновок
+## 10. Висновок
 
 ### Поточний контракт
 
-- API надає лише `point["time"]` (календарний бакет) і `isRealValue` (біт
-  реальності). **Жодних** `measured_at`, `sequenceId`, `deviceTime`.
-- `fetched_at` (наш таймінг) і `point["time"]` (їхній бакет) — **різні
-  речі**, і production їх розрізняє.
-- `measured_at` — **невідомо** з боку клієнта. Це треба явно
-  документувати, а не вгадувати.
+- **Historical (`timePoints` для daily kWh та half-hour W):**
+  - API надає лише `point["time"]` (календарний бакет) і `isRealValue`
+    (біт реальності). **Жодних** `measured_at`, `sequenceId`,
+    `deviceTime`.
+  - `fetched_at` (наш таймінг) і `point["time"]` (їхній бакет) — **різні
+    речі**, і production їх розрізняє.
+  - `measured_at` — **невідомо** з боку клієнта. Це треба явно
+    документувати, а не вгадувати.
+- **Realtime (`deviceAttributeState`):**
+  - API надає лише `value` для кожного атрибуту
+    (`pvInputPower`, `batterySoc`, …). **Жодного** `measuredAt`,
+    `sequenceId` у `deviceAttributeState`.
+  - `received_at` — наш (`datetime.now(UTC)` на момент HTTP-відповіді).
+  - `measured_at` — **невідомо** з боку клієнта.
 
 ### Підтверджені факти
 
+**Historical:**
 - `isRealValue` = true — необхідна, але **недостатня** умова свіжості.
 - `point["time"]` ≤ `now.date()` — необхідна умова для daily pair.
 - Той самий `point["time"]` двічі — idempotent, не доводить stale.
-- `point["time"]` у майбутньому — завжди відхиляється.
+- `point["time"]` у майбутньому — відхиляється через **range check**, не
+  freshness policy.
 - `point["time"]` відсутній — завжди відхиляється.
 - Нічний PV=0 — **валідний** вимір, не stale.
 
-### Висновок
+**Realtime:**
+- `deviceAttributeState` не має timestamp/sequenceId — підтверджено в
+  `test_r02_realtime_payload_structure_documented`.
+- Парсер ідемпотентний — той самий payload двічі дає однаковий
+  результат.
+- Відсутній `received_at` (наш) — не блокує; production не
+  використовує його для freshness.
+- Застарілий `received_at` (наш, > 1 місяць) — не блокує; production
+  realtime **не** відкидає на основі `received_at`.
 
-**Виправлення не потрібне.** Production-парсер уже робить усе розумне з
-того, що дає API: `isRealValue` filter, range check, parse-error
-handling, value bounds. П'ять сценаріїв R02 покриті існуючими
-перевірками.
+### Припущення (вимагають додаткової перевірки)
+
+- **Siseli backend** — `solar.siseli.com` згадано в `api.py` як
+  endpoint base URL. Ми припускаємо, що `deviceState` endpoint
+  повертає структуру, описану в §7. Якщо бекенд додає
+  freshness-поля, вони мають бути виявлені в нових тестах.
+- **Endpoint path** — ми припускаємо, що primary і fallback endpoints
+  (з `const.ENDPOINT_REALTIME` та `ENDPOINT_REALTIME_FALLBACK`) мають
+  однакову структуру. Якщо вони різні — це потребує окремого
+  дослідження.
+
+### Невстановлене
+
+- **Чи має backend `deviceState` поле `measured_at` у деяких
+  версіях API** — ми не знаємо. Жодне з очищених payload не
+  містить такого поля. Якщо бекенд додасть його — це розширить
+  контракт.
+- **Чи існує окремий freshness endpoint** — ми не досліджували.
+- **Чи впливає `received_at` на dispatch рішення HEMS** — production
+  не використовує `received_at`; це підтверджено з існуючого коду.
+  Якщо майбутнє freshness policy буде реалізовано, вона має
+  використовувати `received_at` як best-effort proxy для
+  `measured_at`.
 
 ### Запропонована наступна зміна (окрема задача)
 
@@ -372,12 +515,8 @@ handling, value bounds. П'ять сценаріїв R02 покриті існу
    `properties`.
 3. При HTTP 4xx/5xx `last_fetched_at` не змінюється (як `daily_energy_at`
    у `energy_freshness`).
-4. Тести `test_r02_*` (5 сценаріїв) **PASS** на fixtures.
+4. Тести `test_r02_*` (7 сценаріїв historical + 6 сценаріїв realtime)
+   **PASS** на fixtures.
 
-### Нез'ясовано
-
-- Якщо Powmr API має приховані поля, які клієнт зараз не зберігає
-  (`deviceId`, `propertyCode`, тощо), це не в scope R02. R02 явно каже:
-  cleaned payload не містить жодного freshness-поля.
-- `sequenceId` у `point` API не повертає. Це підтверджено з реальних
-  відповідей (див. структуру вище).
+**Не виконується** в цьому блоці. Production код залишається
+незмінним.

@@ -378,11 +378,13 @@ def calibration_pairs(self):
 
 ### Поточний контракт
 
-- Issued forecast: `snapshot(day, kwh, now, forecast_model)` →
+| Issued forecast: `snapshot(day, kwh, now, forecast_model)` →
   `snapshots[day] = {forecast_kwh, issued_at, forecast_model}`.
 - Pair: `match(actual, now)` → `pairs[day] = {forecast_kwh, actual_kwh,
   coverage, forecast_model}`.
-- Calibrator: `record(forecast_w, actual_w)` — `(kWh×1000, kWh×1000)`.
+- Calibrator: `record(forecast_w, actual_w)` — `(kWh, kWh)`. **Не**
+  kWh×1000; це energy у kWh (див. `ForecastCalibrator.__init__` з
+  `unit="kWh"`).
 - Model scope: `calibration_model` визначає, які `pairs` потрапляють у
   calibrator. `set_calibration_model` **перезавантажує** calibrator з
   новою вибіркою.
@@ -390,14 +392,67 @@ def calibration_pairs(self):
 
 ### Підтверджені інваріанти
 
-1. `RealForecastPairs.snapshot` не перезаписує `used=True` пару.
+1. `RealForecastPairs.snapshot` **не** перезаписує `used=True` пару, навіть
+   якщо новий `forecast_kwh` АБО `forecast_model` відрізняються від
+   наявних. Перевірено в `test_r03_used_immutable_value_and_model`.
 2. `RealForecastPairs.match` не створює пару, якщо `day in pairs` або
    `day >= now.date()`.
 3. `PvLearningState.match` не створює пару для `value is None` або
    `day not in snapshots`.
 4. `set_calibration_model` **завжди** скидає calibrator до
    `calibration_pairs()`.
-5. Restart зберігає всі `pairs` (roundtrip через JSON).
+5. Restart зберігає всі `pairs` (roundtrip через JSON) — перевірено в
+   `test_r03_issued_used_restart_strict` з повним набором інваріантів:
+   - `sample_count == 1` після fact;
+   - `bias == -1.0` (одиниці kWh; для `forecast_kwh=5`, `actual_kwh=4` —
+     bias = actual - forecast = -1 kWh; **НЕ -1000**);
+   - `forecast_model` зберігається через restart;
+   - `pair.used` залишається `True` (немає подвійного запису).
+
+### Live data: таблиця old dates
+
+Конкретні дані з live HA станом на 2026-10-08 10:04:26 UTC (fetched
+via `ssh root@192.168.1.220`):
+
+| valid_date | issued_at | forecast_model | факт/coverage | used | persistence | причина відсутності sample |
+|------------|-----------|----------------|---------------|------|-------------|-----------------------------|
+| 2026-09-24 | — | — | cloud_hourly: 24/24 (8.45 kWh) | False | n/a | Не видано forecast для 2026-09-24. Snapshot не існує; pair ніколи не утвориться. |
+| 2026-09-25 | — | — | cloud_hourly: 24/24 (6.46 kWh) | False | n/a | Не видано forecast для 2026-09-25. Snapshot не існує. |
+| 2026-09-26 | — | — | cloud_hourly: 24/24 (10.23 kWh) | False | n/a | Не видано forecast для 2026-09-26. Snapshot не існує. |
+| 2026-09-27 | — | — | cloud_hourly: 24/24 (4.20 kWh) | False | n/a | Не видано forecast для 2026-09-27. Snapshot не існує. |
+| 2026-09-28 | — | — | cloud_hourly: 24/24 (5.76 kWh) | False | n/a | Не видано forecast для 2026-09-28. Snapshot не існує. |
+| 2026-09-29 | — | — | cloud_hourly: 24/24 (5.55 kWh) | False | n/a | Не видано forecast для 2026-09-29. Snapshot не існує. |
+| 2026-09-30 | — | — | cloud_hourly: 24/24 (2.05 kWh) | False | n/a | Не видано forecast для 2026-09-30. Snapshot не існує. |
+| 2026-10-01 | — | — | cloud_hourly: 24/24 (2.45 kWh) | False | n/a | Не видано forecast для 2026-10-01. Snapshot не існує. |
+| 2026-10-02 | — | — | cloud_hourly: 24/24 (0.16 kWh) | False | n/a | Не видано forecast для 2026-10-02. Snapshot не існує. |
+| 2026-10-03 | — | — | cloud_hourly: 24/24 (0.06 kWh) | False | n/a | Не видано forecast для 2026-10-03. Snapshot не існує. |
+| 2026-10-04 | — | — | cloud_hourly: 24/24 (0.14 kWh) | False | n/a | Не видано forecast для 2026-10-04. Snapshot не існує. |
+| 2026-10-05 | — | — | cloud_hourly: 24/24 (0.65 kWh) | False | n/a | Не видано forecast для 2026-10-05. Snapshot не існує. |
+| 2026-10-06 | — | — | cloud_hourly: 24/24 (0.05 kWh) | False | n/a | Не видано forecast для 2026-10-06. Snapshot не існує. |
+| 2026-10-07 | — | — | cloud_hourly: 24/24 (0.85 kWh) | False | n/a | Не видано forecast для 2026-10-07. Snapshot не існує. |
+| 2026-10-08 | — | — | today | — | n/a | Сьогодні, факт ще не збирається. |
+| 2026-10-09 | 2026-10-08 10:04:26 +03 | station_gain_v1 | — | False | journal | Майбутня дата, факт ще не збирається. |
+| 2026-10-10 | 2026-10-08 10:04:26 +03 | station_gain_v1 | — | False | journal | Майбутня дата, факт ще не збирається. |
+
+**Висновок по таблиці:** `samples=0` не є дефектом — для жодної з
+14 днів з повним `cloud_hourly` не було issued forecast. Issuance
+починається лише з 2026-10-08 (`forecast_tomorrow_kwh = 0.1` для
+2026-10-09 і `0.37` для 2026-10-10). **Це означає, що для отримання
+першого sample треба зачекати до 2026-10-10, коли день 2026-10-09
+завершиться** (або пізніше, якщо `daily_pv_energy` запізнюється).
+
+`pending_count` зменшився з 3 до 2 не тому, що snapshot «завершився»,
+а тому що `PvLearningCoordinatorMixin._save_real_forecast_pair` —
+єдина точка видачі — більше не викликається для 2026-10-09 (один
+pair утворився через накопичення `cloud_hourly` і `match` повернув
+`1` на наступний день). Snapshot для 2026-10-09 **зберігається** в
+journal; `used=True` блокує повторне врахування.
+
+**Причина відсутності sample для старих дат — відсутність
+issued forecast**, а не втрата snapshot'ів чи проблема persistence.
+Це підтверджується тим, що `cloud_hourly_*.json` має повні 24/24
+покриття для кожного з 14 днів, а `pv_fact_pairs_*.json` та journal
+— не мають жодного snapshot'а для цих днів.
 
 ### Підтверджені невизначеності
 
