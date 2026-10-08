@@ -1807,6 +1807,106 @@ async def _register_lovelace_dashboard(
                 res.target_id,
                 res.target_url,
             )
+        else:
+            # R10.6 (round 9):
+            # the target
+            # id is
+            # already
+            # listed in
+            # metadata.
+            # Check if the
+            # existing
+            # item's
+            # ``url_path``
+            # matches the
+            # resolved
+            # ``target_url``.
+            # If not,
+            # update the
+            # item IN
+            # PLACE:
+            # overwrite
+            # ``url_path``
+            # while
+            # preserving
+            # ``show_in_sidebar``,
+            # ``icon``,
+            # ``title``,
+            # and any
+            # other
+            # user-
+            # customised
+            # fields. The
+            # previous
+            # code
+            # silently
+            # skipped the
+            # metadata
+            # write when
+            # ``already_listed=True``,
+            # leaving the
+            # ``url_path``
+            # stale and
+            # the binding
+            # pointing to
+            # an
+            # unregistered
+            # URL.
+            existing_item = None
+            for _it in res.items:
+                if _it.get("id") == res.target_id:
+                    existing_item = _it
+                    break
+            if existing_item is not None and (
+                existing_item.get("url_path")
+                != res.target_url
+            ):
+                # Build the
+                # patched
+                # payload:
+                # update only
+                # the
+                # ``url_path``
+                # field of
+                # the
+                # matching
+                # item, keep
+                # everything
+                # else.
+                patched_items = []
+                for _it in res.items:
+                    if _it.get("id") == res.target_id:
+                        _patched = dict(_it)
+                        _patched["url_path"] = (
+                            res.target_url
+                        )
+                        patched_items.append(
+                            _patched
+                        )
+                    else:
+                        patched_items.append(_it)
+                existing_payload["data"]["items"] = (
+                    patched_items
+                )
+
+                def _write_metadata():
+                    _write_dashboards_metadata_atomic(
+                        res.dashboards_storage,
+                        existing_payload,
+                    )
+
+                await hass.async_add_executor_job(
+                    _write_metadata
+                )
+                _LOGGER.info(
+                    "✅ Dashboard '%s' (id=%s) "
+                    "metadata url_path updated "
+                    "from '%s' to '%s'",
+                    res.target_title,
+                    res.target_id,
+                    existing_item.get("url_path"),
+                    res.target_url,
+                )
     except Exception as exc:
         # R10.6 (round 8):
         # rollback
@@ -2003,6 +2103,63 @@ async def _resolve_dashboard_target(
             f"{entry.title or entry.entry_id[:8]}"
         )
         target_existed_before = sidecar_exists
+
+    # R10.6 (round 9):
+    # ownership check
+    # is applied to
+    # ALL branches
+    # (the previous
+    # code only
+    # checked in the
+    # ``persisted_path
+    # == _DASHBOARD_URL``
+    # branch). If the
+    # resolved
+    # target is the
+    # canonical main
+    # AND another
+    # powmr_inverter
+    # entry already
+    # has the main
+    # binding, we
+    # MUST re-route
+    # to the sidecar
+    # — regardless
+    # of whether the
+    # main file
+    # exists, the
+    # content key
+    # matches, or
+    # the metadata
+    # lists it.
+    # "Перевіряй
+    # ownership
+    # незалежно від
+    # існування
+    # файла."
+    if (
+        target_id == _DASHBOARD_ID
+        and other_owner is not None
+        and other_owner != entry.entry_id
+    ):
+        ownership_conflict = True
+        re_routed_to_sidecar = True
+        target_id = sidecar_id
+        target_url = sidecar_url
+        target_path = sidecar_path
+        target_title = (
+            f"Smart Solar · "
+            f"{entry.title or entry.entry_id[:8]}"
+        )
+        target_existed_before = sidecar_exists
+        _LOGGER.debug(
+            "R10.6 round 9: ownership check "
+            "forced re-route to sidecar "
+            "(main is owned by entry %s, "
+            "current entry is %s)",
+            other_owner,
+            entry.entry_id,
+        )
 
     def _read_key():
         try:
