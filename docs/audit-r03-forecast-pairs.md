@@ -36,7 +36,7 @@ Pending факт: day < now.date() AND actual[day] is not None
    ↓
 RealForecastPairs.match(actual, now)  (тільки завершені дні)
    ↓
-self._pv_calibrator.record(forecast_w=kWh*1000, actual_w=actual_w*1000)
+self._pv_calibrator.record(forecast_w=forecast_kwh, actual_w=actual_kwh)  # kWh
 ```
 
 Файли:
@@ -96,9 +96,12 @@ Live перевірка на 2026-10-08 12:00 UTC:
 ## 3. Повторюваний стан `pending_count=3, samples=0` з аудиту
 
 Аудит від 2026-10-03 фіксує `pending_count=3, samples=0`. У нашому
-поточному live — `pending_count=2`. Різниця в 1 — це **не баг**, а
-звичайне просування: між 2026-10-03 і 2026-10-08 мінус один
-snapshot, який або став `pair`, або був видалений через `prune`.
+поточному live — `pending_count=2`. **Без старих backup-журналів
+причина зменшення `pending_count` невстановлена**: це може бути
+pair утворення, видалення через `prune`, deployment пізніше
+першого дня cloud_hourly, ручне скидання, або інша installation
+до поточної. **Не доводить**, що snapshot «став pair» чи
+«видалений».
 
 `pending_count=3, samples=0` з аудиту = **очікуване накопичення**:
 
@@ -415,28 +418,34 @@ via `ssh root@192.168.1.220`):
 
 | valid_date | issued_at | forecast_model | факт/coverage | used | persistence | причина відсутності sample |
 |------------|-----------|----------------|---------------|------|-------------|-----------------------------|
-| 2026-09-24 | — | — | cloud_hourly: 24/24 (8.45 kWh) | False | n/a | Не видано forecast для 2026-09-24. Snapshot не існує; pair ніколи не утвориться. |
-| 2026-09-25 | — | — | cloud_hourly: 24/24 (6.46 kWh) | False | n/a | Не видано forecast для 2026-09-25. Snapshot не існує. |
-| 2026-09-26 | — | — | cloud_hourly: 24/24 (10.23 kWh) | False | n/a | Не видано forecast для 2026-09-26. Snapshot не існує. |
-| 2026-09-27 | — | — | cloud_hourly: 24/24 (4.20 kWh) | False | n/a | Не видано forecast для 2026-09-27. Snapshot не існує. |
-| 2026-09-28 | — | — | cloud_hourly: 24/24 (5.76 kWh) | False | n/a | Не видано forecast для 2026-09-28. Snapshot не існує. |
-| 2026-09-29 | — | — | cloud_hourly: 24/24 (5.55 kWh) | False | n/a | Не видано forecast для 2026-09-29. Snapshot не існує. |
-| 2026-09-30 | — | — | cloud_hourly: 24/24 (2.05 kWh) | False | n/a | Не видано forecast для 2026-09-30. Snapshot не існує. |
-| 2026-10-01 | — | — | cloud_hourly: 24/24 (2.45 kWh) | False | n/a | Не видано forecast для 2026-10-01. Snapshot не існує. |
-| 2026-10-02 | — | — | cloud_hourly: 24/24 (0.16 kWh) | False | n/a | Не видано forecast для 2026-10-02. Snapshot не існує. |
-| 2026-10-03 | — | — | cloud_hourly: 24/24 (0.06 kWh) | False | n/a | Не видано forecast для 2026-10-03. Snapshot не існує. |
-| 2026-10-04 | — | — | cloud_hourly: 24/24 (0.14 kWh) | False | n/a | Не видано forecast для 2026-10-04. Snapshot не існує. |
-| 2026-10-05 | — | — | cloud_hourly: 24/24 (0.65 kWh) | False | n/a | Не видано forecast для 2026-10-05. Snapshot не існує. |
-| 2026-10-06 | — | — | cloud_hourly: 24/24 (0.05 kWh) | False | n/a | Не видано forecast для 2026-10-06. Snapshot не існує. |
-| 2026-10-07 | — | — | cloud_hourly: 24/24 (0.85 kWh) | False | n/a | Не видано forecast для 2026-10-07. Snapshot не існує. |
+| 2026-09-24 | — | — | cloud_hourly: 24/24 (8.45 kWh) | False | n/a | Snapshot відсутній у поточному журналі; історична причина невстановлена (немає старих backup-журналів). |
+| 2026-09-25 | — | — | cloud_hourly: 24/24 (6.46 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-09-26 | — | — | cloud_hourly: 24/24 (10.23 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-09-27 | — | — | cloud_hourly: 24/24 (4.20 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-09-28 | — | — | cloud_hourly: 24/24 (5.76 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-09-29 | — | — | cloud_hourly: 24/24 (5.55 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-09-30 | — | — | cloud_hourly: 24/24 (2.05 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-10-01 | — | — | cloud_hourly: 24/24 (2.45 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-10-02 | — | — | cloud_hourly: 24/24 (0.16 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-10-03 | — | — | cloud_hourly: 24/24 (0.06 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-10-04 | — | — | cloud_hourly: 24/24 (0.14 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-10-05 | — | — | cloud_hourly: 24/24 (0.65 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-10-06 | — | — | cloud_hourly: 24/24 (0.05 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
+| 2026-10-07 | — | — | cloud_hourly: 24/24 (0.85 kWh) | False | n/a | Snapshot відсутній у поточному журналі. |
 | 2026-10-08 | — | — | today | — | n/a | Сьогодні, факт ще не збирається. |
-| 2026-10-09 | 2026-10-08 10:04:26 +03 | station_gain_v1 | — | False | journal | Майбутня дата, факт ще не збирається. |
-| 2026-10-10 | 2026-10-08 10:04:26 +03 | station_gain_v1 | — | False | journal | Майбутня дата, факт ще не збирається. |
+| 2026-10-09 | 2026-10-08 10:04:26 +03 | station_gain_v1 | — | False | journal | Майбутня дата, факт ще не збирається. Залишення `calibration_model=hourly_response_v1` без зміни призведе до виключення цієї пари з активного калібратора при match (різні `forecast_model`). |
+| 2026-10-10 | 2026-10-08 10:04:26 +03 | station_gain_v1 | — | False | journal | Майбутня дата, факт ще не збирається. Залишення `calibration_model=hourly_response_v1` без зміни призведе до виключення цієї пари з активного калібратора при match. |
 
-**Висновок по таблиці:** `samples=0` не є дефектом — для жодної з
-14 днів з повним `cloud_hourly` не було issued forecast. Issuance
-починається лише з 2026-10-08 (`forecast_tomorrow_kwh = 0.1` для
-2026-10-09 і `0.37` для 2026-10-10).
+**Висновок по таблиці:** для 14 днів з повним `cloud_hourly`
+(2026-09-24..2026-10-07) snapshot відсутній у поточному журналі.
+Це **не доводить**, що forecast ніколи не видавався: причини
+відсутності (deployment пізніше першого дня cloud_hourly,
+видалення, ручне скидання, інша installation) **невстановлені**
+без старих backup-журналів.
+
+Issuance за даними live спостерігається лише з 2026-10-08
+(`forecast_tomorrow_kwh = 0.1` для 2026-10-09 і `0.37` для
+2026-10-10, обидві моделі `station_gain_v1`).
 
 **Невстановлене:** чи отримаємо ми перший sample **саме** для
 2026-10-09 — залежить від того, чи `calibration_model` залишиться

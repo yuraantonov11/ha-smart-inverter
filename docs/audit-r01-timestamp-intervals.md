@@ -256,12 +256,12 @@ def match(self, actual, now):
 (`snapshot["issued_at"]`), факт — з моменту завершення дня (тобто з API
 `fetch_daily_pv_history` або з HA recorder daily-sum deltas).
 
-`RealForecastPairs.add` (`pv_learning.py:300+`, перевірено через
-`test_real_pair_capture.py:60–65`): pair приймає `forecast_w` у kWh×1000
-(`forecast_kwh * 1000`) і `actual_w` у kWh×1000, передає в
+`RealForecastPairs.match` (`pv_learning.py:300+`, перевірено через
+`test_real_pair_capture.py:60–65`): pair приймає `forecast_kwh` і
+`actual_kwh` у **kWh**, передає в
 `ForecastCalibrator.record(forecast_w, actual_w)`. Семантика одиниці
-`kWh × 1000` пояснена у `pv_learning.py:357`: `record(forecast_w=5.,
-actual_w=4.)` у тестах — це 5/4 kWh → 5000/4000 W-еквівалент.
+пояснена у `pv_learning.py:357`: `record(forecast_w=5., actual_w=4.)`
+у тестах — це 5 і 4 kWh; bias = actual - forecast = -1 kWh.
 
 ## 8. Підтверджені timestamps
 
@@ -351,7 +351,7 @@ actual_w=4.)` у тестах — це 5/4 kWh → 5000/4000 W-еквівале�
 - **PvLearningState.match**: pair = `{day, forecast_kwh, actual_kwh, ...}`
   де `day` — рядок `YYYY-MM-DD` у локальному календарі; інтервал неявний,
   але відповідає `day_bounds`.
-- **ForecastCalibrator.record**: `(forecast_w, actual_w)` у kWh×1000 (W-equiv),
+- **ForecastCalibrator.record**: `(forecast_w, actual_w)` у kWh,
   один семпл = один завершений локальний день.
 
 ### Підтверджені сумісності
