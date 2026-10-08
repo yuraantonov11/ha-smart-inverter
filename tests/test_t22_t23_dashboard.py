@@ -323,15 +323,32 @@ def _load_registration_helpers() -> dict:
         "_read_metadata_snapshot",
         "_rollback_dashboard_content",
         "_ensure_dashboard_binding",
-        # R10.6 (round 7):
-        # ownership +
-        # metadata helpers
-        # used by both
-        # ``_ensure_dashboard_binding``
-        # and
-        # ``_register_lovelace_dashboard``.
-        "_is_dashboard_owned_by_other",
+        # R10.6 (round 8):
+        # the SINGLE
+        # resolver used
+        # by both the
+        # helper and
+        # the registrar.
+        # ``_resolve_dashboard_target``
+        # references
+        # ``_metadata_lists_dashboard``
+        # in its body, so
+        # the metadata
+        # helper MUST be
+        # loaded first
+        # (the
+        # ``_exec_function``
+        # ``__globals__``
+        # are fixed at
+        # exec time).
         "_metadata_lists_dashboard",
+        "_resolve_dashboard_target",
+        # R10.6 (round 7):
+        # ownership helper
+        # used by both
+        # the helper and
+        # the registrar.
+        "_is_dashboard_owned_by_other",
     )
     shared: dict = {
         "__builtins__": __builtins__,
@@ -344,6 +361,23 @@ def _load_registration_helpers() -> dict:
         "_LOGGER": __import__("logging").getLogger(
             "test_harness"
         ),
+        # R10.6 (round 8):
+        # the resolver
+        # return type
+        # ``_DashboardResolution``
+        # inherits from
+        # ``NamedTuple``;
+        # the harness
+        # exec's the
+        # class body in a
+        # minimal
+        # namespace so
+        # we MUST inject
+        # ``NamedTuple``
+        # here.
+        "NamedTuple": __import__(
+            "typing"
+        ).NamedTuple,
     }
     # R10.6 (round 6): the
     # canonical main
@@ -470,6 +504,64 @@ def _load_registration_helpers() -> dict:
         except AssertionError:
             continue
         shared.update(ns)
+    # R10.6 (round 8):
+    # extract the
+    # ``_DashboardResolution``
+    # ``NamedTuple``
+    # class. We use
+    # ``_exec_class``
+    # which writes a
+    # harness file
+    # (the audit
+    # requires real
+    # on-disk
+    # filenames for
+    # traceback
+    # attribution).
+    try:
+        _cls_ns = _exec_class(
+            INIT_PY, "_DashboardResolution",
+            args=dict(shared),
+        )
+        shared.update(_cls_ns)
+    except AssertionError:
+        pass
+    # R10.6 (round 8):
+    # RE-exec
+    # ``_resolve_dashboard_target``
+    # and
+    # ``_register_lovelace_dashboard``
+    # so their
+    # ``__globals__``
+    # include
+    # ``_DashboardResolution``
+    # (the return-
+    # type annotation
+    # is a class
+    # reference, and
+    # the
+    # ``_exec_function``
+    # namespace is
+    # fixed at exec
+    # time, so we
+    # must re-exec
+    # after the
+    # class is in
+    # ``shared``).
+    for _name in (
+        "_resolve_dashboard_target",
+        "_register_lovelace_dashboard",
+        "_ensure_dashboard_binding",
+    ):
+        if _name in shared:
+            try:
+                _re_ns = _exec_function(
+                    INIT_PY, _name,
+                    args=dict(shared),
+                )
+                shared.update(_re_ns)
+            except AssertionError:
+                pass
     return {
         name: shared[name]
         for name in helper_names
@@ -492,6 +584,22 @@ def _load_registration_helpers() -> dict:
             "_DASHBOARD_URL",
             "_DASHBOARD_TITLE",
             "DOMAIN",
+            # R10.6 (round 8):
+            # the resolver's
+            # return type.
+            # Extracted via
+            # ``_exec_class``
+            # above; the
+            # extracted
+            # function's
+            # ``__globals__``
+            # need this
+            # class to be
+            # resolvable
+            # when callers
+            # type-check the
+            # return value.
+            "_DashboardResolution",
         )
         if name in shared
     }
@@ -7707,6 +7815,982 @@ def test_r106_helper_handles_missing_metadata_file() -> None:
             "R10.6 round 7: helper must not bind "
             "when metadata file is missing. "
             f"Got {entry.options!r}"
+        )
+
+
+
+
+
+# ───────────────────────────────────────────────────────────────
+# R10.6 (round 8) — Юра
+# follow-up (2):
+# refactor to a
+# SINGLE resolver
+# for target
+# selection used by
+# both
+# ``_ensure_dashboard_binding``
+# and
+# ``_register_lovelace_dashboard``.
+# The previous code
+# had two
+# independent target
+# selection systems
+# that diverged:
+# - the registrar's
+#   ownership re-route
+#   used
+#   ``already_registered``
+#   computed for the
+#   pre-reroute
+#   target (main) and
+#   passed that to
+#   rollback for the
+#   post-reroute
+#   target (sidecar),
+#   so a brand-new
+#   sidecar was
+#   incorrectly
+#   treated as
+#   "previously
+#   existed" and the
+#   rollback did not
+#   remove the
+#   dangling file;
+# - the early-return
+#   branch in
+#   ``_register_lovelace_dashboard``
+#   for
+#   ``already_registered
+#   and not opt_in``
+#   did not check
+#   ownership, so
+#   ``B`` with a
+#   stale wrong
+#   binding to
+#   ``powmr-energy``
+#   returned
+#   silently leaving
+#   the conflict
+#   unresolved.
+# ───────────────────────────────────────────────────────────────
+
+
+def test_r106_conflict_AB_no_optin_detected_and_rerouted() -> None:
+    """R10.6 (round 8):
+    A owns the
+    canonical main
+    (binding
+    ``powmr-energy``).
+    B has a stale
+    wrong binding
+    ``powmr-energy``
+    in
+    ``entry.options``.
+    B runs the
+    registrar with
+    ``opt_in=False``.
+    The conflict
+    MUST be
+    detected and
+    B MUST be
+    re-routed to its
+    own sidecar. A's
+    main and
+    metadata are
+    byte-for-byte
+    unchanged. B's
+    options get the
+    corrected
+    sidecar
+    binding.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        main_path = os.path.join(
+            storage, "lovelace.powmr_energy"
+        )
+        with open(main_path, "w") as f:
+            json.dump(
+                {
+                    "key": "lovelace.powmr_energy",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "USER A"
+                        },
+                    },
+                },
+                f,
+            )
+        with open(main_path, "rb") as f:
+            original_main_bytes = f.read()
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": "powmr_energy",
+                            "url_path":
+                                "powmr-energy",
+                            "title": "USER A",
+                            "show_in_sidebar":
+                                True,
+                        }],
+                    },
+                },
+                f,
+            )
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "rb",
+        ) as f:
+            original_meta_bytes = f.read()
+        # A: owns main.
+        entry_a = _ReadOnlyOptionsEntry(
+            "01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        # B: stale wrong
+        # binding to main.
+        entry_b = _ReadOnlyOptionsEntry(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry_a, entry_b],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        # opt_in=False
+        # (default).
+        hass.data["powmr_inverter"] = {
+            entry_a.entry_id: {},
+            entry_b.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry_b,
+                {"title": "USER B", "views": []},
+            )
+        )
+        # A's main is
+        # byte-for-byte
+        # unchanged.
+        with open(main_path, "rb") as f:
+            after_main_bytes = f.read()
+        assert (
+            after_main_bytes == original_main_bytes
+        ), (
+            "R10.6 round 8: A's main must be "
+            "byte-for-byte unchanged on "
+            "conflict (no opt-in). "
+            f"diff: {original_main_bytes!r} -> "
+            f"{after_main_bytes!r}"
+        )
+        # Metadata is
+        # byte-for-byte
+        # unchanged.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "rb",
+        ) as f:
+            after_meta_bytes = f.read()
+        assert (
+            after_meta_bytes == original_meta_bytes
+        ), (
+            "R10.6 round 8: metadata must be "
+            "byte-for-byte unchanged on "
+            "conflict (no opt-in)"
+        )
+        # B's binding is
+        # re-routed to
+        # B's sidecar
+        # (NOT
+        # powmr-energy).
+        binding = entry_b.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        assert binding != "powmr-energy", (
+            "R10.6 round 8: B's binding must be "
+            f"re-routed away from main. Got {binding!r}"
+        )
+        # A's binding is
+        # unchanged.
+        assert (
+            entry_a.options.get(
+                "lovelace_dashboard_url_path"
+            )
+            == "powmr-energy"
+        )
+
+
+def test_r106_conflict_AB_optin_metadata_failure_removes_new_sidecar() -> None:
+    """R10.6 (round 8):
+    A owns main. B
+    has wrong
+    binding
+    ``powmr-energy``.
+    B runs with
+    ``opt_in=True``.
+    B's sidecar
+    does NOT exist.
+    The metadata
+    write FAILS.
+    The new sidecar
+    MUST be
+    removed (it
+    was created
+    during this
+    call, not
+    before). A's
+    main and
+    metadata are
+    byte-for-byte
+    unchanged. B's
+    options are
+    unchanged (the
+    binding was not
+    persisted).
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        main_path = os.path.join(
+            storage, "lovelace.powmr_energy"
+        )
+        with open(main_path, "w") as f:
+            json.dump(
+                {
+                    "key": "lovelace.powmr_energy",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "USER A"
+                        },
+                    },
+                },
+                f,
+            )
+        with open(main_path, "rb") as f:
+            original_main_bytes = f.read()
+        # Pre-existing
+        # metadata with
+        # A's main item
+        # only.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": "powmr_energy",
+                            "url_path":
+                                "powmr-energy",
+                            "title": "USER A",
+                            "show_in_sidebar":
+                                True,
+                        }],
+                    },
+                },
+                f,
+            )
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "rb",
+        ) as f:
+            original_meta_bytes = f.read()
+        entry_a = _ReadOnlyOptionsEntry(
+            "01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        entry_b = _ReadOnlyOptionsEntry(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry_a, entry_b],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry_a.entry_id: {},
+            entry_b.entry_id: {
+                "dashboard_migration_opt_in": True,
+            },
+        }
+        # Fault-inject
+        # the metadata
+        # write: the
+        # sidecar
+        # content write
+        # succeeds, then
+        # the metadata
+        # write raises
+        # ``OSError(28)``.
+        import hashlib as _h
+        _b_hash = _h.md5(
+            entry_b.entry_id.encode("utf-8")
+        ).hexdigest()[:16]
+        _b_sidecar_id = (
+            f"powmr_energy_{_b_hash}"
+        )
+        _b_sidecar_path = os.path.join(
+            storage,
+            f"lovelace.{_b_sidecar_id}",
+        )
+        fault_calls: list = []
+        original_replace = os.replace
+        target_dir = os.path.abspath(storage)
+
+        def _faulty_replace(
+            src, dst, *a, **kw
+        ):
+            dst_abs = os.path.abspath(str(dst))
+            if (
+                dst_abs.startswith(target_dir)
+                and dst_abs.endswith(
+                    "lovelace_dashboards"
+                )
+            ):
+                fault_calls.append(
+                    (str(src), dst_abs)
+                )
+                raise OSError(
+                    28,
+                    "No space left on device",
+                )
+            return original_replace(
+                src, dst, *a, **kw
+            )
+
+        os.replace = _faulty_replace
+        try:
+            helpers = _load_registration_helpers()
+            ns = _exec_function(
+                INIT_PY,
+                "_register_lovelace_dashboard",
+                args={
+                    "_LOGGER": _FakeLogger(),
+                    "DOMAIN": "powmr_inverter",
+                    "extra_modules": helpers,
+                    "_read_metadata_snapshot":
+                        _read_metadata_snapshot,
+                },
+            )
+            real = ns["_register_lovelace_dashboard"]
+            try:
+                _run(
+                    real(
+                        hass,
+                        entry_b,
+                        {
+                            "title": "USER B",
+                            "views": [],
+                        },
+                    )
+                )
+            except OSError as exc:
+                # Failure
+                # is
+                # expected.
+                assert exc.errno == 28, (
+                    f"expected errno 28, got {exc.errno}"
+                )
+            # The
+            # metadata
+            # write
+            # fault-point
+            # was
+            # reached.
+            assert fault_calls, (
+                "R10.6 round 8: metadata fault-point "
+                "was never reached"
+            )
+        finally:
+            os.replace = original_replace
+        # A's main
+        # byte-for-byte
+        # unchanged.
+        with open(main_path, "rb") as f:
+            after_main_bytes = f.read()
+        assert (
+            after_main_bytes == original_main_bytes
+        ), (
+            "R10.6 round 8: A's main must be "
+            "byte-for-byte unchanged on conflict "
+            "+ metadata failure"
+        )
+        # Metadata is
+        # byte-for-byte
+        # unchanged.
+        with open(
+            os.path.join(
+                storage,
+                "lovelace_dashboards",
+            ),
+            "rb",
+        ) as f:
+            after_meta_bytes = f.read()
+        assert (
+            after_meta_bytes == original_meta_bytes
+        ), (
+            "R10.6 round 8: metadata must be "
+            "byte-for-byte unchanged on failure"
+        )
+        # The new
+        # sidecar was
+        # removed
+        # (it was
+        # created in
+        # this call,
+        # not before).
+        assert not os.path.exists(
+            _b_sidecar_path
+        ), (
+            "R10.6 round 8: brand-new sidecar "
+            "must be deleted on metadata "
+            "failure. Still exists at "
+            f"{_b_sidecar_path}"
+        )
+        # B's options
+        # are NOT
+        # changed
+        # (binding
+        # was not
+        # persisted).
+        assert entry_b.options == {
+            "lovelace_dashboard_url_path":
+                "powmr-energy",
+        }, (
+            "R10.6 round 8: B's options must be "
+            "unchanged on failure. Got "
+            f"{entry_b.options!r}"
+        )
+
+
+def test_r106_conflict_AB_optin_metadata_failure_restores_existing_sidecar() -> None:
+    """R10.6 (round 8):
+    A owns main. B
+    has wrong
+    binding
+    ``powmr-energy``.
+    B runs with
+    ``opt_in=True``.
+    B's sidecar
+    already exists
+    on disk. The
+    metadata write
+    FAILS. The
+    sidecar MUST be
+    restored to its
+    previous
+    bytes
+    byte-for-byte.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        # A's main
+        main_path = os.path.join(
+            storage, "lovelace.powmr_energy"
+        )
+        with open(main_path, "w") as f:
+            json.dump(
+                {
+                    "key": "lovelace.powmr_energy",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "USER A"
+                        },
+                    },
+                },
+                f,
+            )
+        # B's sidecar
+        # already
+        # exists with
+        # PREVIOUS
+        # content.
+        import hashlib as _h
+        _b_hash = _h.md5(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:16]
+        _b_sidecar_id = (
+            f"powmr_energy_{_b_hash}"
+        )
+        _b_sidecar_path = os.path.join(
+            storage,
+            f"lovelace.{_b_sidecar_id}",
+        )
+        with open(_b_sidecar_path, "w") as f:
+            json.dump(
+                {
+                    "key": f"lovelace.{_b_sidecar_id}",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "PREVIOUS B"
+                        },
+                    },
+                },
+                f,
+            )
+        with open(_b_sidecar_path, "rb") as f:
+            original_sidecar_bytes = f.read()
+        # Metadata
+        # lists A's
+        # main only.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": "powmr_energy",
+                            "url_path":
+                                "powmr-energy",
+                            "title": "USER A",
+                            "show_in_sidebar":
+                                True,
+                        }],
+                    },
+                },
+                f,
+            )
+        entry_a = _ReadOnlyOptionsEntry(
+            "01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        entry_b = _ReadOnlyOptionsEntry(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry_a, entry_b],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry_a.entry_id: {},
+            entry_b.entry_id: {
+                "dashboard_migration_opt_in": True,
+            },
+        }
+        # Fault on
+        # metadata
+        # write.
+        fault_calls: list = []
+        original_replace = os.replace
+        target_dir = os.path.abspath(storage)
+
+        def _faulty_replace(
+            src, dst, *a, **kw
+        ):
+            dst_abs = os.path.abspath(str(dst))
+            if (
+                dst_abs.startswith(target_dir)
+                and dst_abs.endswith(
+                    "lovelace_dashboards"
+                )
+            ):
+                fault_calls.append(
+                    (str(src), dst_abs)
+                )
+                raise OSError(
+                    28,
+                    "No space left on device",
+                )
+            return original_replace(
+                src, dst, *a, **kw
+            )
+
+        os.replace = _faulty_replace
+        try:
+            helpers = _load_registration_helpers()
+            ns = _exec_function(
+                INIT_PY,
+                "_register_lovelace_dashboard",
+                args={
+                    "_LOGGER": _FakeLogger(),
+                    "DOMAIN": "powmr_inverter",
+                    "extra_modules": helpers,
+                    "_read_metadata_snapshot":
+                        _read_metadata_snapshot,
+                },
+            )
+            real = ns["_register_lovelace_dashboard"]
+            try:
+                _run(
+                    real(
+                        hass,
+                        entry_b,
+                        {
+                            "title": "USER B",
+                            "views": [],
+                        },
+                    )
+                )
+            except OSError as exc:
+                assert exc.errno == 28
+            assert fault_calls, (
+                "R10.6 round 8: metadata fault-point "
+                "was never reached"
+            )
+        finally:
+            os.replace = original_replace
+        # B's sidecar
+        # is restored
+        # byte-for-byte
+        # from the
+        # ``.bak`` made
+        # by
+        # ``_write_dashboard_atomic``.
+        with open(_b_sidecar_path, "rb") as f:
+            after_sidecar_bytes = f.read()
+        assert (
+            after_sidecar_bytes
+            == original_sidecar_bytes
+        ), (
+            "R10.6 round 8: B's sidecar must be "
+            "restored byte-for-byte on metadata "
+            "failure. "
+            f"{original_sidecar_bytes!r} -> "
+            f"{after_sidecar_bytes!r}"
+        )
+
+
+def test_r106_correct_sidecar_no_binding_no_optin_persists_binding() -> None:
+    """R10.6 (round 8):
+    B's sidecar
+    already exists
+    on disk and is
+    correctly listed
+    in metadata.
+    B has no
+    binding and no
+    opt-in. The
+    helper MUST
+    persist the
+    binding. The
+    content and
+    ``show_in_sidebar``
+    are unchanged.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        import hashlib as _h
+        _b_hash = _h.md5(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:16]
+        _b_sidecar_id = (
+            f"powmr_energy_{_b_hash}"
+        )
+        _b_sidecar_path = os.path.join(
+            storage,
+            f"lovelace.{_b_sidecar_id}",
+        )
+        with open(_b_sidecar_path, "w") as f:
+            json.dump(
+                {
+                    "key": f"lovelace.{_b_sidecar_id}",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "USER B"
+                        },
+                    },
+                },
+                f,
+            )
+        with open(_b_sidecar_path, "rb") as f:
+            original_sidecar_bytes = f.read()
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": _b_sidecar_id,
+                            "url_path":
+                                f"powmr-{_b_hash}",
+                            "title": "USER B",
+                            "show_in_sidebar":
+                                False,
+                        }],
+                    },
+                },
+                f,
+            )
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_ensure_dashboard_binding",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_ensure_dashboard_binding"]
+        _run(real(hass, entry))
+        # Binding
+        # persisted.
+        binding = entry.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        assert binding == f"powmr-{_b_hash}", (
+            f"R10.6 round 8: binding must be "
+            f"persisted as powmr-{_b_hash}, got "
+            f"{binding!r}"
+        )
+        # Content
+        # byte-for-byte
+        # unchanged.
+        with open(_b_sidecar_path, "rb") as f:
+            after = f.read()
+        assert after == original_sidecar_bytes, (
+            "R10.6 round 8: sidecar content must "
+            "not be mutated by the helper"
+        )
+        # ``show_in_sidebar``
+        # unchanged
+        # (still
+        # False).
+        meta = json.load(
+            open(
+                os.path.join(
+                    storage,
+                    "lovelace_dashboards",
+                )
+            )
+        )
+        for it in meta["data"]["items"]:
+            if it.get("id") == _b_sidecar_id:
+                assert (
+                    it.get("show_in_sidebar")
+                    is False
+                ), (
+                    "R10.6 round 8: sidebar "
+                    "visibility must not change"
+                )
+
+
+def test_r106_correct_content_metadata_wrong_url_no_binding() -> None:
+    """R10.6 (round 8):
+    content key is
+    correct but
+    metadata
+    ``url_path``
+    does NOT match
+    the resolved
+    target URL.
+    Binding is NOT
+    persisted.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        import hashlib as _h
+        _b_hash = _h.md5(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N".encode(
+                "utf-8"
+            )
+        ).hexdigest()[:16]
+        _b_sidecar_id = (
+            f"powmr_energy_{_b_hash}"
+        )
+        _b_sidecar_path = os.path.join(
+            storage,
+            f"lovelace.{_b_sidecar_id}",
+        )
+        with open(_b_sidecar_path, "w") as f:
+            json.dump(
+                {
+                    "key": f"lovelace.{_b_sidecar_id}",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "USER B"
+                        },
+                    },
+                },
+                f,
+            )
+        # Metadata
+        # lists the
+        # sidecar but
+        # with the
+        # WRONG
+        # url_path.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": _b_sidecar_id,
+                            "url_path":
+                                "stale-url",
+                            "title": "USER B",
+                            "show_in_sidebar":
+                                False,
+                        }],
+                    },
+                },
+                f,
+            )
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_ensure_dashboard_binding",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_ensure_dashboard_binding"]
+        _run(real(hass, entry))
+        # No
+        # binding.
+        assert entry.options.get(
+            "lovelace_dashboard_url_path"
+        ) is None, (
+            "R10.6 round 8: helper must not bind "
+            "when metadata url_path does not "
+            f"match. Got {entry.options!r}"
         )
 
 

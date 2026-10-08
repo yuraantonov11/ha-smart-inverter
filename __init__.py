@@ -14,6 +14,7 @@ import shutil
 import tempfile
 from datetime import timedelta
 from pathlib import Path
+from typing import NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -1458,752 +1459,386 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
 
 
 async def _register_lovelace_dashboard(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    dashboard_config: dict,
-) -> None:
-    """Auto-register the dashboard in storage mode.
+    hass, entry, dashboard_config
+):
+    """R10.6 (round 8):
+    single-resolver
+    registrar.
 
-    Writes dashboard metadata to .storage/lovelace_dashboards
-    and the actual dashboard config to .storage/lovelace.powmr_energy.
-    The config is stored as a JSON object — NOT a YAML string — which
-    avoids the "Cannot use 'in' operator to search for 'strategy'" crash.
+    Uses
+    ``_resolve_dashboard_target``
+    to finalise the
+    target BEFORE
+    capturing state.
+    The order is the
+    point: target
+    finalised →
+    state captured →
+    decision made →
+    file writes →
+    binding write.
 
-    Audit T23 round 6 (R6.1):
-    ``hass.config_entries.async_entries(DOMAIN)``
-    returns a ``list``, not a
-    generator. The previous code
-    called ``.__next__()`` on the
-    list and raised
-    ``AttributeError: 'list'
-    object has no attribute
-    '__next__'``. The helper now
-    takes the ``entry`` as an
-    explicit argument so it does
-    not need to iterate
-    ``async_entries`` at all.
+    The two scenarios
+    Юра reproduced in
+    round 8 are now
+    handled by the
+    resolver:
 
-    Audit T23 round 5 (D1): when
-    the integration dashboard is
-    already registered (the
-    ``.storage/lovelace.powmr_energy``
-    file exists), this helper
-    MUST NOT overwrite it unless
-    ``hass.data[DOMAIN][entry_id]
-    ["dashboard_migration_opt_in"]``
-    is True. The user opts in
-    via the
-    ``powmr_inverter.migrate_dashboard``
-    service. The migration is
-    one-shot — after the
-    migration, the flag is reset
-    to False so subsequent
-    reloads preserve the new
-    state.
+    1. ``B`` has a
+       stale wrong
+       binding to
+       ``powmr-energy``
+       (owned by
+       ``A``). The
+       resolver sets
+       ``ownership_conflict=True``
+       and re-routes
+       to the
+       sidecar. With
+       ``opt_in=True``
+       we write the
+       new sidecar.
+       ``target_existed_before``
+       reflects the
+       FINAL target
+       (sidecar),
+       so rollback
+       deletes the
+       new file on
+       metadata
+       failure.
 
-    Two entries on one HA
-    install share the
-    lovelace_dashboards file;
-    each entry's
-    ``hass.data[DOMAIN][entry_id]``
-    can opt-in independently.
-    The helper is called per
-    entry.
+    2. ``B`` has
+       a stale
+       wrong
+       binding to
+       ``powmr-energy``,
+       ``opt_in=False``.
+       The resolver
+       re-routes
+       to sidecar
+       and returns
+       ``ownership_conflict=True``.
+       The registrar
+       sees the
+       conflict and
+       does NOT
+       mutate any
+       file. The
+       next setup
+       run (or an
+       explicit
+       opt-in) will
+       resolve the
+       conflict.
+
+    Invariants
+    enforced by
+    the resolver
+    and this
+    function:
+
+    * ``target_existed_before``
+      is captured
+      against the
+      FINAL target
+      (after
+      ownership
+      re-route).
+    * Content is
+      written
+      only when
+      ``not
+      res.target_existed_before
+      or
+      res.opt_in``
+      (i.e. brand-
+      new target
+      OR user
+      opted in to
+      migrate).
+    * Metadata
+      is written
+      only after
+      the content
+      write
+      succeeds.
+    * Binding is
+      written only
+      after both
+      content and
+      metadata
+      writes
+      succeed.
+    * On any
+      failure,
+      rollback
+      uses
+      ``res.target_existed_before``
+      (the FINAL
+      target's
+      existence
+      flag).
+    * ``hass.config_entries.async_update_entry``
+      is called
+      sync (no
+      ``await``).
     """
-    config_dir = hass.config.config_dir
-    dashboards_storage = os.path.join(config_dir, ".storage", "lovelace_dashboards")
 
-    # Audit R7.4: per-entry
-    # dashboard file names use
-    # a full-content hash of the
-    # entry_id, NOT a truncated
-    # prefix. Two entry IDs
-    # whose first 8 characters
-    # collides after ``[:8]``
-    # must still get distinct
-    # files.
-    import hashlib as _hashlib_d
-    entry_hash = _hashlib_d.md5(
-        entry.entry_id.encode("utf-8")
-    ).hexdigest()[:16]
-    sidecar_id = f"powmr_energy_{entry_hash}"
-    sidecar_path = os.path.join(
-        config_dir,
-        ".storage",
-        f"lovelace.{sidecar_id}",
-    )
-    # The first opt-in wins the
-    # canonical main dashboard;
-    # subsequent entries write
-    # to their own sidecar.
-    main_path = os.path.join(
-        config_dir, ".storage", f"lovelace.{_DASHBOARD_ID}"
-    )
-    sidecar_glob = os.path.join(
-        config_dir,
-        # Audit R7.4: sidecar
-        # files use
-        # ``lovelace.powmr_energy_<md5>``.
-        # The glob must include
-        # both the legacy
-        # ``.`` separator (round 6
-        # before R7.4) and the
-        # new ``_`` separator
-        # so entries that migrated
-        # with round 6 are still
-        # detected.
-        ".storage",
-        "lovelace.powmr_energy*",
-    )
-    import glob as _glob
-    # ``all_sidecars`` includes
-    # OUR sidecar so we can
-    # detect a previous registration
-    # for the SAME ``entry_id``.
-    # Audit round 4: reload and
-    # migration must NOT create a
-    # duplicate dashboard for the
-    # same ``entry_id``. The previous
-    # implementation excluded our
-    # own sidecar (``p != sidecar_path``)
-    # and computed ``is_first_opt_in``
-    # from "any other sidecar exists";
-    # that meant every setup after
-    # the canonical ``main_path``
-    # existed (legacy migration, R7)
-    # was treated as a *new* entry and
-    # silently produced a *second*
-    # dashboard pointing at the same
-    # inverter. We now:
-    # 1. Read the persistent binding
-    #    from
-    #    ``entry.options["lovelace_dashboard_url_path"]``
-    #    — if it matches our
-    #    ``sidecar_path`` or
-    #    ``main_path`` we reuse it
-    #    and skip the create step.
-    # 2. If a sidecar for OUR
-    #    ``entry_id`` already exists
-    #    on disk, reuse it
-    #    (idempotent registration).
-    # 3. Only when ``main_path``
-    #    exists AND belongs to a
-    #    *different* ``entry_id`` do
-    #    we write a separate sidecar.
-    all_sidecars = sorted(
-        p for p in _glob.glob(sidecar_glob)
-        if not p.endswith(".bak")
-    )
-    own_sidecar_exists = os.path.exists(sidecar_path)
-
-    # Per-entry persistent binding
-    # stored in ``entry.options``.
-    # The setup path writes this
-    # once; subsequent setups reuse
-    # it verbatim.
-    persisted_path = entry.options.get(
-        "lovelace_dashboard_url_path"
+    res = await _resolve_dashboard_target(
+        hass, entry
     )
 
-    # Round 4 follow-up
-    # (R10.6): ``entry.options``
-    # is a read-only
-    # ``MappingProxyType`` in HA
-    # 2026.10.0b0. Direct
-    # item assignment raises
-    # ``TypeError``. We
-    # accumulate the binding
-    # to persist in
-    # ``must_persist_binding``
-    # and route the write
-    # through
-    # ``hass.config_entries.async_update_entry``
-    # below.
-    must_persist_binding: str | None = None
-    # Defaults for the
-    # resolve phase.
-    # R10.6: every branch
-    # below MUST overwrite
-    # these before the
-    # write phase.
-    dashboard_content_storage: str = ""
-    active_id: str = ""
-    active_url: str = ""
-    active_title: str = (
-        f"Smart Solar · {entry.title or entry.entry_id[:8]}"
-    )
-    is_first_opt_in: bool = False
-
-    if own_sidecar_exists:
-        # Idempotent: this
-        # ``entry_id`` already
-        # has its sidecar
-        # registered. Reuse it.
-        dashboard_content_storage = sidecar_path
-        active_id: str = sidecar_id
-        active_url: str = f"powmr-{entry_hash}"
-        active_title: str = (
-            f"Smart Solar · {entry.title or entry.entry_id[:8]}"
-        )
-        is_first_opt_in = False
-        # Persist the binding so
-        # we never create a
-        # second dashboard even
-        # if the disk file is
-        # deleted out-of-band.
-        # R10.6: ``entry.options``
-        # is a read-only
-        # ``MappingProxyType`` —
-        # route through
-        # ``async_update_entry``.
-        if persisted_path != active_url:
-            must_persist_binding = active_url
-    elif persisted_path is not None:
-        # We have a binding from
-        # a prior entry.options.
-        # R10.6: if the binding
-        # no longer matches a
-        # registered dashboard,
-        # we MUST NOT fall
-        # through to ``main``
-        # (that would overwrite
-        # another entry's user
-        # content). The
-        # ``binding_is_stale``
-        # branch below routes
-        # the request to a
-        # fresh sidecar instead.
-        match_id: str | None = None
-        match_title = ""
-        binding_is_stale = False
-        try:
-            existing_payload = (
-                await hass.async_add_executor_job(
-                    lambda: _read_metadata_snapshot(
-                        dashboards_storage
-                    )
-                )
+    # Ownership
+    # conflict
+    # without opt-in:
+    # do NOT touch
+    # any file. The
+    # helper already
+    # cleared B's
+    # binding, and
+    # we keep A's
+    # main + metadata
+    # byte-for-byte
+    # unchanged.
+    if res.ownership_conflict and not res.opt_in:
+        # Cross-entry
+        # conflict
+        # WITHOUT opt-in.
+        # The user
+        # has not
+        # authorised
+        # the change.
+        # We MUST:
+        # 1. Leave
+        #    A's main
+        #    and
+        #    metadata
+        #    byte-for-
+        #    byte
+        #    unchanged.
+        # 2. Clear
+        #    B's stale
+        #    wrong
+        #    binding
+        #    so B is
+        #    not
+        #    "confirmed
+        #    as owner
+        #    of main".
+        #    The
+        #    binding
+        #    is set
+        #    to None
+        #    (NOT a
+        #    non-
+        #    existent
+        #    sidecar
+        #    URL).
+        if res.persisted_path is not None:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    **dict(entry.options),
+                    "lovelace_dashboard_url_path":
+                        None,
+                },
             )
-            for it in existing_payload.get(
-                "data", {}
-            ).get("items", []):
-                if it.get("url_path") == persisted_path:
-                    match_id = it.get("id")
-                    match_title = it.get("title", "") or (
-                        entry.title or entry.entry_id[:8]
-                    )
-                    break
-        except Exception:
-            match_id = None
-            binding_is_stale = True
-        if match_id is not None:
-            content_path = os.path.join(
-                config_dir,
-                ".storage",
-                f"lovelace.{match_id}",
+            _LOGGER.warning(
+                "R10.6 round 8: cross-entry "
+                "ownership conflict for "
+                "'powmr-energy' (owned by "
+                "entry %s); cleared entry "
+                "%s's stale binding. "
+                "Enable dashboard_migration_opt_in "
+                "on the correct entry or "
+                "remove the wrong binding "
+                "manually.",
+                res.other_owner_entry_id,
+                entry.entry_id,
             )
-            if os.path.exists(content_path):
-                # Live binding —
-                # reuse the
-                # dashboard.
-                dashboard_content_storage = content_path
-                active_id = match_id
-                active_url = persisted_path
-                active_title = match_title
-                is_first_opt_in = False
-            else:
-                # Stale binding:
-                # url_path is in
-                # metadata but the
-                # content file is
-                # gone. R10.6: do
-                # NOT touch
-                # ``main``; route
-                # to a fresh
-                # sidecar.
-                binding_is_stale = True
-        else:
-            # Stale binding:
-            # ``persisted_path``
-            # does not match any
-            # registered
-            # dashboard. R10.6:
-            # do NOT touch
-            # ``main``; route to
-            # a fresh sidecar.
-            binding_is_stale = True
-        if binding_is_stale:
-            # R10.6: pick a
-            # sidecar to avoid
-            # overwriting
-            # another entry's
-            # main.
-            dashboard_content_storage = sidecar_path
-            active_id = sidecar_id
-            active_url = f"powmr-{entry_hash}"
-            active_title = (
-                f"Smart Solar · {entry.title or entry.entry_id[:8]}"
-            )
-            is_first_opt_in = False
-            if persisted_path != active_url:
-                must_persist_binding = active_url
-    else:
-        # No binding. R10.6:
-        # if ``main`` does NOT
-        # exist yet (truly
-        # fresh install) write
-        # ``main`` and record
-        # the binding. If
-        # ``main`` already
-        # exists (legacy /
-        # another entry),
-        # create a sidecar
-        # instead and record
-        # the sidecar's
-        # binding.
-        if not os.path.exists(main_path):
-            is_first_opt_in = True
-            dashboard_content_storage = main_path
-            active_id = _DASHBOARD_ID
-            active_url = _DASHBOARD_URL
-            active_title = _DASHBOARD_TITLE
-            if persisted_path != active_url:
-                must_persist_binding = active_url
-        else:
-            dashboard_content_storage = sidecar_path
-            active_id = sidecar_id
-            active_url = f"powmr-{entry_hash}"
-            active_title = (
-                f"Smart Solar · {entry.title or entry.entry_id[:8]}"
-            )
-            is_first_opt_in = False
-            if persisted_path != active_url:
-                must_persist_binding = active_url
-
-    # R10.6 (round 5): the
-    # binding MUST be
-    # persisted ONLY after
-    # both the content file
-    # and the metadata file
-    # are written. We
-    # accumulate the
-    # binding to write in
-    # ``must_persist_binding``
-    # (resolved in the
-    # branch logic above)
-    # and the actual write
-    # is performed after
-    # the successful
-    # write of both
-    # ``dashboard_content_storage``
-    # and ``dashboards_storage``
-    # — see the post-write
-    # block at the end of
-    # this function. If
-    # either write raises,
-    # the binding is NOT
-    # persisted, leaving
-    # the previous
-    # ``entry.options``
-    # value intact.
-    #
-    # ``async_update_entry``
-    # in HA 2026.10.0b0 is
-    # a *synchronous*
-    # callback (see
-    # ``ConfigEntries.async_update_entry``
-    # in
-    # https://github.com/home-assistant/core/blob/2026.10.0b0/homeassistant/config_entries.py
-    # ) — it returns a
-    # ``bool`` and MUST
-    # NOT be awaited. The
-    # previous code
-    # mistakenly used
-    # ``await`` and crashed
-    # with ``TypeError:
-    # object bool can't be
-    # used in 'await'
-    # expression``.
-
-    # Audit T23 round 6: the opt-in
-    # flag is read PER ENTRY from
-    # ``hass.data[DOMAIN][entry.entry_id]``.
-    # No ``async_entries(...)``,
-    # no ``.__next__()``.
-    bundle = hass.data.get(DOMAIN, {}).get(
-        entry.entry_id, {}
-    )
-    opt_in = bool(bundle.get("dashboard_migration_opt_in", False))
-
-    # Step 1: Check if already registered AND not opt-in
-    already_registered = False
-    try:
-        def _check() -> bool:
-            return os.path.exists(dashboard_content_storage)
-
-        already_registered = await hass.async_add_executor_job(_check)
-        if already_registered and not opt_in:
-            # D1: existing user dashboard
-            # is preserved byte-for-byte.
-            # R10.6 (round 6): the
-            # binding MUST still be
-            # recorded so the next
-            # reload reuses the
-            # existing dashboard
-            # verbatim instead of
-            # taking the
-            # "own_sidecar_exists"
-            # / "is_first_opt_in"
-            # path. The previous
-            # code returned early
-            # without persisting the
-            # binding, leaving
-            # ``entry.options``
-            # empty on the live
-            # registrar and forcing
-            # the next reload to
-            # re-derive the path —
-            # which is fragile and
-            # can misclassify the
-            # sidecar. We persist
-            # the binding ONLY when
-            # the live content
-            # matches the resolved
-            # target (so a corrupted
-            # or unrelated file on
-            # disk is never bound
-            # to a wrong
-            # ``url_path``).
-            _LOGGER.debug(
-                "Dashboard %s already registered; "
-                "no opt-in, persisting binding "
-                "and leaving existing "
-                "dashboard untouched",
-                _DASHBOARD_URL,
-            )
-            # Verify the live
-            # content really is
-            # the dashboard we
-            # expect (i.e. the
-            # file at
-            # ``dashboard_content_storage``
-            # is a real
-            # dashboard, not an
-            # orphan with the
-            # same name). We
-            # compare the file's
-            # ``key`` field (the
-            # canonical
-            # ``lovelace.<id>``
-            # identifier HA
-            # writes) to the
-            # expected
-            # ``active_id`` and
-            # only then persist
-            # the binding.
-            def _verify_content() -> bool:
-                try:
-                    with open(
-                        dashboard_content_storage,
-                        "r",
-                    ) as _f:
-                        data = json.loads(_f.read())
-                    return (
-                        data.get("key")
-                        == f"lovelace.{active_id}"
-                    )
-                except (OSError, ValueError):
-                    return False
-
-            content_matches = (
-                await hass.async_add_executor_job(
-                    _verify_content
-                )
-            )
-            # R10.6 (round 7):
-            # also verify the
-            # Lovelace
-            # ``lovelace_dashboards``
-            # metadata file
-            # lists the
-            # resolved
-            # dashboard with
-            # matching
-            # ``id`` AND
-            # ``url_path``.
-            # A content file
-            # alone is not
-            # enough — an
-            # orphan file
-            # with the right
-            # ``key`` but no
-            # metadata entry
-            # must NOT be
-            # bound, because
-            # HA does not
-            # know about it
-            # and a binding
-            # would point at
-            # a non-existent
-            # dashboard.
-            metadata_matches = (
-                _metadata_lists_dashboard(
-                    dashboards_storage,
-                    active_id,
-                    active_url,
-                )
-            )
-            if (
-                content_matches
-                and metadata_matches
-                and persisted_path != active_url
-            ):
-                # Persist the
-                # binding
-                # through the
-                # sync
-                # config-entries
-                # callback.
-                hass.config_entries.async_update_entry(
-                    entry,
-                    options={
-                        **dict(entry.options),
-                        "lovelace_dashboard_url_path":
-                            active_url,
-                    },
-                )
-            return
-    except Exception as exc:
-        _LOGGER.debug("Dashboard check failed: %s", exc)
-
-    # Step 2: Read the existing
-    # ``lovelace_dashboards``
-    # metadata snapshot. We
-    # capture the existing
-    # payload BEFORE we touch
-    # either the content file
-    # or the metadata file so we
-    # can roll back atomically
-    # on either write failure.
-    # Audit R7.5 rejects dangling
-    # registration — the
-    # metadata MUST NOT list a
-    # dashboard whose content
-    # file does not exist on
-    # disk.
-    existing_payload = await hass.async_add_executor_job(
-        lambda: _read_metadata_snapshot(dashboards_storage)
-    )
-    items = existing_payload.get(
-        "data", {}
-    ).get("items", [])
-
-    # Audit R7.3: register
-    # THIS entry's sidecar
-    # dashboard in the
-    # Lovelace metadata with a
-    # unique ``url_path`` and
-    # ``id`` so the sidecar is
-    # actually navigable. The
-    # canonical main dashboard
-    # is registered with
-    # ``_DASHBOARD_ID`` and
-    # ``_DASHBOARD_URL``; a
-    # sidecar uses ``active_id``
-    # / ``active_url`` derived
-    # from the entry's content
-    # hash.
-    target_id = active_id
-    target_url = active_url
-    target_title = active_title
-
-    # R10.6 (round 7):
-    # ownership
-    # cross-check. If
-    # the resolved
-    # target is the
-    # canonical main
-    # AND another
-    # powmr_inverter
-    # entry already
-    # claims the main
-    # binding, we MUST
-    # NOT proceed —
-    # the migration
-    # would overwrite
-    # a sister entry's
-    # user content.
-    # Re-route to the
-    # sidecar path so
-    # the current entry
-    # gets its own
-    # dashboard.
-    if (
-        target_id == _DASHBOARD_ID
-        and _is_dashboard_owned_by_other(
-            hass, entry.entry_id, _DASHBOARD_URL
-        )
-    ):
-        target_id = sidecar_id
-        target_url = f"powmr-{entry_hash}"
-        target_title = (
-            f"Smart Solar · "
-            f"{entry.title or entry.entry_id[:8]}"
-        )
-        dashboard_content_storage = sidecar_path
-        active_id = target_id
-        active_url = target_url
-        active_title = target_title
-        is_first_opt_in = False
-        # Update the
-        # binding record
-        # so the next
-        # reload reuses
-        # the sidecar.
-        if persisted_path != target_url:
-            must_persist_binding = target_url
-        _LOGGER.info(
-            "R10.6 round 7: main already owned "
-            "by another entry; routing to sidecar "
-            "%s",
-            target_url,
-        )
-
-    already_listed = any(
-        item.get("id") == target_id
-        for item in items
-    )
-
-    # Step 3 (audit R7.5):
-    # write the content file
-    # FIRST. If the content
-    # write raises, no metadata
-    # is touched and the caller
-    # sees a clean failure with
-    # no dangling registration.
-    # The previous code wrote
-    # metadata first then
-    # content, which left a
-    # dangling registration on
-    # content failure — the
-    # sidebar would show a
-    # dashboard that 404s.
-    if not already_registered or opt_in:
-        await _update_dashboard_content(
-            hass,
-            dashboard_content_storage,
-            dashboard_config,
-            dashboard_id=active_id,
-        )
-    else:
-        # D1: already registered
-        # AND no opt-in. Leave
-        # everything untouched.
         return
 
-    # Step 4: only after the
-    # content write succeeded,
-    # append the metadata entry.
-    # If this raises, remove the
-    # freshly written content
-    # file so the dashboard
-    # does not appear in the
-    # sidebar without a
-    # resolvable content
-    # payload. Re-raise so the
-    # service handler sees
-    # ``ok=False``.
+    # Re-route
+    # to sidecar
+    # WITH opt-in:
+    # we will write
+    # the new
+    # sidecar.
+    # Without opt-in
+    # we don't
+    # create the
+    # sidecar (the
+    # user has not
+    # authorised
+    # the change).
+
+    # Read the
+    # existing
+    # metadata
+    # payload so we
+    # can append to
+    # ``items``
+    # atomically.
+    existing_payload = (
+        await hass.async_add_executor_job(
+            lambda: _read_metadata_snapshot(
+                res.dashboards_storage
+            )
+        )
+    )
+
+    # Resolve
+    # write decision.
+    write_content = (
+        (not res.target_existed_before) or res.opt_in
+    )
+    # No content
+    # write needed:
+    # if the target
+    # already exists
+    # AND no opt-in
+    # AND content
+    # key matches
+    # AND metadata
+    # lists it, we
+    # can just
+    # persist the
+    # binding (if
+    # needed).
+    if not write_content:
+        if (
+            res.content_key_ok
+            and res.metadata_ok
+            and res.persisted_path != res.target_url
+        ):
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    **dict(entry.options),
+                    "lovelace_dashboard_url_path":
+                        res.target_url,
+                },
+            )
+        return
+
+    # Step A:
+    # content write.
     try:
-        if not already_listed:
-            items.append({
-                "id": target_id,
-                "icon": "mdi:solar-power",
-                "title": target_title,
-                "show_in_sidebar": True,
-                "require_admin": False,
-                "mode": "storage",
-                "url_path": target_url,
-            })
-            existing_payload["data"]["items"] = items
-
-            def _write_metadata() -> None:
-                _write_dashboards_metadata_atomic(
-                    dashboards_storage, existing_payload
-                )
-
-            await hass.async_add_executor_job(_write_metadata)
-            _LOGGER.info(
-                "✅ Dashboard '%s' (id=%s, url=%s) "
-                "registered atomically",
-                target_title, target_id, target_url,
-            )
-        else:
-            _LOGGER.debug(
-                "Dashboard id=%s already listed; "
-                "metadata not modified",
-                target_id,
-            )
+        await _update_dashboard_content(
+            hass,
+            res.target_path,
+            dashboard_config,
+            dashboard_id=res.target_id,
+        )
     except Exception as exc:
-        # Roll back so we do not
-        # leave a dangling
-        # dashboard in the
-        # Lovelace sidebar.
-        # Audit T22 round 9
-        # (R9.2): ``_write_dashboard_atomic``
-        # already keeps a
-        # ``target_path + ".bak"``
-        # copy of the PREVIOUS
-        # content before the
-        # ``os.replace``. The
-        # rollback MUST restore
-        # the previous content
-        # from the ``.bak`` if
-        # the target already
-        # existed before this
-        # call. Removing the
-        # target unconditionally
-        # would clobber an
-        # already-registered
-        # sidecar that we just
-        # tried to update.
-        # Only when the target
-        # is a brand-new file
-        # (no ``.bak`` was ever
-        # created because the
-        # file did not exist
-        # before) do we delete
-        # the freshly written
-        # content.
+        # Content
+        # write
+        # failed.
+        # Rollback
+        # removes
+        # the brand-
+        # new file
+        # (or leaves
+        # a previous
+        # sidecar
+        # intact).
         try:
             await hass.async_add_executor_job(
                 lambda: _rollback_dashboard_content(
-                    dashboard_content_storage,
-                    # Audit R10.1: the
-                    # caller already
-                    # knows whether the
-                    # target existed
-                    # before this
-                    # operation from
-                    # ``already_registered``.
-                    # The presence of
-                    # ``.bak`` is NOT a
-                    # reliable indicator
-                    # (a stale ``.bak``
-                    # from an earlier
-                    # failure, or a
-                    # missing ``.bak``
-                    # after a disk wipe,
-                    # would otherwise
-                    # mislead the
-                    # rollback).
-                    bool(already_registered),
+                    res.target_path,
+                    res.target_existed_before,
                 )
             )
-        except OSError as rollback_exc:
+        except OSError as rb_exc:
             _LOGGER.error(
-                "Content rollback failed after "
-                "metadata write raised: %s",
-                rollback_exc,
+                "Content rollback failed "
+                "after content write "
+                "raised: %s",
+                rb_exc,
+            )
+        _LOGGER.error(
+            "Dashboard auto-register failed "
+            "(content write raised): %s",
+            exc,
+        )
+        raise
+
+    # Step B:
+    # metadata
+    # write. If
+    # this raises,
+    # rollback the
+    # content write
+    # using the
+    # FINAL target's
+    # ``target_existed_before``
+    # (NOT a stale
+    # pre-reroute
+    # value).
+    try:
+        if not res.already_listed:
+            new_item = {
+                "id": res.target_id,
+                "icon": "mdi:solar-power",
+                "title": res.target_title,
+                "show_in_sidebar": True,
+                "require_admin": False,
+                "mode": "storage",
+                "url_path": res.target_url,
+            }
+            existing_payload["data"]["items"] = (
+                res.items + [new_item]
+            )
+
+            def _write_metadata():
+                _write_dashboards_metadata_atomic(
+                    res.dashboards_storage,
+                    existing_payload,
+                )
+
+            await hass.async_add_executor_job(
+                _write_metadata
+            )
+            _LOGGER.info(
+                "✅ Dashboard '%s' (id=%s, "
+                "url=%s) registered atomically",
+                res.target_title,
+                res.target_id,
+                res.target_url,
+            )
+    except Exception as exc:
+        # R10.6 (round 8):
+        # rollback
+        # uses the
+        # FINAL
+        # target's
+        # ``target_existed_before``,
+        # NOT a
+        # pre-reroute
+        # value. A
+        # brand-new
+        # sidecar is
+        # DELETED. An
+        # existing
+        # sidecar is
+        # restored
+        # byte-for-
+        # byte from
+        # ``.bak``.
+        try:
+            await hass.async_add_executor_job(
+                lambda: _rollback_dashboard_content(
+                    res.target_path,
+                    res.target_existed_before,
+                )
+            )
+        except OSError as rb_exc:
+            _LOGGER.error(
+                "Content rollback failed "
+                "after metadata write "
+                "raised: %s",
+                rb_exc,
             )
         _LOGGER.error(
             "Dashboard auto-register failed "
@@ -2212,148 +1847,72 @@ async def _register_lovelace_dashboard(
         )
         raise
 
-    if already_registered and opt_in:
-        _LOGGER.info(
-            "Dashboard %s migrated "
-            "(opt-in honoured)",
-            target_url,
-        )
-        # R6.5: the migration
-        # is one-shot. Reset
-        # the opt-in flag so
-        # the next reload does
-        # NOT silently
-        # overwrite again.
-        hass.data.setdefault(
-            DOMAIN, {}
-        ).setdefault(
-            entry.entry_id, {}
-        )["dashboard_migration_opt_in"] = False
-    elif not already_listed:
-        _LOGGER.info(
-            "✅ Dashboard '%s' content "
-            "written (first install)",
-            target_title,
-        )
-
-    # R10.6 (round 5):
-    # persist the binding
-    # AFTER both the
-    # content file and
-    # the metadata file
-    # are written. This
-    # order guarantees
-    # that the binding
-    # never points at a
-    # dashboard that does
-    # not exist on disk —
-    # a stale or
-    # failed-write binding
-    # would otherwise
-    # lead the next reload
-    # to ``stale_binding``
-    # fallback, which
-    # (correctly) refuses
-    # to write to main and
-    # instead creates a
-    # sidecar.
-    #
-    # ``async_update_entry``
-    # is a *sync* callback
-    # in HA 2026.10.0b0 —
-    # do NOT ``await``.
-    if must_persist_binding is not None:
+    # Step C:
+    # persist
+    # binding
+    # (sync,
+    # no await).
+    # Only after
+    # BOTH writes
+    # succeed.
+    if res.persisted_path != res.target_url:
         hass.config_entries.async_update_entry(
             entry,
             options={
                 **dict(entry.options),
                 "lovelace_dashboard_url_path":
-                    must_persist_binding,
+                    res.target_url,
             },
         )
 
+    if res.opt_in and res.target_existed_before:
+        # One-shot
+        # migration:
+        # reset the
+        # opt-in flag.
+        hass.data.setdefault(
+            DOMAIN, {}
+        ).setdefault(
+            entry.entry_id, {}
+        )["dashboard_migration_opt_in"] = False
 
-async def _ensure_dashboard_binding(
-    hass: HomeAssistant, entry: ConfigEntry
-) -> None:
-    """R10.6 (round 6):
-    persist the
-    ``lovelace_dashboard_url_path``
-    binding on EVERY
-    setup — even when
-    the canonical main
-    dashboard already
-    exists and
-    ``_auto_install_dashboard``
-    is skipped.
+class _DashboardResolution(NamedTuple):
+    target_id: str
+    target_url: str
+    target_path: str
+    target_title: str
+    target_existed_before: bool
+    content_key_ok: bool
+    metadata_ok: bool
+    already_listed: bool
+    ownership_conflict: bool
+    other_owner_entry_id: str | None
+    re_routed_to_sidecar: bool
+    sidecar_id: str
+    sidecar_path: str
+    sidecar_url: str
+    main_id: str
+    main_path: str
+    main_url: str
+    dashboards_storage: str
+    entry_hash: str
+    persisted_path: str | None
+    opt_in: bool
+    items: list
+    other_entry_count: int
 
-    The helper resolves
-    the live dashboard
-    path the same way
-    the top of
-    ``_register_lovelace_dashboard``
-    does (main vs
-    sidecar) and writes
-    the binding through
-    the sync
-    ``hass.config_entries.async_update_entry``
-    callback in HA
-    2026.10.0b0.
 
-    Behaviour:
-
-    * No main, no
-      sidecar, no
-      binding → nothing
-      to do; the next
-      ``_auto_install_dashboard``
-      run will create
-      the canonical
-      main and the
-      binding at the
-      end of
-      ``_register_lovelace_dashboard``.
-    * Main exists with
-      matching ``key``
-      field → persist
-      ``powmr-energy``.
-    * Sidecar exists
-      for THIS entry
-      with matching
-      ``key`` → persist
-      ``powmr-<hash>``.
-    * Stale or
-      mismatched file
-      on disk → do NOT
-      persist (the next
-      full
-      ``_register_lovelace_dashboard``
-      run will sort
-      things out).
-
-    The helper does NOT
-    write or modify any
-    file on disk. It
-    only reads the
-    content and
-    metadata to verify
-    the binding target
-    and updates
-    ``entry.options``
-    if and only if the
-    live state matches
-    the resolved
-    binding.
-    """
-
+async def _resolve_dashboard_target(
+    hass, entry
+):
+    """SINGLE resolver. Finalises target BEFORE capturing state."""
     config_dir = hass.config.config_dir
+    storage_dir = os.path.join(config_dir, ".storage")
     dashboards_storage = os.path.join(
-        config_dir, ".storage", "lovelace_dashboards"
+        storage_dir, "lovelace_dashboards"
     )
     main_path = os.path.join(
-        config_dir,
-        ".storage",
-        f"lovelace.{_DASHBOARD_ID}",
+        storage_dir, f"lovelace.{_DASHBOARD_ID}"
     )
     _hashlib_d = __import__("hashlib")
     entry_hash = _hashlib_d.md5(
@@ -2361,138 +1920,197 @@ async def _ensure_dashboard_binding(
     ).hexdigest()[:16]
     sidecar_id = f"powmr_energy_{entry_hash}"
     sidecar_path = os.path.join(
-        config_dir,
-        ".storage",
-        f"lovelace.{sidecar_id}",
+        storage_dir, f"lovelace.{sidecar_id}"
     )
+    sidecar_url = f"powmr-{entry_hash}"
 
     persisted_path = entry.options.get(
         "lovelace_dashboard_url_path"
     )
+    bundle = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+    opt_in = bool(
+        bundle.get("dashboard_migration_opt_in", False)
+    )
 
-    # R10.6 (round 6):
-    # the resolution is
-    # the same as in
-    # ``_register_lovelace_dashboard``:
-    # the sidecar (if it
-    # exists) wins over
-    # the canonical
-    # main, because a
-    # previous
-    # ``_auto_install_dashboard``
-    # already created
-    # the sidecar for
-    # THIS entry and the
-    # canonical main may
-    # belong to a
-    # different entry.
-    if os.path.exists(sidecar_path):
-        target_path = sidecar_path
+    def _collect_state():
+        main_exists = os.path.exists(main_path)
+        sidecar_exists = os.path.exists(sidecar_path)
+        other_owner = None
+        other_count = 0
+        for e in hass.config_entries.async_entries(DOMAIN):
+            if e.entry_id == entry.entry_id:
+                continue
+            other_count += 1
+            if (
+                e.options.get(
+                    "lovelace_dashboard_url_path"
+                )
+                == _DASHBOARD_URL
+            ):
+                other_owner = e.entry_id
+        return (
+            main_exists, sidecar_exists,
+            other_owner, other_count,
+        )
+
+    (
+        main_exists, sidecar_exists,
+        other_owner, other_entry_count,
+    ) = await hass.async_add_executor_job(_collect_state)
+
+    ownership_conflict = False
+    re_routed_to_sidecar = False
+
+    if sidecar_exists:
         target_id = sidecar_id
-        target_url = f"powmr-{entry_hash}"
-    elif os.path.exists(main_path):
-        # R10.6 (round 7):
-        # before claiming
-        # the canonical
-        # main, verify
-        # that no other
-        # powmr_inverter
-        # entry already
-        # has the
-        # powmr-energy
-        # binding. If a
-        # sister entry
-        # owns the main,
-        # we MUST NOT
-        # steal it — we
-        # fall through to
-        # the sidecar
-        # path so this
-        # entry gets its
-        # own dashboard.
-        if _is_dashboard_owned_by_other(
-            hass, entry.entry_id, _DASHBOARD_URL
-        ):
-            # Sidecar path.
-            target_path = sidecar_path
+        target_url = sidecar_url
+        target_path = sidecar_path
+        target_title = (
+            f"Smart Solar · "
+            f"{entry.title or entry.entry_id[:8]}"
+        )
+        target_existed_before = True
+    elif persisted_path == _DASHBOARD_URL:
+        if other_owner is not None:
+            ownership_conflict = True
+            re_routed_to_sidecar = True
             target_id = sidecar_id
-            target_url = f"powmr-{entry_hash}"
+            target_url = sidecar_url
+            target_path = sidecar_path
+            target_title = (
+                f"Smart Solar · "
+                f"{entry.title or entry.entry_id[:8]}"
+            )
+            target_existed_before = sidecar_exists
         else:
-            target_path = main_path
             target_id = _DASHBOARD_ID
             target_url = _DASHBOARD_URL
+            target_path = main_path
+            target_title = _DASHBOARD_TITLE
+            target_existed_before = main_exists
+    elif not main_exists:
+        target_id = _DASHBOARD_ID
+        target_url = _DASHBOARD_URL
+        target_path = main_path
+        target_title = _DASHBOARD_TITLE
+        target_existed_before = False
     else:
-        # No dashboard
-        # exists yet. Do
-        # nothing; the
-        # first-install
-        # path will handle
-        # binding.
-        return
+        target_id = sidecar_id
+        target_url = sidecar_url
+        target_path = sidecar_path
+        target_title = (
+            f"Smart Solar · "
+            f"{entry.title or entry.entry_id[:8]}"
+        )
+        target_existed_before = sidecar_exists
 
-    # Verify the file is
-    # actually a
-    # dashboard (i.e. the
-    # ``key`` field
-    # matches the
-    # resolved id). This
-    # is the same
-    # ``already
-    # registered`` guard
-    # the full
-    # ``_register_lovelace_dashboard``
-    # uses on its early
-    # return.
-    def _verify() -> bool:
+    def _read_key():
         try:
             with open(target_path, "r") as _f:
                 data = json.loads(_f.read())
-            return data.get("key") == f"lovelace.{target_id}"
+            return (
+                data.get("key")
+                == f"lovelace.{target_id}"
+            )
         except (OSError, ValueError):
             return False
 
-    content_matches = await hass.async_add_executor_job(
-        _verify
+    content_key_ok = await hass.async_add_executor_job(_read_key)
+
+    def _check_metadata():
+        return _metadata_lists_dashboard(
+            dashboards_storage, target_id, target_url
+        )
+
+    metadata_ok = await hass.async_add_executor_job(_check_metadata)
+
+    def _read_items():
+        snap = _read_metadata_snapshot(dashboards_storage)
+        return snap.get("data", {}).get("items", [])
+
+    items = await hass.async_add_executor_job(_read_items)
+    already_listed = any(
+        item.get("id") == target_id for item in items
     )
-    if not content_matches:
+
+    return _DashboardResolution(
+        target_id=target_id,
+        target_url=target_url,
+        target_path=target_path,
+        target_title=target_title,
+        target_existed_before=target_existed_before,
+        content_key_ok=content_key_ok,
+        metadata_ok=metadata_ok,
+        already_listed=already_listed,
+        ownership_conflict=ownership_conflict,
+        other_owner_entry_id=other_owner,
+        re_routed_to_sidecar=re_routed_to_sidecar,
+        sidecar_id=sidecar_id,
+        sidecar_path=sidecar_path,
+        sidecar_url=sidecar_url,
+        main_id=_DASHBOARD_ID,
+        main_path=main_path,
+        main_url=_DASHBOARD_URL,
+        dashboards_storage=dashboards_storage,
+        entry_hash=entry_hash,
+        persisted_path=persisted_path,
+        opt_in=opt_in,
+        items=items,
+        other_entry_count=other_entry_count,
+    )
+
+
+async def _ensure_dashboard_binding(hass, entry):
+    """R10.6 (round 8): resolver-based binding helper.
+
+    Invariants:
+    * Binding persisted ONLY when target existed before AND
+      content_key matches AND metadata lists it.
+    * On cross-entry ownership conflict, the binding is
+      cleared (set to None). Do NOT re-route to a
+      non-existent sidecar.
+    * No file writes. async_update_entry is sync.
+    """
+    res = await _resolve_dashboard_target(hass, entry)
+
+    if res.ownership_conflict:
+        if res.persisted_path is not None:
+            hass.config_entries.async_update_entry(
+                entry,
+                options={
+                    **dict(entry.options),
+                    "lovelace_dashboard_url_path": None,
+                },
+            )
+            _LOGGER.warning(
+                "R10.6 round 8: cross-entry ownership "
+                "conflict for 'powmr-energy' (owned by "
+                "entry %s); cleared entry %s's stale "
+                "binding. Enable dashboard_migration_opt_in "
+                "on the correct entry or remove the wrong "
+                "binding manually.",
+                res.other_owner_entry_id,
+                entry.entry_id,
+            )
         return
 
-    # R10.6 (round 7):
-    # also verify the
-    # metadata file
-    # lists the
-    # dashboard we are
-    # about to bind.
-    # ``lovelace_dashboards``
-    # is the
-    # authoritative
-    # source for "is
-    # this dashboard
-    # registered in
-    # HA" — a content
-    # file alone is
-    # not enough
-    # because HA can
-    # have orphaned
-    # files. We must
-    # NOT bind to an
-    # unregistered
-    # dashboard.
-    if not _metadata_lists_dashboard(
-        dashboards_storage, target_id, target_url
-    ):
+    if not res.target_existed_before:
         return
-
-    if persisted_path == target_url:
+    if not res.content_key_ok:
+        return
+    if not res.metadata_ok:
+        return
+    if res.persisted_path == res.target_url:
         return
 
     hass.config_entries.async_update_entry(
-            entry,
-            options={
-                **dict(entry.options),
-                "lovelace_dashboard_url_path": target_url,
-            },
-        )
+        entry,
+        options={
+            **dict(entry.options),
+            "lovelace_dashboard_url_path": res.target_url,
+        },
+    )
+
 
 
 def _is_dashboard_owned_by_other(
