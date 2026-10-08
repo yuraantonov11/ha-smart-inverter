@@ -27,11 +27,13 @@ FIXTURE_PATH = os.path.join(
 
 def test_synthetic_one_nonzero_interval() -> None:
     """Production ``complete_hourly_days`` повертає 0.150 kWh/m² для
-    ``2026-10-09`` і 0.0 для решити повних днів.
+    ``2026-10-08`` і 0.0 для решити повних днів.
 
     Інтервали — UTC seconds, семантика ``[start, start+1h)``. Усі 4 дні
     (2026-10-08 ... 2026-10-11) — повні (24 інтервали кожен). Один
-    інтервал (150 W/m²) знаходиться в першій UTC-годині ``2026-10-09``.
+    інтервал (150 W/m²) знаходиться в останній UTC-годині ``2026-10-08``,
+    тобто interval start = 2026-10-08 20:00 UTC = 2026-10-08 23:00 Kyiv
+    (contract v2: ``start`` = interval START = api_t - 3600).
     """
     with open(FIXTURE_PATH, encoding="utf-8") as f:
         fixture = json.load(f)
@@ -49,14 +51,16 @@ def test_synthetic_one_nonzero_interval() -> None:
         "2026-10-08", "2026-10-09", "2026-10-10", "2026-10-11",
     }, f"Expected all 4 days; got {set(result.keys())}"
 
-    # 2026-10-09 має один інтервал 150 W/m² = 0.150 kWh/m² (Wh = W × 1h).
-    assert abs(result["2026-10-09"] - 0.150) < 1e-9, (
+    # 2026-10-08 має один інтервал 150 W/m² = 0.150 kWh/m² (Wh = W × 1h).
+    # Під contract v2 (``start`` = interval start) цей інтервал
+    # належить 2026-10-08.
+    assert abs(result["2026-10-08"] - 0.150) < 1e-9, (
         f"Day with one non-zero interval must integrate to 0.150 kWh/m²; "
-        f"got {result['2026-10-09']}"
+        f"got {result['2026-10-08']}"
     )
 
     # Інші три дні — всі нулі, тожто 0.000 kWh/m² кожен.
-    for day in ("2026-10-08", "2026-10-10", "2026-10-11"):
+    for day in ("2026-10-09", "2026-10-10", "2026-10-11"):
         assert result[day] == 0.0, (
             f"Day {day} (all-zero) must integrate to 0.000; "
             f"got {result[day]}"

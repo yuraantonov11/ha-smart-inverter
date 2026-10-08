@@ -49,15 +49,18 @@ self._pv_calibrator.record(forecast_w=forecast_kwh, actual_w=actual_kwh)  # kWh
 ## 2. Що знаходиться в live (pending_count=2, samples=0)
 
 Знімок стану `predictive_decision_state` (live read 2026-10-08 12:00 UTC):
-- `forecast_calibration.forecast_model = "hourly_response_v1"`
+- `forecast_calibration.forecast_model = "hourly_response_v2"` (contract
+  v2 — повертається з `current_forecast_model_identity()` через
+  `_forecast_model_for_day(tomorrow=2026-10-09)`)
 - `forecast_calibration.samples = 0`
 - `forecast_calibration.excluded_model_pairs = 0`
 - `forecast_calibration.pending_count = 2`
-- `pending[].forecast_model = "station_gain_v1"` (обидва)
+- `pending[].forecast_model = "station_gain_v1"` (обидва — це v1
+  fallback, не впливає на contract version)
 
 Тобто:
 
-1. Calibrator обрав модель `hourly_response_v1` (через
+1. Calibrator обрав модель `hourly_response_v2` (через
    `_forecast_model_for_day(tomorrow=2026-10-09)`).
 2. Issued snapshot для 2026-10-09 і 2026-10-10 — `station_gain_v1`.
 3. `samples = 0` — calibrator порожній (немає завершених пар).
@@ -130,36 +133,74 @@ live всі три дотримані.
 
 ## 4. Незмінність issued forecast
 
-`RealForecastPairs.snapshot` (`pv_learning.py:280+`, див.
-`test_real_pair_capture.py:42–46`):
+`RealForecastPairs.snapshot` (`pv_learning.py:423–431`):
 
 ```python
-existing = self.pairs.get(day)
-if existing and existing.get("used"):
-    return False  # never overwrite a paired forecast
-if existing and existing.get("forecast_model") == forecast_model and \
-   abs(existing.get("forecast_kwh", 0) - value) < 1e-9:
-    return False  # no-op
-self.pairs[day] = {...}
-return True
+def snapshot(self, day, forecast_kwh, now, *, forecast_model=None):
+    value = finite(forecast_kwh, high=500)
+    if (now.tzinfo is None
+            or date.fromisoformat(day) <= now.date()
+            or value is None
+            or day in self.pairs):
+        return False
+    self.pairs[day] = {"date": day, "forecast_kwh": value, "actual_kwh": None,
+                       "captured_at": now.isoformat(), "used": False}
+    if forecast_model is not None:
+        self.pairs[day]["forecast_model"] = forecast_model
+    return True
 ```
 
-Три інваріанти:
+Точний чинний контракт — **кожен перший запис дня є незмінним**:
 
-1. Якщо `pair["used"] == true` (факт вже враховано), **snapshot повертає
-   False** — pair ніколи не перезаписується.
-2. Якщо `forecast_model` і `forecast_kwh` збігаються — **no-op** (snapshot
-   повертає False).
-3. Інакше — оновлює `forecast_kwh` і `forecast_model`, але **НЕ чіпає**
-   `used` і `actual_kwh` (якщо вони вже були встановлені).
+1. Якщо `day in self.pairs` (наявний pair будь-якого стану: pending
+   чи used) — **snapshot повертає False**. Перший запис дня
+   перезаписати неможливо ні з якими змінами `forecast_kwh`
+   чи `forecast_model`.
+2. `date.fromisoformat(day) <= now.date()` — день у минулому
+   або «сьогодні» відхиляється (forecast має бути day-ahead).
+3. `finite(forecast_kwh, high=500)` — `None` (NaN/inf/не-число)
+   відхиляється.
+4. `now.tzinfo is None` — naive datetime відхиляється.
+5. Інакше — створюється новий pair `{date, forecast_kwh,
+   actual_kwh=None, captured_at, used=False, forecast_model?}`.
 
-Це перевірено у `test_real_pair_capture.py:36–37`:
+Підтверджено в `tests/test_r03_forecast_pairs.py`:
 
-> `same date cannot overwrite first forecast`
+- `test_r03_used_immutable_value_and_model` — `used=True` pair не
+  перезаписується при зміні `forecast_kwh` чи `forecast_model`.
+- `test_r03_pending_immutable_value_and_model` — `used=False` pair
+  (pending) **так само** не перезаписується при спробі змінити
+  `forecast_kwh` чи `forecast_model`. Це відповідає чинному
+  контракту `day in self.pairs` вище.
+- `test_r03_save_load_round_trip_immutability` — після save/load
+  pair зберігає незмінність, бо reload відновлює той самий об'єкт
+  pair.
 
-та `test_calibration_model_provenance.py:64`:
+### 4.1. Версія радіаційного контракту
 
-> `changing model cannot overwrite issued legacy forecast`
+Кожен `forecast_model` є тегом pipeline family, **не**
+калібрувальним коефіцієнтом. Кожен радіаційний контракт
+(`RADIATION_INTERVAL_CONTRACT_VERSION`) має свою ідентичність:
+
+- `current_forecast_model_identity(contract_version=N)` =
+  `f"hourly_response_v{N}"` (наразі v2).
+- `legacy_forecast_model_identity(contract_version=N)` = теж саме
+  для пар, виданих під старіший контракт.
+
+`PvLearningState.load` і `RealForecastPairs.load` приймають
+попередні версії (`VERSION=2` для PvLearningState, `VERSION=1` для
+RealForecastPairs), скидають залежні від контракту кеші
+(`radiation`, `model`, `archive_checked_day`), зберігають
+`snapshots`/`pairs` недоторканими і **ре-тегають** старі пари
+з версією-специфічним тегом (`_legacy_forecast_model` фіксує
+оригінальний тег). Невідому майбутню версію load відхиляє явно
+(`ValueError`).
+
+`calibration_pairs()` повертає лише пари, чий `forecast_model`
+збігається з активним `state.calibration_model`. Це запобігає
+змішуванню старих і нових пар у calibrator: нова пара під
+`hourly_response_v2` не потрапить у calibrator, що працює на
+`hourly_response_v1`, і навпаки.
 
 ## 5. Захист від повторного врахування факту
 

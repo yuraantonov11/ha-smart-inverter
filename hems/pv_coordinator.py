@@ -16,7 +16,8 @@ from .history_builder import build_hourly_load_matrix
 from .predictive import PredictiveHemsController, normalize_night_window
 from .options_helpers import compute_site_coordinates
 from .pv_learning import (PvLearningState, RealForecastPairs, finite, complete_hourly_days, daily_energy_deltas,
-                          day_bounds, timestamp, train_station)
+                          day_bounds, timestamp, train_station,
+                          current_forecast_model_identity, legacy_forecast_model_identity)
 
 _LOGGER = logging.getLogger("custom_components.powmr_inverter.coordinator")
 
@@ -573,8 +574,15 @@ class PvLearningCoordinatorMixin:
             _LOGGER.warning("Forecast fetch failed: %s", exc)
 
     def _forecast_model_for_day(self, day):
-        """Pipeline family, not daily coefficients that change during training."""
+        """Pipeline family, not daily coefficients that change during training.
+
+        Each radiation interval contract version gets its own
+        identity (``hourly_response_v2`` under the new contract,
+        ``hourly_response_v1`` under the old). Pairs and snapshots
+        issued under one identity are NOT mixed into the calibrator
+        of the other.
+        """
         response = getattr(getattr(self, "_forecast", None), "hourly_response", None)
         if response and 0 <= (day-datetime.fromisoformat(response["last_day"]).date()).days <= 14:
-            return "hourly_response_v1"
+            return current_forecast_model_identity()
         return "station_gain_v1"

@@ -1435,6 +1435,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # configured ``timezone_name`` (HA tz);
         # we convert it to a real ``datetime``
         # before comparing to ``now``.
+        #
+        # Each row carries two timestamps: ``timestamp`` is the START
+        # of the radiation interval (``api_t - 1h``); ``weather_timestamp``
+        # is the natural moment of the weather reading (``api_t``,
+        # unchanged from the API). Storm risk is about the weather
+        # reading, so we use ``weather_timestamp`` here.
         try:
             tz = ZoneInfo(self.hass.config.time_zone)
         except Exception:
@@ -1446,7 +1452,11 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         now_epoch = now_local.timestamp()
         upcoming: list[dict] = []
         for h in hourly:
-            ts = h.get("timestamp")
+            # Prefer ``weather_timestamp`` (the weather's natural
+            # moment). Fall back to ``timestamp`` for backward
+            # compatibility with rows that predate the contract
+            # change.
+            ts = h.get("weather_timestamp", h.get("timestamp"))
             if ts is None:
                 continue
             try:

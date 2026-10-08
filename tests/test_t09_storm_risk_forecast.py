@@ -480,6 +480,14 @@ async def _drive_fetch_hourly(payload: dict) -> tuple[list[dict], dict]:
         # in the exec'd body is unchanged.
         "ZoneInfo": _harness_zoneinfo,
         "finite": _finite,
+        # Shared radiation interval boundary — the AST harness
+        # binds the production helper so the exec'd
+        # ``_fetch_hourly`` body uses the same offset as the
+        # archive path.
+        "radiation_interval_start_of": (
+            __import__("hems.pv_learning", fromlist=["radiation_interval_start_of"])
+            .radiation_interval_start_of
+        ),
         "_LOGGER": logging.getLogger("t09_fetch"),
         "OPEN_METEO_BASE": OPEN_METEO_BASE,
     }

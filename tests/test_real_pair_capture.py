@@ -43,7 +43,7 @@ async def exercise(check):
         check(c._real_pairs_path == Path(directory)/'entry'/'real_forecast_pairs.json', 'per-entry path')
         check(c.hass.async_add_executor_job.await_count == 2, 'load and atomic save run in executor')
         persisted = json.loads(c._real_pairs_path.read_text())
-        check(persisted['version'] == 1 and len(persisted['pairs']) == 1, 'versioned JSON persisted')
+        check(persisted['version'] == 2 and len(persisted['pairs']) == 1, 'versioned JSON persisted')
         c.forecast_tomorrow_kwh = 9.
         await c._save_real_forecast_pair(now)
         check(len(c._real_pairs_store.pairs) == 1 and rows[0]['forecast_kwh'] == 5., 'same date cannot overwrite first forecast')

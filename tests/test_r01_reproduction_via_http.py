@@ -163,7 +163,12 @@ def _drive_method(method_name: str, payload_or_factory, site_tz_name: str,
     the recorded request params. The latter is used to verify the
     fixture matches the request.
     """
-    from hems.pv_learning import day_bounds, complete_hourly_days
+    from hems.pv_learning import (
+    complete_hourly_days,
+    day_bounds,
+    filter_radiation_to_requested_range,
+    shift_radiation_to_interval_start,
+)
     src = _load_method(method_name)
     src = textwrap.indent(src, "    ")
     src = re.sub(
@@ -171,8 +176,15 @@ def _drive_method(method_name: str, payload_or_factory, site_tz_name: str,
         r"\1, *, hourly_var=None)\2",
         src, count=1, flags=re.MULTILINE,
     )
-    src = src.replace("from .pv_learning import day_bounds",
-                      "pass  # day_bounds already in ns")
+    # Strip any ``from .pv_learning import ...`` lines from the
+    # function body; the helpers are injected into the namespace
+    # instead. This applies to both the single-name and the
+    # parenthesised multi-name forms.
+    src = re.sub(
+        r"^[ \t]*from \.pv_learning import[^\n]*\n",
+        "    pass  # from .pv_learning import ... injected below\n",
+        src, flags=re.MULTILINE,
+    )
     src = src.replace('"hourly": "shortwave_radiation"',
                       '"hourly": (hourly_var or "shortwave_radiation")')
 
@@ -194,6 +206,8 @@ def _drive_method(method_name: str, payload_or_factory, site_tz_name: str,
         "ZoneInfo": ZoneInfo,
         "day_bounds": day_bounds,
         "complete_hourly_days": complete_hourly_days,
+        "shift_radiation_to_interval_start": shift_radiation_to_interval_start,
+        "filter_radiation_to_requested_range": filter_radiation_to_requested_range,
     }
     exec(compile(_FAKE_SESSION_SRC, "<r01_fake_session>", "exec"), ns)
 
@@ -204,8 +218,11 @@ def _drive_method(method_name: str, payload_or_factory, site_tz_name: str,
         r"\1, *, hourly_var=None)\2",
         src2, count=1, flags=re.MULTILINE,
     )
-    src2 = src2.replace("from .pv_learning import day_bounds",
-                        "pass  # day_bounds already in ns")
+    src2 = re.sub(
+        r"^[ \t]*from \.pv_learning import[^\n]*\n",
+        "    pass  # from .pv_learning import ... injected below\n",
+        src2, flags=re.MULTILINE,
+    )
     src2 = src2.replace('"hourly": "shortwave_radiation"',
                         '"hourly": (hourly_var or "shortwave_radiation")')
 
@@ -245,15 +262,14 @@ def test_r01_daily_pulse_attributed_to_production_day() -> None:
     HTTP fixture covers the actual UTC range.
     Pulse 200 W/m² at API timestamp 2026-10-08 21:00 UTC.
 
-    For current production: daily["2026-10-09"] += 0.2 kWh/m² because
-    production groups by ``ts.astimezone(tz).date()`` (END of
-    interval). daily["2026-10-08"] = 0.0 because the bucket for
-    Oct 8 (Kyiv) is complete (24 hours = 21:00 Oct 7 UTC through
-    20:00 Oct 8 UTC), all zeros.
+    With the production contract v2 (this commit), each row's
+    ``start`` is the radiation interval START (= api_t - 3600).
+    The pulse interval is [2026-10-08 20:00 UTC, 2026-10-08 21:00
+    UTC) = the last hour of Oct 8 in Kyiv. Daily aggregation puts
+    the pulse in Oct 8.
 
-    The DOCUMENTED contract [t-1h, t) would put the pulse in Oct 8.
-    We assert the **current** production behavior explicitly. This
-    is the bug we are documenting.
+    Expected production daily: {2026-10-08: 0.2, 2026-10-09: 0.0}.
+    This matches the documented contract [t-1h, t).
     """
     start_day = datetime(2026, 10, 8).date()
     end_day = datetime(2026, 10, 9).date()
@@ -293,27 +309,33 @@ def test_r01_daily_pulse_attributed_to_production_day() -> None:
     assert p["timeformat"] == "unixtime"
     assert p["hourly"] == "shortwave_radiation"
 
-    # Daily assertion: current production behavior.
+    # Production daily (contract v2): pulse is in Oct 8 because the
+    # internal row's ``start`` = interval start, and the pulse's
+    # interval starts at 2026-10-08 20:00 UTC (= 2026-10-08 23:00
+    # Kyiv = last hour of Oct 8 in Kyiv).
     expected_production_daily = {
-        "2026-10-08": 0.0,
-        "2026-10-09": 0.2,
+        "2026-10-08": 0.2,
+        "2026-10-09": 0.0,
     }
     assert daily == expected_production_daily, (
-        f"Current production daily: got {daily}, expected "
-        f"{expected_production_daily}. The pulse at 2026-10-08 21:00 UTC "
-        f"is attributed to Oct 9 (the documented production↔docs mismatch)."
+        f"Production daily: got {daily}, expected "
+        f"{expected_production_daily}. The pulse at API t=2026-10-08 "
+        f"21:00 UTC represents interval [20:00, 21:00) UTC = last hour "
+        f"of Oct 8 in Kyiv."
     )
 
 
 def test_r01_documented_contract_pulse_belongs_to_oct8() -> None:
     """Independent computation of the documented contract [t-1h, t):
-    the pulse at 2026-10-08 21:00 UTC represents the hour
+    the pulse at API t=2026-10-08 21:00 UTC represents the hour
     [2026-10-08 20:00 UTC, 2026-10-08 21:00 UTC) = [23:00, 24:00)
     Kyiv Oct 8 — the LAST hour of Oct 8 in Kyiv. By docs, this
     value belongs to Oct 8.
 
-    We compute the documented daily independently from the input
-    payload and assert that production differs from it.
+    Under the production contract v2, production and the documented
+    contract MUST agree: both place the pulse in Oct 8. We assert
+    this agreement so any future regression that re-introduces the
+    off-by-one bug would fail this test.
     """
     start_day = datetime(2026, 10, 8).date()
     end_day = datetime(2026, 10, 9).date()
@@ -334,36 +356,26 @@ def test_r01_documented_contract_pulse_belongs_to_oct8() -> None:
     # Take only the first call's rows (the daily call). The driver
     # makes a second call to get_archive_hourly_radiation with the
     # same fixture, which would double-count.
-    first_call_n = len(params[0].get("time", [])) if "time" in params[0] else None
-    # We don't have direct access to the first call's rows; slice
-    # based on the request range.
     n_rows_daily = 72  # 3 days * 24 hours
     rows_daily = rows[:n_rows_daily]
 
-    # Independent computation: for each row in production, the
-    # interval is [t-1h, t), and we attribute the value to the day
-    # at the START of the interval in Kyiv.
+    # Independent computation from the production rows: each row's
+    # ``start`` is the interval start (contract v2), so the day
+    # assignment is the local day in which the interval begins.
     documented: dict[str, float] = {}
     for row in rows_daily:
         ts = datetime.fromtimestamp(row["start"], tz=timezone.utc)
-        interval_start = ts - timedelta(hours=1)
-        day = interval_start.astimezone(tz).date().isoformat()
+        day = ts.astimezone(tz).date().isoformat()
         documented.setdefault(day, 0.0)
         documented[day] += row["mean"]
-    # Convert to kWh/m² (W/m² * 1h / 1000).
     documented_kwh = {d: round(v / 1000.0, 6) for d, v in documented.items()}
 
-    # The documented contract puts the pulse (200 W/m²) in Oct 8.
+    # The documented contract (and the new production contract)
+    # both put the pulse (200 W/m²) in Oct 8.
     expected_documented = {
-        "2026-10-07": 0.0,
-        "2026-10-08": 0.2,  # the pulse here (22→24h wait, 24h)
+        "2026-10-08": 0.2,  # the pulse here
         "2026-10-09": 0.0,
-        "2026-10-10": 0.0,
     }
-    # The independent aggregation covers all hours whose interval
-    # starts in the local day. Oct 7 has 22 hours (interval start
-    # in Oct 7), Oct 8 has 24, Oct 9 has 24, Oct 10 has 2.
-    # The KEY assertion: the pulse (200 W/m²) is in Oct 8, not Oct 9.
     assert documented_kwh.get("2026-10-08") == 0.2, (
         f"Documented contract: documented_kwh['2026-10-08'] should be 0.2; "
         f"got {documented_kwh.get('2026-10-08')}"
@@ -372,19 +384,13 @@ def test_r01_documented_contract_pulse_belongs_to_oct8() -> None:
         f"Documented contract: documented_kwh['2026-10-09'] should be 0.0; "
         f"got {documented_kwh.get('2026-10-09')}"
     )
-    # And production differs from the documented contract — that's
-    # the bug we are documenting. Production puts the pulse in Oct 9.
-    assert daily != documented_kwh, (
-        f"Production daily should differ from documented: "
-        f"production={daily}, documented={documented_kwh}. "
-        f"If they match, the bug has been fixed and this test "
-        f"needs updating."
-    )
-    # Specifically: production daily["2026-10-09"] = 0.2 (END of
-    # interval), documented would be 0.0 (pulse is in Oct 8).
-    assert daily.get("2026-10-09") == 0.2, (
-        f"Production should attribute pulse to Oct 9: "
-        f"daily['2026-10-09'] = {daily.get('2026-10-09')}"
+    # Under contract v2, production and documented must agree.
+    # If this assertion fails, the off-by-one bug has been
+    # re-introduced.
+    assert daily == expected_documented, (
+        f"Production daily should match documented contract under v2: "
+        f"production={daily}, documented={expected_documented}. "
+        f"If they differ, the off-by-one bug is back."
     )
 
 
@@ -490,16 +496,22 @@ def test_r01_daily_constant_100w_fall_back() -> None:
 
 
 def _mutate_daily(daily, kind):
-    """Return a mutated version of the production daily dict."""
+    """Return a mutated version of the production daily dict.
+
+    Contract v2 daily: ``{2026-10-08: 0.2, 2026-10-09: 0.0}``.
+    The pulse is in Oct 8; the mutations exercise the four ways
+    a buggy implementation could still pass the equality check
+    while returning wrong data.
+    """
     if kind == "empty":
         return {}
     if kind == "wrong_pulse_day":
-        # Move the 0.2 kWh/m² from 2026-10-09 to 2026-10-08 (or
-        # the other way).
+        # Move the 0.2 kWh/m² from 2026-10-08 to 2026-10-09 (the
+        # old contract v1 mis-attribution).
         new = dict(daily)
-        if "2026-10-09" in new and new["2026-10-09"] > 0:
-            v = new.pop("2026-10-09")
-            new["2026-10-08"] = new.get("2026-10-08", 0.0) + v
+        if "2026-10-08" in new and new["2026-10-08"] > 0:
+            v = new.pop("2026-10-08")
+            new["2026-10-09"] = new.get("2026-10-09", 0.0) + v
         return new
     if kind == "wrong_sum":
         new = dict(daily)
@@ -509,13 +521,11 @@ def _mutate_daily(daily, kind):
         return new
     if kind == "shifted_timestamps":
         # Pretend the rows[].start was shifted by +7200 (i.e. +2h).
-        # We can't mutate production's daily result from outside, so
-        # we wrap the rows+ daily tuple to simulate. But for this
-        # test, the "production" daily is what the test verifies; if
-        # production had +2h shift, the daily would still be
-        # {2026-10-08: 0.0, 2026-10-09: 0.2}. So the "shifted
-        # timestamps" mutation is detected by checking
-        # rows[0].start != expected_first_t.
+        # For contract v2, ``start`` is interval start; +2h would
+        # mis-attribute days. The mutation is detected by checking
+        # ``rows[0].start`` against the expected first interval
+        # start (2026-10-07 20:00 UTC = the first hour of Oct 8
+        # in Kyiv).
         return daily
     raise ValueError(f"unknown mutation: {kind}")
 
@@ -539,7 +549,7 @@ def test_r01_mutation_empty_daily_triggers_assertion() -> None:
     )
     # Simulate the mutation: replace production's daily with {}.
     mutated = _mutate_daily(daily, "empty")
-    expected = {"2026-10-08": 0.0, "2026-10-09": 0.2}
+    expected = {"2026-10-08": 0.2, "2026-10-09": 0.0}
     try:
         assert mutated == expected, (
             f"mutated daily ({mutated}) should not equal expected ({expected})"
@@ -554,8 +564,8 @@ def test_r01_mutation_empty_daily_triggers_assertion() -> None:
 
 
 def test_r01_mutation_wrong_pulse_day_triggers_assertion() -> None:
-    """Mutation 2: pulse attributed to wrong day. The assertion MUST
-    fail.
+    """Mutation 2: pulse attributed to wrong day (the v1 mis-attribution
+    Oct 8 -> Oct 9). The assertion MUST fail.
     """
     start_day = datetime(2026, 10, 8).date()
     end_day = datetime(2026, 10, 9).date()
@@ -571,7 +581,7 @@ def test_r01_mutation_wrong_pulse_day_triggers_assertion() -> None:
         start_day, end_day,
     )
     mutated = _mutate_daily(daily, "wrong_pulse_day")
-    expected = {"2026-10-08": 0.0, "2026-10-09": 0.2}
+    expected = {"2026-10-08": 0.2, "2026-10-09": 0.0}
     try:
         assert mutated == expected
         raised = False
@@ -601,7 +611,7 @@ def test_r01_mutation_wrong_sum_triggers_assertion() -> None:
         start_day, end_day,
     )
     mutated = _mutate_daily(daily, "wrong_sum")
-    expected = {"2026-10-08": 0.0, "2026-10-09": 0.2}
+    expected = {"2026-10-08": 0.2, "2026-10-09": 0.0}
     try:
         # Replicate the production assertion with float tolerance.
         assert set(mutated.keys()) == set(expected.keys())
@@ -619,10 +629,11 @@ def test_r01_mutation_wrong_sum_triggers_assertion() -> None:
 def test_r01_mutation_shifted_timestamps_triggers_assertion() -> None:
     """Mutation 4: production's rows[].start is shifted by +7200s
     while the input HTTP fixture is unchanged. The assertion on
-    rows[0].start MUST fail.
+    ``rows[0].start`` MUST fail.
 
-    The fixture covers 2026-10-07 00:00 UTC through
-    2026-10-09 23:00 UTC, so first_t = 2026-10-07 00:00 UTC.
+    For contract v2 the first kept row is the interval start
+    of the first requested hour: 2026-10-07 21:00 UTC (= first
+    hour of Oct 8 in Kyiv) - 1h = 2026-10-07 20:00 UTC.
     """
     start_day = datetime(2026, 10, 8).date()
     end_day = datetime(2026, 10, 9).date()
@@ -637,9 +648,12 @@ def test_r01_mutation_shifted_timestamps_triggers_assertion() -> None:
         "get_archive_radiation", payload, tz_name, 50.45, 30.52,
         start_day, end_day,
     )
-    # The first api_t from the input fixture was 2026-10-07 00:00 UTC.
+    # Expected first kept row's start = 2026-10-07 21:00 UTC - 1h
+    # = 2026-10-07 20:00 UTC. The first kept row in the
+    # response represents the interval [first, first+1h) of the
+    # requested range.
     expected_first_t = int(
-        datetime(2026, 10, 7, 0, 0, tzinfo=timezone.utc).timestamp()
+        datetime(2026, 10, 7, 20, 0, tzinfo=timezone.utc).timestamp()
     )
     # Simulate the production mutation: rows[0]["start"] is +7200
     # shifted.

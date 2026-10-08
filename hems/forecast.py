@@ -16,7 +16,14 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import aiohttp
-from .pv_learning import complete_hourly_days, finite
+from .pv_learning import (
+    complete_hourly_days,
+    day_bounds,
+    filter_radiation_to_requested_range,
+    finite,
+    radiation_interval_start_of,
+    shift_radiation_to_interval_start,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -220,16 +227,32 @@ class ForecastService:
         Fetch UTC hours (unambiguous at DST). Include both edge UTC dates,
         then group by HA timezone. One bounded request avoids blocking the
         initial coordinator refresh on four sequential monthly requests.
+
+        Open-Meteo ``shortwave_radiation`` at API timestamp ``t`` is the
+        mean over ``[t-3600, t)``. We shift to ``start = t - 3600`` so
+        every internal row's ``start`` is the interval START. Daily
+        aggregation then attributes each value to the local day in
+        which the interval begins (the documented contract).
         """
-        from .pv_learning import day_bounds
         tz = ZoneInfo(self.timezone_name)
         first, _ = day_bounds(start_day, tz)
         _, last = day_bounds(end_day, tz)
-        stop = (last - timedelta(seconds=1)).date()
+        # The requested interval is ``[first, last)`` in UTC. The API
+        # returns hours at the END of the radiation interval, so to
+        # capture the value whose interval starts at ``first`` we need
+        # the API hour ``first + 1h``; the latest needed hour is the
+        # one whose interval ends at ``last``, i.e. ``last`` itself.
+        # The Open-Meteo ``end_date`` query parameter is inclusive, so
+        # to include the API hour ``last`` we need
+        # ``end_date = last.date()`` — NOT ``(last - 1s).date()``,
+        # which would miss the very last interval when ``last`` is a
+        # UTC-midnight boundary.
+        stop = last.date()
         session = await self._ensure_session()
         await self._rate_limit()
         params = {"latitude": self._latitude, "longitude": self._longitude,
-                  "start_date": first.date().isoformat(), "end_date": stop.isoformat(),
+                  "start_date": first.date().isoformat(),
+                  "end_date": stop.isoformat(),
                   "hourly": "shortwave_radiation", "timezone": "UTC", "timeformat": "unixtime"}
         async with session.get("https://archive-api.open-meteo.com/v1/archive", params=params) as resp:
             resp.raise_for_status()
@@ -238,22 +261,39 @@ class ForecastService:
         times, values = hourly.get("time", []), hourly.get("shortwave_radiation", [])
         if not times or len(times) != len(values):
             raise ValueError("Archive radiation response is incomplete")
-        rows = [{"start": ts, "mean": value} for ts, value in zip(times, values)]
+        # Shift API timestamps to interval start, then keep only rows
+        # whose interval lies fully inside ``[first, last)``.
+        first_epoch = int(first.timestamp())
+        last_epoch = int(last.timestamp())
+        shifted = shift_radiation_to_interval_start(times, values)
+        rows = filter_radiation_to_requested_range(
+            shifted, first_epoch, last_epoch,
+        )
         daily = complete_hourly_days(rows, tz, end_day + timedelta(days=1), ceiling=2000)
         return {day: value for day, value in daily.items()
                 if start_day.isoformat() <= day <= end_day.isoformat()}
 
     async def get_archive_hourly_radiation(self, start_day, end_day):
-        """Bounded recent radiation request for the empirical hourly response."""
-        from .pv_learning import day_bounds
+        """Bounded recent radiation request for the empirical hourly response.
+
+        Open-Meteo ``shortwave_radiation`` at API timestamp ``t`` is the
+        mean over ``[t-3600, t)``. We shift to ``start = t - 3600`` so
+        every internal row's ``start`` is the interval START. The
+        hourly response training aligns these intervals with measured
+        PV intervals (which are also keyed by interval start).
+        """
         tz = ZoneInfo(self.timezone_name)
         first, _ = day_bounds(start_day, tz)
         _, last = day_bounds(end_day, tz)
+        # We request the full UTC-date range ``[first.date(), last.date()]``
+        # so the response covers both edge days; ``last`` itself is
+        # needed because the last interval ends at exactly ``last``.
+        stop = last.date()
         session = await self._ensure_session()
         await self._rate_limit()
         params = {"latitude": self._latitude, "longitude": self._longitude,
                   "start_date": first.date().isoformat(),
-                  "end_date": (last - timedelta(seconds=1)).date().isoformat(),
+                  "end_date": stop.isoformat(),
                   "hourly": "shortwave_radiation", "timezone": "UTC", "timeformat": "unixtime"}
         async with session.get("https://archive-api.open-meteo.com/v1/archive", params=params) as resp:
             resp.raise_for_status()
@@ -262,7 +302,12 @@ class ForecastService:
         times, values = hourly.get("time", []), hourly.get("shortwave_radiation", [])
         if not times or len(times) != len(values):
             raise ValueError("Incomplete hourly archive radiation")
-        return [{"start": t, "mean": r} for t, r in zip(times, values)]
+        first_epoch = int(first.timestamp())
+        last_epoch = int(last.timestamp())
+        shifted = shift_radiation_to_interval_start(times, values)
+        return filter_radiation_to_requested_range(
+            shifted, first_epoch, last_epoch,
+        )
 
     def set_hourly_response(self, model):
         if model == self.hourly_response:
@@ -287,6 +332,17 @@ class ForecastService:
         parameter pins the unit so we never have
         to convert km/h defaults into the m/s
         scale ``evaluate_storm_risk`` expects.
+
+        Radiation interval contract: Open-Meteo's
+        ``shortwave_radiation`` at API timestamp ``t``
+        represents the mean over ``[t-3600, t)``. The
+        internal ``timestamp`` (power/radiation
+        consumer) is therefore ``t - 3600`` — the
+        START of the radiation interval. Weather
+        fields keep their natural moment ``t`` (the
+        API timestamp) in ``weather_timestamp`` so
+        the storm-risk evaluator picks the right
+        moment without re-shifting.
         """
         await self._rate_limit()
         session = await self._ensure_session()
@@ -342,9 +398,18 @@ class ForecastService:
             temp = temperatures[i] if i < len(temperatures) else None
             wind_raw = wind_speeds[i] if i < len(wind_speeds) else None
             precip_raw = precip_probs[i] if i < len(precip_probs) else None
-            radiation = finite(rad, high=2000)
+            # ``finite`` rejects NaN, inf, booleans (after
+            # Python 3 ``bool`` is an ``int`` — we explicitly
+            # reject them here so True/False never become
+            # a "valid" radiation of 1.0/0.0) and missing
+            # values. Unknown radiation is not a measured
+            # zero; the row is dropped, not coerced.
+            if isinstance(rad, bool) or rad is None:
+                radiation = None
+            else:
+                radiation = finite(rad, high=2000)
             if radiation is None:
-                continue  # unknown radiation is not a measured zero
+                continue
             # T09: validate the storm-risk inputs
             # before exposing them to the evaluator.
             # ``finite`` returns None for NaN, inf
@@ -372,7 +437,19 @@ class ForecastService:
                 else:
                     if 0 <= wc_int <= 200:
                         weather_code_clean = wc_int
-            local_time = datetime.fromtimestamp(t, timezone.utc).astimezone(ZoneInfo(self.timezone_name))
+            # Single shared radiation-interval boundary
+            # computation: every internal ``timestamp`` and
+            # ``time`` is the interval START. The gain lookup
+            # uses the hour of the interval start so the
+            # power is anchored to the same hour as the
+            # radiation mean. Weather fields keep their
+            # natural API moment in ``weather_timestamp``;
+            # ``evaluate_storm_risk`` reads that field
+            # without re-shifting.
+            radiation_interval_start = radiation_interval_start_of(t)
+            local_time = datetime.fromtimestamp(
+                radiation_interval_start, timezone.utc
+            ).astimezone(ZoneInfo(self.timezone_name))
             gain = self.learned_ratio
             if self.hourly_response:
                 last_day = datetime.fromisoformat(self.hourly_response["last_day"]).date()
@@ -383,7 +460,8 @@ class ForecastService:
             power_w = round(min(20000.0, max(0.0, radiation * gain)))
             result.append({
                 "time": local_time.strftime("%Y-%m-%dT%H:00"),
-                "timestamp": t,
+                "timestamp": radiation_interval_start,
+                "weather_timestamp": t,
                 "radiation_wm2": radiation,
                 "power_w": power_w,
                 "weather_code": weather_code_clean,

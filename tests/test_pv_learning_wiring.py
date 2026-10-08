@@ -158,7 +158,10 @@ async def exercise():
         f._rate_limit = AsyncMock()
         result = await f._fetch_hourly()
         _check(result[0]['power_w'] == 2000,'trained gain applied at common forecast source')
-        _check(result[0]['time'] == '2026-10-02T13:00','forecast UTC instant mapped to local timezone')
+        # Contract v2: ``time`` is the START of the radiation interval
+        # (api_t - 1h = 09:00 UTC = 12:00 Kyiv in EEST). Previously
+        # this was 10:00 UTC = 13:00 Kyiv.
+        _check(result[0]['time'] == '2026-10-02T12:00','forecast radiation interval start in local timezone')
         _check(session.get.call_args.kwargs['params']['forecast_days'] == 3,'three forecast dates requested')
         f.set_station_gain(100)
         result = await f._fetch_hourly()
