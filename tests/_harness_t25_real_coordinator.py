@@ -64,7 +64,20 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # via a synthetic package so the
 # relative imports inside the
 # production modules resolve.
-os.chdir("/tmp")
+# R10.6 (round 5): the
+# ``os.chdir("/tmp")``
+# shadow-hack was
+# removed. The
+# integration's
+# ``select.py`` is
+# only an issue on
+# Windows where the
+# CWD is the tests
+# directory; the
+# importlib loader
+# below uses absolute
+# paths so no global
+# chdir is needed.
 sys.path.insert(0, str(REPO_ROOT))
 
 

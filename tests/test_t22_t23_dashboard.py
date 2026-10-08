@@ -420,6 +420,10 @@ class _FakeConfigEntries:
     # binding writes
     # through
     # ``hass.config_entries.async_update_entry``.
+    # In HA 2026.10.0b0 this
+    # is a *sync* callback
+    # (returns ``bool``,
+    # MUST NOT be awaited).
     # This is the
     # in-place equivalent
     # of the real HA
@@ -433,11 +437,12 @@ class _FakeConfigEntries:
     # tests use plain
     # ``dict`` — no
     # proxy).
-    async def async_update_entry(
+    def async_update_entry(
         self, entry, *, options=None, **kw
     ):
         if options is not None:
             entry.options = dict(options)
+        return True
 
 
 class _FakeServiceCall:
@@ -5307,19 +5312,34 @@ class _RecordingConfigEntries:
             if getattr(e, "domain", None) == domain
         ]
 
-    async def async_update_entry(
+    # R10.6 (round 5):
+    # ``async_update_entry``
+    # in HA 2026.10.0b0 is
+    # a *synchronous*
+    # callback that returns
+    # a ``bool``. Production
+    # MUST NOT ``await``
+    # it; an ``await``
+    # raises ``TypeError:
+    # object bool can't be
+    # used in 'await'
+    # expression`` against
+    # the real HA
+    # implementation.
+    def async_update_entry(
         self, entry, *, options=None, **kw
     ):
         self.update_calls.append(
             (entry.entry_id, dict(options or {}))
         )
         if options is None:
-            return
+            return True
         entry._options_src.update(options)
         import types as _t
         entry.options = _t.MappingProxyType(
             entry._options_src
         )
+        return True
 
 
 class _ReadOnlyHass(_FakeHass):
@@ -5730,6 +5750,549 @@ def test_r106_two_entries_isolated_dashboards() -> None:
             "R10.6 isolation: sidecar's binding "
             f"(hash={sidecar_hash!r}) must match "
             f"entry_b ({binding_b!r})"
+        )
+
+
+
+
+
+# ───────────────────────────────────────────────────────────────
+# R10.6 (round 5) — Юра
+# follow-up: HA
+# 2026.10.0b0 makes
+# ``ConfigEntries.async_update_entry``
+# a *synchronous*
+# callback. The previous
+# test stubs were
+# ``async def``, which
+# hid the production
+# defect
+# (``await
+# hass.config_entries.async_update_entry``
+# raises
+# ``TypeError: object
+# bool can't be used in
+# 'await' expression``
+# against the real HA).
+# After the fix, the
+# stubs are sync and
+# the regression test
+# below fails RED if
+# production re-introduces
+# ``await``.
+# ───────────────────────────────────────────────────────────────
+
+
+class _BoolReturnStubConfigEntries(_RecordingConfigEntries):
+    """A stub whose
+    ``async_update_entry``
+    is a *synchronous*
+    function returning a
+    plain ``bool``. This
+    matches HA 2026.10.0b0:
+    see
+    ``ConfigEntries.async_update_entry``
+    in
+    https://github.com/home-assistant/core/blob/2026.10.0b0/homeassistant/config_entries.py
+    — it returns a bool
+    immediately.
+
+    Production code that
+    mistakenly does
+    ``await
+    hass.config_entries.async_update_entry(...)``
+    raises
+    ``TypeError: object
+    bool can't be used in
+    'await' expression``;
+    that surfaces as a
+    crash inside the
+    helper.
+    """
+
+    def async_update_entry(
+        self, entry, *, options=None, **kw
+    ):
+        self.update_calls.append(
+            (entry.entry_id, dict(options or {}))
+        )
+        if options is None:
+            return True
+        entry._options_src.update(options)
+        import types as _t
+        entry.options = _t.MappingProxyType(
+            entry._options_src
+        )
+        return True
+
+
+class _BoolReturnHass(_ReadOnlyHass):
+    def __init__(self, *args, **kw):
+        super().__init__(*args, **kw)
+        entries = kw.get(
+            "entries",
+            getattr(
+                self.config_entries, "_entries", []
+            ),
+        )
+        self.config_entries = (
+            _BoolReturnStubConfigEntries(entries)
+        )
+
+
+def test_r106_async_update_entry_is_called_synchronously() -> None:
+    """R10.6 (round 5):
+    ``hass.config_entries.async_update_entry``
+    is sync in HA
+    2026.10.0b0. The
+    production helper
+    MUST NOT ``await``
+    the call. The stub
+    here mirrors the
+    real-HA return type
+    (``bool``); awaiting
+    a ``bool`` raises
+    ``TypeError``.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _BoolReturnHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry,
+                {"title": "SYNC", "views": []},
+            )
+        )
+        # If production
+        # re-introduces
+        # ``await``, this
+        # assertion is
+        # never reached
+        # because the
+        # function raises.
+        assert any(
+            "lovelace_dashboard_url_path"
+            in (opts or {})
+            for _eid, opts in (
+                hass.config_entries.update_calls
+            )
+        ), (
+            "R10.6 round 5: production must call "
+            "the sync "
+            "hass.config_entries.async_update_entry"
+        )
+
+
+def test_r106_binding_persisted_only_after_successful_writes() -> None:
+    """R10.6 (round 5):
+    when content write
+    FAILS, the binding
+    MUST NOT be
+    persisted — leaving
+    the previous
+    ``entry.options``
+    value intact so a
+    reload reuses the
+    pre-existing
+    dashboard.
+    """
+
+    # Pre-existing
+    # dashboard on disk
+    # for entry A. This
+    # is the "previous
+    # binding" we expect
+    # to survive a
+    # failed-write
+    # scenario.
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        main_path = os.path.join(
+            storage, "lovelace.powmr_energy"
+        )
+        with open(main_path, "w") as f:
+            json.dump(
+                {
+                    "data": {
+                        "config": {
+                            "title": "USER"
+                        },
+                    },
+                },
+                f,
+            )
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": "powmr_energy",
+                            "url_path": "powmr-energy",
+                            "title": "USER",
+                            "show_in_sidebar": True,
+                        }],
+                    },
+                },
+                f,
+            )
+        # Entry whose
+        # ``options`` is
+        # empty: no prior
+        # binding. The
+        # production code
+        # will compute
+        # ``must_persist_binding``
+        # = "powmr-<hash>"
+        # (since main
+        # already exists for
+        # a different entry,
+        # this entry gets a
+        # sidecar).
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        # ``chmod`` the
+        # storage directory
+        # to read-only so
+        # the sidecar
+        # content write
+        # raises
+        # ``PermissionError``
+        # (the existing
+        # ``lovelace.powmr_energy``
+        # is already on
+        # disk; new file
+        # creation in the
+        # directory is what
+        # fails). This
+        # exercises the
+        # production code
+        # path with a real
+        # OS-level failure
+        # rather than a
+        # function-stub
+        # override (which
+        # the previous
+        # round showed is
+        # not reliable
+        # through the
+        # ``extra_modules``
+        # mechanism).
+        os.chmod(storage, 0o555)
+        try:
+            helpers = _load_registration_helpers()
+            ns = _exec_function(
+                INIT_PY,
+                "_register_lovelace_dashboard",
+                args={
+                    "_LOGGER": _FakeLogger(),
+                    "DOMAIN": "powmr_inverter",
+                    "extra_modules": helpers,
+                    "_read_metadata_snapshot":
+                        _read_metadata_snapshot,
+                },
+            )
+            real = ns["_register_lovelace_dashboard"]
+            try:
+                _run(
+                    real(
+                        hass,
+                        entry,
+                        {"title": "FAIL", "views": []},
+                    )
+                )
+            except Exception:
+                # Failure is
+                # expected; what
+                # matters is the
+                # side-effect.
+                pass
+        finally:
+            os.chmod(storage, 0o755)
+        # After a failed
+        # content write,
+        # the binding MUST
+        # NOT have been
+        # persisted.
+        update_calls = (
+            hass.config_entries.update_calls
+        )
+        assert not any(
+            "lovelace_dashboard_url_path"
+            in (opts or {})
+            for _eid, opts in update_calls
+        ), (
+            "R10.6 round 5: binding must NOT be "
+            "persisted on content-write failure; "
+            f"got calls: {update_calls!r}"
+        )
+        # The pre-existing
+        # main file content
+        # is preserved.
+        with open(main_path) as f:
+            after = json.load(f)
+        assert (
+            after["data"]["config"]["title"]
+            == "USER"
+        ), (
+            "R10.6 round 5: pre-existing main "
+            "must not be touched on a failed "
+            "write"
+        )
+
+
+def test_r106_binding_persisted_only_after_metadata_write_succeeds() -> None:
+    """R10.6 (round 5):
+    when the metadata
+    write FAILS, the
+    binding MUST NOT be
+    persisted either.
+    This guards against
+    a class of bugs
+    where the
+    content+metadata
+    pair gets out of
+    sync because a
+    partial success is
+    recorded as a
+    binding.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        # Content write
+        # succeeds. Metadata
+        # write fails.
+        def _ok_write(path, payload, *a, **kw):
+            import os as _os
+            import json as _json
+            _os.makedirs(
+                _os.path.dirname(path),
+                exist_ok=True,
+            )
+            with open(path, "w") as f:
+                _json.dump(payload, f)
+
+        def _failing_metadata(
+            path, payload, *a, **kw
+        ):
+            raise OSError(
+                "R10.6 round 5: simulated metadata "
+                "write failure"
+            )
+
+        helpers = _load_registration_helpers()
+        helpers[
+            "_write_dashboard_atomic"
+        ] = _ok_write
+        helpers[
+            "_write_dashboards_metadata_atomic"
+        ] = _failing_metadata
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        try:
+            _run(
+                real(
+                    hass,
+                    entry,
+                    {"title": "METAFAIL", "views": []},
+                )
+            )
+        except Exception:
+            pass
+        update_calls = (
+            hass.config_entries.update_calls
+        )
+        assert not any(
+            "lovelace_dashboard_url_path"
+            in (opts or {})
+            for _eid, opts in update_calls
+        ), (
+            "R10.6 round 5: binding must NOT be "
+            "persisted on metadata-write failure; "
+            f"got calls: {update_calls!r}"
+        )
+
+
+def test_r106_reload_after_successful_setup_keeps_binding() -> None:
+    """R10.6 (round 5):
+    after a successful
+    first install, the
+    binding is recorded
+    in
+    ``entry.options``;
+    on reload, the same
+    dashboard is found
+    via the binding, and
+    no second dashboard
+    is created.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        # First setup.
+        _run(
+            real(
+                hass,
+                entry,
+                {"title": "FIRST", "views": []},
+            )
+        )
+        # Now the binding
+        # is recorded in
+        # ``entry.options``.
+        binding = entry.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        assert binding == "powmr-energy", (
+            f"R10.6 round 5: first setup must "
+            f"persist binding 'powmr-energy'; "
+            f"got {binding!r}"
+        )
+        # Reload — a fresh
+        # ``hass`` and
+        # ``entry`` is
+        # constructed from
+        # the persisted
+        # options. We
+        # re-instantiate the
+        # entry with the
+        # binding as
+        # initial_options to
+        # simulate a HA
+        # restart.
+        entry_reload = _ReadOnlyOptionsEntry(
+            entry.entry_id,
+            initial_options=dict(entry.options),
+        )
+        hass_reload = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry_reload],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass_reload.data["powmr_inverter"] = {
+            entry_reload.entry_id: {},
+        }
+        _run(
+            real(
+                hass_reload,
+                entry_reload,
+                {"title": "RELOAD", "views": []},
+            )
+        )
+        files = sorted(
+            f for f in os.listdir(storage)
+            if f.startswith("lovelace.powmr_energy")
+            and not f.endswith(".bak")
+        )
+        assert "lovelace.powmr_energy" in files
+        sidecars = [
+            f for f in files
+            if f != "lovelace.powmr_energy"
+        ]
+        assert sidecars == [], (
+            "R10.6 round 5: reload after a "
+            "successful first install must reuse "
+            f"the bound dashboard; got {files!r}"
         )
 
 

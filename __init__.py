@@ -1754,24 +1754,50 @@ async def _register_lovelace_dashboard(
             if persisted_path != active_url:
                 must_persist_binding = active_url
 
-    # R10.6: persist the
-    # binding via
-    # ``hass.config_entries.async_update_entry``.
-    # ``entry.options`` is a
-    # read-only
-    # ``MappingProxyType`` in
-    # HA 2026.10.0b0; direct
-    # ``entry.options[...] = ...``
-    # raises ``TypeError``.
-    if must_persist_binding is not None:
-        await hass.config_entries.async_update_entry(
-            entry,
-            options={
-                **dict(entry.options),
-                "lovelace_dashboard_url_path":
-                    must_persist_binding,
-            },
-        )
+    # R10.6 (round 5): the
+    # binding MUST be
+    # persisted ONLY after
+    # both the content file
+    # and the metadata file
+    # are written. We
+    # accumulate the
+    # binding to write in
+    # ``must_persist_binding``
+    # (resolved in the
+    # branch logic above)
+    # and the actual write
+    # is performed after
+    # the successful
+    # write of both
+    # ``dashboard_content_storage``
+    # and ``dashboards_storage``
+    # — see the post-write
+    # block at the end of
+    # this function. If
+    # either write raises,
+    # the binding is NOT
+    # persisted, leaving
+    # the previous
+    # ``entry.options``
+    # value intact.
+    #
+    # ``async_update_entry``
+    # in HA 2026.10.0b0 is
+    # a *synchronous*
+    # callback (see
+    # ``ConfigEntries.async_update_entry``
+    # in
+    # https://github.com/home-assistant/core/blob/2026.10.0b0/homeassistant/config_entries.py
+    # ) — it returns a
+    # ``bool`` and MUST
+    # NOT be awaited. The
+    # previous code
+    # mistakenly used
+    # ``await`` and crashed
+    # with ``TypeError:
+    # object bool can't be
+    # used in 'await'
+    # expression``.
 
     # Audit T23 round 6: the opt-in
     # flag is read PER ENTRY from
@@ -2008,6 +2034,42 @@ async def _register_lovelace_dashboard(
             "✅ Dashboard '%s' content "
             "written (first install)",
             target_title,
+        )
+
+    # R10.6 (round 5):
+    # persist the binding
+    # AFTER both the
+    # content file and
+    # the metadata file
+    # are written. This
+    # order guarantees
+    # that the binding
+    # never points at a
+    # dashboard that does
+    # not exist on disk —
+    # a stale or
+    # failed-write binding
+    # would otherwise
+    # lead the next reload
+    # to ``stale_binding``
+    # fallback, which
+    # (correctly) refuses
+    # to write to main and
+    # instead creates a
+    # sidecar.
+    #
+    # ``async_update_entry``
+    # is a *sync* callback
+    # in HA 2026.10.0b0 —
+    # do NOT ``await``.
+    if must_persist_binding is not None:
+        hass.config_entries.async_update_entry(
+            entry,
+            options={
+                **dict(entry.options),
+                "lovelace_dashboard_url_path":
+                    must_persist_binding,
+            },
         )
 
 
