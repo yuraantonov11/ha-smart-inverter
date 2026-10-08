@@ -323,6 +323,15 @@ def _load_registration_helpers() -> dict:
         "_read_metadata_snapshot",
         "_rollback_dashboard_content",
         "_ensure_dashboard_binding",
+        # R10.6 (round 7):
+        # ownership +
+        # metadata helpers
+        # used by both
+        # ``_ensure_dashboard_binding``
+        # and
+        # ``_register_lovelace_dashboard``.
+        "_is_dashboard_owned_by_other",
+        "_metadata_lists_dashboard",
     )
     shared: dict = {
         "__builtins__": __builtins__,
@@ -390,6 +399,69 @@ def _load_registration_helpers() -> dict:
                     pass
     except Exception:
         pass
+    # R10.6 (round 7):
+    # ``_is_dashboard_owned_by_other``
+    # references
+    # ``DOMAIN`` (a
+    # module-level
+    # constant) in its
+    # body. ``DOMAIN``
+    # is imported from
+    # ``.const`` at the
+    # top of
+    # ``__init__.py``;
+    # it's an
+    # ``ImportFrom``,
+    # not an
+    # ``Assign``. We
+    # lift it from the
+    # source the same
+    # way as the
+    # dashboard
+    # constants and
+    # inject it into
+    # the shared
+    # namespace so the
+    # extracted
+    # function can
+    # resolve it.
+    if "DOMAIN" not in shared:
+        try:
+            # Look up
+            # the value
+            # via
+            # importlib
+            # (avoids
+            # pulling in
+            # the full
+            # integration
+            # with its
+            # ``homeassistant``
+            # dependency).
+            import importlib.util as _ilu2
+            import pathlib as _pl2
+            _const_path = (
+                _pl2.Path(INIT_PY)
+                .resolve()
+                .parent
+                / "const.py"
+            )
+            _spec = _ilu2.spec_from_file_location(
+                "_powmr_const_for_domain",
+                str(_const_path),
+            )
+            if _spec is not None and _spec.loader is not None:
+                _const_mod = _ilu2.module_from_spec(
+                    _spec
+                )
+                _spec.loader.exec_module(_const_mod)
+                _domain = getattr(
+                    _const_mod, "DOMAIN", None
+                )
+                if _domain is not None:
+                    shared["DOMAIN"] = _domain
+        except Exception:
+            pass
     for name in helper_names:
         try:
             ns = _exec_function(
@@ -419,6 +491,7 @@ def _load_registration_helpers() -> dict:
             "_DASHBOARD_ID",
             "_DASHBOARD_URL",
             "_DASHBOARD_TITLE",
+            "DOMAIN",
         )
         if name in shared
     }
@@ -5986,7 +6059,7 @@ def test_r106_async_update_entry_is_called_synchronously() -> None:
 
 
 def test_r106_binding_persisted_only_after_successful_writes() -> None:
-    """R10.6 (round 5):
+    """R10.6 (round 5+7):
     when content write
     FAILS, the binding
     MUST NOT be
@@ -5997,6 +6070,39 @@ def test_r106_binding_persisted_only_after_successful_writes() -> None:
     reload reuses the
     pre-existing
     dashboard.
+
+    The previous
+    implementation
+    used
+    ``os.chmod(0o555)``
+    on the storage
+    directory to
+    trigger the
+    failure. That is
+    NOT portable to
+    Windows (chmod
+    does not make a
+    directory
+    read-only on
+    Windows). The
+    round-7 fix
+    replaces it with
+    a deterministic
+    ``os.replace``
+    wrapper that
+    raises
+    ``OSError(28, "No
+    space left on
+    device")`` for
+    any call targeting
+    a file under the
+    storage dir — the
+    same pattern the
+    round-6
+    ``test_r106_deterministic_writer_oserror_no_chmod``
+    test uses. This
+    test runs on any
+    platform.
     """
 
     # Pre-existing
@@ -6013,6 +6119,11 @@ def test_r106_binding_persisted_only_after_successful_writes() -> None:
         main_path = os.path.join(
             storage, "lovelace.powmr_energy"
         )
+        # Record the
+        # original main
+        # bytes for
+        # byte-for-byte
+        # comparison.
         with open(main_path, "w") as f:
             json.dump(
                 {
@@ -6024,6 +6135,8 @@ def test_r106_binding_persisted_only_after_successful_writes() -> None:
                 },
                 f,
             )
+        with open(main_path, "rb") as f:
+            original_bytes = f.read()
         with open(
             os.path.join(
                 storage, "lovelace_dashboards"
@@ -6072,34 +6185,51 @@ def test_r106_binding_persisted_only_after_successful_writes() -> None:
         hass.data["powmr_inverter"] = {
             entry.entry_id: {},
         }
-        # ``chmod`` the
-        # storage directory
-        # to read-only so
-        # the sidecar
-        # content write
-        # raises
-        # ``PermissionError``
-        # (the existing
-        # ``lovelace.powmr_energy``
-        # is already on
-        # disk; new file
-        # creation in the
-        # directory is what
-        # fails). This
-        # exercises the
-        # production code
-        # path with a real
-        # OS-level failure
-        # rather than a
-        # function-stub
-        # override (which
-        # the previous
-        # round showed is
-        # not reliable
-        # through the
-        # ``extra_modules``
-        # mechanism).
-        os.chmod(storage, 0o555)
+        # Wrap
+        # ``os.replace``
+        # so any call
+        # targeting a
+        # file under our
+        # storage dir
+        # raises the
+        # expected
+        # OSError. The
+        # production
+        # ``_write_dashboard_atomic``
+        # uses
+        # ``os.replace``
+        # as the final
+        # step of the
+        # atomic-write
+        # pattern. Patching
+        # the module-level
+        # ``os.replace``
+        # is enough
+        # because the
+        # extracted
+        # function
+        # resolves
+        # ``os`` from the
+        # shared
+        # namespace.
+        fault_calls: list = []
+        original_replace = os.replace
+        target_dir = os.path.abspath(storage)
+
+        def _faulty_replace(
+            src, dst, *a, **kw
+        ):
+            dst_abs = os.path.abspath(str(dst))
+            if dst_abs.startswith(target_dir):
+                fault_calls.append((str(src), dst_abs))
+                raise OSError(
+                    28, "No space left on device"
+                )
+            return original_replace(
+                src, dst, *a, **kw
+            )
+
+        os.replace = _faulty_replace
         try:
             helpers = _load_registration_helpers()
             ns = _exec_function(
@@ -6114,6 +6244,7 @@ def test_r106_binding_persisted_only_after_successful_writes() -> None:
                 },
             )
             real = ns["_register_lovelace_dashboard"]
+            raised: Exception | None = None
             try:
                 _run(
                     real(
@@ -6122,14 +6253,40 @@ def test_r106_binding_persisted_only_after_successful_writes() -> None:
                         {"title": "FAIL", "views": []},
                     )
                 )
-            except Exception:
-                # Failure is
-                # expected; what
-                # matters is the
-                # side-effect.
-                pass
+            except OSError as exc:
+                raised = exc
+            # Fault-point
+            # reached.
+            assert fault_calls, (
+                "R10.6 round 7: the fault-point "
+                "was never reached — the writer "
+                "did not call ``os.replace`` on "
+                "the target file. The injection "
+                "is not exercising the "
+                "production path."
+            )
+            # Exact OSError
+            # class and
+            # message.
+            assert isinstance(raised, OSError), (
+                f"R10.6 round 7: expected OSError, "
+                f"got {type(raised).__name__}: "
+                f"{raised!r}"
+            )
+            assert raised.errno == 28, (
+                f"R10.6 round 7: expected errno 28, "
+                f"got {raised.errno}"
+            )
+            assert (
+                "No space left on device"
+                in str(raised)
+            ), (
+                "R10.6 round 7: expected "
+                f"'No space left on device', got "
+                f"{str(raised)!r}"
+            )
         finally:
-            os.chmod(storage, 0o755)
+            os.replace = original_replace
         # After a failed
         # content write,
         # the binding MUST
@@ -6149,16 +6306,14 @@ def test_r106_binding_persisted_only_after_successful_writes() -> None:
         )
         # The pre-existing
         # main file content
-        # is preserved.
-        with open(main_path) as f:
-            after = json.load(f)
-        assert (
-            after["data"]["config"]["title"]
-            == "USER"
-        ), (
+        # is preserved
+        # byte-for-byte.
+        with open(main_path, "rb") as f:
+            after_bytes = f.read()
+        assert after_bytes == original_bytes, (
             "R10.6 round 5: pre-existing main "
-            "must not be touched on a failed "
-            "write"
+            "must be byte-for-byte unchanged "
+            "on a failed write"
         )
 
 
@@ -6905,6 +7060,654 @@ def test_r106_deterministic_writer_oserror_no_chmod() -> None:
             )
         finally:
             os.replace = original_replace
+
+
+
+
+
+# ───────────────────────────────────────────────────────────────
+# R10.6 (round 7) — Юра
+# follow-up: cross-entry
+# isolation. A
+# canonical main
+# dashboard owned by
+# entry A must NEVER
+# be bound to a
+# different entry B,
+# and an opt-in
+# migration by B must
+# NOT overwrite A's
+# user content. The
+# previous
+# ``_ensure_dashboard_binding``
+# simply checked "does
+# the main exist and
+# the key match?" —
+# that proved the
+# FILE is a dashboard
+# but not that THIS
+# entry owns it. The
+# round-7 fix adds a
+# cross-entry
+# ownership check
+# (via
+# ``_is_dashboard_owned_by_other``)
+# and a metadata check
+# (via
+# ``_metadata_lists_dashboard``).
+# ───────────────────────────────────────────────────────────────
+
+
+def test_r106_other_entry_owns_main_helper_does_not_bind() -> None:
+    """R10.6 (round 7):
+    when entry A is
+    already bound to
+    the canonical main
+    dashboard and
+    entry B (no
+    binding) runs
+    ``_ensure_dashboard_binding``,
+    B MUST NOT be
+    bound to
+    ``powmr-energy``.
+    B must fall through
+    to the sidecar
+    path (or be left
+    unbound) so the
+    upcoming opt-in
+    migration by B
+    cannot overwrite
+    A's content.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        # Pre-existing
+        # main that A
+        # claims.
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "key": "lovelace.powmr_energy",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "USER A"
+                        },
+                    },
+                },
+                f,
+            )
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": "powmr_energy",
+                            "url_path": "powmr-energy",
+                            "title": "USER A",
+                            "show_in_sidebar": True,
+                            "require_admin": False,
+                            "mode": "storage",
+                        }],
+                    },
+                },
+                f,
+            )
+        # Entry A: owns
+        # main, binding
+        # powmr-energy.
+        entry_a = _ReadOnlyOptionsEntry(
+            "01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        # Entry B: new,
+        # no binding.
+        entry_b = _ReadOnlyOptionsEntry(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            initial_options={},
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry_a, entry_b],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry_a.entry_id: {},
+            entry_b.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_ensure_dashboard_binding",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_ensure_dashboard_binding"]
+        _run(real(hass, entry_b))
+        # B's binding
+        # MUST NOT be
+        # powmr-energy
+        # (A owns it).
+        assert (
+            entry_b.options.get(
+                "lovelace_dashboard_url_path"
+            )
+            != "powmr-energy"
+        ), (
+            "R10.6 round 7: B's ensure must not "
+            "steal A's main binding. Got "
+            f"{entry_b.options.get('lovelace_dashboard_url_path')!r}"
+        )
+        # A's binding
+        # is untouched.
+        assert (
+            entry_a.options.get(
+                "lovelace_dashboard_url_path"
+            )
+            == "powmr-energy"
+        )
+        # A's main file
+        # is preserved
+        # byte-for-byte.
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+        ) as f:
+            after = json.load(f)
+        assert (
+            after["data"]["config"]["title"]
+            == "USER A"
+        )
+
+
+def test_r106_other_entry_owns_main_registrar_re_routes() -> None:
+    """R10.6 (round 7):
+    even if entry B has
+    somehow ended up
+    with the persisted
+    binding
+    ``powmr-energy``
+    pointing at A's
+    main, the registrar
+    MUST detect that
+    another entry owns
+    the main and
+    re-route B to the
+    sidecar path. The
+    opt-in migration
+    that would
+    otherwise overwrite
+    A's user content
+    is rejected.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        # A's main
+        # (USER content).
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "key": "lovelace.powmr_energy",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "USER A"
+                        },
+                    },
+                },
+                f,
+            )
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": "powmr_energy",
+                            "url_path": "powmr-energy",
+                            "title": "USER A",
+                            "show_in_sidebar": True,
+                        }],
+                    },
+                },
+                f,
+            )
+        # Record the
+        # original main
+        # bytes.
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+            "rb",
+        ) as f:
+            original_bytes = f.read()
+        # A: owns main.
+        entry_a = _ReadOnlyOptionsEntry(
+            "01AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        # B: somehow
+        # already has the
+        # wrong binding
+        # (this is the
+        # scenario Юра
+        # reproduced before
+        # the fix).
+        entry_b = _ReadOnlyOptionsEntry(
+            "01BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            initial_options={
+                "lovelace_dashboard_url_path":
+                    "powmr-energy",
+            },
+        )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry_a, entry_b],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        # B has
+        # ``opt_in=True``
+        # so the
+        # registrar will
+        # try to migrate.
+        hass.data["powmr_inverter"] = {
+            entry_a.entry_id: {},
+            entry_b.entry_id: {
+                "dashboard_migration_opt_in": True,
+            },
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_register_lovelace_dashboard",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_register_lovelace_dashboard"]
+        _run(
+            real(
+                hass,
+                entry_b,
+                {"title": "B WROTE", "views": []},
+            )
+        )
+        # Main file is
+        # byte-for-byte
+        # unchanged.
+        with open(
+            os.path.join(
+                storage, "lovelace.powmr_energy"
+            ),
+            "rb",
+        ) as f:
+            after_bytes = f.read()
+        assert after_bytes == original_bytes, (
+            "R10.6 round 7: A's main must be "
+            "byte-for-byte unchanged after B's "
+            "migration attempt"
+        )
+        # B's binding is
+        # re-routed to
+        # its own sidecar.
+        binding = entry_b.options.get(
+            "lovelace_dashboard_url_path"
+        )
+        assert binding != "powmr-energy", (
+            "R10.6 round 7: B's binding must be "
+            f"re-routed away from main; got {binding!r}"
+        )
+        # A's binding
+        # is untouched.
+        assert (
+            entry_a.options.get(
+                "lovelace_dashboard_url_path"
+            )
+            == "powmr-energy"
+        )
+
+
+def test_r106_helper_requires_metadata_listing() -> None:
+    """R10.6 (round 7):
+    the helper MUST NOT
+    bind to a
+    dashboard that is
+    not registered in
+    ``lovelace_dashboards``.
+    A content file
+    alone is not
+    enough. This
+    covers the
+    scenario: sidecar
+    file on disk,
+    empty metadata
+    ``items`` →
+    binding is
+    rejected.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        # Sidecar file
+        # with matching
+        # ``key`` — but
+        # NO metadata
+        # entry.
+        import hashlib as _h
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        _hash = _h.md5(
+            entry.entry_id.encode("utf-8")
+        ).hexdigest()[:16]
+        sidecar_id = f"powmr_energy_{_hash}"
+        sidecar_path = os.path.join(
+            storage, f"lovelace.{sidecar_id}"
+        )
+        with open(sidecar_path, "w") as f:
+            json.dump(
+                {
+                    "key": f"lovelace.{sidecar_id}",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "ORPHAN"
+                        },
+                    },
+                },
+                f,
+            )
+        # Empty
+        # metadata
+        # ``items``.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {"items": []},
+                },
+                f,
+            )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_ensure_dashboard_binding",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_ensure_dashboard_binding"]
+        _run(real(hass, entry))
+        # No binding
+        # was persisted.
+        assert (
+            entry.options.get(
+                "lovelace_dashboard_url_path"
+            )
+            is None
+        ), (
+            "R10.6 round 7: helper must not bind "
+            "to an orphan file (no metadata). "
+            f"Got {entry.options!r}"
+        )
+
+
+def test_r106_helper_requires_metadata_url_match() -> None:
+    """R10.6 (round 7):
+    the metadata
+    ``url_path`` MUST
+    match the
+    expected
+    dashboard URL. A
+    metadata item with
+    a different
+    ``url_path`` is
+    not enough.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        import hashlib as _h
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        _hash = _h.md5(
+            entry.entry_id.encode("utf-8")
+        ).hexdigest()[:16]
+        sidecar_id = f"powmr_energy_{_hash}"
+        sidecar_path = os.path.join(
+            storage, f"lovelace.{sidecar_id}"
+        )
+        with open(sidecar_path, "w") as f:
+            json.dump(
+                {
+                    "key": f"lovelace.{sidecar_id}",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "MISMATCH"
+                        },
+                    },
+                },
+                f,
+            )
+        # Metadata
+        # lists the
+        # sidecar ID
+        # but with a
+        # WRONG url_path.
+        with open(
+            os.path.join(
+                storage, "lovelace_dashboards"
+            ),
+            "w",
+        ) as f:
+            json.dump(
+                {
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "items": [{
+                            "id": sidecar_id,
+                            "url_path": "wrong-url",
+                            "title": "MISMATCH",
+                            "show_in_sidebar": False,
+                            "require_admin": False,
+                            "mode": "storage",
+                        }],
+                    },
+                },
+                f,
+            )
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_ensure_dashboard_binding",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_ensure_dashboard_binding"]
+        _run(real(hass, entry))
+        assert (
+            entry.options.get(
+                "lovelace_dashboard_url_path"
+            )
+            is None
+        ), (
+            "R10.6 round 7: helper must not bind "
+            "when metadata url_path does not "
+            f"match. Got {entry.options!r}"
+        )
+
+
+def test_r106_helper_handles_missing_metadata_file() -> None:
+    """R10.6 (round 7):
+    no metadata file
+    on disk → no
+    binding.
+    """
+
+    with tempfile.TemporaryDirectory() as tmp:
+        storage = os.path.join(tmp, ".storage")
+        os.makedirs(storage, exist_ok=True)
+        import hashlib as _h
+        entry = _ReadOnlyOptionsEntry(
+            "01M3XWJ8DRYDQC8A0NCPRVB53N",
+            initial_options={},
+        )
+        _hash = _h.md5(
+            entry.entry_id.encode("utf-8")
+        ).hexdigest()[:16]
+        sidecar_id = f"powmr_energy_{_hash}"
+        sidecar_path = os.path.join(
+            storage, f"lovelace.{sidecar_id}"
+        )
+        with open(sidecar_path, "w") as f:
+            json.dump(
+                {
+                    "key": f"lovelace.{sidecar_id}",
+                    "version": 1,
+                    "minor_version": 1,
+                    "key_version": 1,
+                    "data": {
+                        "config": {
+                            "title": "NO META"
+                        },
+                    },
+                },
+                f,
+            )
+        # No
+        # ``lovelace_dashboards``
+        # file.
+        hass = _ReadOnlyHass(
+            config_dir=tmp,
+            entries=[entry],
+            states={},
+            services=_FakeServiceReg(),
+        )
+        hass.data["powmr_inverter"] = {
+            entry.entry_id: {},
+        }
+        helpers = _load_registration_helpers()
+        ns = _exec_function(
+            INIT_PY,
+            "_ensure_dashboard_binding",
+            args={
+                "_LOGGER": _FakeLogger(),
+                "DOMAIN": "powmr_inverter",
+                "extra_modules": helpers,
+                "_read_metadata_snapshot":
+                    _read_metadata_snapshot,
+            },
+        )
+        real = ns["_ensure_dashboard_binding"]
+        _run(real(hass, entry))
+        assert (
+            entry.options.get(
+                "lovelace_dashboard_url_path"
+            )
+            is None
+        ), (
+            "R10.6 round 7: helper must not bind "
+            "when metadata file is missing. "
+            f"Got {entry.options!r}"
+        )
 
 
 def _run_all() -> None:

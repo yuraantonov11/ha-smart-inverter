@@ -1920,8 +1920,42 @@ async def _register_lovelace_dashboard(
                     _verify_content
                 )
             )
+            # R10.6 (round 7):
+            # also verify the
+            # Lovelace
+            # ``lovelace_dashboards``
+            # metadata file
+            # lists the
+            # resolved
+            # dashboard with
+            # matching
+            # ``id`` AND
+            # ``url_path``.
+            # A content file
+            # alone is not
+            # enough — an
+            # orphan file
+            # with the right
+            # ``key`` but no
+            # metadata entry
+            # must NOT be
+            # bound, because
+            # HA does not
+            # know about it
+            # and a binding
+            # would point at
+            # a non-existent
+            # dashboard.
+            metadata_matches = (
+                _metadata_lists_dashboard(
+                    dashboards_storage,
+                    active_id,
+                    active_url,
+                )
+            )
             if (
                 content_matches
+                and metadata_matches
                 and persisted_path != active_url
             ):
                 # Persist the
@@ -1982,6 +2016,59 @@ async def _register_lovelace_dashboard(
     target_id = active_id
     target_url = active_url
     target_title = active_title
+
+    # R10.6 (round 7):
+    # ownership
+    # cross-check. If
+    # the resolved
+    # target is the
+    # canonical main
+    # AND another
+    # powmr_inverter
+    # entry already
+    # claims the main
+    # binding, we MUST
+    # NOT proceed —
+    # the migration
+    # would overwrite
+    # a sister entry's
+    # user content.
+    # Re-route to the
+    # sidecar path so
+    # the current entry
+    # gets its own
+    # dashboard.
+    if (
+        target_id == _DASHBOARD_ID
+        and _is_dashboard_owned_by_other(
+            hass, entry.entry_id, _DASHBOARD_URL
+        )
+    ):
+        target_id = sidecar_id
+        target_url = f"powmr-{entry_hash}"
+        target_title = (
+            f"Smart Solar · "
+            f"{entry.title or entry.entry_id[:8]}"
+        )
+        dashboard_content_storage = sidecar_path
+        active_id = target_id
+        active_url = target_url
+        active_title = target_title
+        is_first_opt_in = False
+        # Update the
+        # binding record
+        # so the next
+        # reload reuses
+        # the sidecar.
+        if persisted_path != target_url:
+            must_persist_binding = target_url
+        _LOGGER.info(
+            "R10.6 round 7: main already owned "
+            "by another entry; routing to sidecar "
+            "%s",
+            target_url,
+        )
+
     already_listed = any(
         item.get("id") == target_id
         for item in items
@@ -2304,9 +2391,36 @@ async def _ensure_dashboard_binding(
         target_id = sidecar_id
         target_url = f"powmr-{entry_hash}"
     elif os.path.exists(main_path):
-        target_path = main_path
-        target_id = _DASHBOARD_ID
-        target_url = _DASHBOARD_URL
+        # R10.6 (round 7):
+        # before claiming
+        # the canonical
+        # main, verify
+        # that no other
+        # powmr_inverter
+        # entry already
+        # has the
+        # powmr-energy
+        # binding. If a
+        # sister entry
+        # owns the main,
+        # we MUST NOT
+        # steal it — we
+        # fall through to
+        # the sidecar
+        # path so this
+        # entry gets its
+        # own dashboard.
+        if _is_dashboard_owned_by_other(
+            hass, entry.entry_id, _DASHBOARD_URL
+        ):
+            # Sidecar path.
+            target_path = sidecar_path
+            target_id = sidecar_id
+            target_url = f"powmr-{entry_hash}"
+        else:
+            target_path = main_path
+            target_id = _DASHBOARD_ID
+            target_url = _DASHBOARD_URL
     else:
         # No dashboard
         # exists yet. Do
@@ -2343,16 +2457,153 @@ async def _ensure_dashboard_binding(
     if not content_matches:
         return
 
+    # R10.6 (round 7):
+    # also verify the
+    # metadata file
+    # lists the
+    # dashboard we are
+    # about to bind.
+    # ``lovelace_dashboards``
+    # is the
+    # authoritative
+    # source for "is
+    # this dashboard
+    # registered in
+    # HA" — a content
+    # file alone is
+    # not enough
+    # because HA can
+    # have orphaned
+    # files. We must
+    # NOT bind to an
+    # unregistered
+    # dashboard.
+    if not _metadata_lists_dashboard(
+        dashboards_storage, target_id, target_url
+    ):
+        return
+
     if persisted_path == target_url:
         return
 
     hass.config_entries.async_update_entry(
-        entry,
-        options={
-            **dict(entry.options),
-            "lovelace_dashboard_url_path": target_url,
-        },
-    )
+            entry,
+            options={
+                **dict(entry.options),
+                "lovelace_dashboard_url_path": target_url,
+            },
+        )
+
+
+def _is_dashboard_owned_by_other(
+    hass: HomeAssistant,
+    current_entry_id: str,
+    target_url: str,
+) -> bool:
+    """R10.6 (round 7):
+    return True if any
+    OTHER
+    powmr_inverter config
+    entry has its
+    ``lovelace_dashboard_url_path``
+    binding set to
+    ``target_url``. This
+    is the
+    cross-entry
+    ownership check the
+    resolver and the
+    setup helper share
+    so a new entry can
+    never claim a
+    dashboard that is
+    already bound to
+    another entry.
+
+    The check is local:
+    it iterates
+    ``hass.config_entries.async_entries(DOMAIN)``
+    and looks at each
+    entry's
+    ``options`` for the
+    binding. The
+    current entry is
+    excluded.
+    """
+
+    try:
+        for e in hass.config_entries.async_entries(
+            DOMAIN
+        ):
+            if e.entry_id == current_entry_id:
+                continue
+            if (
+                e.options.get(
+                    "lovelace_dashboard_url_path"
+                )
+                == target_url
+            ):
+                return True
+    except AttributeError:
+        # ``hass.config_entries``
+        # not in the
+        # expected shape
+        # (e.g. test
+        # harness without
+        # ``async_entries``).
+        # Treat as "not
+        # owned" so the
+        # caller can fall
+        # back to a
+        # sidecar.
+        return False
+    return False
+
+
+def _metadata_lists_dashboard(
+    dashboards_storage: str,
+    target_id: str,
+    target_url: str,
+) -> bool:
+    """R10.6 (round 7):
+    return True if the
+    Lovelace metadata
+    file at
+    ``dashboards_storage``
+    contains an item
+    whose ``id`` AND
+    ``url_path`` both
+    match the
+    expected values. A
+    content file on
+    disk is not enough
+    to claim a
+    dashboard — HA only
+    knows about
+    dashboards that are
+    registered in
+    ``lovelace_dashboards``.
+
+    A missing or
+    corrupt metadata
+    file returns False
+    (the dashboard is
+    not registered yet).
+    """
+
+    try:
+        with open(dashboards_storage, "r") as f:
+            data = json.loads(f.read())
+    except (OSError, ValueError):
+        return False
+    for item in (
+        data.get("data", {}).get("items", [])
+    ):
+        if (
+            item.get("id") == target_id
+            and item.get("url_path") == target_url
+        ):
+            return True
+    return False
 
 
 def _read_metadata_snapshot(dashboards_storage: str) -> dict:
