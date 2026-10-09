@@ -36,7 +36,25 @@ class TotalEnergyCard extends HTMLElement {
   }
 
   _fmtKwh(v) {
-    if (v === null || v === undefined || Number.isNaN(v)) return '—';
+    // R07 follow-up: a sensor state of
+    // "Infinity" / "NaN" / non-numeric
+    // must NOT be passed through as a
+    // number. We coerce with ``Number``
+    // and explicitly check
+    // ``Number.isFinite`` so a real zero
+    // is preserved (zero is finite) and
+    // an unreadable total renders as
+    // "—" rather than "Infinity MWh".
+    if (v === null || v === undefined) return '—';
+    if (typeof v === 'string') {
+      const n = Number(v);
+      v = Number.isFinite(n) ? n : null;
+    } else if (typeof v === 'number') {
+      v = Number.isFinite(v) ? v : null;
+    } else {
+      v = null;
+    }
+    if (v === null) return '—';
     if (v >= 1000) return (v / 1000).toFixed(2) + ' MWh';
     return v.toFixed(2) + ' kWh';
   }

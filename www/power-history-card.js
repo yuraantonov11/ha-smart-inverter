@@ -54,18 +54,26 @@ class PowerHistoryCard extends HTMLElement {
   }
   _cleanSeries(rawValues, rawLabels) {
     // Returns { values:number[], labels:string[],
-    // gaps:number[], rawIndices:number[] }.
-    // ``gaps`` is the list of indices where the
-    // value or label is missing or out-of-order;
-    // the chart uses those to start a new
-    // sub-path. ``rawIndices`` maps each valid
-    // value back to its original (time) index
-    // in the input array — the chart uses it for
-    // x-axis positioning so removing invalid
-    // points does NOT compress the timeline.
+    // gaps:number[], rawIndices:number[],
+    // rawLength:number }. ``gaps`` is the
+    // list of indices where the value or
+    // label is missing or out-of-order; the
+    // chart uses those to start a new
+    // sub-path. ``rawIndices`` maps each
+    // valid value back to its original
+    // (time) index in the input array — the
+    // chart uses it for x-axis positioning
+    // so removing invalid points does NOT
+    // compress the timeline.
+    // ``rawLength`` is the ORIGINAL input
+    // length (including the gaps). The
+    // chart's x-axis uses it as the
+    // canonical time span so that tail
+    // gaps (where the last point is null)
+    // are NOT silently dropped.
     const values = Array.isArray(rawValues) ? rawValues : [];
     const labels = Array.isArray(rawLabels) ? rawLabels : [];
-    const out = { values: [], labels: [], gaps: [], rawIndices: [] };
+    const out = { values: [], labels: [], gaps: [], rawIndices: [], rawLength: values.length };
     let prev = -Infinity;
     for (let i = 0; i < values.length; i++) {
       if (!this._isFiniteNumber(values[i])) {
@@ -134,12 +142,16 @@ class PowerHistoryCard extends HTMLElement {
     // different gaps therefore align on
     // the same time axis.
     const resolved = [];
-    // The union of all raw indices is the
-    // shared time axis. We use the FIRST
-    // series' raw indices as the canonical
-    // axis; subsequent series map back to
-    // this axis via their rawIndex.
-    let canonicalRawIndices = null;
+    // The shared time axis is derived
+    // from the LARGEST raw length across
+    // all series (R07 follow-up: the
+    // first-series-only approach could
+    // miss tail gaps when the first
+    // series had shorter data than the
+    // others). We collect every series'
+    // raw length and union them.
+    let canonicalRawLength = 0;
+    let firstSeriesSeen = false;
     for (const s of seriesList) {
       const rawValues = this._getAttr(s.entity, s.attribute);
       if (!rawValues) continue;
@@ -159,8 +171,18 @@ class PowerHistoryCard extends HTMLElement {
         });
       }
       const rawIndices = cleaned.rawIndices;
-      if (canonicalRawIndices === null) {
-        canonicalRawIndices = rawIndices;
+      if (!firstSeriesSeen) firstSeriesSeen = true;
+      // ``cleaned.rawLength`` is the
+      // original input length (the
+      // number of raw samples BEFORE
+      // invalid points were removed).
+      // The shared time axis MUST
+      // include gaps at the tail of the
+      // longest series, even if no
+      // series has a valid point at
+      // that raw index.
+      if (cleaned.rawLength > canonicalRawLength) {
+        canonicalRawLength = cleaned.rawLength;
       }
       resolved.push({
         points: points,
@@ -169,6 +191,7 @@ class PowerHistoryCard extends HTMLElement {
         name: s.name || '',
         divisor: s.unit_divisor || 1,
         rawIndices: rawIndices,
+        rawLength: cleaned.rawLength,
       });
     }
 
@@ -178,24 +201,17 @@ class PowerHistoryCard extends HTMLElement {
     }
 
     // The X axis spans the canonical raw
-    // indices. We do NOT compress when
-    // invalid points are removed — the
-    // x-axis is the original time axis.
-    const canonicalN =
-      canonicalRawIndices !== null
-        ? Math.max(
-            ...canonicalRawIndices,
-            // ``resolved[0].gaps`` are raw
-            // indices; the max raw index is
-            // ``max(canonicalRawIndices)``
-            // since canonicalRawIndices is
-            // the valid subset of the raw
-            // array.
-            canonicalRawIndices[
-              canonicalRawIndices.length - 1
-            ] || 0,
-          ) + 1
-        : 0;
+    // length across all series. The
+    // longest series' raw length is the
+    // canonical axis — this preserves
+    // tail gaps in any single series.
+    // R07 follow-up: the previous
+    // implementation used only the
+    // valid-subset of the first series,
+    // which truncated the time axis
+    // when the first series had fewer
+    // samples than the others.
+    const canonicalN = canonicalRawLength;
     const data = resolved[0].points.map(
       p => p.value,
     );
@@ -311,14 +327,21 @@ class PowerHistoryCard extends HTMLElement {
         }
         svg += `<path d="${path}" fill="none" stroke="${this._escape(r.color)}" stroke-width="1.5" opacity="0.9"/>`;
         // Dots: emit one circle per valid
-        // point that is NOT a gap-leader.
-        // Gap-leader dots would visually
-        // "close" the gap.
+        // point INCLUDING gap-leaders
+        // (R07 follow-up: a gap-leader is
+        // a valid point that immediately
+        // follows a missing sample. The
+        // previous implementation skipped
+        // it to keep the visual gap, but
+        // that also dropped the tooltip.
+        // The line ALREADY breaks at the
+        // gap (see the path 'M' start
+        // above); the dot here only marks
+        // the data point, NOT closes the
+        // gap). Every valid point gets a
+        // tooltip.
         for (let i = 0; i < n; i++) {
           const p = r.points[i];
-          const prev = i > 0 ? r.points[i - 1].rawIndex : -1;
-          const isGapLeader = i > 0 && p.rawIndex !== prev + 1;
-          if (isGapLeader) continue;
           const x = xForRaw(p.rawIndex);
           const v = p.value / r.divisor;
           const yVal = padT + chartH - (v / maxVal) * chartH;

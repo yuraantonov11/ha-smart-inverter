@@ -3,21 +3,41 @@
     "step": {
       "user": {
         "title": "Smart Solar Inverter",
-        "description": "Enter your solar.siseli.com account credentials",
+        "description": "Введіть облікові дані solar.siseli.com",
         "data": {
           "email": "Email",
-          "password": "Password",
+          "password": "Пароль",
           "predictive_default_mode": "Початковий режим прогнозної допомоги",
           "predictive_night_window_start_hour": "Початок нічного вікна AI (0–23)",
           "predictive_night_window_end_hour": "Кінець нічного вікна AI (0–23)",
           "predictive_min_confidence_for_assist": "Мінімальна впевненість Assist (не нижче 0.2)"
         }
+      },
+      "select_device": {
+        "title": "Виберіть інвертор",
+        "description": "До цього акаунта прив'язано кілька інверторів. Виберіть інвертор, за яким спостерігати.",
+        "data": {
+          "selected_device_sn": "Інвертор для моніторингу"
+        }
+      },
+      "reauth": {
+        "title": "Повторна авторизація Smart Solar Inverter",
+        "description": "Оновіть пароль акаунта solar.siseli.com",
+        "data": {
+          "email": "Email",
+          "password": "Новий пароль"
+        }
       }
     },
     "error": {
-      "auth_failed": "Authentication failed. Check your email and password.",
-      "no_device": "No device found for this account.",
-      "invalid_predictive_options": "Некоректний режим AI, нічне вікно або впевненість."
+      "auth_failed": "Помилка автентифікації. Перевірте email та пароль.",
+      "no_device": "Для цього акаунта не знайдено жодного пристрою.",
+      "invalid_predictive_options": "Некоректний режим AI, нічне вікно або впевненість.",
+      "invalid_device": "Вибраний інвертор відсутній у списку пристроїв акаунта. Оновіть список і повторіть.",
+      "reauth_failed_device_missing": "Повторна авторизація не вдалася: попередньо вибраний інвертор недоступний у цьому акаунті. Прив'язку збережено. Щоб прив'язати інший інвертор, видаліть інтеграцію та додайте її знову."
+    },
+    "abort": {
+      "reauth_successful": "Повторну авторизацію виконано."
     }
   },
   "options": {

@@ -12,12 +12,32 @@
           "predictive_night_window_end_hour": "Predictive night window end (0-23)",
           "predictive_min_confidence_for_assist": "Minimum confidence for Assist (safety minimum 0.2)"
         }
+      },
+      "select_device": {
+        "title": "Select inverter",
+        "description": "Multiple inverters are linked to this account. Select the inverter to monitor.",
+        "data": {
+          "selected_device_sn": "Inverter to monitor"
+        }
+      },
+      "reauth": {
+        "title": "Re-authenticate Smart Solar Inverter",
+        "description": "Update the password for your solar.siseli.com account",
+        "data": {
+          "email": "Email",
+          "password": "New password"
+        }
       }
     },
     "error": {
       "auth_failed": "Authentication failed. Check your email and password.",
       "no_device": "No device found for this account.",
-      "invalid_predictive_options": "Invalid predictive mode, night window or confidence."
+      "invalid_predictive_options": "Invalid predictive mode, night window or confidence.",
+      "invalid_device": "The selected inverter is not in the account's device list. Refresh the list and try again.",
+      "reauth_failed_device_missing": "Re-authentication failed: the previously selected inverter is not available on this account. The existing binding has been preserved. To bind to a different inverter, remove the integration and add it again."
+    },
+    "abort": {
+      "reauth_successful": "Re-authentication was successful."
     }
   },
   "options": {

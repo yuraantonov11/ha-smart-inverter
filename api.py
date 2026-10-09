@@ -356,7 +356,10 @@ class InverterApiClient:
         return True
 
     async def authenticate(
-        self, preferred_device_sn: str | None = None,
+        self,
+        preferred_device_sn: str | None = None,
+        *,
+        skip_device_list: bool = False,
     ) -> bool:
         """Login to solar.siseli.com and fetch device list.
 
@@ -449,6 +452,14 @@ class InverterApiClient:
         # persistent choice). Either keeps the
         # device identity stable across auth
         # cycles.
+        #
+        # ``skip_device_list=True`` defers the
+        # device-list call to a later step (used
+        # by the config flow so a multi-device
+        # account can be routed to the picker
+        # instead of raising here).
+        if skip_device_list:
+            return True
         effective_pref = (
             preferred_device_sn
             if preferred_device_sn is not None

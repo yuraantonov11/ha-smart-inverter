@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-__version__ = "1.8.13-perf-fixes"
-"""Bumped to surface applied patches in HA UI Devices panel.
-Tracks local-only fixes (5 patches applied 2026-07-07); HACS version stays 1.8.12."""
+__version__ = "1.9.0"
+"""Bumped to align with manifest.json (1.9.0).
+
+The HACS-distributed release and the
+local patch set both surface as 1.9.0
+in the HA Devices panel. No release
+tag is created by this commit.
+"""
 
 import hashlib
 import logging
@@ -171,22 +176,34 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Smart Solar Inverter from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
+    # R07: pass the operator's persistent
+    # device choice into the client so
+    # that every auth / re-auth cycle
+    # preserves the device identity. The
+    # value lives in ``entry.data`` for
+    # first-time setup and is also kept in
+    # ``entry.options`` for reconfigure
+    # flows.
+    #
+    # Legacy entries (created before
+    # R07) do NOT have
+    # ``selected_device_sn`` in
+    # ``entry.data``. Their ``unique_id``
+    # IS the device_sn (set by
+    # ``async_set_unique_id`` in the
+    # config flow). We fall back to the
+    # unique id so the legacy binding
+    # is preserved across reloads and
+    # reauths.
+    selected_sn = (
+        entry.data.get("selected_device_sn")
+        or entry.options.get("selected_device_sn")
+        or entry.unique_id
+    )
     api = InverterApiClient(
         email=entry.data["email"],
         password=entry.data["password"],
-        # R07: pass the operator's persistent
-        # device choice into the client so
-        # that every auth / re-auth cycle
-        # preserves the device identity. The
-        # value lives in ``entry.data`` for
-        # first-time setup and is also kept in
-        # ``entry.options`` for reconfigure
-        # flows. ``entry.data`` is the source
-        # of truth at setup time.
-        selected_device_sn=(
-            entry.data.get("selected_device_sn")
-            or entry.options.get("selected_device_sn")
-        ),
+        selected_device_sn=selected_sn,
     )
 
     try:

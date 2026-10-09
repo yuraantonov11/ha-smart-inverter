@@ -357,6 +357,208 @@ test_x_uses_rawIndex_not_cleaned_index();
 test_cadence_unknown_not_defaulted();
 test_cadence_from_config_is_used();
 test_html_injection_escaped();
+
+function test_yura_30_point_fixture_with_tail_null() {
+  // Юра scenario: A has the last
+  // point as null, B has all 30
+  // valid. The chart's right edge
+  // must NOT be at 490 (which is
+  // B's last point x-position
+  // without the tail gap), but
+  // extend to 30 raw positions
+  // (B's last point at the right
+  // edge ~505.9).
+  const N = 30;
+  const labels = _build_labels(N);
+  // A: last point null.
+  const valuesA = [];
+  for (let i = 0; i < N; i++) {
+    valuesA.push(i === N - 1 ? null : 0.1 * i + 1.0);
+  }
+  // B: all 30 valid.
+  const valuesB = [];
+  for (let i = 0; i < N; i++) valuesB.push(0.2 * i + 2.0);
+  const seriesA = {
+    entity: 'sensor.a', attribute: 'k', labels_attribute: 'l',
+    color: '#f5b06a', name: 'A', unit_divisor: 1,
+    values: valuesA, labels: labels,
+  };
+  const seriesB = {
+    entity: 'sensor.b', attribute: 'k', labels_attribute: 'l',
+    color: '#3aa', name: 'B', unit_divisor: 1,
+    values: valuesB, labels: labels,
+  };
+  const html = _render(seriesA);
+  // Re-render with both series.
+  card._config = {
+    title: 'Two-series tail gap',
+    series: [seriesA, seriesB],
+  };
+  card._hass = {
+    states: {
+      'sensor.a': { attributes: { k: valuesA, l: labels } },
+      'sensor.b': { attributes: { k: valuesB, l: labels } },
+    },
+  };
+  card.hass = card._hass;
+  const html2 = card.innerHTML;
+  // Extract B's last M coordinate. The
+  // last point must extend to the
+  // right edge of the chart, not
+  // stop at B's last valid (which
+  // would be the same as A's last
+  // valid anyway, but the right
+  // edge would be wrong if canonicalN
+  // were derived only from valid
+  // indices).
+  const pathB = html2.match(/<path d="([^"]+)"[^>]*fill="none"[^>]*stroke="#3aa"/);
+  assert.ok(pathB, 'B path must be present');
+  // Find the last x coordinate in B's
+  // path.
+  const coordRe = /[ML](-?\d+\.\d+),(-?\d+\.\d+)/g;
+  const coordsB = [];
+  let m;
+  while ((m = coordRe.exec(pathB[1])) !== null) {
+    coordsB.push(parseFloat(m[1]));
+  }
+  const lastX = coordsB[coordsB.length - 1];
+  // The chart has W=500, padL=45,
+  // padR=10. canonicalN=30 →
+  // xForRaw(29) = 45 + (29/29)*(500-45-10) = 490.
+  // Wait: the formula is
+  // x = padL + (rawIndex / max(1, canonicalN-1)) * chartW.
+  // canonicalN = 30, so canonicalN-1 = 29.
+  // x = 45 + (29/29) * 445 = 490.
+  // The expected value is ~490.
+  assert.ok(
+    Math.abs(lastX - 490) < 1,
+    `B last point x must be ~490 (canonicalN=30, rawIndex=29); got ${lastX}`
+  );
+  console.log('  two-series tail gap: canonicalN=30, B last x=490');
+}
+
+function test_tooltip_after_gap_includes_isolated_point() {
+  // Юра scenario: a gap at index 28
+  // is followed by a valid point at
+  // index 29. The chart line breaks
+  // at the gap (the path starts a
+  // new M at index 29), but the
+  // tooltip for index 29 MUST be
+  // present (the previous
+  // implementation skipped
+  // gap-leader dots entirely).
+  const N = 30;
+  const labels = _build_labels(N);
+  const values = [];
+  for (let i = 0; i < N; i++) {
+    if (i === 28) values.push(null);
+    else values.push(0.1 * i + 1.0);
+  }
+  const html = _render({
+    entity: 'sensor.x', attribute: 'k', labels_attribute: 'l',
+    color: '#f5b06a', name: 'X', unit_divisor: 1,
+    values: values, labels: labels,
+  });
+  // The last valid point (rawIndex=29,
+  // label=labels[29]) MUST have a
+  // tooltip.
+  const lastLabel = labels[29];
+  const titleMatches = html.match(/<title>[^<]*<\/title>/g) || [];
+  const hasLast = titleMatches.some(t => t.includes(lastLabel));
+  assert.ok(
+    hasLast,
+    `isolated last point (label=${lastLabel}) after gap must have a tooltip`,
+  );
+  // The path must have an M at the
+  // start of the last segment (after
+  // the gap).
+  const pathMatch = html.match(/<path d="([^"]+)"/);
+  const d = pathMatch[1];
+  const mCount = (d.match(/M/g) || []).length;
+  // 30 raw indices, 1 gap at 28 → 2
+  // sub-paths → 2 M commands.
+  assert.strictEqual(
+    mCount, 2,
+    `expected 2 M commands (one before the gap, one after); got M=${mCount}`,
+  );
+  console.log('  isolated last point after gap: tooltip + new M preserved');
+}
+
+function test_shared_axis_uses_longest_series() {
+  // Юра scenario: two series, first
+  // series shorter than the second.
+  // The shared time axis MUST use
+  // the longer series' raw length
+  // (the previous implementation
+  // used only the first series'
+  // valid subset, which would
+  // truncate the chart for the
+  // second series).
+  const labelsShort = _build_labels(15);
+  const labelsLong = _build_labels(30);
+  const seriesA = {
+    entity: 'sensor.a', attribute: 'k', labels_attribute: 'l',
+    color: '#f5b06a', name: 'A', unit_divisor: 1,
+    values: [1, 2, 3, 4, 5, null, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    labels: labelsShort,
+  };
+  const valuesB = [];
+  for (let i = 0; i < 30; i++) valuesB.push(0.3 * i + 1.0);
+  const seriesB = {
+    entity: 'sensor.b', attribute: 'k', labels_attribute: 'l',
+    color: '#3aa', name: 'B', unit_divisor: 1,
+    values: valuesB, labels: labelsLong,
+  };
+  card._config = {
+    title: 'Shared axis',
+    series: [seriesA, seriesB],
+  };
+  card._hass = {
+    states: {
+      'sensor.a': { attributes: { k: seriesA.values, l: labelsShort } },
+      'sensor.b': { attributes: { k: valuesB, l: labelsLong } },
+    },
+  };
+  card.hass = card._hass;
+  const html = card.innerHTML;
+  // B's last point must be at x ~ 490
+  // (canonicalN = 30, rawIndex = 29).
+  // If canonicalN were derived from
+  // A's valid subset (14), B's last
+  // point would be at ~490 too, but
+  // the alignment would still be
+  // consistent. The real test is the
+  // x-position of a value at
+  // rawIndex 14: it must be at
+  // ~250 (45 + 14/29 * 445), not at
+  // ~475 (45 + 14/14 * 445) which
+  // is what the buggy code would
+  // produce.
+  const pathB = html.match(/<path d="([^"]+)"[^>]*stroke="#3aa"/);
+  assert.ok(pathB);
+  // Find a coordinate near rawIndex 14
+  // (which has value 0.3*14+1.0=5.2).
+  // The x should be ~250, not ~475.
+  const coordRe = /L(-?\d+\.\d+),(-?\d+\.\d+)/g;
+  const coordsB = [];
+  let m;
+  while ((m = coordRe.exec(pathB[1])) !== null) {
+    coordsB.push([parseFloat(m[1]), parseFloat(m[2])]);
+  }
+  // Sort by x; check that there's a
+  // coordinate near x=259.8 (the 15th
+  // point, rawIndex=14, canonicalN=30).
+  const hasMidX = coordsB.some(([x, _]) => Math.abs(x - 259.8) < 5);
+  assert.ok(
+    hasMidX,
+    `series B must have a coordinate near x=259.8 (canonicalN=30, rawIndex=14); coords=${JSON.stringify(coordsB.slice(0, 5))}...`,
+  );
+  console.log('  shared axis: longest series drives canonicalN');
+}
+
+test_yura_30_point_fixture_with_tail_null();
+test_tooltip_after_gap_includes_isolated_point();
+test_shared_axis_uses_longest_series();
 console.log(
   'R06 follow-up: yura-30-point fixture, alignment, cadence, escape passed',
 );

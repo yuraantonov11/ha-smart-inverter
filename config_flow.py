@@ -1,4 +1,50 @@
-"""Config flow for Inverter Smart Inverter integration."""
+"""Config flow for Smart Solar Inverter integration.
+
+R07 follow-up (2026-10-09): the flow is
+split into three explicit phases:
+
+  1. ``async_step_user`` — credentials.
+     The client is constructed with NO
+     ``selected_device_sn`` so the login
+     and the device-list fetch are both
+     allowed to proceed. After a
+     successful login we ALWAYS have a
+     device list (the login response
+     includes the access token needed to
+     call the device-list endpoint).
+  2. ``async_step_select_device`` —
+     present the device list to the
+     operator. We do NOT call
+     ``_fetch_device_list`` here (the
+     list was already retrieved during
+     step 1 and is cached on
+     ``self._pending_devices``). The
+     operator MUST select explicitly when
+     the account has more than one
+     device.
+  3. ``async_create_entry`` — only after
+     a confirmed selection.
+
+A second-stage refactor (R07 follow-up
+#2): the reauth flow MUST receive the
+saved ``selected_device_sn`` and MUST
+preserve all other fields in
+``entry.data``. If the selected device
+is missing from the new account, the
+reauth fails WITHOUT touching
+``entry.data`` (so the operator's
+existing bindings are not destroyed).
+
+Cleanup contract (R07 follow-up #3):
+every code path that owns an
+``InverterApiClient`` MUST close it
+exactly once:
+  - successful setup
+  - auth failure
+  - user cancellation of the picker
+  - unexpected exception
+  - reauth success and failure
+"""
 
 from __future__ import annotations
 
@@ -13,7 +59,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .api import InverterApiClient, InverterAuthError
+from .api import InverterApiClient, InverterAuthError, InverterApiError
 from .hems.predictive_control import parse_predictive_options
 from .const import (
     CONF_EMAIL,
@@ -43,95 +89,120 @@ def _predictive_schema(current):
     }
 
 
+def _str_device_label(d: dict[str, Any]) -> str:
+    """Format a device dict for the picker.
+    All fields are coerced to string so
+    a numeric ``id`` or ``stationId``
+    cannot crash the option label.
+    """
+    dev_id = str(d.get("id", "?"))
+    station = str(d.get("stationId", "?"))
+    # Use ``isFinite``-safe formatting: a
+    # non-numeric or NaN value renders as
+    # ``0.0 kWh`` (a placeholder, NOT
+    # the live daily total).
+    try:
+        daily = float(d.get("dailyProducedQuantity", 0))
+        if not _is_finite(daily):
+            daily = 0.0
+    except (TypeError, ValueError):
+        daily = 0.0
+    return f"{dev_id} — station {station} — {daily:.1f} kWh today"
+
+
+def _is_finite(v: Any) -> bool:
+    if v is None:
+        return False
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return False
+    return f == f  # NaN check (NaN != NaN)
+
+
 class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Smart Solar Inverter."""
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        # Pending state for the multi-step
+        # flow. Cleared in every exit path.
+        # NEVER stored on ``self`` after
+        # ``async_create_entry``.
+        self._pending_api: InverterApiClient | None = None
+        self._pending_devices: list[dict[str, Any]] = []
+        self._pending_email: str | None = None
+        self._pending_password: str | None = None
+        self._pending_predictive: dict[str, Any] | None = None
+        # True if the reauth flow is
+        # running. ``_get_reauth_entry()``
+        # returns the entry being reauthed.
+        self._is_reauth: bool = False
+
+    async def _cleanup_pending(self) -> None:
+        """Close the pending client (if
+        any) and clear all pending state.
+        Called from every exit path
+        (success, error, cancel).
+        """
+        api = self._pending_api
+        self._pending_api = None
+        self._pending_devices = []
+        self._pending_email = None
+        self._pending_password = None
+        self._pending_predictive = None
+        if api is not None:
+            try:
+                await api.close()
+            except Exception:  # noqa: BLE001
+                # The client may have a closed
+                # session already; ignore.
+                _LOGGER.debug("pending api close failed", exc_info=True)
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the initial step.
+        """Credentials step.
 
-        R07 multi-device flow:
-          1. credentials step (existing)
-          2. authenticate + fetch device list
-          3. if account has >1 device, present
-             a "select_device" step and require
-             an explicit choice
-          4. selected device is persisted in
-             ``entry.data['selected_device_sn']``
-             and used by every subsequent
-             auth / re-auth / re-load cycle.
+        R07 follow-up contract:
+          1. Validate the credentials
+             schema.
+          2. Build a client with NO
+             ``selected_device_sn`` and
+             call ``authenticate()`` (no
+             preference). The login MUST
+             succeed before we fetch the
+             device list.
+          3. After login, fetch the device
+             list with NO preference. The
+             fetch must SUCCEED even when
+             the account has multiple
+             devices — the multi-device
+             guard in ``_fetch_device_list``
+             only triggers when a specific
+             ``selected_device_sn`` is
+             passed.
+          4. Single-device accounts:
+             auto-bind. Multi-device
+             accounts: cache the list on
+             ``self`` and proceed to
+             ``async_step_select_device``.
+          5. The client is closed on every
+             exit path (success, error,
+             cancel) by ``_cleanup_pending``.
+
+        ID normalisation: every device id
+        is coerced to a string before it
+        is stored in
+        ``entry.data['selected_device_sn']``
+        so the equality check at
+        ``async_step_select_device`` does
+        not depend on the JSON numeric /
+        string type returned by the API.
         """
-        errors: dict[str, str] = {}
-
         if user_input is not None:
-            email = user_input[CONF_EMAIL]
-            password = user_input[CONF_PASSWORD]
-            try:
-                predictive_options = parse_predictive_options(user_input)
-            except ValueError:
-                return self.async_show_form(step_id="user", data_schema=vol.Schema({
-                    vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str,
-                    **_predictive_schema(user_input),
-                }), errors={"base": "invalid_predictive_options"})
-
-            # Validate credentials
-            api = InverterApiClient(email=email, password=password)
-            try:
-                ok = await api.authenticate()
-            except InverterAuthError as exc:
-                errors["base"] = "auth_failed"
-                _LOGGER.error("Auth failed: %s", exc)
-            except Exception as exc:
-                errors["base"] = "auth_failed"
-                _LOGGER.exception("Unexpected auth error: %s", exc)
-            else:
-                if not ok:
-                    errors["base"] = "no_device"
-                else:
-                    # R07: if the account has more
-                    # than one device, the user
-                    # MUST pick one. We stash the
-                    # authenticated client on
-                    # ``self`` so the next step
-                    # can re-use it without a
-                    # second login.
-                    if api._account_device_count > 1:
-                        self._pending_api = api
-                        self._pending_email = email
-                        self._pending_password = password
-                        self._pending_predictive = (
-                            predictive_options
-                        )
-                        return await self.async_step_select_device()
-                    # Single device: bind to it
-                    # automatically. We still
-                    # persist the choice in
-                    # ``data`` so the integration
-                    # re-binds to the same device
-                    # across reloads.
-                    chosen_sn = api.device_sn
-                    if not chosen_sn:
-                        errors["base"] = "no_device"
-                    else:
-                        await api.close()
-                        await self.async_set_unique_id(chosen_sn)
-                        self._abort_if_unique_id_configured()
-
-                        return self.async_create_entry(
-                            title=f"Solar Inverter ({chosen_sn})",
-                            options={**predictive_options, "predictive_mode": predictive_options["predictive_default_mode"].lower()},
-                            data={
-                                CONF_EMAIL: email,
-                                CONF_PASSWORD: password,
-                                "selected_device_sn": chosen_sn,
-                            },
-                        )
-            finally:
-                if "api" in dir(self) and getattr(self, "_pending_api", None) is not api:
-                    await api.close()
+            return await self._handle_user_submit(user_input)
 
         return self.async_show_form(
             step_id="user",
@@ -150,68 +221,199 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     **_predictive_schema({}),
                 }
             ),
-            errors=errors,
+            errors={},
         )
+
+    async def _handle_user_submit(
+        self, user_input: dict[str, Any]
+    ) -> FlowResult:
+        """The submit handler for the
+        credentials step. Extracted so it
+        can be unit-tested in isolation.
+        """
+        errors: dict[str, str] = {}
+        email = user_input[CONF_EMAIL]
+        password = user_input[CONF_PASSWORD]
+        try:
+            predictive_options = parse_predictive_options(user_input)
+        except ValueError:
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema({
+                    vol.Required(CONF_EMAIL): str,
+                    vol.Required(CONF_PASSWORD): str,
+                    **_predictive_schema(user_input),
+                }),
+                errors={"base": "invalid_predictive_options"},
+            )
+
+        # Phase 1: login with the
+        # device-list call SKIPPED. We
+        # need the access token to call
+        # the device-list endpoint, but
+        # we MUST NOT raise on
+        # multi-device-no-preference
+        # here. The picker step uses the
+        # cached list. ``skip_device_list``
+        # is a production-API flag added
+        # in R07 follow-up for exactly
+        # this case.
+        api = InverterApiClient(email=email, password=password)
+        self._pending_api = api
+        self._pending_email = email
+        self._pending_password = password
+        self._pending_predictive = predictive_options
+        try:
+            try:
+                await api.authenticate(skip_device_list=True)
+            except InverterAuthError as exc:
+                _LOGGER.error("Auth failed: %s", exc)
+                errors["base"] = "auth_failed"
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=vol.Schema({
+                        vol.Required(CONF_EMAIL): str,
+                        vol.Required(CONF_PASSWORD): str,
+                        **_predictive_schema(user_input),
+                    }),
+                    errors=errors,
+                )
+            except InverterApiError as exc:
+                _LOGGER.error("API error during login: %s", exc)
+                errors["base"] = "auth_failed"
+                return self.async_show_form(
+                    step_id="user",
+                    data_schema=vol.Schema({
+                        vol.Required(CONF_EMAIL): str,
+                        vol.Required(CONF_PASSWORD): str,
+                        **_predictive_schema(user_input),
+                    }),
+                    errors=errors,
+                )
+
+            # Phase 2: device list. We
+            # ``_list_devices`` (returns the
+            # raw list without binding). The
+            # auth client is kept alive on
+            # ``self._pending_api`` so the
+            # picker step can re-use it
+            # without a second login.
+            devices = await api._list_devices()
+        finally:
+            # ``_pending_api`` retains the
+            # client; close it ONLY on the
+            # error path (the success path
+            # closes via ``_cleanup_pending``
+            # inside ``async_step_select_device``
+            # or directly below).
+            if errors:
+                await self._cleanup_pending()
+
+        if not devices:
+            await self._cleanup_pending()
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema({
+                    vol.Required(CONF_EMAIL): str,
+                    vol.Required(CONF_PASSWORD): str,
+                    **_predictive_schema(user_input),
+                }),
+                errors={"base": "no_device"},
+            )
+
+        # Normalise ids to string. The API
+        # sometimes returns numeric ids; we
+        # coerce so the picker equality
+        # check does not depend on type.
+        norm_devices: list[dict[str, Any]] = []
+        for d in devices:
+            norm_devices.append({
+                **d,
+                "id": str(d.get("id", "")),
+                "stationId": str(d.get("stationId", "")),
+            })
+        self._pending_devices = norm_devices
+
+        # Phase 3: single-device auto-bind
+        # or multi-device picker.
+        if len(norm_devices) == 1:
+            chosen_sn = norm_devices[0]["id"]
+            return await self._finalize_entry(chosen_sn)
+
+        # Multi-device: proceed to picker.
+        return await self.async_step_select_device()
 
     async def async_step_select_device(
         self, user_input: dict[str, Any] | None = None,
     ) -> FlowResult:
-        """R07: present the operator with the
-        list of devices on the account and
-        require an explicit choice.
-        """
-        api = getattr(self, "_pending_api", None)
-        if api is None:
-            # No authenticated client — send
-            # the user back to the credentials
-            # step.
-            return self.async_step_user()
-        # Re-fetch the device list to make
-        # sure the choices are fresh.
-        try:
-            await api._fetch_device_list(None)
-        except Exception as exc:
-            _LOGGER.error("Device list refresh failed: %s", exc)
-            await api.close()
-            return self.async_step_user()
+        """Picker step. Only reached when the
+        account has more than one device.
 
-        devices = await api._list_devices()
-        if not devices:
-            await api.close()
-            return self.async_step_user()
+        R07 follow-up:
+          - We do NOT call
+            ``_fetch_device_list`` here —
+            the list was already retrieved
+            during ``async_step_user`` and
+            is cached on
+            ``self._pending_devices``.
+          - We do NOT auto-fall-back to
+            ``devices[0]`` when the operator
+            cancels or submits an invalid
+            id. Invalid submission shows an
+            error and lets the user retry.
+          - The pending client is closed
+            in every exit path via
+            ``_cleanup_pending``.
+
+        Returns ``FlowResult``, NOT the
+        raw coroutine from
+        ``async_step_user`` (the previous
+        implementation returned the
+        coroutine directly, which Home
+        Assistant cannot await).
+        """
+        devices = self._pending_devices
+        if not devices or self._pending_api is None:
+            # Pending state lost (e.g. the
+            # operator refreshed the page
+            # mid-flow). Send them back to
+            # the credentials step.
+            await self._cleanup_pending()
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema({
+                    vol.Required(CONF_EMAIL): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.EMAIL,
+                        )
+                    ),
+                    vol.Required(CONF_PASSWORD): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
+                        )
+                    ),
+                    **_predictive_schema({}),
+                }),
+                errors={"base": "no_device"},
+            )
 
         errors: dict[str, str] = {}
         if user_input is not None:
-            chosen = user_input.get("selected_device_sn")
-            if not chosen or chosen not in [
-                d["id"] for d in devices
-            ]:
+            chosen_raw = user_input.get("selected_device_sn")
+            # Normalise: coerce to str, strip
+            # whitespace. The API can return
+            # either a number or a string,
+            # and the operator can type either
+            # in the form. Both must work.
+            chosen = str(chosen_raw).strip() if chosen_raw is not None else ""
+            valid_ids = {d["id"] for d in devices}
+            if not chosen or chosen not in valid_ids:
                 errors["base"] = "invalid_device"
             else:
-                email = self._pending_email
-                password = self._pending_password
-                predictive_options = self._pending_predictive
-                await api.close()
-                await self.async_set_unique_id(chosen)
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=f"Solar Inverter ({chosen})",
-                    options={**predictive_options, "predictive_mode": predictive_options["predictive_default_mode"].lower()},
-                    data={
-                        CONF_EMAIL: email,
-                        CONF_PASSWORD: password,
-                        "selected_device_sn": chosen,
-                    },
-                )
+                return await self._finalize_entry(chosen)
 
-        # Build a Select selector with one row
-        # per device.
         device_options = {
-            d["id"]: (
-                f"{d['id']} — station {d.get('stationId', '?')}"
-                f" — {d.get('dailyProducedQuantity', 0):.1f} kWh today"
-            )
-            for d in devices
+            d["id"]: _str_device_label(d) for d in devices
         }
         return self.async_show_form(
             step_id="select_device",
@@ -221,44 +423,173 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
+    async def _finalize_entry(
+        self, chosen_sn: str,
+    ) -> FlowResult:
+        """Create the config entry with the
+        normalised ``selected_device_sn``
+        and clean up the pending client.
+        """
+        email = self._pending_email
+        password = self._pending_password
+        predictive_options = self._pending_predictive
+        if not email or not password or not predictive_options:
+            await self._cleanup_pending()
+            return self.async_show_form(
+                step_id="user",
+                data_schema=vol.Schema({
+                    vol.Required(CONF_EMAIL): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.EMAIL,
+                        )
+                    ),
+                    vol.Required(CONF_PASSWORD): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
+                        )
+                    ),
+                    **_predictive_schema({}),
+                }),
+                errors={"base": "no_device"},
+            )
+        await self._cleanup_pending()
+        await self.async_set_unique_id(chosen_sn)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=f"Solar Inverter ({chosen_sn})",
+            options={
+                **predictive_options,
+                "predictive_mode": predictive_options["predictive_default_mode"].lower(),
+            },
+            data={
+                CONF_EMAIL: email,
+                CONF_PASSWORD: password,
+                "selected_device_sn": chosen_sn,
+            },
+        )
+
     @staticmethod
     @callback
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> InverterOptionsFlow:
+    ) -> "InverterOptionsFlow":
         """Create the options flow."""
         return InverterOptionsFlow()
 
     async def async_step_reauth(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle re-authentication when the token expires."""
-        errors: dict[str, str] = {}
+        """Re-authentication when the token
+        expires.
+
+        R07 follow-up contract:
+          - The client's ``selected_device_sn``
+            is the saved operator choice
+            (from ``entry.data``). It is
+            NEVER omitted. A legacy entry
+            without ``selected_device_sn``
+            uses the entry's own
+            ``unique_id`` (which IS the
+            device_sn, set by HA) as the
+            identity guard.
+          - The new client authenticates
+            with the saved device preference.
+          - If the saved device is missing
+            from the new account, the
+            reauth FAILS without touching
+            ``entry.data``, the unique id,
+            or the binding. The operator
+            must add a new entry instead.
+          - On success, ``entry.data`` is
+            updated with the new
+            credentials AND the saved
+            ``selected_device_sn`` is
+            preserved. Other entry.data
+            fields are preserved by
+            spreading ``entry.data`` into
+            the update.
+        """
         entry = self._get_reauth_entry()
+        saved_sn = entry.data.get("selected_device_sn") or (
+            # Legacy entries: the unique id
+            # IS the device_sn. ``unique_id``
+            # is a property of the config
+            # entry in HA, set via
+            # ``async_set_unique_id``. We
+            # read it through the entry's
+            # public attribute.
+            getattr(entry, "unique_id", None)
+        )
 
         if user_input is not None:
             email = user_input.get(CONF_EMAIL, entry.data[CONF_EMAIL])
             password = user_input[CONF_PASSWORD]
-            api = InverterApiClient(email=email, password=password)
+            api = InverterApiClient(
+                email=email,
+                password=password,
+                selected_device_sn=saved_sn,
+            )
+            self._pending_api = api
             try:
-                ok = await api.authenticate()
-            except InverterAuthError:
-                errors["base"] = "auth_failed"
-            else:
-                if ok and api.device_sn:
-                    await api.close()
-                    self.hass.config_entries.async_update_entry(
-                        entry,
-                        data={
-                            CONF_EMAIL: email,
-                            CONF_PASSWORD: password,
-                        },
+                try:
+                    await api.authenticate()
+                except (InverterAuthError, InverterApiError):
+                    # Auth failed OR the
+                    # selected device is
+                    # missing. The
+                    # ``InverterApiError`` is
+                    # raised by
+                    # ``_fetch_device_list``
+                    # when the preference
+                    # is not in the list.
+                    # Either way: the saved
+                    # binding is preserved
+                    # and the operator must
+                    # reconfigure.
+                    return self.async_show_form(
+                        step_id="reauth",
+                        data_schema=vol.Schema(
+                            {
+                                vol.Optional(
+                                    CONF_EMAIL,
+                                    default=entry.data.get(CONF_EMAIL, ""),
+                                ): selector.TextSelector(
+                                    selector.TextSelectorConfig(
+                                        type=selector.TextSelectorType.EMAIL,
+                                    )
+                                ),
+                                vol.Required(CONF_PASSWORD): selector.TextSelector(
+                                    selector.TextSelectorConfig(
+                                        type=selector.TextSelectorType.PASSWORD,
+                                    )
+                                ),
+                            }
+                        ),
+                        errors={"base": "reauth_failed_device_missing"},
                     )
-                    await self.hass.config_entries.async_reload(entry.entry_id)
-                    return self.async_abort(reason="reauth_successful")
-                errors["base"] = "auth_failed"
+                # Success: the saved device
+                # was found. Persist the new
+                # credentials AND the saved
+                # ``selected_device_sn``.
+                new_data = {
+                    **entry.data,
+                    CONF_EMAIL: email,
+                    CONF_PASSWORD: password,
+                }
+                # If ``entry.data`` did not
+                # have ``selected_device_sn``,
+                # we add it from the legacy
+                # unique_id.
+                if "selected_device_sn" not in new_data and saved_sn:
+                    new_data["selected_device_sn"] = str(saved_sn)
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data=new_data,
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
             finally:
-                await api.close()
+                await self._cleanup_pending()
 
         return self.async_show_form(
             step_id="reauth",
@@ -279,7 +610,7 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
-            errors=errors,
+            errors={},
         )
 
 

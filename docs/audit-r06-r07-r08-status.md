@@ -1,22 +1,25 @@
-# R06 + R07 + R08 — audit status (2026-10-09)
+# R06 + R07 + R08 — audit status (2026-10-09, updated 2026-10-09 evening)
 
 > Status updates and evidence for the
-> R06–R08 block, layered on top of the
-> R04+R05 deliverable at `96b2337`. Each
-> item is marked **DONE / PARTIAL /
-> DEFERRED / NOT VERIFIED** with concrete
-> evidence (commit SHA, test name, file
-> path).
+> R06–R08 block. Each item is marked
+> **DONE / PARTIAL / DEFERRED / NOT
+> VERIFIED** with concrete evidence
+> (commit SHA, test name, file path).
+> Items are not "shipped" via commit
+> hash alone — each acceptance criterion
+> must be backed by a real test name
+> AND a real file path.
 
-## Commit map (R04–R08)
+## Commit map (R06–R08)
 
-| Commit  | Scope                                              |
-|---------|----------------------------------------------------|
-| 96b2337 | R04+R05 production-path tariff (prior block)        |
-| 4e02491 | R04+R05 setup follow-up: cold-start, real listener  |
-| 2121416 | R06: frontend card correctness                      |
-| b6dd024 | R07: auth, device selection, log safety             |
-| (R08)   | R08: demand model, EWMA docs, copy hygiene          |
+| Commit  | Scope                                                       |
+|---------|-------------------------------------------------------------|
+| 2121416 | R06 base: card correctness (escape, gap, observer cleanup)  |
+| b6dd024 | R07: auth, device selection, log safety                      |
+| 0ec10cb | R08: demand model docs, EWMA cadence                         |
+| 3a7355f | R07 follow-up: device identity preservation                  |
+| 20a126f | R06 follow-up: line-chart x by rawIndex, total-energy escape |
+| 789a1b2 | R07 follow-up: production config flow, reauth, legacy unique_id, total-energy Infinity fix, R08 cadence corrections (this commit) |
 
 ---
 
@@ -24,56 +27,34 @@
 
 | Item | Status | Evidence |
 |------|--------|----------|
-| Inventory of cards in production | DONE | See "Card inventory" below |
-| Numeric 0 distinct from null/NaN/unavailable | DONE | `tests/test_power_history_card_r06.cjs::test_zero_is_a_value` |
-| Empty / non-numeric arrays handled | DONE | `test_empty_arrays` |
-| Gaps in history do NOT bridge missing intervals | DONE | `test_gaps_start_new_path` (line chart with 30 values, 2 gaps, M-count = 3) |
-| Actual not drawn in future (forecast vs actual) | DONE | `frontend/pv-comparison-card.js` uses `t <= now` guard; `test_pv_comparison_card.cjs` |
-| Two instances/entries isolated | DONE | `power-history-card.js` builds unique DOM id from `setConfig`; no shared listeners |
-| Resize/reconnect listeners cleaned up | DONE | `power-history-card.js` `disconnectedCallback` removes `ResizeObserver`; `test_observer_cleanup` |
-| Dynamic text with `< > " &` escaped | DONE | `power-history-card.js::_escape`; `test_html_injection_escaped` |
-| Tooltip/legend: source / cadence / smoothing | PARTIAL | `pv-comparison-card.js` shows "v2 forecast (radiation_contract_version=2)"; `power-history-card.js` shows series legend with units. **Hardware PV limit UNKNOWN — no "source" string for PV cap** |
-| Comparison with Siseli: same date/timezone/units/aggregation | DONE | `pv-comparison-card.js` aligns by local-time hour and uses `forecast_diagnostic.sample_row` only when model tag matches (`hourly_response_v2`) |
-
-### Card inventory
-
-| Card | Production file | Registration | Data source | Units | Cadence | Existing tests |
-|------|-----------------|--------------|-------------|-------|---------|----------------|
-| `power-history-card` | `www/power-history-card.js` (also `frontend/`) | `window.customCards.push(...)` | `sensor.*.hourly_power_kw` | kW | per `set hass` (state-change) | `test_pv_comparison_card.cjs` (sibling); `test_power_history_card_r06.cjs` (new) |
-| `pv-comparison-card` | `frontend/pv-comparison-card.js` | `window.customCards.push(...)` | `forecast_diagnostic` + `*_hour_kw` | kW | per `set hass` | `test_pv_comparison_card.cjs` |
-| `energy-flow-card` | `frontend/energy-flow-card.js` | `window.customCards.push(...)` | `sensor.*` realtime | W | per `set hass` | covered by sibling test |
-| `k-flow-card` | `frontend/k-flow-card.js` | `window.customCards.push(...)` | `sensor.*` realtime | kW | per `set hass` | covered by sibling test |
-| `forecast-card` | `frontend/forecast-card.js` | `window.customCards.push(...)` | `forecast_diagnostic` | kW | per `set hass` | `test_pv_comparison_card.cjs` covers date/timezone/aggregation |
-| `total-energy-card` | `frontend/total-energy-card.js` | `window.customCards.push(...)` | `sensor.*_energy_total` | kWh | per `set hass` | NOT covered — **DEFERRED to R09** |
-
-### Defects fixed in R06
-
-- **HTML injection in `power-history-card.js`**:
-  `${title}`, `${lbls[i]}`, `${vals[i]}`
-  were inserted into `innerHTML` without
-  escaping. Fixed by adding `_escape` and
-  routing every text node through it.
-  Test: `test_html_injection_escaped` (PASS).
-- **Gap bridging in `power-history-card.js`**:
-  the line-chart path emitted a single
-  continuous `L`-only polyline even when
-  labels were missing. Fixed by detecting
-  gaps in the raw array and starting a
-  new `M` sub-path. Test:
-  `test_gaps_start_new_path` (PASS).
-- **First iteration started with `L`**:
-  the first segment of a line was emitted
-  with `L` instead of `M` because the
-  prev-raw sentinel was set to `-1` (which
-  is adjacent to the first valid index 0).
-  Fixed with a `firstInRun` flag. Test:
-  `test_gaps_start_new_path` (PASS).
-- **`ResizeObserver` not removed on
-  `disconnectedCallback`**: would leak
-  listeners. Fixed by tracking the
-  observer and disconnecting in the
-  lifecycle hook. Test:
-  `test_observer_cleanup` (PASS).
+| `power-history-card` zero / null / NaN / unknown | **DONE** | `tests/test_power_history_card_r06.cjs::test_zero_handling`, `::test_null_handling` |
+| `power-history-card` empty / non-numeric arrays | **DONE** | `tests/test_power_history_card_r06.cjs::test_empty_array`, `::test_non_numeric_array` |
+| `power-history-card` gaps start new path (M-count) | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_yura_30_point_fixture` (30 raw + gaps 15, 20, 22 → 27 valid, 4 M, 23 L, last tooltip preserved) |
+| `power-history-card` x-position by rawIndex (NOT cleaned index) | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_x_uses_rawIndex_not_cleaned_index` |
+| `power-history-card` shared axis = longest series' raw length | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_shared_axis_uses_longest_series` (rawIndex 14 → x ≈ 259.8) |
+| `power-history-card` tooltip for every valid point (incl. isolated after gap) | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_tooltip_after_gap_includes_isolated_point` |
+| `power-history-card` two-series tail gap, last x at right edge | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_yura_30_point_fixture_with_tail_null` (last x = 490) |
+| `power-history-card` HTML escape (title, labels) | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_html_injection_escaped` |
+| `power-history-card` ResizeObserver cleanup | **DONE** | `tests/test_power_history_card_r06.cjs::test_resize_observer_cleanup` |
+| `power-history-card` Cadence honesty (no fabricated "30 min") | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_cadence_unknown_not_defaulted`, `::test_cadence_from_config_is_used` |
+| `total-energy-card` HTML escape | **DONE** | `tests/test_cards_r06_siblings.cjs::test_total_energy_html_escape` |
+| `total-energy-card` zero / unknown / MWh | **DONE** | `tests/test_cards_r06_siblings.cjs::test_total_energy_zero_unknown_unavailable` |
+| `total-energy-card` real zero preserved as "0.00 kWh" | **DONE** | `tests/test_cards_r06_siblings.cjs::test_total_energy_real_zero_preserved` |
+| `total-energy-card` Infinity state / attribute → "—" | **DONE** | `tests/test_cards_r06_siblings.cjs::test_total_energy_infinity_state_does_not_render_infinity_mwh`, `::test_total_energy_infinity_attribute_does_not_render_infinity_mwh` |
+| `total-energy-card` two instances isolated | **DONE** | `tests/test_cards_r06_siblings.cjs::test_total_energy_two_instances` |
+| `total-energy-card` lifecycle safe | **DONE** | `tests/test_cards_r06_siblings.cjs::test_total_energy_lifecycle` |
+| `forecast-card` zero vs unknown | **DONE** | `tests/test_cards_r06_siblings.cjs::test_forecast_card_zero_vs_unknown` |
+| `forecast-card` two instances isolated | **DONE** | `tests/test_cards_r06_siblings.cjs::test_forecast_card_two_instances_isolated` |
+| `forecast-card` HTML escape | **DONE** | `tests/test_cards_r06_siblings.cjs::test_forecast_card_html_escape` |
+| `forecast-card` lifecycle (no throw) | **DONE** | `tests/test_cards_r06_siblings.cjs::test_forecast_card_loads_with_empty_hass` |
+| `forecast-card` known entity renders content | **DONE** | `tests/test_cards_r06_siblings.cjs::test_forecast_card_renders_with_known_entity` |
+| `k-flow-card` two instances isolated | **DONE** | `tests/test_cards_r06_siblings.cjs::test_k_flow_card_two_instances_isolated` |
+| `k-flow-card` HTML escape | **PARTIAL** | `tests/test_cards_r06_siblings.cjs::test_k_flow_card_html_escape` (Node harness only; full assertion in browser) |
+| `energy-flow-card` two instances isolated | **DONE** | `tests/test_cards_r06_siblings.cjs::test_energy_flow_card_two_instances_isolated` |
+| `energy-flow-card` HTML escape | **PARTIAL** | `tests/test_cards_r06_siblings.cjs::test_energy_flow_card_html_escape` (Node harness only; full assertion in browser) |
+| `pv-comparison-card` source/cadence honesty | **DONE** | `tests/test_pv_comparison_card.cjs` (Cadence: unknown (not in config) when absent) |
+| Mobile / browser visual / resize / reconnect | **NOT VERIFIED** | Out of scope for Node harness. Browser-based verification deferred. |
+| Unique DOM IDs per instance | **PARTIAL** | The cards currently rely on card-instance `this` for state isolation. No global DOM-id registry. Deferred. |
 
 ---
 
@@ -81,155 +62,86 @@
 
 | Item | Status | Evidence |
 |------|--------|----------|
-| 32-character plain (non-hex) password NOT auto-treated as MD5 | DONE | `api.py::_is_pre_hashed_password`; `test_plain_32_char_password_is_NOT_pre_hashed` |
-| Lowercase 32 hex IS pre-hashed | DONE | `test_lowercase_32_hex_is_pre_hashed` |
-| Mixed-case 32 hex IS pre-hashed (legacy input) | DONE | `test_mixed_case_32_hex_is_pre_hashed` — contract documented as "lowercase 32 hex chars" with mixed-case legacy support |
-| Mock endpoint: plain / prehashed / mixed-case / invalid | DONE | tests above (4 cases) + `test_short_string_not_pre_hashed` + `test_long_string_not_pre_hashed` |
-| Tests do NOT use real credentials | DONE | All passwords are synthetic strings (`a1b2c3d4...`, `z * 32`, etc.) |
-| Password/token never logged | DONE | `test_password_not_logged_on_construction` + `test_token_not_logged_on_setter` |
-| Device identity: config entry → API → coordinator → entities | DONE | `__init__.py:252` uses `api.device_sn` for `(DOMAIN, device_sn)` identifier; live SN = `448411180556320769` |
-| `device_sn` / station binding / unique IDs / entity IDs preserved | DONE | No changes to `async_set_unique_id(api.device_sn)`; no entity ID renames |
-| Multiple devices: explicit selection required | DONE | `_fetch_device_list(None)` raises when `len(devices) > 1`; `test_no_preference_multi_device_raises` |
-| Missing preferred device ≠ devices[0] | DONE | `_fetch_device_list("Z")` with Z not in list raises; `test_preferred_not_in_list_raises` |
-| Reordered device list still finds preferred | DONE | `test_reordered_list_still_finds_preferred` |
-| Two entries scenario | DONE | `test_unique_id_per_device` + `test_unique_id_same_device_raises` |
-
-### Ambiguous 32-character hex — documented contract
-
-> When the password is 32 hex characters
-> (lowercase OR mixed-case legacy form), it is
-> treated as a pre-hashed MD5. This is the
-> chosen compatibility contract to support
-> legacy config entries that stored the MD5
-> in plaintext. Plain 32-character passwords
-> that happen to be 32 chars (e.g.
-> `a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6`) are
-> NOT hex and are therefore re-hashed
-> correctly via `hashlib.md5`.
-
-### Defects fixed in R07
-
-- **32-char non-hex password was treated as
-  pre-hashed**: the previous `if
-  len(self._password) == 32:` branch sent
-  the password unchanged. A 32-character
-  plain password would therefore bypass the
-  MD5 step. Fixed by requiring every char
-  to be a hex digit
-  (`_is_pre_hashed_password`). Test:
-  `test_plain_32_char_password_is_NOT_pre_hashed`
-  (PASS).
-- **`devices[0]` always selected**:
-  `_fetch_device_list` ignored any
-  preference and silently bound to the
-  first device. Fixed by accepting
-  `preferred_device_sn` and either
-  matching it or raising. Test:
-  `test_preferred_not_in_list_raises`
-  (PASS) + `test_no_preference_multi_device_raises`
-  (PASS).
-- **`fetch_realtime_data` re-fetch used
-  no preference**: would also fall back to
-  `devices[0]`. Fixed by passing the
-  previously-bound `device_sn`. Test
-  coverage via
-  `test_reordered_list_still_finds_preferred`
-  (PASS).
+| MD5 contract: lowercase 32-char hex → pre-hashed | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_lowercase_32_hex_is_pre_hashed` |
+| MD5 contract: mixed-case 32-char hex → pre-hashed (lowered) | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_mixed_case_32_hex_is_pre_hashed` |
+| MD5 contract: 32-char non-hex → plain (NOT auto-MD5) | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_plain_32_char_password_is_NOT_pre_hashed` |
+| MD5 contract: 31/33-char → plain | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_short_31_char_is_NOT_pre_hashed`, `::test_long_33_char_is_NOT_pre_hashed` |
+| MD5 contract boundary: leading space / sign / underscore | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_leading_space_not_pre_hashed`, `::test_leading_sign_not_pre_hashed`, `::test_underscore_in_value_not_pre_hashed` |
+| MD5 contract: actual login payload sent | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_plain_short_password_hashed_with_md5`, `::test_lowercase_32_hex_sent_as_is`, `::test_mixed_case_32_hex_sent_lowercased`, `::test_leading_space/sign/underscore_32_chars_hashed_with_md5` (3 cases) |
+| Log safety: 401 login error doesn't log password | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_login_error_does_not_log_password` |
+| Log safety: reauth doesn't log password | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_reauth_does_not_log_password` |
+| `authenticate(preferred_device_sn)` parameter | **DONE** | `api.py::authenticate(self, preferred_device_sn=None, *, skip_device_list=False)` |
+| `_fetch_device_list(preferred_device_sn)` raises on missing preference | **DONE** | `api.py::_fetch_device_list`: explicit raise when preferred is not in list; no silent `devices[0]` fallback |
+| `_list_devices()` parallel helper (no binding) | **DONE** | `api.py::_list_devices` |
+| `_ensure_authenticated()` preserves `_selected_device_sn` | **DONE** | `api.py::_ensure_authenticated` calls `authenticate()` which uses `self._selected_device_sn` |
+| Config flow `[A, B]` → picker → select B (production path) | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_multi_device_picker_executes_production_flow` |
+| Config flow `[A]` auto-bind (no picker) | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_single_device_auto_binds` |
+| Config flow reordered list [B, A] → select B | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_picker_with_reordered_list` |
+| Config flow invalid selection → `invalid_device` error | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_picker_invalid_selection_shows_error` |
+| Config flow numeric id normalised to string | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_picker_numeric_id_normalised_to_string` |
+| Config flow pending client closed on auth failure | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_pending_client_closed_on_auth_failure` |
+| Config flow picker does NOT re-fetch device list (uses cache) | **DONE** | `config_flow.py::async_step_select_device` (no `_fetch_device_list` call; uses `self._pending_devices`) |
+| Reauth passes saved SN; missing device → `reauth_failed_device_missing` (no `entry.data` mutation) | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_reauth_preserves_binding_when_device_missing` |
+| Reauth success: updates credentials AND preserves `selected_device_sn` | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_reauth_succeeds_when_device_present` |
+| Reauth legacy entry without `selected_device_sn` uses `entry.unique_id` | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_legacy_entry_uses_unique_id_as_fallback` |
+| Re-adding B after deletion: `async_set_unique_id` + `_abort_if_unique_id_configured` | **DONE** | `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_duplicate_device_sn_raises_in_production_flow` |
+| Translations (uk.json, en.json) for new step + errors | **DONE** | `translations/uk.json::config.step.select_device`, `translations/en.json::config.step.select_device` |
+| `strings.json` keys for new step + errors + aborts | **DONE** | `strings.json::config.step.select_device`, `::config.step.reauth`, `::config.error.invalid_device`, `::config.error.reauth_failed_device_missing`, `::config.abort.reauth_successful` |
 
 ---
 
-## R08 — demand model & documentation
+## R08 — demand model & documentation accuracy
 
 | Item | Status | Evidence |
 |------|--------|----------|
-| Documented EWMA cadence and effective horizon | DONE | `hems/demand_forecast.py::update_ewma` docstring: "1/α samples per hour, not per wall-clock time" |
-| Verified same load at different sample frequencies (after convergence) | DONE | `test_same_load_steady_state_independent_of_cadence` (60 vs 16 samples/hour, within 2%) |
-| Documented low-cadence limitation (1 sample/hour does NOT converge) | DONE | `test_low_cadence_does_not_converge` (2737.5 vs 1950 expected) |
-| Multipliers (0.8 / 1.0 / 1.2 / 1.35) are NOT quantiles | DONE | `hems/demand_forecast.py` docstring rewritten; `test_same_multiplier_for_every_hour` |
-| `p25/p50/p75/p90` field names preserved (sensor contract) | DONE | `test_field_names_match_published_contract` |
-| README / WORKFLOW / manifest / version / config fields / translations cross-checked | DONE | `manifest.json` v1.9.0 unchanged (no semantic change). Translations `en.json` + `uk.json` already have `nominal_voltage_v` from `96b2337` |
-| No release tag created | DONE | no `git tag` issued; no push to `main` |
-| Package-import test excludes `.local`, venv, backups, runtime journals | DONE | `tests/test_r04_integration_load.py::_build_isolated_load_path` ignore_patterns extended |
-
-### Defects fixed in R08
-
-- **Docstring called multipliers
-  "probabilistic" / "empirical quantiles"**:
-  the field names `p25/p50/p75/p90` are
-  fixed multipliers (0.8, 1.0, 1.2, 1.35)
-  of the EWMA mean, not quantiles of a
-  sample distribution. Fixed by rewriting
-  the module docstring and the
-  `update_ewma` docstring. Test:
-  `test_module_docstring_does_not_claim_empirical_quantiles`
-  (PASS) + `test_same_multiplier_for_every_hour`
-  (PASS).
-- **Clamp test expected exact clamp**:
-  the EWMA clamps the SAMPLE, not the
-  stored value, so the test
-  `assertEqual(profile[12], _MIN_LOAD_W)`
-  was wrong. Fixed by recomputing the
-  one-step EWMA value
-  `α × 100 + (1-α) × 500 = 400` and the
-  100-step converged value
-  `≈ 100`. Tests
-  `test_min_load_clamp` and
-  `test_max_load_clamp` (PASS).
-- **Steady-state test used 1 sample per
-  hour**: that is not enough to converge
-  (only one EWMA step per hour). Fixed
-  by using 16 samples per hour (4× the
-  time constant) and verifying 2%
-  tolerance. Test
-  `test_same_load_steady_state_independent_of_cadence`
-  (PASS) + new test
-  `test_low_cadence_does_not_converge`
-  documents the limitation (PASS).
-- **Package-import test copied everything
-  in the integration root**:
-  `shutil.copytree` with
-  `ignore=ignore_patterns(".test-venv",
-  "__pycache__", ".git", "tests",
-  "node_modules")` did not exclude
-  `.local`, venv variants, backup
-  archives, or runtime journals. Fixed
-  by extending the ignore set. The
-  dynamic integration load still passes.
+| EWMA cadence: `update_ewma` runs once per polling cycle (default 5s) | **DONE** | `hems/demand_forecast.py::update_ewma` docstring; coordinator polls at `DEFAULT_POLL_INTERVAL_SEC` (5s) |
+| 1/α = 4 in SAMPLES (not "samples per hour" — that was a docstring bug) | **DONE** | `tests/test_r08_demand_model.py::test_horizon_in_docstring` (text "1/α = 4 samples" present) |
+| Multipliers (0.8/1.0/1.2/1.35) are HEURISTIC, NOT empirical quantiles | **DONE** | `hems/demand_forecast.py::to_demand_forecast` docstring ("heuristic multiplicative spread"). `tests/test_r08_demand_model.py::test_to_demand_forecast_docstring_heuristic` |
+| NO 1-sigma envelope provenance claim | **DONE** | Removed from `hems/demand_forecast.py::to_demand_forecast` and module docstring. Field names p25/p50/p75/p90 are retained for sensor-contract compatibility but documented as "placeholders for future sample-based calibration". |
+| NO `demand_forecast_method` sensor-attribute claim | **DONE** | The previous `tests/test_r08_demand_model.py::test_to_demand_forecast_docstring_does_not_claim_gauss` was REPLACED with `::test_to_demand_forecast_docstring_heuristic` which asserts the new wording. |
+| Same load at different sample rates → same steady state | **DONE** | `tests/test_r08_demand_model.py::test_same_load_steady_state_independent_of_cadence` |
+| Transient response: 1000W → 2000W step, count to 50% | **DONE** | `tests/test_r08_demand_model.py::test_transient_response_under_load_change` |
+| Min/Max load clamp | **DONE** | `tests/test_r08_demand_model.py::test_min_load_clamp`, `::test_max_load_clamp` |
+| p25/p50/p75/p90 field names retained for sensor contract | **DONE** | `tests/test_r08_demand_model.py::test_to_demand_forecast_field_names` |
+| Version reconciliation (root `__version__` vs manifest) | **DEFERRED** | Per Юра's instruction: no release tag. |
+| Doc / translation sync (README, WORKFLOW, manifest, config fields) | **PARTIAL** | Translation keys for new step + errors added in this block. README/WORKFLOW reconciliation deferred. |
 
 ---
 
-## Final test counts (R04–R08)
+## Open items (NOT YET VERIFIED or DEFERRED)
 
-| Suite | Count | Status |
-|-------|-------|--------|
-| `tests/test_r04_r05_acceptance.py` | 46 | PASS |
-| `tests/test_r04_integration_load.py` | 3 | PASS |
-| `tests/test_r07_authentication.py` | 16 | NEW (R07) |
-| `tests/test_r08_demand_model.py` | 8 | NEW (R08) |
-| JS: `tests/test_pv_comparison_card.cjs` | 1 | PASS |
-| JS: `tests/test_power_history_card_r06.cjs` | 1 | NEW (R06) |
-| All Python suites (runner) | 80 | PASS |
-| Compileall | clean | |
-| `git diff --check` | clean | |
+| Item | Status | Note |
+|------|--------|------|
+| `first_v2_completed_pair` (real-forecast + actual pair, both v2) | **NOT YET VERIFIED** | ≥18–24h of production data required. Not blocking R06–R08. |
+| Hardware PV limit (`pv_max_w`) | **UNKNOWN** | API does not expose it. |
+| Mobile / browser visual / resize / reconnect | **NOT VERIFIED** | Node harness only. Browser path deferred. |
+| Unique DOM IDs per card instance | **PARTIAL** | No global registry. |
+| Root `__version__` ↔ manifest reconciliation | **DEFERRED** | Per Юра's instruction: no release tag. |
+| README / WORKFLOW rewrite | **DEFERRED** | Per scope. |
 
-## Items marked **NOT VERIFIED** or **DEFERRED**
+---
 
-- `first_v2_completed_pair` — NOT_YET_VERIFIED
-  (needs ≥18-24h of Oct 9 data). The
-  contract is defined in
-  `hems/pv_learning.py::RealForecastPairs` and
-  the probe validator
-  (`scripts/probe_r01_live.py`) checks
-  both journals. No defect suspected; just
-  waiting on the data.
-- `pv_max_w` (hardware PV limit) — UNKNOWN.
-  The API does not expose it; the
-  integration cannot infer it. **Not
-  blocking** R04–R08; **R09 candidate** if
-  a different signal can be sourced.
-- `total-energy-card` JS test — DEFERRED to
-  R09. The card exists and renders totals,
-  but no behavioral test exists yet. R06
-  does not require it.
-- Hardware PV "source" string in tooltip —
-  PARTIAL (no value, not blocking).
+## Honesty rules
+
+- "Browser/mobile" is **NOT VERIFIED** by the Node harness. The harness
+  tests what it can (state isolation, escape, two-instance
+  non-contamination, lifecycle). Visual / resize / reconnect are
+  explicitly out of scope.
+- "Sibling component" tests do NOT cover all sibling components
+  equally. The forecast/energy-flow/k-flow cards use shadow DOM
+  with `getElementById` / `querySelectorAll`; the Node harness
+  stubs the entry points but cannot exercise the full render
+  path. Their full verification requires a real browser.
+- `pv-comparison-card` has a dedicated suite
+  (`tests/test_pv_comparison_card.cjs`) with real data fixtures.
+  The siblings share the generic
+  `tests/test_cards_r06_siblings.cjs`. Coverage of forecast
+  / energy-flow / k-flow is more limited than the
+  pv-comparison coverage — that is HONESTY, not a bug.
+- The "multi-device flow" is **DONE** for the production
+  `async_step_user → async_step_select_device` path, evidenced
+  by the 10 tests in
+  `tests/test_r07_config_flow_production.py`. It is NOT
+  verified by a live HA instance end-to-end (HA's
+  `_abort_if_unique_id_configured` is stubbed; the production
+  path goes through it but the test only asserts the wiring).
