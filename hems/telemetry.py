@@ -413,16 +413,38 @@ def build_planner_inputs(
                     hourly_weather.append(None)
 
     # ── Tariff schedule ────────────────────────────────────────────
+    # R05: invalid tariff values used to be silently
+    # replaced with 0.0 here, which then propagated as
+    # "free electricity" into the planner. A 0.0 tariff
+    # at the night window tells the planner to discharge
+    # during the cheapest hours — wrong. Refuse NaN,
+    # Infinity, boolean, negative, and out-of-range
+    # values, and propagate the failure via the
+    # returned ``tariff`` (an empty list) plus a
+    # ``tariff_source`` set to ``"fallback"``. The
+    # caller (coordinator) builds a sane default
+    # from the configured day/night rates when this
+    # happens.
     tariff: list[float] = []
+    tariff_source = "api"
     if tariff_schedule and len(tariff_schedule) >= 24:
         for v in tariff_schedule[:24]:
-            try:
-                fv = float(v)
-                if fv < 0 or fv > 50:
-                    fv = 0.0
-            except (TypeError, ValueError):
-                fv = 0.0
+            fv = _finite_number(v)
+            if fv is None or fv < 0.0 or fv > 50.0:
+                # Refuse the entire schedule. The
+                # caller will rebuild from day/night
+                # options or fall back to the
+                # documented defaults.
+                tariff = []
+                tariff_source = "fallback"
+                break
             tariff.append(fv)
+    if not tariff:
+        # No schedule supplied or every value was
+        # invalid — the caller must rebuild. We do
+        # NOT substitute 0.0 (that would mean
+        # "free electricity" to the planner).
+        tariff = []
 
     # ── Consumption history ────────────────────────────────────────
     # Audit T19 follow-up: telemetry must

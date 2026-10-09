@@ -44,13 +44,22 @@ def _normalize_charger(value: str | int | None) -> str | None:
 
 
 def _finite_number(value: Any) -> float | None:
-    """Unknown/nonfinite telemetry must never masquerade as a full battery."""
+    """Unknown/nonfinite telemetry must never masquerade as a full battery.
+
+    Returns ``None`` for anything that is not a real (non-bool)
+    number. Strings, even parseable ones like ``"230"``, are
+    refused: the production sources emit real floats, and a
+    string is the symptom of a corrupted HA option or a
+    bug in a future contributor's code. Rejecting parseable
+    strings at the gate keeps the failure mode obvious.
+    """
     if isinstance(value, bool):
         return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
+    if isinstance(value, str):
         return None
+    if not isinstance(value, (int, float)):
+        return None
+    number = float(value)
     return number if math.isfinite(number) else None
 
 

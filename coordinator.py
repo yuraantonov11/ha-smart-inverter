@@ -310,17 +310,33 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._hems._predictive_enabled = (
             self._predictive_tuning.predictive_mode in ("shadow", "assist")
         )
-        # Battery capacity in kWh — coordinator owns the input. Derive
-        # from Ah × nominal V (51.2V for typical LiFePO4) so the
-        # planner sees a real number, not the previous hardcoded 4.8.
-        try:
-            self._battery_capacity_kwh: float = (
-                float(entry.options.get("battery_capacity_ah", 230.0))
-                * 51.2
-                / 1000.0
-            )
-        except (TypeError, ValueError):
-            self._battery_capacity_kwh = 4.8
+        # R04: battery capacity derivation chain.
+        #
+        # The operator configures ``battery_capacity_ah`` and
+        # ``nominal_voltage_v`` (default 51.2 V — the typical
+        # LiFePO4 16S pack). The derived kWh = Ah × V / 1000.
+        #
+        # Reject NaN, Infinity, boolean, and non-numeric values
+        # for BOTH inputs. A capacity of 48000 kWh (typo) used
+        # to pass silently and let the planner pretend the
+        # battery can buffer 48 MWh overnight. We now refuse
+        # the configuration, fall back to the documented
+        # defaults (230 Ah, 51.2 V, 11.776 kWh), and surface
+        # the rejection in the diagnostic so the operator
+        # sees the reason.
+        cap = self._derive_battery_capacity(entry.options)
+        self._battery_capacity_ah = cap["ah"]
+        self._nominal_voltage_v = cap["voltage"]
+        self._battery_capacity_kwh = cap["kwh"]
+        self._capacity_input_warning = cap["warning"]
+        # R04: the inverter's PV-input max is NOT exposed by
+        # the powmr API and is not configurable. Leave the
+        # hardware limit unknown — the planner will not cap
+        # forecast power. Operators who know their
+        # inverter's PV-input max should extend the device
+        # config endpoint; that is a separate R04 acceptance
+        # gate that has not been done in this round.
+        self._inverter_pv_max_w = None
         self._hems_debug_day = None  # type: str | None
         self._hems_debug_decisions = 0
         self._hems_debug_commands = 0
@@ -449,8 +465,18 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._daily_battery_discharge_night_kwh: float = 0.0
         self._daily_savings_uah: float = 0.0
         self._monthly_savings_uah: float = 0.0
-        self._day_tariff_uah: float = float(entry.options.get("tariff_day", 4.32))
-        self._night_tariff_uah: float = float(entry.options.get("tariff_night", 2.16))
+        # R05: validate the day/night tariff options. NaN
+        # or out-of-range values used to pass silently and
+        # propagate through ``_build_tariff_schedule``.
+        from hems.engine import _finite_number
+        _day = _finite_number(entry.options.get("tariff_day", 4.32))
+        _night = _finite_number(entry.options.get("tariff_night", 2.16))
+        self._day_tariff_uah: float = (
+            4.32 if _day is None or not (0.0 <= _day <= 50.0) else _day
+        )
+        self._night_tariff_uah: float = (
+            2.16 if _night is None or not (0.0 <= _night <= 50.0) else _night
+        )
         # T06 follow-up: throttle write attempts so the per-cycle
         # 5 s cadence does not hammer ``async_update_entry`` (which
         # wakes up storage listeners and may race with the other
@@ -1774,18 +1800,29 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         separate day/night rates via options we still produce a
         sensible schedule so the planner has SOMETHING to look at.
         """
-        try:
-            day = float(self._day_tariff_uah)
-            night = float(self._night_tariff_uah)
-        except (TypeError, ValueError):
-            return [0.0] * 24
+        # R05: invalid day/night tariffs used to fall through
+        # the ``try/except`` and return ``[0.0] * 24``, which
+        # the planner read as "free electricity". A 0.0
+        # tariff at the night window tells the planner to
+        # discharge at night, which is the opposite of the
+        # operator's intent. Refuse NaN, Infinity, boolean,
+        # and non-numeric inputs and fall back to the
+        # documented Ukrainian defaults (4.32 day, 2.16
+        # night UAH/kWh).
+        from hems.engine import _finite_number
+        day_f = _finite_number(self._day_tariff_uah)
+        night_f = _finite_number(self._night_tariff_uah)
+        if day_f is None or day_f < 0.0 or day_f > 50.0:
+            day_f = 4.32
+        if night_f is None or night_f < 0.0 or night_f > 50.0:
+            night_f = 2.16
         # Ukraine TOU: night 23-07, day otherwise
         out: list[float] = []
         for h in range(24):
             if h >= 23 or h < 7:
-                out.append(night)
+                out.append(night_f)
             else:
-                out.append(day)
+                out.append(day_f)
         return out
 
     def _evaluate_grid(self, grid_voltage: float) -> tuple[bool, str]:
@@ -1872,6 +1909,48 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     def _is_daytime(now: datetime) -> bool:
         """Ukrainian two-zone tariff: day 07:00–23:00, night 23:00–07:00."""
         return 7 <= now.hour < 23
+
+    @staticmethod
+    def _derive_battery_capacity(options: dict) -> dict:
+        """R04: derive the battery capacity chain from options.
+
+        Returns a dict with keys ``ah``, ``voltage``, ``kwh``,
+        and ``warning`` (None when inputs are valid). The
+        defaults (230 Ah, 51.2 V) match the documented
+        LiFePO4 16S pack and the live deployment's
+        `entry.options` (no explicit battery_capacity_ah).
+
+        Valid range:
+          - ``battery_capacity_ah`` in [50, 1000]
+          - ``nominal_voltage_v``   in [10, 100]
+
+        Inputs that are NaN, Infinity, boolean, or
+        non-numeric fall back to the documented defaults
+        with a ``warning`` string so the operator sees the
+        reason in the diagnostic.
+        """
+        from hems.engine import _finite_number
+        DEFAULTS = {"ah": 230.0, "voltage": 51.2}
+        ah_raw = options.get("battery_capacity_ah", DEFAULTS["ah"])
+        v_raw = options.get("nominal_voltage_v", DEFAULTS["voltage"])
+        ah_f = _finite_number(ah_raw)
+        v_f = _finite_number(v_raw)
+        warning = None
+        if ah_f is None or v_f is None:
+            warning = f"non-finite capacity inputs: ah={ah_raw!r}, v={v_raw!r}"
+            ah_f, v_f = DEFAULTS["ah"], DEFAULTS["voltage"]
+        if not (50.0 <= ah_f <= 1000.0):
+            warning = f"battery_capacity_ah={ah_f} out of [50, 1000]"
+            ah_f = DEFAULTS["ah"]
+        if not (10.0 <= v_f <= 100.0):
+            warning = f"nominal_voltage_v={v_f} out of [10, 100]"
+            v_f = DEFAULTS["voltage"]
+        return {
+            "ah": ah_f,
+            "voltage": v_f,
+            "kwh": ah_f * v_f / 1000.0,
+            "warning": warning,
+        }
 
     def _accumulate_daily_energy(self, now: datetime, raw: dict[str, Any]) -> None:
         """Integrate samples into daily kWh totals.

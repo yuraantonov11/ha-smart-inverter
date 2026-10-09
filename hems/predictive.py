@@ -858,8 +858,20 @@ def simulate_24h(
         max_soc = 95.0
 
         # Decide output + charger
-        if (h - night_start) % 24 < night_duration:
-            # Night window
+        # R05: the previous ``elif 9 <= h <= 16`` gate made
+        # the planner ignore any positive PV forecast before
+        # 09:00 or after 16:00. Kyiv in late spring gets PV
+        # until ~21:00, and the autumn/winter PV tail is
+        # the most useful charging signal. Replace the
+        # wall-clock 9-16 gate with a physical-balance
+        # daylight decision: if ``pv_forecast > 0`` and
+        # we are not in the night-charge window, treat
+        # this as a "daylight hour" and let the
+        # surplus / balanced / low branches fire based
+        # on the actual PV vs. load balance.
+        is_night = (h - night_start) % 24 < night_duration
+        if is_night:
+            # Night window — keep the original logic.
             if soc < target_morning and charge_duration and (h - charge_start) % 24 < charge_duration:
                 # Need to charge
                 output = OutputPriority.USB
@@ -870,8 +882,10 @@ def simulate_24h(
                 output = OutputPriority.USB
                 charger = ChargerPriority.OSO
                 reason = f"night_idle: {charge_reason}" if soc < target_morning else "night_idle: SOC at target"
-        elif 9 <= h <= 16:
-            # Daylight window — PV available
+        elif pv_forecast > 0:
+            # Daylight hour (positive PV forecast AND not
+            # in night window). Use physical balance; do
+            # not gate on wall-clock hour.
             if pv_forecast > load_forecast * 1.2:
                 # Surplus — charge battery
                 output = OutputPriority.SBU
