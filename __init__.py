@@ -174,6 +174,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     api = InverterApiClient(
         email=entry.data["email"],
         password=entry.data["password"],
+        # R07: pass the operator's persistent
+        # device choice into the client so
+        # that every auth / re-auth cycle
+        # preserves the device identity. The
+        # value lives in ``entry.data`` for
+        # first-time setup and is also kept in
+        # ``entry.options`` for reconfigure
+        # flows. ``entry.data`` is the source
+        # of truth at setup time.
+        selected_device_sn=(
+            entry.data.get("selected_device_sn")
+            or entry.options.get("selected_device_sn")
+        ),
     )
 
     try:

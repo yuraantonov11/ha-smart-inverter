@@ -51,7 +51,19 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle the initial step."""
+        """Handle the initial step.
+
+        R07 multi-device flow:
+          1. credentials step (existing)
+          2. authenticate + fetch device list
+          3. if account has >1 device, present
+             a "select_device" step and require
+             an explicit choice
+          4. selected device is persisted in
+             ``entry.data['selected_device_sn']``
+             and used by every subsequent
+             auth / re-auth / re-load cycle.
+        """
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -76,23 +88,50 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "auth_failed"
                 _LOGGER.exception("Unexpected auth error: %s", exc)
             else:
-                if not ok or not api.device_sn:
+                if not ok:
                     errors["base"] = "no_device"
                 else:
-                    await api.close()
-                    await self.async_set_unique_id(api.device_sn)
-                    self._abort_if_unique_id_configured()
+                    # R07: if the account has more
+                    # than one device, the user
+                    # MUST pick one. We stash the
+                    # authenticated client on
+                    # ``self`` so the next step
+                    # can re-use it without a
+                    # second login.
+                    if api._account_device_count > 1:
+                        self._pending_api = api
+                        self._pending_email = email
+                        self._pending_password = password
+                        self._pending_predictive = (
+                            predictive_options
+                        )
+                        return await self.async_step_select_device()
+                    # Single device: bind to it
+                    # automatically. We still
+                    # persist the choice in
+                    # ``data`` so the integration
+                    # re-binds to the same device
+                    # across reloads.
+                    chosen_sn = api.device_sn
+                    if not chosen_sn:
+                        errors["base"] = "no_device"
+                    else:
+                        await api.close()
+                        await self.async_set_unique_id(chosen_sn)
+                        self._abort_if_unique_id_configured()
 
-                    return self.async_create_entry(
-                        title=f"Solar Inverter ({api.device_sn})",
-                        options={**predictive_options, "predictive_mode": predictive_options["predictive_default_mode"].lower()},
-                        data={
-                            CONF_EMAIL: email,
-                            CONF_PASSWORD: password,
-                        },
-                    )
+                        return self.async_create_entry(
+                            title=f"Solar Inverter ({chosen_sn})",
+                            options={**predictive_options, "predictive_mode": predictive_options["predictive_default_mode"].lower()},
+                            data={
+                                CONF_EMAIL: email,
+                                CONF_PASSWORD: password,
+                                "selected_device_sn": chosen_sn,
+                            },
+                        )
             finally:
-                await api.close()
+                if "api" in dir(self) and getattr(self, "_pending_api", None) is not api:
+                    await api.close()
 
         return self.async_show_form(
             step_id="user",
@@ -110,6 +149,74 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                     **_predictive_schema({}),
                 }
+            ),
+            errors=errors,
+        )
+
+    async def async_step_select_device(
+        self, user_input: dict[str, Any] | None = None,
+    ) -> FlowResult:
+        """R07: present the operator with the
+        list of devices on the account and
+        require an explicit choice.
+        """
+        api = getattr(self, "_pending_api", None)
+        if api is None:
+            # No authenticated client — send
+            # the user back to the credentials
+            # step.
+            return self.async_step_user()
+        # Re-fetch the device list to make
+        # sure the choices are fresh.
+        try:
+            await api._fetch_device_list(None)
+        except Exception as exc:
+            _LOGGER.error("Device list refresh failed: %s", exc)
+            await api.close()
+            return self.async_step_user()
+
+        devices = await api._list_devices()
+        if not devices:
+            await api.close()
+            return self.async_step_user()
+
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            chosen = user_input.get("selected_device_sn")
+            if not chosen or chosen not in [
+                d["id"] for d in devices
+            ]:
+                errors["base"] = "invalid_device"
+            else:
+                email = self._pending_email
+                password = self._pending_password
+                predictive_options = self._pending_predictive
+                await api.close()
+                await self.async_set_unique_id(chosen)
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"Solar Inverter ({chosen})",
+                    options={**predictive_options, "predictive_mode": predictive_options["predictive_default_mode"].lower()},
+                    data={
+                        CONF_EMAIL: email,
+                        CONF_PASSWORD: password,
+                        "selected_device_sn": chosen,
+                    },
+                )
+
+        # Build a Select selector with one row
+        # per device.
+        device_options = {
+            d["id"]: (
+                f"{d['id']} — station {d.get('stationId', '?')}"
+                f" — {d.get('dailyProducedQuantity', 0):.1f} kWh today"
+            )
+            for d in devices
+        }
+        return self.async_show_form(
+            step_id="select_device",
+            data_schema=vol.Schema(
+                {vol.Required("selected_device_sn"): vol.In(device_options)}
             ),
             errors=errors,
         )

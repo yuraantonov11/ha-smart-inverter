@@ -124,9 +124,24 @@ class TokenExpiredError(InverterApiError):
 class InverterApiClient:
     """Async HTTP client for the solar.siseli.com inverter API."""
 
-    def __init__(self, email: str, password: str) -> None:
+    def __init__(
+        self,
+        email: str,
+        password: str,
+        selected_device_sn: str | None = None,
+    ) -> None:
         self._email = email
         self._password = password
+        # R07: explicit device preference. The
+        # user-selected device (from the config
+        # flow) is preserved across auth and
+        # re-auth cycles. It is NEVER derived
+        # from ``devices[0]`` — multi-device
+        # accounts must make an explicit
+        # choice.
+        self._selected_device_sn: str | None = (
+            selected_device_sn
+        )
         self._session: aiohttp.ClientSession | None = None
 
         # Auth state
@@ -294,37 +309,73 @@ class InverterApiClient:
 
         Contract:
           - ``len(value) == 32`` AND every char is a
-            lowercase hex digit ⇒ pre-hashed.
+            hex digit (0-9, a-f, A-F) ⇒ pre-hashed.
           - any other 32-character value (e.g. a
             plain password that happens to be
-            32 characters long) is treated as plain
+            32 characters long, or a 32-char string
+            that contains non-hex whitespace /
+            punctuation) is treated as plain
             and hashed here.
           - mixed-case hex (``ABCDEF12...``) is
             normalised to lowercase before
             comparison to be lenient on legacy
             inputs, but the contract is documented
-            as ``lowercase 32 hex chars``.
+            as ``exactly 32 ASCII hex digits``.
+
+        The previous implementation used
+        ``int(value, 16)`` which accepted leading
+        whitespace, sign, and underscores (in
+        Python 3.11+). Examples that returned True
+        for the old check but must return False
+        under the documented contract:
+          - ``" " + "a" * 31`` (leading space)
+          - ``"+" + "a" * 31`` (leading sign)
+          - ``"a_" * 15 + "aa"`` (underscores,
+            allowed in 3.11+ ``int()`` literals)
+
+        This stricter check uses a per-character
+        scan so the result matches the
+        documentation.
         """
         if not isinstance(value, str) or len(value) != 32:
             return False
-        lowered = value.lower()
-        # ``int(lowered, 16)`` raises ValueError for
-        # non-hex. We catch and return False.
-        try:
-            int(lowered, 16)
-        except ValueError:
-            return False
+        # Per-character check: every char must be
+        # in the hex alphabet. This is O(32) and
+        # avoids any ``int()`` leniency.
+        for ch in value:
+            # ``ord("0") <= ord(ch) <= ord("9")`` OR
+            # ``ord("a") <= ord(ch) <= ord("f")`` OR
+            # ``ord("A") <= ord(ch) <= ord("F")``
+            o = ord(ch)
+            if not (
+                (0x30 <= o <= 0x39)  # 0-9
+                or (0x41 <= o <= 0x46)  # A-F
+                or (0x61 <= o <= 0x66)  # a-f
+            ):
+                return False
         return True
 
-    async def authenticate(self, preferred_device_sn: str | None = None) -> bool:
+    async def authenticate(
+        self, preferred_device_sn: str | None = None,
+    ) -> bool:
         """Login to solar.siseli.com and fetch device list.
 
-        ``preferred_device_sn`` is the device the
-        operator selected via the options flow
-        (or the previously-bound device if no
-        change). It is forwarded to
-        ``_fetch_device_list`` which decides how
-        to honour or refuse it.
+        ``preferred_device_sn`` overrides the
+        instance-level ``_selected_device_sn``
+        (useful for tests). When neither is
+        set, single-device accounts auto-bind
+        and multi-device accounts raise — see
+        ``_fetch_device_list`` for the full
+        policy.
+
+        The selected device is forwarded to
+        ``_fetch_device_list`` so that
+        re-authentication cycles (e.g. after a
+        token expiry) preserve the device
+        identity. Without this, an account
+        with multiple devices whose previously
+        selected device is ``B`` would silently
+        rebind to ``A`` after a token refresh.
         """
         await self._ensure_session()
         await self._apply_rate_limit(ENDPOINT_LOGIN)
@@ -391,7 +442,19 @@ class InverterApiClient:
         self.access_token = resp_data.get("accessToken") or resp_data.get("token")
         self.user_id = str(resp_data.get("userId", ""))
 
-        await self._fetch_device_list(preferred_device_sn)
+        # R07: forward the device preference.
+        # ``preferred_device_sn`` (caller-supplied)
+        # wins over the instance-level
+        # ``_selected_device_sn`` (operator's
+        # persistent choice). Either keeps the
+        # device identity stable across auth
+        # cycles.
+        effective_pref = (
+            preferred_device_sn
+            if preferred_device_sn is not None
+            else self._selected_device_sn
+        )
+        await self._fetch_device_list(effective_pref)
         return True
 
     async def _ensure_authenticated(self) -> None:
@@ -533,6 +596,36 @@ class InverterApiClient:
             raise InverterApiError(
                 data.get("msg", "Failed to fetch device list")
             )
+
+    async def _list_devices(self) -> list[dict[str, Any]]:
+        """Return the raw device list from the
+        account without binding to any
+        particular device. Used by the
+        config-flow device picker.
+
+        Raises ``InverterApiError`` if the
+        request fails.
+        """
+        if not self.user_id:
+            # Caller must ``authenticate()``
+            # first.
+            return []
+        await self._apply_rate_limit(ENDPOINT_DEVICE_LIST)
+        body = {"page": 1, "count": 10, "applyModeCategory": 1}
+        headers = self._build_headers("POST", body)
+        async with self._session.post(
+            ENDPOINT_DEVICE_LIST,
+            data=self._json_compact(body),
+            headers=headers,
+        ) as resp:
+            data = await resp.json()
+        if data.get("code") == 0 and data.get("data"):
+            devices = data["data"].get("list", [])
+            self._account_device_count = len(devices)
+            return devices
+        raise InverterApiError(
+            data.get("msg", "Failed to fetch device list")
+        )
 
     async def refresh_device_summary(self) -> bool:
         """Refresh ``daily_energy``,
@@ -779,15 +872,21 @@ class InverterApiClient:
         """Fetch real-time inverter data mirroring Dart getRealTimeData."""
         if not self.device_sn:
             _LOGGER.warning("No device selected, trying to re-fetch")
-            # R07: re-fetch the same device that
-            # was bound previously. If the operator
-            # has not changed the selection, this
-            # is a no-op; if the account has been
-            # switched, the missing-device error
-            # surfaces to the operator instead of
-            # silently binding to a different
-            # inverter.
-            await self._fetch_device_list(self.device_sn)
+            # R07: re-fetch using the
+            # operator's persistent preference
+            # (``_selected_device_sn``), NOT an
+            # empty string. An empty preference
+            # is meaningless and would cause the
+            # multi-device guard to fail even on
+            # a single-device account. We use
+            # ``_selected_device_sn`` first; if
+            # it is also None, fall back to
+            # ``self.device_sn`` (which is
+            # already empty in this branch but
+            # kept for symmetry with the rest of
+            # the auth cycle).
+            pref = self._selected_device_sn or self.device_sn
+            await self._fetch_device_list(pref)
             if not self.device_sn:
                 self.last_realtime_offline = True
                 return None

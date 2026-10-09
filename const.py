@@ -282,6 +282,11 @@ EWMA_ALPHA = 0.25
 STORAGE_ACCESS_TOKEN = "access_token"
 STORAGE_USER_ID = "user_id"
 STORAGE_DEVICE_SN = "device_sn"
+# R07: operator's persistent device choice
+# (config entry). Set on the initial config
+# flow (when the account has >1 device) and
+# never derived from the device list order.
+STORAGE_SELECTED_DEVICE_SN = "selected_device_sn"
 STORAGE_STATION_ID = "station_id"
 STORAGE_CURRENT_MODE = "current_mode"
 STORAGE_BATTERY_CYCLES = "battery_cycles"
