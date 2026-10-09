@@ -288,16 +288,57 @@ class InverterApiClient:
 
     # ── API methods ────────────────────────────────────────────────────
 
-    async def authenticate(self) -> bool:
-        """Login to solar.siseli.com and fetch device list."""
+    @staticmethod
+    def _is_pre_hashed_password(value: str) -> bool:
+        """R07: detect pre-hashed (MD5) passwords.
+
+        Contract:
+          - ``len(value) == 32`` AND every char is a
+            lowercase hex digit ⇒ pre-hashed.
+          - any other 32-character value (e.g. a
+            plain password that happens to be
+            32 characters long) is treated as plain
+            and hashed here.
+          - mixed-case hex (``ABCDEF12...``) is
+            normalised to lowercase before
+            comparison to be lenient on legacy
+            inputs, but the contract is documented
+            as ``lowercase 32 hex chars``.
+        """
+        if not isinstance(value, str) or len(value) != 32:
+            return False
+        lowered = value.lower()
+        # ``int(lowered, 16)`` raises ValueError for
+        # non-hex. We catch and return False.
+        try:
+            int(lowered, 16)
+        except ValueError:
+            return False
+        return True
+
+    async def authenticate(self, preferred_device_sn: str | None = None) -> bool:
+        """Login to solar.siseli.com and fetch device list.
+
+        ``preferred_device_sn`` is the device the
+        operator selected via the options flow
+        (or the previously-bound device if no
+        change). It is forwarded to
+        ``_fetch_device_list`` which decides how
+        to honour or refuse it.
+        """
         await self._ensure_session()
         await self._apply_rate_limit(ENDPOINT_LOGIN)
 
-        # MD5 password (already MD5 if 32 hex chars)
-        if len(self._password) == 32:
+        # R07: detect pre-hashed (MD5) passwords
+        # explicitly. A 32-character plain password
+        # is NOT auto-treated as MD5 — we now check
+        # that every character is a hex digit.
+        if self._is_pre_hashed_password(self._password):
             password_md5 = self._password.lower()
         else:
-            password_md5 = hashlib.md5(self._password.encode()).hexdigest()
+            password_md5 = hashlib.md5(
+                self._password.encode()
+            ).hexdigest()
 
         body = {"account": self._email, "password": password_md5}
         headers = self._build_headers("POST", body)
@@ -350,7 +391,7 @@ class InverterApiClient:
         self.access_token = resp_data.get("accessToken") or resp_data.get("token")
         self.user_id = str(resp_data.get("userId", ""))
 
-        await self._fetch_device_list()
+        await self._fetch_device_list(preferred_device_sn)
         return True
 
     async def _ensure_authenticated(self) -> None:
@@ -365,8 +406,32 @@ class InverterApiClient:
                 f"Re-authentication failed (invalid credentials): {exc}"
             ) from exc
 
-    async def _fetch_device_list(self) -> None:
-        """Fetch device list and populate device_sn / station_id."""
+    async def _fetch_device_list(
+        self, preferred_device_sn: str | None = None,
+    ) -> None:
+        """Fetch device list and populate device_sn / station_id.
+
+        R07 audit: when ``preferred_device_sn`` is
+        provided (from the integration's options),
+        we look for that device in the list and
+        bind to it. If the preferred device is NOT
+        in the list (reordered, removed, account
+        switched), we raise an explicit error
+        rather than silently falling back to
+        ``devices[0]``. The previous behaviour
+        silently bound to a different inverter
+        when the account had multiple devices and
+        the user expected a specific one.
+
+        When ``preferred_device_sn`` is None and
+        the account has exactly one device, we
+        bind to it. When the account has
+        multiple devices and no preference, we
+        raise ``InverterApiError`` — the operator
+        must select one via the options flow
+        rather than letting the integration pick
+        arbitrarily.
+        """
         if not self.user_id:
             return
 
@@ -382,58 +447,88 @@ class InverterApiClient:
         if data.get("code") == 0 and data.get("data"):
             devices = data["data"].get("list", [])
             self._account_device_count = len(devices)
-            if devices:
-                dev = devices[0]
-                self.device_sn = str(dev.get("id", ""))
-                self.current_station_id = str(dev.get("stationId", ""))
-                self.daily_energy = self._parse_double(
-                    dev.get("dailyProducedQuantity")
-                )
-                self.total_energy = self._parse_double(
-                    dev.get("totalProducedQuantity")
-                )
-                # Audit T20 follow-up: publish
-                # the freshness triple
-                # alongside ``daily_energy``.
-                # ``_now_utc`` is the UTC
-                # timestamp the API was
-                # refreshed. We always store
-                # ``daily_energy_at`` as a
-                # timezone-aware UTC datetime
-                # so the freshness helper can
-                # subtract it from a
-                # timezone-aware ``now`` without
-                # ``TypeError``. ``daily_energy_date``
-                # is the calendar date in the
-                # host's local timezone because
-                # the inverter rolls its
-                # counter back to zero at local
-                # midnight. ``dt_util`` is the
-                # HA utility used elsewhere in
-                # the codebase; if it is not
-                # available (standalone / unit
-                # tests) we fall back to the
-                # naive ``datetime.now()``
-                # which the freshness helper
-                # normalises to UTC.
-                _now_utc = datetime.now(tz=timezone.utc)
-                self.daily_energy_at = _now_utc
-                try:
-                    from homeassistant.util import (
-                        dt as _ha_dt,
-                    )
-                    _local = _ha_dt.as_local(_now_utc)
-                except ImportError:
-                    _local = _now_utc.astimezone()
-                self.daily_energy_date = _local.date()
-                self._update_co2()
-                _LOGGER.info(
-                    "Device found: SN=%s station=%s",
-                    self.device_sn,
-                    self.current_station_id,
-                )
-            else:
+            if not devices:
                 raise InverterApiError("No devices found for this account")
+            # R07: pick the device EXPLICITLY.
+            dev = None
+            if preferred_device_sn:
+                for d in devices:
+                    if str(d.get("id", "")) == preferred_device_sn:
+                        dev = d
+                        break
+                if dev is None:
+                    # Preferred device is missing —
+                    # account switched, or the device
+                    # was removed. Do NOT silently
+                    # fall back to devices[0].
+                    raise InverterApiError(
+                        f"Selected device {preferred_device_sn!r} "
+                        f"not found in account's device list "
+                        f"(have: {[str(d.get('id', '')) for d in devices]})"
+                    )
+            else:
+                # No preference: only allow
+                # auto-binding when there is exactly
+                # one device. Multiple devices
+                # without a selection is an error,
+                # not a guess.
+                if len(devices) > 1:
+                    raise InverterApiError(
+                        f"Account has {len(devices)} devices but "
+                        f"no selection configured. Set "
+                        f"'selected_device_sn' in the integration "
+                        f"options to choose one of: "
+                        f"{[str(d.get('id', '')) for d in devices]}"
+                    )
+                dev = devices[0]
+            self.device_sn = str(dev.get("id", ""))
+            self.current_station_id = str(dev.get("stationId", ""))
+            self.daily_energy = self._parse_double(
+                dev.get("dailyProducedQuantity")
+            )
+            self.total_energy = self._parse_double(
+                dev.get("totalProducedQuantity")
+            )
+            # Audit T20 follow-up: publish
+            # the freshness triple
+            # alongside ``daily_energy``.
+            # ``_now_utc`` is the UTC
+            # timestamp the API was
+            # refreshed. We always store
+            # ``daily_energy_at`` as a
+            # timezone-aware UTC datetime
+            # so the freshness helper can
+            # subtract it from a
+            # timezone-aware ``now`` without
+            # ``TypeError``. ``daily_energy_date``
+            # is the calendar date in the
+            # host's local timezone because
+            # the inverter rolls its
+            # counter back to zero at local
+            # midnight. ``dt_util`` is the
+            # HA utility used elsewhere in
+            # the codebase; if it is not
+            # available (standalone / unit
+            # tests) we fall back to the
+            # naive ``datetime.now()``
+            # which the freshness helper
+            # normalises to UTC.
+            _now_utc = datetime.now(tz=timezone.utc)
+            self.daily_energy_at = _now_utc
+            try:
+                from homeassistant.util import (
+                    dt as _ha_dt,
+                )
+                _local = _ha_dt.as_local(_now_utc)
+            except ImportError:
+                _local = _now_utc.astimezone()
+            self.daily_energy_date = _local.date()
+            self._update_co2()
+            _LOGGER.info(
+                "Device found: SN=%s station=%s",
+                self.device_sn,
+                self.current_station_id,
+            )
         else:
             raise InverterApiError(
                 data.get("msg", "Failed to fetch device list")
@@ -684,7 +779,15 @@ class InverterApiClient:
         """Fetch real-time inverter data mirroring Dart getRealTimeData."""
         if not self.device_sn:
             _LOGGER.warning("No device selected, trying to re-fetch")
-            await self._fetch_device_list()
+            # R07: re-fetch the same device that
+            # was bound previously. If the operator
+            # has not changed the selection, this
+            # is a no-op; if the account has been
+            # switched, the missing-device error
+            # surfaces to the operator instead of
+            # silently binding to a different
+            # inverter.
+            await self._fetch_device_list(self.device_sn)
             if not self.device_sn:
                 self.last_realtime_offline = True
                 return None
