@@ -1,8 +1,19 @@
-"""Demand Forecast — EWMA load profile with probabilistic predictions.
+"""Demand Forecast — EWMA load profile with multiplicative spread.
 
 Ported from Flutter DemandForecastService.
-Uses Exponentially Weighted Moving Average (α=0.25) to learn hourly
-load patterns, then converts to probabilistic p25/p50/p75/p90 forecasts.
+Uses an Exponentially Weighted Moving Average (α=0.25) to learn
+hourly load patterns, then expresses each hour as a central
+estimate (p50) plus multiplicative spread factors (×0.80, ×1.00,
+×1.20, ×1.35) that approximate a Gaussian distribution around
+the mean.
+
+R08 audit (2026-10-09): the previous docstring called these
+"probabilistic" / "empirical-quantile" outputs. They are
+fixed multipliers of the EWMA mean, applied uniformly to
+every hour. The code is kept as-is for compatibility (the
+p25/p50/p75/p90 field names are part of the published
+sensor contract) but the docstring is corrected to call
+them multipliers.
 """
 
 from __future__ import annotations
@@ -81,6 +92,13 @@ class DemandForecastService:
         alpha: float = _DEFAULT_ALPHA,
     ) -> None:
         """Update EWMA profile with a new load sample.
+
+        The profile is keyed by hour-of-day (0-23), so the
+        effective time constant is ``1 / alpha`` SAMPLES PER
+        HOUR, not per wall-clock time. With ``alpha=0.25`` and
+        the default 30-second polling cadence, ~4 samples per
+        hour take ~2 minutes. The "horizon" reported in the
+        dashboard is therefore in samples/hour, not in minutes.
 
         Args:
             timestamp: When the sample was taken.

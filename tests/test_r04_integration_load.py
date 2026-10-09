@@ -124,20 +124,47 @@ def _build_isolated_load_path(
     (cc / "__init__.py").write_text("")
     pi_pkg = cc / "powmr_inverter"
     pi_pkg.mkdir()
-    # Copy the full integration source. The
-    # relative-import contract is the same
-    # regardless of which submodules are loaded —
-    # what matters is that the import path
-    # ``from .hems.engine import`` resolves.
+    # Copy only production files. R08 audit
+    # explicitly forbids copying .local,
+    # venv, backups, runtime journals.
+    # ``shutil.copytree`` with
+    # ``ignore=shutil.ignore_patterns(...)``
+    # is the standard way; we list the
+    # excluded patterns explicitly so the
+    # exclusion set is auditable.
     shutil.copytree(
         integration_root, pi_pkg, dirs_exist_ok=True,
         ignore=shutil.ignore_patterns(
-            ".test-venv", "__pycache__", ".git",
+            # Version control
+            ".git",
+            # Virtualenvs and IDEs
+            ".test-venv", ".venv", "venv",
+            ".vscode", ".idea",
+            # Local-only files (R08)
+            ".local",
+            # Backup archives (R08)
+            "*.tar.gz", "*.zip", "*.bak",
+            # Runtime journals written by the
+            # integration (R08)
+            "*.json.journal", "*.journal",
+            # Caches and build artefacts
+            "__pycache__", "*.pyc", "*.pyo",
+            ".mypy_cache", ".pytest_cache",
+            ".ruff_cache",
+            # Tests and JS bundles
             "tests", "node_modules",
+            # OS and editor noise
+            ".DS_Store", "*.swp", "*~",
+            # Docs and changelogs are
+            # intentionally kept; operators
+            # read them after install.
         ),
     )
-    # Drop the test venv from the copy if it
-    # somehow crept in.
+    # Defensive: drop the test venv from the
+    # copy if it somehow crept in. The
+    # ignore_patterns above already covers
+    # this; the rmtree is a belt-and-braces
+    # fallback.
     venv = pi_pkg / ".test-venv"
     if venv.exists():
         shutil.rmtree(venv, ignore_errors=True)
