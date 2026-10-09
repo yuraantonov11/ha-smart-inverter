@@ -34,6 +34,7 @@ importing the full HA runtime.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import pathlib
 import sys
@@ -392,18 +393,26 @@ class TestConfigFlowProduction(unittest.IsolatedAsyncioTestCase):
         flow.async_show_form.assert_called()
         form_kwargs = flow.async_show_form.call_args.kwargs
         self.assertEqual(form_kwargs["step_id"], "select_device")
-        # The pending client exists.
-        self.assertIsNotNone(flow._pending_api)
-        api = flow._pending_api
-        # Constructor received NO
-        # preference (login phase).
-        self.assertIsNone(api.selected_device_sn)
-        # The pending state survived the
-        # mock-authenticate (the mock
-        # raises InverterApiError for
-        # multi-device-no-pref; the
-        # production flow catches it and
-        # proceeds to the picker).
+        # R07 follow-up #3: the API
+        # client is closed at the end of
+        # ``_handle_user_submit`` (single
+        # ``finally``). ``_pending_api``
+        # is therefore None at picker
+        # time; the picker uses the
+        # cached list only.
+        self.assertIsNone(flow._pending_api)
+        self.assertEqual(len(flow._pending_devices), 2)
+        # The mock client was created
+        # with the operator's email and
+        # password and then closed.
+        _MockApiClient = globals()["_MockApiClient"]
+        instances = list(_MockApiClient.instances)
+        self.assertGreater(len(instances), 0)
+        api = instances[-1]
+        self.assertTrue(
+            api._closed,
+            'client must be closed before picker renders',
+        )
         # Phase 2: submit the picker.
         result2 = await flow.async_step_select_device({
             "selected_device_sn": "B",
@@ -413,8 +422,6 @@ class TestConfigFlowProduction(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             create_kwargs["data"]["selected_device_sn"], "B"
         )
-        # The pending client was closed.
-        self.assertTrue(api._closed)
 
     async def test_single_device_auto_binds(self):
         """Юра scenario: [A] only →
@@ -694,6 +701,235 @@ class TestConfigFlowProduction(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(InverterApiError):
             await flow._finalize_entry("B")
         flow.async_set_unique_id.assert_called_with("B")
+
+    # ── R07 follow-up #3: cleanup ──
+    async def test_list_devices_error_closes_client(self):
+        """Юра scenario: ``_list_devices``
+        raises ``InverterApiError`` →
+        the client MUST be closed and
+        pending state MUST be cleared.
+        The previous implementation
+        only closed when ``errors`` was
+        non-empty, leaking the session
+        on list failures.
+        """
+        from powmr_inverter_fake.api import InverterApiError
+
+        class _ListErrorResponder:
+            def respond(self, preferred):
+                raise InverterApiError("server 503")
+            _devices = []
+
+        flow = _make_flow_harness(self._flow_mod, [])
+        flow._list_responder = _ListErrorResponder()
+        # Rebind factory to use the new
+        # responder.
+        original_factory = self._flow_mod.InverterApiClient
+        def _factory(*args, **kwargs):
+            client = original_factory(*args, **kwargs)
+            client._list_responder = flow._list_responder
+            return client
+        self._flow_mod.InverterApiClient = _factory
+        try:
+            result = await flow.async_step_user({
+                "email": "u@e.com",
+                "password": "p",
+                "predictive_default_mode": "Shadow",
+                "predictive_night_window_start_hour": 23,
+                "predictive_night_window_end_hour": 7,
+                "predictive_min_confidence_for_assist": 0.2,
+            })
+        finally:
+            self._flow_mod.InverterApiClient = original_factory
+        # The flow shows the credentials
+        # form again with an error
+        # (NOT the picker — we never
+        # reached a list).
+        flow.async_show_form.assert_called()
+        form_kwargs = flow.async_show_form.call_args.kwargs
+        self.assertEqual(form_kwargs["step_id"], "user")
+        self.assertEqual(form_kwargs["errors"]["base"], "auth_failed")
+        # The client was closed.
+        _MockApiClient = globals()["_MockApiClient"]
+        instances = list(_MockApiClient.instances)
+        self.assertEqual(len(instances), 1)
+        self.assertTrue(instances[0]._closed)
+        # Pending state was cleared
+        # (no leak into next request).
+        self.assertIsNone(flow._pending_api)
+        self.assertEqual(flow._pending_devices, [])
+        self.assertIsNone(flow._pending_email)
+        self.assertIsNone(flow._pending_password)
+
+    async def test_cancellation_during_list_devices_closes_client(self):
+        """Юра scenario: ``asyncio.CancelledError``
+        is raised while ``_list_devices``
+        is in flight → the client MUST
+        be closed and the cancellation
+        MUST propagate (not be
+        swallowed).
+        """
+        _MockApiClient = globals()["_MockApiClient"]
+
+        class _CancelResponder:
+            def respond(self, preferred):
+                raise asyncio.CancelledError("user cancelled")
+            _devices = []
+
+        flow = _make_flow_harness(self._flow_mod, [])
+        flow._list_responder = _CancelResponder()
+        original_factory = self._flow_mod.InverterApiClient
+        def _factory(*args, **kwargs):
+            client = original_factory(*args, **kwargs)
+            client._list_responder = flow._list_responder
+            return client
+        self._flow_mod.InverterApiClient = _factory
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await flow.async_step_user({
+                    "email": "u@e.com",
+                    "password": "p",
+                    "predictive_default_mode": "Shadow",
+                    "predictive_night_window_start_hour": 23,
+                    "predictive_night_window_end_hour": 7,
+                    "predictive_min_confidence_for_assist": 0.2,
+                })
+        finally:
+            self._flow_mod.InverterApiClient = original_factory
+        # The client was closed EVEN
+        # THOUGH the cancellation
+        # propagated.
+        instances = list(_MockApiClient.instances)
+        self.assertEqual(len(instances), 1)
+        self.assertTrue(instances[0]._closed)
+
+    async def test_retry_after_error_does_not_leak_previous_client(self):
+        """Юра scenario: the operator
+        enters wrong credentials,
+        gets an error, and re-tries
+        with correct ones. The first
+        client MUST be closed before
+        the second is created.
+        """
+        _MockApiClient = globals()["_MockApiClient"]
+        # First call: empty list
+        # (simulates a successful login
+        # with no devices). Second
+        # call: a list with one device.
+        flow = _make_flow_harness(self._flow_mod, [
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+        ])
+        # First attempt: empty list.
+        flow._list_responder._devices = []
+        result1 = await flow.async_step_user({
+            "email": "u@e.com", "password": "wrong",
+            "predictive_default_mode": "Shadow",
+            "predictive_night_window_start_hour": 23,
+            "predictive_night_window_end_hour": 7,
+            "predictive_min_confidence_for_assist": 0.2,
+        })
+        # The first client is closed.
+        instances = list(_MockApiClient.instances)
+        self.assertEqual(len(instances), 1)
+        first_client = instances[0]
+        self.assertTrue(first_client._closed)
+        # Second attempt: success.
+        flow._list_responder._devices = [
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+        ]
+        result2 = await flow.async_step_user({
+            "email": "u@e.com", "password": "correct",
+            "predictive_default_mode": "Shadow",
+            "predictive_night_window_start_hour": 23,
+            "predictive_night_window_end_hour": 7,
+            "predictive_min_confidence_for_assist": 0.2,
+        })
+        # A second client was created
+        # and closed.
+        instances = list(_MockApiClient.instances)
+        self.assertEqual(len(instances), 2)
+        self.assertTrue(instances[0]._closed)
+        self.assertTrue(instances[1]._closed)
+        # The entry was created on the
+        # second attempt.
+        flow.async_set_unique_id.assert_called_with("A")
+        flow.async_create_entry.assert_called()
+
+    async def test_is_finite_helper_rejects_infinities(self):
+        # R07 follow-up #4: the helper
+        # ``_is_finite`` MUST reject
+        # ``+inf`` and ``-inf`` (not just
+        # NaN). The previous
+        # implementation used ``f == f``
+        # which returned True for
+        # infinities.
+        _is_finite = self._flow_mod._is_finite
+        # NaN: rejected
+        self.assertFalse(_is_finite(float("nan")))
+        # +Inf: rejected
+        self.assertFalse(_is_finite(float("inf")))
+        # -Inf: rejected
+        self.assertFalse(_is_finite(float("-inf")))
+        # Real zero: preserved (finite)
+        self.assertTrue(_is_finite(0))
+        self.assertTrue(_is_finite(0.0))
+        # Positive and negative finite
+        # values: preserved.
+        self.assertTrue(_is_finite(1.5))
+        self.assertTrue(_is_finite(-2.7))
+        # String forms.
+        self.assertFalse(_is_finite("Infinity"))
+        self.assertFalse(_is_finite("-Infinity"))
+        self.assertTrue(_is_finite("3.14"))
+        # None and non-numeric: rejected.
+        self.assertFalse(_is_finite(None))
+        self.assertFalse(_is_finite("not a number"))
+        self.assertFalse(_is_finite([1, 2, 3]))
+
+    async def test_picker_renders_with_already_closed_client(self):
+        """Юра scenario: the picker
+        step must work from the
+        CACHED list. The client was
+        closed at the end of
+        ``_handle_user_submit``; the
+        picker must NOT re-open it.
+        """
+        flow = _make_flow_harness(self._flow_mod, [
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+            {"id": "B", "stationId": "SB",
+             "dailyProducedQuantity": 2.0},
+        ])
+        # Run the credentials step.
+        await flow.async_step_user({
+            "email": "u@e.com", "password": "p",
+            "predictive_default_mode": "Shadow",
+            "predictive_night_window_start_hour": 23,
+            "predictive_night_window_end_hour": 7,
+            "predictive_min_confidence_for_assist": 0.2,
+        })
+        # The client is closed. The
+        # picker is rendered.
+        _MockApiClient = globals()["_MockApiClient"]
+        instances = list(_MockApiClient.instances)
+        self.assertEqual(len(instances), 1)
+        self.assertTrue(instances[0]._closed)
+        # The picker form shows both
+        # options from the CACHED list.
+        flow.async_show_form.assert_called()
+        form_kwargs = flow.async_show_form.call_args.kwargs
+        data_schema = form_kwargs["data_schema"]
+        marker = None
+        for k in data_schema._schema.keys():
+            if getattr(k, "_key", None) == "selected_device_sn":
+                marker = k
+                break
+        self.assertIsNotNone(marker)
+        selector = data_schema._schema[marker]
+        self.assertIn("A", selector._options)
+        self.assertIn("B", selector._options)
 
 
 if __name__ == "__main__":

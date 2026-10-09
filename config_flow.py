@@ -49,6 +49,7 @@ exactly once:
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 import voluptuous as vol
@@ -111,13 +112,23 @@ def _str_device_label(d: dict[str, Any]) -> str:
 
 
 def _is_finite(v: Any) -> bool:
+    # R07 follow-up #4: the previous
+    # implementation used ``f == f``
+    # which only rejects NaN. It
+    # returned True for ``+inf`` and
+    # ``-inf``, allowing an infinite
+    # daily energy to slip into the
+    # picker option label. ``math.isfinite``
+    # rejects ALL of: NaN, +inf,
+    # -inf. A real zero is finite
+    # (preserved).
     if v is None:
         return False
     try:
         f = float(v)
     except (TypeError, ValueError):
         return False
-    return f == f  # NaN check (NaN != NaN)
+    return math.isfinite(f)
 
 
 class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -230,10 +241,25 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """The submit handler for the
         credentials step. Extracted so it
         can be unit-tested in isolation.
+
+        Resource contract (R07 follow-up
+        #3): the InverterApiClient MUST
+        be closed in a single ``finally``
+        block regardless of whether
+        ``_list_devices`` raises
+        ``InverterApiError``,
+        ``asyncio.CancelledError``, or
+        any other exception. The previous
+        implementation only closed the
+        client when ``errors`` was
+        non-empty, leaking the session on
+        ``_list_devices`` failures and on
+        cancellation. Picker step uses
+        the cached list (no live client
+        needed), so the client is closed
+        before returning to the form
+        regardless of outcome.
         """
-        errors: dict[str, str] = {}
-        email = user_input[CONF_EMAIL]
-        password = user_input[CONF_PASSWORD]
         try:
             predictive_options = parse_predictive_options(user_input)
         except ValueError:
@@ -247,28 +273,25 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors={"base": "invalid_predictive_options"},
             )
 
-        # Phase 1: login with the
-        # device-list call SKIPPED. We
-        # need the access token to call
-        # the device-list endpoint, but
-        # we MUST NOT raise on
-        # multi-device-no-preference
-        # here. The picker step uses the
-        # cached list. ``skip_device_list``
-        # is a production-API flag added
-        # in R07 follow-up for exactly
-        # this case.
+        email = user_input[CONF_EMAIL]
+        password = user_input[CONF_PASSWORD]
+        # Phase 1+2: login and device
+        # list in a single try/finally.
+        # ``skip_device_list`` lets the
+        # login complete without raising
+        # on multi-device-no-preference.
+        # The picker step uses the cached
+        # list, so the client does NOT
+        # need to stay open between
+        # ``async_step_user`` and
+        # ``async_step_select_device``.
         api = InverterApiClient(email=email, password=password)
-        self._pending_api = api
-        self._pending_email = email
-        self._pending_password = password
-        self._pending_predictive = predictive_options
+        devices: list[dict[str, Any]] = []
         try:
             try:
                 await api.authenticate(skip_device_list=True)
-            except InverterAuthError as exc:
+            except (InverterAuthError, InverterApiError) as exc:
                 _LOGGER.error("Auth failed: %s", exc)
-                errors["base"] = "auth_failed"
                 return self.async_show_form(
                     step_id="user",
                     data_schema=vol.Schema({
@@ -276,11 +299,22 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         vol.Required(CONF_PASSWORD): str,
                         **_predictive_schema(user_input),
                     }),
-                    errors=errors,
+                    errors={"base": "auth_failed"},
                 )
-            except InverterApiError as exc:
-                _LOGGER.error("API error during login: %s", exc)
-                errors["base"] = "auth_failed"
+            # Phase 2: device list. Any
+            # failure here (InverterApiError
+            # or CancelledError) MUST
+            # propagate the failure to the
+            # caller AND close the client.
+            # The ``finally`` block below
+            # owns the close — do NOT
+            # ``return`` before it runs.
+            try:
+                devices = await api._list_devices()
+            except (InverterApiError, InverterAuthError) as exc:
+                _LOGGER.error(
+                    "Device list failed: %s", exc,
+                )
                 return self.async_show_form(
                     step_id="user",
                     data_schema=vol.Schema({
@@ -288,29 +322,22 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         vol.Required(CONF_PASSWORD): str,
                         **_predictive_schema(user_input),
                     }),
-                    errors=errors,
+                    errors={"base": "auth_failed"},
                 )
-
-            # Phase 2: device list. We
-            # ``_list_devices`` (returns the
-            # raw list without binding). The
-            # auth client is kept alive on
-            # ``self._pending_api`` so the
-            # picker step can re-use it
-            # without a second login.
-            devices = await api._list_devices()
         finally:
-            # ``_pending_api`` retains the
-            # client; close it ONLY on the
-            # error path (the success path
-            # closes via ``_cleanup_pending``
-            # inside ``async_step_select_device``
-            # or directly below).
-            if errors:
-                await self._cleanup_pending()
+            # Always close the client.
+            # ``CancelledError`` propagates
+            # after this block runs (we
+            # don't swallow it; we just
+            # guarantee the session is
+            # closed before the cancellation
+            # bubbles up).
+            await api.close()
 
+        # From here on, the client is
+        # closed. Picker uses the cached
+        # list only.
         if not devices:
-            await self._cleanup_pending()
             return self.async_show_form(
                 step_id="user",
                 data_schema=vol.Schema({
@@ -321,26 +348,31 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors={"base": "no_device"},
             )
 
-        # Normalise ids to string. The API
-        # sometimes returns numeric ids; we
-        # coerce so the picker equality
-        # check does not depend on type.
-        norm_devices: list[dict[str, Any]] = []
-        for d in devices:
-            norm_devices.append({
+        # Cache for the picker step.
+        # The client is closed, but the
+        # picker doesn't need a live
+        # client (it just shows the
+        # cached list and finalises on
+        # user submit).
+        self._pending_email = email
+        self._pending_password = password
+        self._pending_predictive = predictive_options
+        self._pending_devices = [
+            {
                 **d,
                 "id": str(d.get("id", "")),
                 "stationId": str(d.get("stationId", "")),
-            })
-        self._pending_devices = norm_devices
+            }
+            for d in devices
+        ]
+        # No live client needed for
+        # picker. ``_pending_api`` stays
+        # None.
+        self._pending_api = None
 
-        # Phase 3: single-device auto-bind
-        # or multi-device picker.
-        if len(norm_devices) == 1:
-            chosen_sn = norm_devices[0]["id"]
+        if len(self._pending_devices) == 1:
+            chosen_sn = self._pending_devices[0]["id"]
             return await self._finalize_entry(chosen_sn)
-
-        # Multi-device: proceed to picker.
         return await self.async_step_select_device()
 
     async def async_step_select_device(
@@ -361,8 +393,22 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             cancels or submits an invalid
             id. Invalid submission shows an
             error and lets the user retry.
-          - The pending client is closed
-            in every exit path via
+          - The pending API client is
+            closed at the end of
+            ``_handle_user_submit`` (single
+            ``finally``); the picker uses
+            the cached list only and does
+            NOT need a live client.
+          - When the operator submits an
+            invalid id, the pending state
+            (devices / email / password) is
+            preserved so the picker can
+            re-render with the error.
+          - When the operator cancels (we
+            don't actually receive a
+            cancel — the form just stops
+            re-submitting), pending state
+            is cleared via
             ``_cleanup_pending``.
 
         Returns ``FlowResult``, NOT the
@@ -373,7 +419,7 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         Assistant cannot await).
         """
         devices = self._pending_devices
-        if not devices or self._pending_api is None:
+        if not devices or not self._pending_email or not self._pending_password:
             # Pending state lost (e.g. the
             # operator refreshed the page
             # mid-flow). Send them back to
