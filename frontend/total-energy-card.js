@@ -41,6 +41,20 @@ class TotalEnergyCard extends HTMLElement {
     return v.toFixed(2) + ' kWh';
   }
 
+  _esc(s) {
+    // R06 follow-up: escape user-supplied
+    // text (title, entity) to prevent
+    // HTML injection. Mirrors
+    // ``_escape`` in the other cards.
+    if (s === null || s === undefined) return '';
+    return String(s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   _render() {
     if (!this._hass || !this._config) return;
     const cfg = this._config;
@@ -48,8 +62,8 @@ class TotalEnergyCard extends HTMLElement {
     if (!state) {
       this.innerHTML = `
         <ha-card>
-          <div class="te-title">${cfg.title || 'Total energy'}</div>
-          <div class="te-empty">Sensor ${cfg.entity} unavailable</div>
+          <div class="te-title">${this._esc(cfg.title || 'Total energy')}</div>
+          <div class="te-empty">Sensor ${this._esc(cfg.entity)} unavailable</div>
         </ha-card>
       `;
       return;
@@ -59,7 +73,7 @@ class TotalEnergyCard extends HTMLElement {
     const year = this._attr(cfg.entity, cfg.year_attribute || 'year_kwh');
     this.innerHTML = `
       <ha-card>
-        <div class="te-title">${cfg.title || 'Total energy'}</div>
+        <div class="te-title">${this._esc(cfg.title || 'Total energy')}</div>
         <div class="te-total">${this._fmtKwh(total)}</div>
         <div class="te-row">
           <span class="te-chip">Today: ${this._fmtKwh(today)}</span>

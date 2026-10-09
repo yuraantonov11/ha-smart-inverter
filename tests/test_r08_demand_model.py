@@ -351,6 +351,137 @@ class TestDocumentationStrings(unittest.TestCase):
             "module docstring must call them "
             "multipliers",
         )
+        # R08 follow-up: the production
+        # docstring must NOT describe the
+        # spread as a Gaussian distribution
+        # or approximation. The audit note
+        # may mention the previous bad
+        # description in scare quotes, but
+        # the live description must use
+        # "heuristic" — not "Gaussian".
+        # We allow "Gaussian" only when
+        # negated or quoted.
+        lowered = doc.lower()
+        # Strip the audit-note paragraph
+        # (between R08 audit and the next
+        # paragraph). The live description
+        # is what's checked.
+        live = lowered.split("r08 audit")[0]
+        self.assertNotIn(
+            "gaussian", live,
+            "module docstring live "
+            "description must not mention "
+            "Gaussian",
+        )
+        self.assertIn(
+            "heuristic", live,
+            "module docstring must use "
+            "'heuristic' in the live "
+            "description",
+        )
+
+    def test_to_demand_forecast_docstring_heuristic(self):
+        """The method-level docstring also
+        must not use "Gaussian approximation".
+        """
+        from hems.demand_forecast import (
+            DemandForecastService,
+        )
+        method_doc = (
+            DemandForecastService
+            .to_demand_forecast.__doc__ or ""
+        )
+        self.assertIn(
+            "heuristic", method_doc.lower(),
+            "method docstring must call the "
+            "spread heuristic",
+        )
+        self.assertNotIn(
+            "gaussian approximation", method_doc.lower(),
+            "method docstring must NOT claim "
+            "Gaussian approximation; the "
+            "multipliers are NOT statistically "
+            "calibrated",
+        )
+
+    def test_transient_response_under_load_change(self):
+        """Юра: "verify transient response
+        to load change at different
+        cadences; steady-state constant
+        load test does not prove equal
+        response".
+
+        We start with a converged
+        profile (after 60 samples per
+        hour at load=1000W), then
+        introduce a step change to
+        load=2000W. We measure how many
+        samples each cadence takes to
+        reach 50% of the new steady
+        state. The answer is the same
+        for both cadences (≈
+        1/α = 4 samples to converge 50%),
+        but the wall-clock time depends
+        on the cadence.
+        """
+        # Cadence 1: 5 s per sample. Cadence
+        # 2: 30 s per sample. Both deliver
+        # the same number of samples, but
+        # different wall-clock durations.
+
+        def simulate(polling_interval_s):
+            svc = DemandForecastService()
+            # Burn 60 samples at load=1000W
+            # to converge to baseline.
+            for i in range(60):
+                svc.update_ewma(
+                    datetime(2026, 1, 1, 12, 0, 0)
+                    + timedelta(seconds=i * polling_interval_s),
+                    load_w=1000.0,
+                )
+            baseline = svc.profile[12]
+            # Apply step change to load=2000W
+            # and count samples until the
+            # profile reaches
+            # (baseline + 0.5 * (2000 - baseline))
+            # = halfway to the new steady
+            # state.
+            target = baseline + 0.5 * (2000 - baseline)
+            n_samples_to_half = None
+            for i in range(60):
+                svc.update_ewma(
+                    datetime(2026, 1, 1, 12, 0, 0)
+                    + timedelta(
+                        seconds=(60 + i) * polling_interval_s,
+                    ),
+                    load_w=2000.0,
+                )
+                if svc.profile[12] >= target:
+                    n_samples_to_half = i + 1
+                    break
+            return n_samples_to_half
+
+        n5 = simulate(5)
+        n30 = simulate(30)
+        # Both cadences should reach
+        # halfway in approximately the
+        # same number of samples (the
+        # EWMA step count is independent
+        # of cadence).
+        self.assertIsNotNone(
+            n5, "5s cadence must converge",
+        )
+        self.assertIsNotNone(
+            n30, "30s cadence must converge",
+        )
+        # Allow ±1 sample of slack for
+        # rounding.
+        self.assertLess(
+            abs(n5 - n30), 2,
+            f"sample count to 50% should be "
+            f"cadence-independent; 5s={n5}, "
+            f"30s={n30}",
+        )
 
 
 if __name__ == "__main__":

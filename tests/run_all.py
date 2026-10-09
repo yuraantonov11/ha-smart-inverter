@@ -418,38 +418,53 @@ def _run_python_suite(
     )
 
 
-def _run_js_suite() -> tuple[bool, str]:
-    """Run the JS suite. ``node`` is
-    the only supported runner — the
-    audit forbids silently passing
-    when it is missing.
+def _run_js_suites() -> tuple[bool, str]:
+    """Run every ``tests/test_*.cjs`` JS
+    suite. R06 follow-up: the runner must
+    NOT silently pass when a new suite is
+    added. We discover all .cjs files at
+    runtime and run them in alphabetical
+    order. A failure in any one suite
+    fails the whole run.
     """
     node = _node_executable()
     if node is None:
         return False, (
-            "JS suite (test_pv_comparison_card.cjs): "
-            "node executable not found on PATH; "
-            "install Node.js or skip --js-only"
+            "JS suites: node executable not "
+            "found on PATH; install Node.js "
+            "or skip --js-only"
         )
-    js = REPO_ROOT / "tests" / "test_pv_comparison_card.cjs"
-    if not js.exists():
+    js_dir = REPO_ROOT / "tests"
+    if not js_dir.is_dir():
+        return False, f"JS suites: missing {js_dir}"
+    js_files = sorted(js_dir.glob("test_*.cjs"))
+    if not js_files:
         return False, (
-            f"JS suite (test_pv_comparison_card.cjs): "
-            f"missing {js}"
+            "JS suites: no test_*.cjs files "
+            "discovered in tests/"
         )
-    r = subprocess.run(
-        [node, str(js)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        cwd=str(REPO_ROOT),
+    failures: list[str] = []
+    for js in js_files:
+        r = subprocess.run(
+            [node, str(js)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(REPO_ROOT),
+        )
+        if r.returncode != 0:
+            failures.append(
+                f"{js.name}: exit={r.returncode} "
+                f"stderr={r.stderr.strip()[:300]}"
+            )
+    if failures:
+        return False, (
+            "JS suites: " + " | ".join(failures)
+        )
+    return True, (
+        f"JS suites: {len(js_files)} file(s) PASS "
+        f"({', '.join(j.name for j in js_files)})"
     )
-    if r.returncode != 0:
-        return False, (
-            f"JS suite (test_pv_comparison_card.cjs): "
-            f"FAIL exit={r.returncode}"
-        )
-    return True, "JS suite (test_pv_comparison_card.cjs): PASS"
 
 
 def main() -> int:
@@ -544,7 +559,7 @@ def main() -> int:
                 summary["python_failed_files"].append(label)  # type: ignore[attr-defined]
 
     if not args.python_only:
-        ok, msg = _run_js_suite()
+        ok, msg = _run_js_suites()
         print(msg)
         summary["js_passed"] = ok
         if not ok:

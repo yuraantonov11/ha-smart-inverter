@@ -1,19 +1,20 @@
-"""Demand Forecast — EWMA load profile with multiplicative spread.
+"""Demand Forecast — EWMA load profile with heuristic multiplicative spread.
 
 Ported from Flutter DemandForecastService.
 Uses an Exponentially Weighted Moving Average (α=0.25) to learn
 hourly load patterns, then expresses each hour as a central
-estimate (p50) plus multiplicative spread factors (×0.80, ×1.00,
-×1.20, ×1.35) that approximate a Gaussian distribution around
-the mean.
+estimate (p50) plus heuristic multiplicative spread factors
+(×0.80, ×1.00, ×1.20, ×1.35).
 
 R08 audit (2026-10-09): the previous docstring called these
-"probabilistic" / "empirical-quantile" outputs. They are
-fixed multipliers of the EWMA mean, applied uniformly to
-every hour. The code is kept as-is for compatibility (the
-p25/p50/p75/p90 field names are part of the published
-sensor contract) but the docstring is corrected to call
-them multipliers.
+"probabilistic" / "empirical-quantile" outputs, and described
+the spread as a "Gaussian approximation". The spread is in
+fact a fixed-multiplier heuristic, NOT a sample-based
+quantile estimate and NOT a statistically-calibrated
+envelope. The ``p25/p50/p75/p90`` field names are
+kept for backward compatibility with the published sensor
+contract, but the values must NOT be interpreted as
+probability-of-exceedance levels.
 """
 
 from __future__ import annotations
@@ -93,12 +94,37 @@ class DemandForecastService:
     ) -> None:
         """Update EWMA profile with a new load sample.
 
-        The profile is keyed by hour-of-day (0-23), so the
-        effective time constant is ``1 / alpha`` SAMPLES PER
-        HOUR, not per wall-clock time. With ``alpha=0.25`` and
-        the default 30-second polling cadence, ~4 samples per
-        hour take ~2 minutes. The "horizon" reported in the
-        dashboard is therefore in samples/hour, not in minutes.
+        R08 audit (2026-10-09): the effective
+        time constant is ``1 / alpha`` SAMPLES
+        (per hour-of-day), NOT per wall-clock
+        time. With ``alpha=0.25`` that is
+        roughly 4 samples. The wall-clock
+        horizon DEPENDS on the polling cadence
+        in production:
+
+            - DEFAULT_POLL_INTERVAL_SEC = 5
+              (see ``const.py``) → ~20 s
+              wall-clock horizon
+            - 30 s polling → ~120 s horizon
+            - 1 min polling → ~4 min horizon
+
+        The previous docstring stated
+        "1/α samples per hour" which conflated
+        two different units. The correct unit
+        is "samples" (count), not
+        "samples per hour". A higher
+        ``alpha`` means faster convergence
+        (less smoothing); a lower ``alpha``
+        means slower convergence (more
+        smoothing). The number of samples
+        until convergence is the same; the
+        wall-clock time is not.
+
+        The "horizon" reported in the
+        dashboard is therefore in
+        **samples**, not in minutes. Multiply
+        by the current polling interval to
+        convert to wall-clock time.
 
         Args:
             timestamp: When the sample was taken.
@@ -111,10 +137,40 @@ class DemandForecastService:
         self._profile[hour] = alpha * sample + (1 - alpha) * old
 
     def to_demand_forecast(self) -> DemandForecastData:
-        """Convert EWMA profile to probabilistic demand forecast.
+        """Convert EWMA profile to a demand
+        forecast with heuristic
+        multiplicative spread.
 
-        Uses fixed multipliers as a lightweight Gaussian approximation:
-        p25 = 0.8×, p50 = 1.0×, p75 = 1.2×, p90 = 1.35×
+        R08 audit (2026-10-09): the spread
+        around the EWMA mean is encoded as
+        four fixed multipliers (0.80, 1.00,
+        1.20, 1.35) of the central value.
+        These are HEURISTIC estimates,
+        not sample-based quantiles and not
+        a statistical calibration of a
+        distribution. The field names
+        ``p25/p50/p75/p90`` are kept for
+        backward compatibility with the
+        published sensor contract, but the
+        values are NOT empirical quantiles —
+        they are constant multipliers
+        applied uniformly to every hour.
+        Operators and tests must NOT
+        interpret them as
+        probability-of-exceedance levels.
+
+        Multiplier derivation (for the
+        historical record): chosen to
+        approximate a 1-sigma envelope
+        around the EWMA mean (p50 = 1.0×,
+        ±20% as a rough 1-sigma proxy).
+        This is a placeholder for a
+        proper sample-based calibration
+        that has not yet been
+        implemented. The integration
+        explicitly documents this in the
+        sensor's ``demand_forecast_method``
+        attribute.
         """
         metrics: dict[int, DemandMetrics] = {}
         for hour in range(24):

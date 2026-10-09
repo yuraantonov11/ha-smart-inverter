@@ -53,13 +53,19 @@ class PowerHistoryCard extends HTMLElement {
     return typeof v === 'number' && Number.isFinite(v);
   }
   _cleanSeries(rawValues, rawLabels) {
-    // Returns { values:number[], labels:string[], gaps:number[] }.
-    // ``gaps`` is the list of indices where the label
-    // is missing or out-of-order; the chart uses
-    // those to start a new sub-path.
+    // Returns { values:number[], labels:string[],
+    // gaps:number[], rawIndices:number[] }.
+    // ``gaps`` is the list of indices where the
+    // value or label is missing or out-of-order;
+    // the chart uses those to start a new
+    // sub-path. ``rawIndices`` maps each valid
+    // value back to its original (time) index
+    // in the input array — the chart uses it for
+    // x-axis positioning so removing invalid
+    // points does NOT compress the timeline.
     const values = Array.isArray(rawValues) ? rawValues : [];
     const labels = Array.isArray(rawLabels) ? rawLabels : [];
-    const out = { values: [], labels: [], gaps: [] };
+    const out = { values: [], labels: [], gaps: [], rawIndices: [] };
     let prev = -Infinity;
     for (let i = 0; i < values.length; i++) {
       if (!this._isFiniteNumber(values[i])) {
@@ -84,6 +90,7 @@ class PowerHistoryCard extends HTMLElement {
       if (Number.isFinite(t)) prev = t;
       out.values.push(values[i]);
       out.labels.push(String(lbl));
+      out.rawIndices.push(i);
     }
     return out;
   }
@@ -117,21 +124,51 @@ class PowerHistoryCard extends HTMLElement {
       }];
     }
 
-    // Resolve data for each series
+    // Resolve data for each series.
+    // R06 follow-up (2026-10-09): each
+    // series is resolved independently. The
+    // raw INDEX is preserved alongside
+    // each valid value so the x-axis
+    // reflects the ORIGINAL time, not the
+    // cleaned index. Two series with
+    // different gaps therefore align on
+    // the same time axis.
     const resolved = [];
+    // The union of all raw indices is the
+    // shared time axis. We use the FIRST
+    // series' raw indices as the canonical
+    // axis; subsequent series map back to
+    // this axis via their rawIndex.
+    let canonicalRawIndices = null;
     for (const s of seriesList) {
       const rawValues = this._getAttr(s.entity, s.attribute);
       if (!rawValues) continue;
       const rawLabels = this._getAttr(s.entity, s.labels_attribute);
       const cleaned = this._cleanSeries(rawValues, rawLabels);
       if (cleaned.values.length === 0) continue;
+      // ``cleaned.rawIndices[i]`` is the
+      // raw (time) index of the i-th
+      // valid point. ``cleaned.gaps`` are
+      // raw indices in the same axis.
+      const points = [];
+      for (let i = 0; i < cleaned.values.length; i++) {
+        points.push({
+          rawIndex: cleaned.rawIndices[i],
+          value: cleaned.values[i],
+          label: cleaned.labels[i],
+        });
+      }
+      const rawIndices = cleaned.rawIndices;
+      if (canonicalRawIndices === null) {
+        canonicalRawIndices = rawIndices;
+      }
       resolved.push({
-        values: cleaned.values,
-        labels: cleaned.labels,
+        points: points,
         gaps: cleaned.gaps,
         color: s.color || '#f5b06a',
         name: s.name || '',
         divisor: s.unit_divisor || 1,
+        rawIndices: rawIndices,
       });
     }
 
@@ -140,15 +177,42 @@ class PowerHistoryCard extends HTMLElement {
       return;
     }
 
-    const data = resolved[0].values;
-    const lbls = resolved[0].labels;
+    // The X axis spans the canonical raw
+    // indices. We do NOT compress when
+    // invalid points are removed — the
+    // x-axis is the original time axis.
+    const canonicalN =
+      canonicalRawIndices !== null
+        ? Math.max(
+            ...canonicalRawIndices,
+            // ``resolved[0].gaps`` are raw
+            // indices; the max raw index is
+            // ``max(canonicalRawIndices)``
+            // since canonicalRawIndices is
+            // the valid subset of the raw
+            // array.
+            canonicalRawIndices[
+              canonicalRawIndices.length - 1
+            ] || 0,
+          ) + 1
+        : 0;
+    const data = resolved[0].points.map(
+      p => p.value,
+    );
+    const lbls = resolved[0].points.map(
+      p => p.label || '',
+    );
     const W = 500, H = 180, padL = 45, padR = 10, padT = 10, padB = 30;
     const chartW = W - padL - padR, chartH = H - padT - padB;
 
     // Compute max across all series
     let maxVal = 0;
     for (const r of resolved) {
-      for (const v of r.values) maxVal = Math.max(maxVal, v / r.divisor);
+      for (const p of r.points) {
+        maxVal = Math.max(
+          maxVal, p.value / r.divisor,
+        );
+      }
     }
     maxVal = Math.max(maxVal * 1.1, 0.01);
 
@@ -165,127 +229,102 @@ class PowerHistoryCard extends HTMLElement {
       svg += `<text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="#999" font-size="9">${yLabel}</text>`;
     }
 
-    // X labels
-    const step = Math.max(1, Math.floor(data.length / 8));
-    for (let i = 0; i < data.length; i += step) {
-      const x = padL + (i / (data.length - 1 || 1)) * chartW;
-      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="#999" font-size="8">${this._escape(lbls[i] || '')}</text>`;
+    // X labels: only for points on the
+    // canonical time axis. The first
+    // series' labels are the labels of the
+    // time axis. If the first series has a
+    // gap, we still want a label at the
+    // gap position (use the gap's expected
+    // label from the raw input).
+    const xLabelStep = Math.max(
+      1, Math.floor(canonicalN / 8),
+    );
+    for (let i = 0; i < canonicalN; i += xLabelStep) {
+      const x = padL
+        + (i / Math.max(canonicalN - 1, 1))
+        * chartW;
+      // Find the label for raw index ``i``
+      // — the first series' label at
+      // rawIndex === i, or the raw label
+      // at index ``i`` from the first
+      // series' labels_attribute.
+      let lblAt = '';
+      const firstSeries = resolved[0];
+      const idx = firstSeries.rawIndices.indexOf(i);
+      if (idx >= 0) {
+        lblAt = firstSeries.points[idx].label || '';
+      }
+      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="#999" font-size="8">${this._escape(lblAt)}</text>`;
     }
 
-    // Render each series
+    // Render each series. Each series
+    // has its OWN gaps and its OWN
+    // rawIndices.
     for (const r of resolved) {
-      const vals = r.values.map(v => v / r.divisor);
-      const n = vals.length;
-      const gap = chartW / Math.max(n - 1, 1);
+      const n = r.points.length;
+      // Use the canonical time axis to
+      // derive x-positions: x for rawIndex
+      // ``i`` is ``padL + (i / (canonicalN-1)) * chartW``.
+      const xForRaw = (rawIndex) =>
+        padL
+        + (rawIndex / Math.max(canonicalN - 1, 1))
+        * chartW;
 
       if (n <= 24) {
-        // Bar chart for fewer points
-        const barW = Math.max(2, (chartW / n) - 2);
-        const barGap = chartW / n;
+        // Bar chart: use raw index for x so
+        // the bar reflects the original
+        // time, not the cleaned position.
+        const barW = Math.max(
+          2, (chartW / Math.max(canonicalN, 1)) - 2,
+        );
+        const barGap = chartW / Math.max(canonicalN, 1);
         for (let i = 0; i < n; i++) {
-          const x = padL + i * barGap;
-          const h = (vals[i] / maxVal) * chartH;
+          const p = r.points[i];
+          const x = padL + p.rawIndex * barGap;
+          const v = p.value / r.divisor;
+          const h = (v / maxVal) * chartH;
           const y = padT + chartH - h;
-          const tipText = `${this._escape(lbls[i] || '')}: ${this._isFiniteNumber(vals[i]) ? vals[i].toFixed(3) : '—'}`;
+          const tipText = `${this._escape(p.label || '')}: ${this._isFiniteNumber(v) ? v.toFixed(3) : '—'}`;
           svg += `<rect x="${x}" y="${y}" width="${barW}" height="${h}" fill="${this._escape(r.color)}" rx="1" opacity="0.85">
             <title>${tipText}</title></rect>`;
         }
       } else {
-        // Line chart for many points. R06: gaps in
-        // the original series start a new ``M``
-        // sub-path so missing intervals are not
-        // connected as if they were measured.
-        const n0 = resolved[0].values.length;
-        // Map gaps in the cleaned values back to
-        // a position in the rendered chart. We
-        // start a new sub-path whenever the
-        // corresponding index in the cleaned
-        // series is the first index of a new
-        // contiguous run. The original gaps in
-        // rawValues are the positions in the
-        // raw array, but the cleaned values are
-        // a sparse subsequence; we approximate
-        // by treating the absence of a value as
-        // a "break before next valid point" if
-        // the previous raw index was a gap.
+        // Line chart. Each series has its
+        // OWN gaps. Use rawIndex for x.
+        const gapSet = new Set(r.gaps);
         let path = '';
-        let inRun = false;
-        for (let i = 0; i < vals.length; i++) {
-          if (!inRun) {
-            path += 'M' + `${(padL + i * gap).toFixed(1)},${(padT + chartH - (vals[i] / maxVal) * chartH).toFixed(1)}`;
-            inRun = true;
-          } else {
-            path += 'L' + `${(padL + i * gap).toFixed(1)},${(padT + chartH - (vals[i] / maxVal) * chartH).toFixed(1)}`;
-          }
-        }
-        // Find positions in the cleaned sequence
-        // that are immediately after a gap in the
-        // original raw series (size n0). For each
-        // such position, restart the path with an
-        // ``M`` so missing intervals are not
-        // connected.
-        if (resolved[0].gaps && resolved[0].gaps.length) {
-          // gaps are raw indices in the original
-          // input. The cleaned index for raw
-          // index i is (i - number_of_gaps_before).
-          // If two consecutive valid raw indices
-          // are separated by a gap, the second
-          // one is the start of a new run.
-          const gapSet = new Set(resolved[0].gaps);
-          let cleaned = -1;
-          let prevRaw = -1;
-          let firstInRun = true;
-          path = '';
-          for (let raw = 0; raw < n0; raw++) {
-            if (gapSet.has(raw)) {
-              prevRaw = raw;
-              firstInRun = true;
-              continue;
-            }
-            cleaned++;
-            // New run if the previous valid raw was
-            // not the immediate predecessor, OR this
-            // is the very first valid point.
-            const isNewRun = firstInRun || raw !== prevRaw + 1;
-            const x = padL + cleaned * gap;
-            const yVal = padT + chartH - (vals[cleaned] / maxVal) * chartH;
-            path += (isNewRun ? 'M' : 'L') + `${x.toFixed(1)},${yVal.toFixed(1)}`;
-            prevRaw = raw;
-            firstInRun = false;
-          }
+        let firstInRun = true;
+        for (let i = 0; i < n; i++) {
+          const p = r.points[i];
+          // New run if the previous valid
+          // raw was not the immediate
+          // predecessor, OR this is the
+          // first valid point.
+          const prev = i > 0 ? r.points[i - 1].rawIndex : -1;
+          const isNewRun =
+            firstInRun || p.rawIndex !== prev + 1;
+          const x = xForRaw(p.rawIndex);
+          const v = p.value / r.divisor;
+          const yVal = padT + chartH - (v / maxVal) * chartH;
+          path += (isNewRun ? 'M' : 'L') + `${x.toFixed(1)},${yVal.toFixed(1)}`;
+          firstInRun = false;
         }
         svg += `<path d="${path}" fill="none" stroke="${this._escape(r.color)}" stroke-width="1.5" opacity="0.9"/>`;
-        // Dots — only for points that are NOT
-        // immediately after a gap (gap-leader
-        // dots would visually "close" the gap).
-        if (resolved[0].gaps && resolved[0].gaps.length) {
-          const gapSet = new Set(resolved[0].gaps);
-          let cleaned = -1;
-          let prevRaw = -1;
-          for (let raw = 0; raw < n0; raw++) {
-            if (gapSet.has(raw)) {
-              prevRaw = raw;
-              continue;
-            }
-            cleaned++;
-            const isGapLeader = raw !== prevRaw + 1;
-            if (!isGapLeader) {
-              const x = padL + cleaned * gap;
-              const yVal = padT + chartH - (vals[cleaned] / maxVal) * chartH;
-              const tipText = `${this._escape(lbls[cleaned] || '')}: ${this._isFiniteNumber(vals[cleaned]) ? vals[cleaned].toFixed(3) : '—'}`;
-              svg += `<circle cx="${x.toFixed(1)}" cy="${yVal.toFixed(1)}" r="2" fill="${this._escape(r.color)}">
-                <title>${tipText}</title></circle>`;
-            }
-            prevRaw = raw;
-          }
-        } else {
-          for (let i = 0; i < n; i++) {
-            const x = padL + i * gap;
-            const y = padT + chartH - (vals[i] / maxVal) * chartH;
-            const tipText = `${this._escape(lbls[i] || '')}: ${this._isFiniteNumber(vals[i]) ? vals[i].toFixed(3) : '—'}`;
-            svg += `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="2" fill="${this._escape(r.color)}">
-              <title>${tipText}</title></circle>`;
-          }
+        // Dots: emit one circle per valid
+        // point that is NOT a gap-leader.
+        // Gap-leader dots would visually
+        // "close" the gap.
+        for (let i = 0; i < n; i++) {
+          const p = r.points[i];
+          const prev = i > 0 ? r.points[i - 1].rawIndex : -1;
+          const isGapLeader = i > 0 && p.rawIndex !== prev + 1;
+          if (isGapLeader) continue;
+          const x = xForRaw(p.rawIndex);
+          const v = p.value / r.divisor;
+          const yVal = padT + chartH - (v / maxVal) * chartH;
+          const tipText = `${this._escape(p.label || '')}: ${this._isFiniteNumber(v) ? v.toFixed(3) : '—'}`;
+          svg += `<circle cx="${x.toFixed(1)}" cy="${yVal.toFixed(1)}" r="2" fill="${this._escape(r.color)}">
+            <title>${tipText}</title></circle>`;
         }
       }
     }
@@ -305,10 +344,19 @@ class PowerHistoryCard extends HTMLElement {
     // and smoothing. R06 audit requires the card
     // to surface what it is plotting so the
     // operator can interpret it correctly.
-    const cadence = cfg.cadence || '30 min';
+    // R06 follow-up: do NOT default
+    // ``cfg.cadence`` to "30 min" — that
+    // was a fabricated default that did
+    // not match the actual data. When the
+    // cadence is unknown, surface that
+    // explicitly so the operator is not
+    // misled.
     const smoothing = cfg.smoothing || 'none';
     const source = cfg.source || (cfg.entity || 'unknown');
-    const metaLine = `Source: ${this._escape(source)} · Cadence: ${this._escape(cadence)} · Smoothing: ${this._escape(smoothing)}`;
+    const cadenceText = cfg.cadence
+      ? `Cadence: ${this._escape(cfg.cadence)}`
+      : 'Cadence: unknown (not in config)';
+    const metaLine = `Source: ${this._escape(source)} · ${cadenceText} · Smoothing: ${this._escape(smoothing)}`;
 
     const unit = cfg.unit || '';
     this.innerHTML = `<ha-card>
