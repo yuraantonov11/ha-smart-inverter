@@ -1669,4 +1669,6 @@ window.customCards.push({
   preview: true,
   version: '1.1.0',
 });
-customElements.define('k-flow-card', KFlowCard);
+if (!customElements.get('k-flow-card')) {
+  customElements.define('k-flow-card', KFlowCard);
+}

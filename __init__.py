@@ -513,7 +513,34 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def _install_flow_card(hass: HomeAssistant) -> None:
-    """Bundle k-flow-card JS + icons into www/ and register for auto-load."""
+    """Bundle k-flow-card JS + icons into www/ and register for auto-load.
+
+    Audit R09: avoid re-registering URLs
+    that are already present in the
+    user's ``lovelace_resources``
+    storage. HA's ``add_extra_js_url``
+    does NOT deduplicate, so when the
+    operator has already pinned
+    ``/local/community/powmr-inverter/<x>.js``
+    (often with a custom cache-bust
+    hash) the integration would add a
+    second registration. The browser
+    then loads the script twice and
+    ``customElements.define`` throws
+    "Already used" on the second pass.
+    Solution: query
+    ``.storage/lovelace_resources``
+    first; if the path is already
+    registered (with any cache-bust
+    variant) the operator wins and the
+    integration skips registration. The
+    custom-element files now also use
+    an ``if (!customElements.get(...))``
+    guard as a defence in depth, so
+    even if a future operator reload
+    re-registers the URL the script
+    itself is idempotent.
+    """
     import shutil
 
     src_dir = os.path.join(os.path.dirname(__file__), "frontend")
@@ -522,6 +549,31 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
     # that still looks at /local/community/k-flow-card/ finds them.
     legacy_dir = os.path.join(hass.config.config_dir, "www", "community", "k-flow-card")
     resource_url = "/local/community/powmr-inverter/k-flow-card.js"
+
+    # R09: read operator-installed
+    # lovelace resources. The file is
+    # JSON; tolerate parse errors and
+    # missing files so a fresh install
+    # does not break setup.
+    def _existing_resource_paths() -> set[str]:
+        from pathlib import Path
+        store = Path(hass.config.config_dir) / ".storage" / "lovelace_resources"
+        if not store.exists():
+            return set()
+        try:
+            data = json.loads(store.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return set()
+        urls: set[str] = set()
+        for item in (data.get("data") or {}).get("items") or []:
+            raw = str(item.get("url") or "")
+            # Strip cache-bust query string
+            # so we compare the canonical
+            # path, not the version hash.
+            path = raw.split("?", 1)[0]
+            if path:
+                urls.add(path)
+        return urls
 
     def _copy_files() -> bool:
         """Copy bundled frontend files to www/ — always overwrite so updates stick."""
@@ -642,10 +694,51 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # do NOT silently register
         # it with the empty-hash.
         _pc_bust = hashes["pc"]
-        add_extra_js_url(hass, f"{resource_url}?v={_flow_bust}")
+        # R09: read operator-installed
+        # resource paths before we add
+        # anything. We compute this on
+        # the executor to keep the file
+        # I/O off the HA event loop.
+        existing_paths: set[str] = await hass.async_add_executor_job(
+            _existing_resource_paths
+        )
+
+        def _register(
+            url_path: str, version: str
+        ) -> bool:
+            """Register an extra JS URL
+            only when the operator has
+            not already pinned the
+            same path. Returns True
+            when a new registration
+            was added.
+
+            The custom-element JS now
+            also guards
+            ``customElements.define``,
+            so this dedup is defence
+            in depth (avoids
+            redundant HTTP fetches
+            and the prior
+            "Already used" warning
+            cascade).
+            """
+            if url_path in existing_paths:
+                _LOGGER.info(
+                    "Skipping %s — already "
+                    "in lovelace_resources",
+                    url_path,
+                )
+                return False
+            add_extra_js_url(
+                hass, f"{url_path}?v={version}"
+            )
+            return True
+
+        _register(resource_url, _flow_bust)
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
-        add_extra_js_url(hass, f"{fc_url}?v={_forecast_bust}")
+        _register(fc_url, _forecast_bust)
         # pv-comparison: only
         # register when the asset
         # exists on disk. The
@@ -666,7 +759,7 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
                 installed_www, "pv-comparison-card.js"
             )
         ):
-            add_extra_js_url(hass, f"{pc_url}?v={_pc_bust}")
+            _register(pc_url, _pc_bust)
         else:
             _LOGGER.warning(
                 "pv-comparison-card.js not installed; "
@@ -674,10 +767,10 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
             )
         # Power history chart card
         ph_url = "/local/community/powmr-inverter/power-history-card.js"
-        add_extra_js_url(hass, f"{ph_url}?v={_ph_bust}")
+        _register(ph_url, _ph_bust)
         # Total energy info card
         te_url = "/local/community/powmr-inverter/total-energy-card.js"
-        add_extra_js_url(hass, f"{te_url}?v={_te_bust}")
+        _register(te_url, _te_bust)
         _LOGGER.info(
             "Flow card + forecast card + power-history card + total-energy card registered "
             "(cache-bust: flow=%s forecast=%s ph=%s te=%s pc=%s)",

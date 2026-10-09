@@ -115,7 +115,9 @@ class TotalEnergyCard extends HTMLElement {
   }
 }
 
-customElements.define('total-energy-card', TotalEnergyCard);
+if (!customElements.get('total-energy-card')) {
+  customElements.define('total-energy-card', TotalEnergyCard);
+}
 window.customCards = window.customCards || [];
 if (!window.customCards.some(c => c.type === 'total-energy-card')) {
   window.customCards.push({

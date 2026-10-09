@@ -395,6 +395,8 @@ class PowerHistoryCard extends HTMLElement {
   }
 }
 
-customElements.define('power-history-card', PowerHistoryCard);
+if (!customElements.get('power-history-card')) {
+  customElements.define('power-history-card', PowerHistoryCard);
+}
 window.customCards = window.customCards || [];
 window.customCards.push({ type: 'power-history-card', name: 'Power History Card', description: 'Multi-series chart from entity attributes' });

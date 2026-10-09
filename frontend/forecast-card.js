@@ -188,4 +188,6 @@ window.customCards.push({
   preview: true,
   version: '1.0.0',
 });
-customElements.define('forecast-card', ForecastCard);
+if (!customElements.get('forecast-card')) {
+  customElements.define('forecast-card', ForecastCard);
+}

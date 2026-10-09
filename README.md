@@ -6,7 +6,7 @@
 [![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=powmr_inverter)
 
 Custom integration for **solar inverters** with battery storage and HEMS control.
-Currently supports the `solar.siseli.com` cloud platform (Inverter, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
+Currently supports the `solar.siseli.com` cloud platform (POW-HUB, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
 Architecture is designed to support additional data sources in the future (direct inverter connection, other cloud platforms).
 
 ### Station learning and measured forecast accuracy
@@ -61,9 +61,15 @@ remain under the user's control.
 
 ### Services
 
-`set_output_priority`, `set_charger_priority`, `set_smart_mode`, `force_grid_charge`,
-`set_grid_charging`, `set_grid_feed_in`, `set_backup_mode`,
-`set_battery_charge_limit`, `set_grid_charge_power`
+`powmr_inverter.set_output_priority`, `powmr_inverter.set_charger_priority`,
+`powmr_inverter.set_smart_mode`, `powmr_inverter.force_grid_charge`,
+`powmr_inverter.set_grid_charging`, `powmr_inverter.set_grid_feed_in`,
+`powmr_inverter.set_backup_mode`,
+`powmr_inverter.set_battery_charge_limit`,
+`powmr_inverter.set_grid_charge_power`
+
+The full service set is registered when the integration is set up. Run
+`Developer Tools → Actions` in Home Assistant to inspect the latest list.
 
 ## 📦 Installation
 
@@ -102,8 +108,8 @@ No external API keys, no REST sensors, no cloud services needed beyond the Sisel
 
 MIT
 
-| `Inverter_inverter.set_smart_mode` | Set HEMS mode (adaptive/arbitrage/storm) |
-| `Inverter_inverter.force_grid_charge` | Force battery charge from grid (duration in minutes) |
+| `powmr_inverter.set_smart_mode` | Set HEMS mode (adaptive/arbitrage/storm) |
+| `powmr_inverter.force_grid_charge` | Force battery charge from grid (duration in minutes) |
 
 ## HEMS Automations
 
@@ -137,10 +143,10 @@ cd core
 script/setup
 
 # Link custom component
-ln -s /path/to/this/repo config/custom_components/Inverter_inverter
+ln -s /path/to/this/repo config/custom_components/powmr_inverter
 
 # Run tests
-pytest custom_components/Inverter_inverter/tests/
+pytest custom_components/powmr_inverter/tests/
 ```
 
 ## Requirements
@@ -148,7 +154,8 @@ pytest custom_components/Inverter_inverter/tests/
 - Home Assistant 2024.1+
 - Python 3.12+
 - `aiohttp` ≥ 3.9.0
-- `pycryptodome` ≥ 3.20.0
+- `cryptography` (HA pulls this in automatically; `manifest.json`
+  declares it as the integration's runtime requirement)
 
 ## License
 

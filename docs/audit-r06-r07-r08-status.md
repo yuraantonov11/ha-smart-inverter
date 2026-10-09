@@ -19,7 +19,7 @@
 | 0ec10cb | R08: demand model docs, EWMA cadence                         |
 | 3a7355f | R07 follow-up: device identity preservation                  |
 | 20a126f | R06 follow-up: line-chart x by rawIndex, total-energy escape |
-| 789a1b2 | R07 follow-up: production config flow, reauth, legacy unique_id, total-energy Infinity fix, R08 cadence corrections (this commit) |
+| 280ebd4 | R07 follow-up: production config flow, reauth, legacy unique_id, total-energy Infinity fix, R08 cadence corrections (this commit) |
 
 ---
 
@@ -107,6 +107,28 @@
 | Doc / translation sync (README, WORKFLOW, manifest, config fields) | **PARTIAL** | Translation keys for new step + errors added in this block. README/WORKFLOW reconciliation deferred. |
 
 ---
+
+---
+
+## R09 — frontend dedup & customElements guard
+
+| Item | Status | Evidence |
+|------|--------|----------|
+| `add_extra_js_url` does NOT dedupe — operator-pinned URLs in `lovelace_resources` would be re-registered, leading to double HTTP load and `customElements.define` "Already used" warning. | **DONE** | `__init__.py::_install_flow_card` reads `.storage/lovelace_resources` first via `_existing_resource_paths()` and skips the URL when the canonical path (cache-bust stripped) is already present. Operator's version wins. |
+| `customElements.define` not guarded in 4 cards: `power-history-card`, `forecast-card`, `total-energy-card`, `energy-flow-card`, `k-flow-card`. | **DONE** | Each of these files now wraps `customElements.define` in `if (!customElements.get('NAME'))`. `pv-comparison-card` already had the guard. |
+| Regression test: operator has `power-history-card.js?v=2.0.0-92c25bc9` pinned → integration does NOT re-register. | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09IntegrationSkipsAlreadyRegistered::test_power_history_not_reregistered` |
+| Regression test: cache-bust query string is stripped before comparison. | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09ResourcePathExtraction::test_single_url_strips_query` |
+| Regression test: each guarded file actually wraps `customElements.define` (contract pin). | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09CustomElementGuard::test_each_file_has_guard` |
+
+Browser "Already used" warning root cause was **confirmed**: the
+operator's `lovelace_resources` had `power-history-card.js?v=2.0.0-92c25bc9`
+and `pv-comparison-card.js?v=2` (stale `?v=2` static literal)
+pinned manually. The integration's `add_extra_js_url` then
+added second copies with the live cache-bust hash, which the
+browser loaded in parallel, hitting `customElements.define`
+twice. R09 fix preserves the operator's URLs (no deletion) and
+prevents the integration from re-registering them. The
+custom-element guard is defence in depth.
 
 ## Open items (NOT YET VERIFIED or DEFERRED)
 

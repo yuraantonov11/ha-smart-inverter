@@ -27,27 +27,34 @@ git push origin feature/or-fix
 
 ## Релізний цикл
 
+Release tag і GitHub Release публікуються **вручну Юрою**, не через
+pre-push hook. Поточна гілка `develop` тримає версію, синхронізовану
+з `manifest.json` і root `__version__` (`custom_components/powmr_inverter/__init__.py`).
+
 ```bash
 # 1. Переконатись, що все на develop протестовано
 git checkout develop
 python tests/run_all.py
 
-# 2. Merge develop в main
-git checkout main
-git merge --no-ff develop
+# 2. Узгодити версію (root __version__ ↔ manifest.json)
+#    — ручна правка обох файлів перед публікацією release tag.
+#    Поточна: 1.9.0 (див. manifest.json: "version": "1.9.0"
+#    і __init__.py: __version__ = "1.9.0").
+grep -n '__version__' custom_components/powmr_inverter/__init__.py
+python3 -c 'import json; print(json.load(open("manifest.json"))["version"])'
 
-# 3. Оновити версію (з -dev на релізну)
-./bump_version.sh 1.9.0
-git add manifest.json
-git commit -m "chore: bump version to v1.9.0"
+# 3. Push develop (release НЕ створюється автоматично)
+git push origin develop
+
+# 4. Release tag (виконує Юра вручну після review)
 git tag v1.9.0
-
-# 4. Push (pre-push hook запустить тести)
-git push origin main --tags
-
-# 5. GitHub Releases (опційно, для HACS metadata)
+git push origin v1.9.0
 gh release create v1.9.0 --generate-notes
 ```
+
+**Без автоматичного bump_version.sh**: скрипт не існує в репозиторії.
+Версія редагується руками в `manifest.json` і `__init__.py` в одному
+коміті перед публікацією release tag.
 
 ## Правила (enforced by hooks)
 

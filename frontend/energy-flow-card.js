@@ -79,4 +79,6 @@ class SmartSolarEnergyFlow extends HTMLElement {
   }
 }
 
-customElements.define("smart-solar-energy-flow", SmartSolarEnergyFlow);
+if (!customElements.get('smart-solar-energy-flow')) {
+  customElements.define('smart-solar-energy-flow', SmartSolarEnergyFlow);
+}
