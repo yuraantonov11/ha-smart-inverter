@@ -90,6 +90,12 @@ class PlannerInputs:
 
     # Tariff schedule (24 values UAH/kWh). Empty = unknown.
     tariff_schedule: list[float] = field(default_factory=list)
+    # R05: day/night rate fallbacks for the planner to
+    # use when ``tariff_schedule`` is empty. These are
+    # the operator-configured UAH/kWh rates (not
+    # module-level constants).
+    tariff_day_fallback: float = 4.32
+    tariff_night_fallback: float = 2.16
 
     # Battery reserve floor in percent. The planner
     # must not let a plan drain the SOC below this
@@ -238,6 +244,9 @@ def build_planner_inputs(
     # the documented default for this station.
     charge_efficiency: float = 0.85,
     discharge_efficiency: float = 0.90,
+    # R05: day/night rate fallbacks for the planner.
+    tariff_day_fallback: float = 4.32,
+    tariff_night_fallback: float = 2.16,
 ) -> PlannerInputs:
     """Build a ``PlannerInputs`` from raw API + already-corrected values.
 
@@ -419,31 +428,31 @@ def build_planner_inputs(
     # at the night window tells the planner to discharge
     # during the cheapest hours — wrong. Refuse NaN,
     # Infinity, boolean, negative, and out-of-range
-    # values, and propagate the failure via the
-    # returned ``tariff`` (an empty list) plus a
-    # ``tariff_source`` set to ``"fallback"``. The
-    # caller (coordinator) builds a sane default
-    # from the configured day/night rates when this
-    # happens.
+    # values: the schedule is set to an empty list and
+    # the planner rebuilds it from the operator's
+    # ``tariff_day_fallback`` / ``tariff_night_fallback``
+    # parameters (or the documented defaults). The
+    # caller in ``hems.engine`` passes the
+    # coordinator's configured day/night rates, so the
+    # operator's 8/3 UAH/kWh config reaches the
+    # planner, not the hardcoded 4.32/2.16.
     tariff: list[float] = []
-    tariff_source = "api"
     if tariff_schedule and len(tariff_schedule) >= 24:
         for v in tariff_schedule[:24]:
             fv = _finite_number(v)
             if fv is None or fv < 0.0 or fv > 50.0:
                 # Refuse the entire schedule. The
-                # caller will rebuild from day/night
-                # options or fall back to the
-                # documented defaults.
+                # planner will rebuild from the
+                # fallbacks the caller supplied.
                 tariff = []
-                tariff_source = "fallback"
                 break
             tariff.append(fv)
     if not tariff:
         # No schedule supplied or every value was
-        # invalid — the caller must rebuild. We do
-        # NOT substitute 0.0 (that would mean
-        # "free electricity" to the planner).
+        # invalid. We do NOT substitute 0.0
+        # ("free electricity"); the planner uses
+        # ``tariff_day_fallback`` / ``tariff_night_fallback``
+        # for an empty schedule.
         tariff = []
 
     # ── Consumption history ────────────────────────────────────────
@@ -538,6 +547,15 @@ def build_planner_inputs(
         reserve_soc=reserve_soc_value,
         charge_efficiency=charge_eff,
         discharge_efficiency=discharge_eff,
+        # R05: day/night fallbacks. The planner uses
+        # them when ``tariff_schedule`` is empty (the
+        # validator rejected every value in the list).
+        # We pass the parameters the caller supplied;
+        # ``build_planner_inputs`` does not re-validate
+        # these (the coordinator's
+        # ``_build_tariff_schedule`` already does that).
+        tariff_day_fallback=tariff_day_fallback,
+        tariff_night_fallback=tariff_night_fallback,
         soc_source=TelemetrySource(
             origin="fallback" if soc_fallback else soc_origin,
             stale=False,

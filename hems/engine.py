@@ -550,6 +550,21 @@ class HemsEngine:
                 hourly_pv=hourly_pv, hourly_radiation=radiation, hourly_weather_codes=weather,
                 dated_hourly_pv=dated_pv,
                 tariff_schedule=list(getattr(self, "_tariff_schedule", []) or []),
+                # R05: pass the coordinator's configured
+                # day/night rates as the planner's
+                # fallbacks. The validator in
+                # ``build_planner_inputs`` may have refused
+                # the schedule (returned an empty list),
+                # in which case the planner rebuilds the
+                # 24-hour day/night schedule from these
+                # fallbacks. They are the operator's
+                # settings, NOT module-level constants.
+                tariff_day_fallback=_finite_number(
+                    getattr(self, "_day_tariff_uah", 4.32)
+                ) or 4.32,
+                tariff_night_fallback=_finite_number(
+                    getattr(self, "_night_tariff_uah", 2.16)
+                ) or 2.16,
                 # Audit T19: the dated
                 # ``list[tuple[date,
                 # list[float], bool]]``

@@ -1484,6 +1484,28 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
         attributes["forecast_diagnostic"] = (
             self._build_forecast_diagnostic()
         )
+        # R04: surface the capacity warning to the
+        # operator. The coordinator stores the warning
+        # text on ``_capacity_input_warning`` (or None
+        # for valid inputs). When invalid, the planner
+        # MUST NOT use the derived kWh for capacity-
+        # dependent decisions; this attribute carries
+        # the reason.
+        cap_warn = getattr(
+            self.coordinator, "_capacity_input_warning", None
+        )
+        cap_kwh = getattr(
+            self.coordinator, "_battery_capacity_kwh", None
+        )
+        cap_ah = getattr(self.coordinator, "_battery_capacity_ah", None)
+        cap_v = getattr(self.coordinator, "_nominal_voltage_v", None)
+        attributes["capacity_diagnostic"] = {
+            "ah": cap_ah,
+            "voltage_v": cap_v,
+            "kwh": cap_kwh,
+            "warning": cap_warn,
+            "ok_for_planning": cap_warn is None,
+        }
         return attributes
 
     def _build_forecast_diagnostic(self):

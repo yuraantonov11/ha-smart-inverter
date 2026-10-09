@@ -136,6 +136,22 @@ class PlannerInputs:
     consumption_history: list[list[float]]
     night_charge_window: tuple[int, int] = (23, 7)
 
+    # R05: when ``tariff_schedule`` is empty (the
+    # ``build_planner_inputs`` validator refused the
+    # caller's values), the planner does NOT silently
+    # fall back to the module-level ``TARIFF_DAY`` /
+    # ``TARIFF_NIGHT`` constants. The caller is
+    # expected to pass a recovery schedule via
+    # ``tariff_day_fallback`` and ``tariff_night_fallback``;
+    # those are the configured day/night UAH/kWh
+    # rates from the operator. When the caller does
+    # not supply them, the planner uses the
+    # documented defaults 4.32 / 2.16 — the SAME
+    # default the coordinator's
+    # ``_build_tariff_schedule`` would have produced.
+    tariff_day_fallback: float = 4.32
+    tariff_night_fallback: float = 2.16
+
     # Weather alerts (will be added in Phase 1F)
     storm_alert: bool = False
     storm_hours_away: int | None = None
@@ -838,7 +854,29 @@ def simulate_24h(
 
         load_forecast = predictor.predict(h, ts.weekday())[0]
 
-        tariff = inputs.tariff_schedule[h] if len(inputs.tariff_schedule) == 24 else get_tariff(h)
+        # R05: tariff recovery contract. When the caller
+        # supplied a 24-element schedule we use it as-is.
+        # When the schedule is empty (the validator
+        # rejected the caller's list), the planner does
+        # NOT fall back to the module-level
+        # ``TARIFF_DAY`` / ``TARIFF_NIGHT`` constants;
+        # it uses the caller's
+        # ``tariff_day_fallback`` / ``tariff_night_fallback``
+        # which are the operator-configured rates (or the
+        # documented defaults 4.32 / 2.16 when the caller
+        # did not supply them).
+        sched = inputs.tariff_schedule
+        if len(sched) == 24:
+            tariff = sched[h]
+        else:
+            # Rebuild the day/night schedule from the
+            # configured fallbacks. Ukraine TOU: night
+            # 23-07, day otherwise. The fallbacks are
+            # the operator's settings, not the
+            # hardcoded module constants.
+            d_fb = getattr(inputs, "tariff_day_fallback", 4.32)
+            n_fb = getattr(inputs, "tariff_night_fallback", 2.16)
+            tariff = n_fb if (h >= 23 or h < 7) else d_fb
 
         # SOC bounds
         # T08: ``min_soc`` is the user-configured

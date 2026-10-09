@@ -312,23 +312,36 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         )
         # R04: battery capacity derivation chain.
         #
-        # The operator configures ``battery_capacity_ah`` and
-        # ``nominal_voltage_v`` (default 51.2 V — the typical
-        # LiFePO4 16S pack). The derived kWh = Ah × V / 1000.
+        # The form allows ``battery_capacity_ah`` in
+        # ``[10, 2000]`` (config_flow.py:309-311). The
+        # runtime validator mirrors that. ``nominal_voltage_v``
+        # is a new option, runtime range ``[10, 100]``
+        # (LiFePO4 16S = 51.2 V; lead-acid 12/24/48 V).
         #
-        # Reject NaN, Infinity, boolean, and non-numeric values
-        # for BOTH inputs. A capacity of 48000 kWh (typo) used
-        # to pass silently and let the planner pretend the
-        # battery can buffer 48 MWh overnight. We now refuse
-        # the configuration, fall back to the documented
-        # defaults (230 Ah, 51.2 V, 11.776 kWh), and surface
-        # the rejection in the diagnostic so the operator
-        # sees the reason.
+        # When the user supplied an EXPLICITLY INVALID
+        # value, the planner must NOT trust the derived
+        # kWh. We set ``_battery_capacity_kwh = None``
+        # and ``_hems._battery_capacity_kwh = None`` so
+        # the predictive path's gate at engine.py:515
+        # (``capacity is None or capacity <= 0``) returns
+        # ``(None, None)`` and the baseline engine keeps
+        # running without a predictive recommendation.
+        # The sensor attribute ``capacity_diagnostic``
+        # surfaces the warning.
         cap = self._derive_battery_capacity(entry.options)
         self._battery_capacity_ah = cap["ah"]
         self._nominal_voltage_v = cap["voltage"]
-        self._battery_capacity_kwh = cap["kwh"]
         self._capacity_input_warning = cap["warning"]
+        if cap["ok_for_planning"]:
+            self._battery_capacity_kwh = cap["kwh"]
+        else:
+            # Explicit bad input — DO NOT pretend the
+            # battery is 11.776 kWh. The predictive
+            # planner must hold off; the baseline engine
+            # still runs (it does not depend on
+            # ``_battery_capacity_kwh``).
+            self._battery_capacity_kwh = None
+        self._hems._battery_capacity_kwh = self._battery_capacity_kwh
         # R04: the inverter's PV-input max is NOT exposed by
         # the powmr API and is not configurable. Leave the
         # hardware limit unknown — the planner will not cap
@@ -468,7 +481,6 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # R05: validate the day/night tariff options. NaN
         # or out-of-range values used to pass silently and
         # propagate through ``_build_tariff_schedule``.
-        from hems.engine import _finite_number
         _day = _finite_number(entry.options.get("tariff_day", 4.32))
         _night = _finite_number(entry.options.get("tariff_night", 2.16))
         self._day_tariff_uah: float = (
@@ -1091,7 +1103,9 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             row[1] if isinstance(row, tuple) else row
             for row in self._load_matrix
         ]
-        self._hems._battery_capacity_kwh = self._battery_capacity_kwh
+        # NOTE: ``_hems._battery_capacity_kwh`` is set in
+        # ``__init__`` from the derived capacity, and
+        # updated on option reload. Don't overwrite here.
         self._configure_night_window()
 
         controller = self._hems._predictive_controller
@@ -1809,7 +1823,6 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # and non-numeric inputs and fall back to the
         # documented Ukrainian defaults (4.32 day, 2.16
         # night UAH/kWh).
-        from hems.engine import _finite_number
         day_f = _finite_number(self._day_tariff_uah)
         night_f = _finite_number(self._night_tariff_uah)
         if day_f is None or day_f < 0.0 or day_f > 50.0:
@@ -1915,42 +1928,108 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         """R04: derive the battery capacity chain from options.
 
         Returns a dict with keys ``ah``, ``voltage``, ``kwh``,
-        and ``warning`` (None when inputs are valid). The
-        defaults (230 Ah, 51.2 V) match the documented
-        LiFePO4 16S pack and the live deployment's
-        `entry.options` (no explicit battery_capacity_ah).
+        and ``warning`` (None when inputs are valid).
 
-        Valid range:
-          - ``battery_capacity_ah`` in [50, 1000]
-          - ``nominal_voltage_v``   in [10, 100]
+        Form range (config_flow.py) for ``battery_capacity_ah``
+        is ``[10, 2000]``. The runtime validator mirrors that.
+        ``nominal_voltage_v`` is a new option; the runtime
+        validator accepts ``[10, 100]`` (LiFePO4 16S = 51.2 V,
+        lead-acid 12/24/48 V packs).
 
-        Inputs that are NaN, Infinity, boolean, or
-        non-numeric fall back to the documented defaults
-        with a ``warning`` string so the operator sees the
-        reason in the diagnostic.
+        Important contract:
+          - each field is validated INDEPENDENTLY. A bad
+            Ah does not force the voltage to its default
+            and vice versa.
+          - a missing legacy option falls back to the
+            documented default (no warning) — that is the
+            common case for the live deployment.
+          - a non-finite or out-of-range value is an
+            explicit input error (sets ``warning``) and
+            is replaced by the default for that ONE field.
+          - if EITHER input is invalid, the planner must
+            not trust the derived kWh. The caller is
+            expected to check ``warning`` and either
+            refuse to run the predictive planner or
+            gate it with a separate explicit decision.
         """
-        from hems.engine import _finite_number
         DEFAULTS = {"ah": 230.0, "voltage": 51.2}
-        ah_raw = options.get("battery_capacity_ah", DEFAULTS["ah"])
-        v_raw = options.get("nominal_voltage_v", DEFAULTS["voltage"])
-        ah_f = _finite_number(ah_raw)
-        v_f = _finite_number(v_raw)
-        warning = None
-        if ah_f is None or v_f is None:
-            warning = f"non-finite capacity inputs: ah={ah_raw!r}, v={v_raw!r}"
-            ah_f, v_f = DEFAULTS["ah"], DEFAULTS["voltage"]
-        if not (50.0 <= ah_f <= 1000.0):
-            warning = f"battery_capacity_ah={ah_f} out of [50, 1000]"
-            ah_f = DEFAULTS["ah"]
-        if not (10.0 <= v_f <= 100.0):
-            warning = f"nominal_voltage_v={v_f} out of [10, 100]"
-            v_f = DEFAULTS["voltage"]
+        # Form-allowed range, kept in sync with
+        # config_flow.py:309-311.
+        RANGES = {"ah": (10.0, 2000.0), "voltage": (10.0, 100.0)}
+        out = dict(DEFAULTS)
+        warnings: list[str] = []
+        for key in ("ah", "voltage"):
+            raw = options.get(
+                "battery_capacity_ah" if key == "ah"
+                else "nominal_voltage_v",
+                DEFAULTS[key],
+            )
+            checked = _finite_number(raw)
+            lo, hi = RANGES[key]
+            if checked is None:
+                warnings.append(
+                    f"{key}={raw!r} is non-finite; "
+                    f"using default {DEFAULTS[key]}"
+                )
+                continue
+            if not (lo <= checked <= hi):
+                warnings.append(
+                    f"{key}={checked} out of form range "
+                    f"[{lo}, {hi}]; using default {DEFAULTS[key]}"
+                )
+                continue
+            out[key] = checked
         return {
-            "ah": ah_f,
-            "voltage": v_f,
-            "kwh": ah_f * v_f / 1000.0,
-            "warning": warning,
+            "ah": out["ah"],
+            "voltage": out["voltage"],
+            "kwh": out["ah"] * out["voltage"] / 1000.0,
+            "warning": "; ".join(warnings) if warnings else None,
+            "ok_for_planning": not warnings,
         }
+
+    def apply_capacity_and_tariff_options(self, options: dict) -> None:
+        """R04+R05: live-update the capacity and tariff
+        caches from a new ``entry.options`` dict.
+
+        Called from the options-update listener in
+        ``__init__.py``. Re-derives capacity (setting
+        ``_battery_capacity_kwh`` to None when the
+        inputs are invalid) and rebuilds the 24-hour
+        tariff schedule in place. Does NOT touch
+        capacity-dependent state outside what
+        ``_build_tariff_schedule`` and the capacity
+        derivation already own.
+        """
+        cap = self._derive_battery_capacity(options)
+        self._battery_capacity_ah = cap["ah"]
+        self._nominal_voltage_v = cap["voltage"]
+        self._capacity_input_warning = cap["warning"]
+        if cap["ok_for_planning"]:
+            self._battery_capacity_kwh = cap["kwh"]
+        else:
+            self._battery_capacity_kwh = None
+        # Mirror to the engine so the predictive path
+        # sees the new value on the next cycle.
+        if getattr(self, "_hems", None) is not None:
+            self._hems._battery_capacity_kwh = self._battery_capacity_kwh
+        # R05: re-validate and re-build the tariff
+        # schedule. The base day/night rates are
+        # pulled directly from the new options so a
+        # user who changes ``tariff_day`` from 4.32
+        # to 8.0 sees the new schedule without a
+        # coordinator reload.
+        _day = _finite_number(options.get("tariff_day", 4.32))
+        _night = _finite_number(options.get("tariff_night", 2.16))
+        self._day_tariff_uah = (
+            4.32 if _day is None or not (0.0 <= _day <= 50.0) else _day
+        )
+        self._night_tariff_uah = (
+            2.16 if _night is None or not (0.0 <= _night <= 50.0) else _night
+        )
+        new_sched = self._build_tariff_schedule()
+        self._tariff_schedule = new_sched
+        if getattr(self, "_hems", None) is not None:
+            self._hems._tariff_schedule = new_sched
 
     def _accumulate_daily_energy(self, now: datetime, raw: dict[str, Any]) -> None:
         """Integrate samples into daily kWh totals.

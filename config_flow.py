@@ -311,6 +311,13 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                         vol.Range(min=10.0, max=2000.0),
                     ),
                     vol.Optional(
+                        "nominal_voltage_v",
+                        default=current.get("nominal_voltage_v", 51.2),
+                    ): vol.All(
+                        vol.Coerce(float),
+                        vol.Range(min=10.0, max=100.0),
+                    ),
+                    vol.Optional(
                         "pv_total_capacity_w",
                         default=current.get("pv_total_capacity_w", 3000.0),
                     ): vol.All(

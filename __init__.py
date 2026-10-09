@@ -88,10 +88,32 @@ async def _async_options_updated(
     ``entry.async_reload()`` when the user
     changes a reload-required key.
 
-    The listener still records the event in the
-    log so we can observe selective-apply in
-    production diagnostics.
+    R04+R05: the capacity and tariff caches on
+    the coordinator are NOT recomputed on the
+    next cycle (they live in
+    ``_battery_capacity_kwh``, ``_day_tariff_uah``,
+    ``_night_tariff_uah``). For those, we call
+    a runtime updater that re-derives the
+    capacity and re-builds the tariff schedule
+    in place. This is the verified update path
+    (no coordinator reload required for these
+    two families of options).
     """
+    bundle: dict | None = (
+        getattr(hass, "data", {}).get(DOMAIN, {}).get(entry.entry_id)
+        if hasattr(hass, "data") else None
+    )
+    coordinator: InverterCoordinator | None = (
+        bundle.get("coordinator") if isinstance(bundle, dict) else None
+    )
+    if coordinator is not None:
+        try:
+            coordinator.apply_capacity_and_tariff_options(entry.options)
+        except Exception as exc:  # pragma: no cover
+            _LOGGER.warning(
+                "Failed to apply capacity/tariff options for %s: %r",
+                entry.entry_id, exc,
+            )
     _LOGGER.debug(
         "options updated for entry %s; selective apply (no reload)",
         entry.entry_id,

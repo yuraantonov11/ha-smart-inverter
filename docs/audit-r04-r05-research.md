@@ -81,13 +81,6 @@ coordinator so downstream code knows to skip the cap
 rather than guess. **R04 acceptance: separate task**
 that requires extending the device config endpoint.
 
-### `pv_oversize_kw`
-
-`SiteTelemetry.pv_oversize_kw` exists in the dataclass
-(telemetry.py) but is NOT plumbed to the planner.
-**Status: known field, no consumer — not in scope for
-this R04 round.**
-
 ## R05 — daylight / tariff / night-window map
 
 ### `simulate_24h` daylight gate (confirmed defect)
@@ -138,13 +131,30 @@ implied they were coupled.**
 
 ### DST handling
 
+For `Europe/Kyiv` (`UTC+2` winter, `UTC+3` summer):
+
+- **2026-03-29 (DST forward)**: wall-clock `03:00..03:59`
+  is skipped — local clocks jump from `02:59:59 EET` to
+  `04:00:00 EEST`. The fold attribute stays 0.
+- **2026-10-25 (DST backward)**: wall-clock `03:00..03:59`
+  repeats — `03:00 EEST` (fold=0, UTC 00:00) and
+  `03:00 EET` (fold=1, UTC 01:00) both exist.
+
 The planner iterates `delta=0..23` from `now` using
-`now.astimezone(UTC) + delta → astimezone(tz)`. This
-correctly handles DST transitions: the wall-clock hour
-02:00..02:59 is skipped on 2026-03-29 (forward) and
-the wall-clock hour 02:00..02:59 repeats on 2026-10-25
-(backward). The same `night_charge_window=(23, 7)`
-produces an 8-wall-clock-hour window in both seasons
+`now.astimezone(UTC) + delta → astimezone(tz)`. Each
+`delta=1` step is a fixed `3600`-second UTC step, so
+the iteration is always monotonic in UTC. Local-hour
+outputs may skip or repeat the affected wall-clock
+hour, but the production `simulate_24h` only reads
+the `ts.hour` of the resulting timestamp and applies
+the same tariff / charging-window / day-branching
+rules to whichever hour the iteration lands on. The
+end-to-end test exercises a midnight start and
+verifies the iteration produces 24 distinct UTC
+seconds-since-epoch with `Δ == 3600` between
+consecutive steps, regardless of the local fold. The
+same `night_charge_window=(23, 7)` produces an
+8-wall-clock-hour window in both seasons
 (UTC+3 summer, UTC+2 winter); this is by design, not
 a defect. **`astral` is NOT required.**
 
