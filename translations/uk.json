@@ -35,6 +35,7 @@
           "site_longitude": "Longitude",
           "auto_storm_by_forecast": "Auto-Storm by weather forecast",
           "battery_capacity_ah": "Battery capacity (Ah)",
+          "nominal_voltage_v": "Номінальна напруга батареї (В)",
           "pv_total_capacity_w": "Total PV capacity (W)",
           "inverter_max_power_w": "Inverter max power (W)",
           "night_start_hour": "Night start hour (0-23)",

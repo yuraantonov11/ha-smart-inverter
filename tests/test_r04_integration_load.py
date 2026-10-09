@@ -23,8 +23,12 @@ fails.
 
 from __future__ import annotations
 
+import importlib
 import pathlib
 import re
+import shutil
+import sys
+import tempfile
 import unittest
 
 
@@ -104,6 +108,125 @@ class RelativeImport(unittest.TestCase):
             "the single 'from .hems.engine import' "
             "block does not include _finite_number",
         )
+
+
+def _build_isolated_load_path(
+    integration_root: pathlib.Path,
+) -> pathlib.Path:
+    """Build a copy of the integration source tree
+    in a fresh ``custom_components/`` layout.
+    Returns the parent of ``custom_components/``
+    (i.e. the directory that goes on ``sys.path``).
+    """
+    parent = pathlib.Path(tempfile.mkdtemp(prefix="r04_load_"))
+    cc = parent / "custom_components"
+    cc.mkdir()
+    (cc / "__init__.py").write_text("")
+    pi_pkg = cc / "powmr_inverter"
+    pi_pkg.mkdir()
+    # Copy the full integration source. The
+    # relative-import contract is the same
+    # regardless of which submodules are loaded —
+    # what matters is that the import path
+    # ``from .hems.engine import`` resolves.
+    shutil.copytree(
+        integration_root, pi_pkg, dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns(
+            ".test-venv", "__pycache__", ".git",
+            "tests", "node_modules",
+        ),
+    )
+    # Drop the test venv from the copy if it
+    # somehow crept in.
+    venv = pi_pkg / ".test-venv"
+    if venv.exists():
+        shutil.rmtree(venv, ignore_errors=True)
+    return parent
+
+
+class DynamicPackageLoad(unittest.TestCase):
+    """Dynamic load smoke test: build a fake
+    ``custom_components.powmr_inverter`` package
+    layout, import the coordinator, and verify
+    that the relative import
+    ``from .hems.engine import _finite_number``
+    resolves to a real callable.
+
+    Юра's audit: the previous static regex test
+    is a regression guard but does NOT confirm
+    the integration actually loads. This
+    dynamic check exercises the import path that
+    was broken in commit ``49b43c1``.
+    """
+
+    def setUp(self) -> None:
+        self.integration_root = (
+            pathlib.Path(__file__).resolve().parent.parent
+        )
+
+    def tearDown(self) -> None:
+        for name in list(sys.modules):
+            if name.startswith("custom_components.powmr_inverter"):
+                del sys.modules[name]
+            elif name == "custom_components":
+                del sys.modules[name]
+
+    def test_loads_as_custom_components_powmr_inverter(self):
+        parent = _build_isolated_load_path(
+            self.integration_root
+        )
+        try:
+            sys.path.insert(0, str(parent))
+            try:
+                # Build the chain explicitly:
+                # 1. import custom_components
+                # 2. import custom_components.powmr_inverter
+                # 3. import custom_components.powmr_inverter.coordinator
+                #    — this is where the original
+                #    ``ImportError: cannot import name
+                #    '_finite_number' from 'hems.engine'``
+                #    fired.
+                cc = importlib.import_module("custom_components")
+                pkg = importlib.import_module(
+                    "custom_components.powmr_inverter"
+                )
+                coord = importlib.import_module(
+                    "custom_components.powmr_inverter.coordinator"
+                )
+            except ImportError as exc:
+                self.fail(
+                    f"integration did not load as "
+                    f"custom_components.powmr_inverter: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            # The original failure: ``_finite_number``
+            # bound to ``None`` because the
+            # ``from hems.engine import`` (absolute)
+            # was resolved against the top-level
+            # ``hems`` package (which has no such
+            # symbol). After the fix
+            # (``from .hems.engine import``), the
+            # symbol is a real callable.
+            self.assertTrue(
+                callable(getattr(coord, "_finite_number", None)),
+                f"coordinator._finite_number is not "
+                f"callable: got "
+                f"{getattr(coord, '_finite_number', None)!r}",
+            )
+            # The integration package loaded
+            # cleanly.
+            self.assertTrue(pkg.__name__.endswith("powmr_inverter"))
+            # And the custom_components namespace
+            # exists.
+            self.assertEqual(cc.__name__, "custom_components")
+        finally:
+            sys.path.remove(str(parent))
+            for name in list(sys.modules):
+                if name.startswith("custom_components.powmr_inverter"):
+                    del sys.modules[name]
+                elif name == "custom_components":
+                    del sys.modules[name]
+            shutil.rmtree(parent, ignore_errors=True)
 
 
 if __name__ == "__main__":

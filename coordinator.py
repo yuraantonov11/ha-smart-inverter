@@ -2020,15 +2020,25 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # coordinator reload.
         _day = _finite_number(options.get("tariff_day", 4.32))
         _night = _finite_number(options.get("tariff_night", 2.16))
+        # Boundary: ``0.0`` is valid (free
+        # electricity). Use ``is None`` / range check,
+        # NOT ``or default``.
         self._day_tariff_uah = (
-            4.32 if _day is None or not (0.0 <= _day <= 50.0) else _day
+            4.32 if _day is None or not (0.0 <= _day <= 50.0)
+            else _day
         )
         self._night_tariff_uah = (
-            2.16 if _night is None or not (0.0 <= _night <= 50.0) else _night
+            2.16 if _night is None or not (0.0 <= _night <= 50.0)
+            else _night
         )
         new_sched = self._build_tariff_schedule()
         self._tariff_schedule = new_sched
         if getattr(self, "_hems", None) is not None:
+            # Mirror to the engine so the planner
+            # fallback path has the operator's rates,
+            # not module-level constants.
+            self._hems._day_tariff_uah = self._day_tariff_uah
+            self._hems._night_tariff_uah = self._night_tariff_uah
             self._hems._tariff_schedule = new_sched
 
     def _accumulate_daily_energy(self, now: datetime, raw: dict[str, Any]) -> None:

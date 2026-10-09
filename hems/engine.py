@@ -43,6 +43,42 @@ def _normalize_charger(value: str | int | None) -> str | None:
     return _normalize_setting(value, _CHARGER_DISPLAY_TO_NUM)
 
 
+def _coerce_tariff_fallback(value: Any, *, default: float) -> float:
+    """R05: validate a tariff-fallback rate.
+
+    Contract:
+      - ``None``           → engine has not been bound
+                             to a coordinator (cold
+                             start / test fixture).
+                             Returns ``default``.
+      - ``0.0``            → valid operator input
+                             (free electricity, e.g.
+                             solar surplus). PRESERVED
+                             — NOT replaced by
+                             ``default``. This is the
+                             explicit fix for the
+                             ``... or default`` pattern
+                             which silently swallowed
+                             valid zero.
+      - finite, ``0 ≤ x``  → operator's choice.
+      - NaN / Inf / bool /
+        string / negative /
+        too-large          → rejected. Returns
+                             ``default``.
+
+    The "too-large" bound is 50 UAH/kWh — well above
+    the documented Ukraine peak of 4.32 day/2.16 night
+    plus any reasonable margin. The lower bound is
+    exactly 0 (not -0): tariffs cannot be negative.
+    """
+    n = _finite_number(value)
+    if n is None:
+        return default
+    if n < 0 or n > 50:
+        return default
+    return n
+
+
 def _finite_number(value: Any) -> float | None:
     """Unknown/nonfinite telemetry must never masquerade as a full battery.
 
@@ -190,6 +226,18 @@ class HemsEngine:
 
         # Emergency stale data
         self._last_realtime_at: datetime | None = None
+
+        # R05: configured day/night tariffs. The
+        # coordinator writes to these from
+        # ``apply_capacity_and_tariff_options`` so the
+        # planner fallback path has the operator's
+        # rates, not module-level constants. Default
+        # to the documented UA rates (4.32 day /
+        # 2.16 night UAH/kWh) when the coordinator has
+        # not yet bound the engine.
+        self._day_tariff_uah: float | None = None
+        self._night_tariff_uah: float | None = None
+        self._tariff_schedule: list[float] | None = None
 
         # Last applied buzzer state
         self._last_buzzer: str | None = None
@@ -532,6 +580,18 @@ class HemsEngine:
             )
             if planner_reserve is None or not 0 <= planner_reserve <= 100:
                 planner_reserve = 20.0
+            # R05: validate the configured day/night rates
+            # before passing them as planner fallbacks. The
+            # ``_coerce_tariff_fallback`` helper preserves
+            # valid zero and rejects NaN/Inf/bool/negative.
+            _d = _coerce_tariff_fallback(
+                getattr(self, "_day_tariff_uah", None),
+                default=4.32,
+            )
+            _n = _coerce_tariff_fallback(
+                getattr(self, "_night_tariff_uah", None),
+                default=2.16,
+            )
             pi = build_planner_inputs(
                 raw={"gridVoltage": inputs["grid_voltage"],
                      # T01 follow-up: when ``soc_unknown`` is set, do
@@ -550,8 +610,8 @@ class HemsEngine:
                 hourly_pv=hourly_pv, hourly_radiation=radiation, hourly_weather_codes=weather,
                 dated_hourly_pv=dated_pv,
                 tariff_schedule=list(getattr(self, "_tariff_schedule", []) or []),
-                # R05: pass the coordinator's configured
-                # day/night rates as the planner's
+                # R05: the coordinator's configured
+                # day/night rates become the planner's
                 # fallbacks. The validator in
                 # ``build_planner_inputs`` may have refused
                 # the schedule (returned an empty list),
@@ -559,12 +619,8 @@ class HemsEngine:
                 # 24-hour day/night schedule from these
                 # fallbacks. They are the operator's
                 # settings, NOT module-level constants.
-                tariff_day_fallback=_finite_number(
-                    getattr(self, "_day_tariff_uah", 4.32)
-                ) or 4.32,
-                tariff_night_fallback=_finite_number(
-                    getattr(self, "_night_tariff_uah", 2.16)
-                ) or 2.16,
+                tariff_day_fallback=_d,
+                tariff_night_fallback=_n,
                 # Audit T19: the dated
                 # ``list[tuple[date,
                 # list[float], bool]]``
