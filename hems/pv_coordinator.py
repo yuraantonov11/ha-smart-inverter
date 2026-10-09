@@ -584,10 +584,28 @@ class PvLearningCoordinatorMixin:
                     self.hourly_weather_today.append(bucket[0].get("weather_code") if bucket else None)
             self._adjust_daily_forecasts()
             await self._save_pv_state()
-            # SUCCESS: stamp the *receive* time. Failed refreshes
-            # below do NOT touch this — the old forecast is then
-            # honestly reported as "not received this cycle".
-            self._forecast_last_received_at = now
+            # SUCCESS: stamp the *receive* time in
+            # UTC, aware. Failed refreshes below
+            # do NOT touch this — the old forecast
+            # is then honestly reported as "not
+            # received this cycle".
+            #
+            # The ``now`` argument is the local-naive
+            # wall-clock time the caller passed in;
+            # we do NOT change its contract here.
+            # We convert via the same path
+            # ``_pv_local_now`` uses, which goes
+            # ``utcnow → astimezone(site_tz)``, so
+            # the local wall clock is preserved.
+            # To recover the UTC moment we rebuild
+            # from the local clock's wall-clock
+            # fields: that gives the same
+            # UTC offset as the live poll cycle
+            # had at completion.
+            local_completion = self._pv_local_now()
+            self._forecast_last_received_at = local_completion.astimezone(
+                timezone.utc
+            )
         except Exception as exc:
             # A previous day's chart must not masquerade as today's forecast.
             self.forecast_tomorrow_kwh = None

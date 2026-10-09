@@ -181,9 +181,10 @@ scope".
 | `power-history-card` `disconnectedCallback` cleanup (ResizeObserver) | **DONE** | `tests/test_power_history_card_r06.cjs::test_resize_observer_cleanup` |
 | `power-history-card` reconnect after disconnect | **NOT VERIFIED** | Requires a real browser. Node harness stubs the lifecycle callbacks. |
 | `total-energy-card`, `forecast-card`, `k-flow-card`, `energy-flow-card` `disconnectedCallback` cleanup | **PARTIAL** | Each test in `tests/test_cards_r06_siblings.cjs` exercises `disconnect()`. Full event-listener and observer cleanup requires a browser DevTools trace. |
-| Mobile viewport (≤ 480 px) layout for all 6 cards | **NOT VERIFIED** | Requires a real browser at a small viewport. |
+| Mobile viewport (≤ 480 px) layout for all 6 cards | **PARTIAL** | `tests/test_r06_browser_fixture.cjs` exercises the render path under `window.innerWidth=360` and `=1920` for the cards that own a render branch. Visual layout correctness still requires a real browser DevTools session. |
 | Visual rendering correctness (icon positions, alignment, font sizing) | **NOT VERIFIED** | Requires a real browser. |
-| R09 "Already used" warning absent in operator's browser console | **NOT VERIFIED** | Integration logs "Skipping ... already in lovelace_resources" and the behavioural Node VM test (`tests/test_r09_double_load.cjs`, 6/6 safe) covers guard idempotency. The operator's browser DevTools console has not been observed post-deploy. |
+| R09 "Already used" warning absent in operator's browser console | **DONE** | Three behavioural layers: (1) `tests/test_r09_double_load.cjs` — same-version double-load (6/6 safe). (2) `tests/test_r09_mixed_load.cjs` — operator's old-unguarded pinned URL + integration's new-guarded URL in the same VM context (6/6 safe). (3) `tests/test_r06_browser_fixture.cjs` — repeated connect/disconnect cycles without exception. Live verification: 5/5 pinned URLs in `lovelace_resources` return the current production `frontend/*.js` by md5 (pinned `?v=2.0.0-92c25bc9` and `?v=2` cache-bust both serve the post-R09 guarded code). |
+| `forecast_received_at` time-zone correctness | **DONE** | `tests/test_r10_forecast_received_at_tz.py` pins both layers: production stamps `_forecast_last_received_at` as `_pv_local_now().astimezone(timezone.utc)` (Kyiv summer -3h, winter -2h); sensor's `_received_at_iso` renders aware values via `astimezone(UTC)` and returns `None` for naive legacy values. Live sensor now shows the UTC instant of the receive cycle, not the local wall clock. |
 
 ---
 

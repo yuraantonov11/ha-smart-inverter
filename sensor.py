@@ -1664,6 +1664,27 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
         Source: ``coordinator._forecast_last_received_at``.
         Failed refreshes do not update this — the previous
         good fetch is then honestly reported.
+
+        R10.7: time-zone contract fix.
+
+        The value should arrive as a UTC-aware
+        ``datetime`` (set in
+        ``hems/pv_coordinator.py::_maybe_refresh_forecast``
+        via ``local_completion.astimezone(timezone.utc)``).
+        For aware values we return the same instant
+        rendered in UTC, which is unambiguous.
+
+        Legacy defensive case: a value without
+        ``tzinfo`` is a pre-fix value. We do NOT
+        pretend it is UTC by tacking on a tz —
+        that was the original bug (wall clock
+        22:51 + UTC offset 0 = 22:51Z, off by
+        the site's UTC offset). Instead we
+        return ``None`` for the legacy
+        non-aware value and let the audit probe
+        flag it. The new code path always
+        produces aware values, so the legacy
+        case is the empty branch.
         """
         from datetime import datetime, timezone as _tz
         last_at = getattr(self.coordinator, "_forecast_last_received_at", None)
@@ -1671,8 +1692,15 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
             return None
         if isinstance(last_at, datetime):
             if last_at.tzinfo is None:
-                last_at = last_at.replace(tzinfo=_tz.utc)
-            return last_at.isoformat()
+                # Legacy value: do NOT lie about
+                # its offset. The next successful
+                # refresh will overwrite it with
+                # an aware UTC value. Until then,
+                # report ``unknown`` so the
+                # audit probe (NOT_YET_VERIFIED)
+                # has an honest signal.
+                return None
+            return last_at.astimezone(_tz.utc).isoformat()
         if isinstance(last_at, (int, float)) and last_at > 0:
             return datetime.fromtimestamp(last_at, _tz.utc).isoformat()
         return None
