@@ -678,7 +678,9 @@ class KFlowCardEditor extends HTMLElement {
     this._rendered = true; // Fix #2: mark rendered so hass setter stops triggering full DOM rebuilds
   }
 }
-customElements.define('k-flow-card-editor', KFlowCardEditor);
+if (!customElements.get('k-flow-card-editor')) {
+  customElements.define('k-flow-card-editor', KFlowCardEditor);
+}
 
 // ═══════════════════════════════════════════════════════════════
 // MAIN CARD

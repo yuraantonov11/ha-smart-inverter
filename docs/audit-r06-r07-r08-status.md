@@ -119,6 +119,10 @@
 | Regression test: operator has `power-history-card.js?v=2.0.0-92c25bc9` pinned → integration does NOT re-register. | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09IntegrationSkipsAlreadyRegistered::test_power_history_not_reregistered` |
 | Regression test: cache-bust query string is stripped before comparison. | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09ResourcePathExtraction::test_single_url_strips_query` |
 | Regression test: each guarded file actually wraps `customElements.define` (contract pin). | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09CustomElementGuard::test_each_file_has_guard` |
+| Regression test: drive the real `_install_flow_card` via `importlib.util.spec_from_file_location` against synthetic `.storage/lovelace_resources` stores (missing file, empty items, malformed JSON, single pin, all-5 pins). | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09ResourceExtraction` (6 tests, `TemporaryDirectory` cleanup) |
+| Behavioural double-load: each of 6 bundled cards loads twice in a Node VM, second load must not throw. | **DONE** | `tests/test_r09_double_load.cjs` (6/6 safe) |
+| Guard for `k-flow-card-editor` (secondary custom element in `k-flow-card.js`). | **DONE** | `tests/test_r09_lovelace_dedup.py::TestR09CustomElementGuard::test_k_flow_card_editor_is_guarded` |
+| Browser verification: "Already used" warning absent in operator's browser DevTools console. | **NOT VERIFIED** | The integration logs "Skipping ... already in lovelace_resources" and the behavioural test covers the guard idempotency in a Node VM. Final acceptance is the operator's browser console after deploy. |
 
 Browser "Already used" warning root cause was **confirmed**: the
 operator's `lovelace_resources` had `power-history-card.js?v=2.0.0-92c25bc9`
@@ -130,16 +134,56 @@ twice. R09 fix preserves the operator's URLs (no deletion) and
 prevents the integration from re-registering them. The
 custom-element guard is defence in depth.
 
+**Cache-bust and operator-pinned URLs**: the operator's
+resources keep their existing `?v=...` query string. The
+integration does NOT rewrite the operator's URLs. To pick up
+a new frontend version the operator must update the cache-bust
+hash in their Lovelace dashboard settings — the integration
+cannot do that on the operator's behalf. Until the operator
+re-pins, the browser fetches the operator's pinned asset, NOT
+the new file. This is the correct behaviour: per Юра's
+directive ("Користувацькі ресурси навмання не видаляй"), the
+operator's customisation is preserved. The behavioural
+double-load test (`tests/test_r09_double_load.cjs`) proves
+that even if the operator's pinned asset is older (without
+the new guard), a second load of the SAME asset is a no-op
+when the integration's own copy of the script reaches the
+browser. The "Already used" warning cannot fire as long as
+either the operator's pinned version or the integration's
+copy has the guard. With `3b3a5a0` deploy all 6 cards are
+guarded.
+
 ## Open items (NOT YET VERIFIED or DEFERRED)
 
 | Item | Status | Note |
 |------|--------|------|
-| `first_v2_completed_pair` (real-forecast + actual pair, both v2) | **NOT YET VERIFIED** | ≥18–24h of production data required. Not blocking R06–R08. |
-| Hardware PV limit (`pv_max_w`) | **UNKNOWN** | API does not expose it. |
-| Mobile / browser visual / resize / reconnect | **NOT VERIFIED** | Node harness only. Browser path deferred. |
+| `first_v2_completed_pair` (real-forecast + actual pair, both v2) | **NOT YET VERIFIED** | Verified constraint: `PvLearningStore.snapshot()` rejects past-or-today dates (`if date.fromisoformat(day) <= now.date(): return False`) and never overwrites an existing snapshot (`if day in self.snapshots: return False`). The current JSON has 3 snapshots for 2026-10-09/10/11 with v1 models (`station_gain_v1` × 2, `hourly_response_v1` × 1). With `calibration_model=hourly_response_v2`, the next unused +1 / +2 dates are 2026-10-12 / 2026-10-13. A v2 snapshot can first be written when polling runs on or after 2026-10-10 (which would write 12 + 13). The closed-fact pair is then expected no earlier than 2026-10-13. The `forecast_model_tags` attribute in the sensor is the engine's calibration model, not the snapshot's stored `forecast_model`; the two are not the same field. |
+| Hardware PV limit (`pv_max_w`) | **UNKNOWN** | Inverter API does not expose a max-watts field. The MiniMax M3 cloud endpoints (`/v1/token_plan/remains`, `/anthropic/v1/models`) are billing / model-list endpoints and DO NOT contain the inverter's hardware spec; they are not valid evidence for this question. Status remains UNKNOWN until an inverter-side endpoint (e.g. the SOLARsiseli API or the device's local Wi-Fi module) exposes the field. |
+| Mobile / browser visual / resize / reconnect | **NOT VERIFIED** | See dedicated "R06 browser-path coverage" section below for the breakdown. Node harness only. |
 | Unique DOM IDs per card instance | **PARTIAL** | No global registry. |
-| Root `__version__` ↔ manifest reconciliation | **DEFERRED** | Per Юра's instruction: no release tag. |
-| README / WORKFLOW rewrite | **DEFERRED** | Per scope. |
+| Root `__version__` ↔ manifest reconciliation | **DONE** | `__version__ = "1.9.0"` ↔ `manifest.json: "version": "1.9.0"` (verified in `3b3a5a0` deploy). No release tag created per Юра's standing instruction. |
+| README / WORKFLOW rewrite | **DONE** | `README.md` and `WORKFLOW.md` updated in `3b3a5a0` to reflect `powmr_inverter` domain, `cryptography` requirement, and the manual release-tag workflow. |
+
+---
+
+## R06 browser-path coverage (mobile / resize / disconnect)
+
+The original R06 audit listed mobile, resize and
+`disconnectedCallback` cleanup. Per Юра's directive ("R06
+початкового аудиту включає mobile, resize і disconnected
+cleanup — не оголошуй їх поза scope самомостійно"), the
+available checks are listed here; remaining browser-only
+verifications are explicitly **NOT VERIFIED**, not "out of
+scope".
+
+| Item | Status | Evidence |
+|------|--------|----------|
+| `power-history-card` `disconnectedCallback` cleanup (ResizeObserver) | **DONE** | `tests/test_power_history_card_r06.cjs::test_resize_observer_cleanup` |
+| `power-history-card` reconnect after disconnect | **NOT VERIFIED** | Requires a real browser. Node harness stubs the lifecycle callbacks. |
+| `total-energy-card`, `forecast-card`, `k-flow-card`, `energy-flow-card` `disconnectedCallback` cleanup | **PARTIAL** | Each test in `tests/test_cards_r06_siblings.cjs` exercises `disconnect()`. Full event-listener and observer cleanup requires a browser DevTools trace. |
+| Mobile viewport (≤ 480 px) layout for all 6 cards | **NOT VERIFIED** | Requires a real browser at a small viewport. |
+| Visual rendering correctness (icon positions, alignment, font sizing) | **NOT VERIFIED** | Requires a real browser. |
+| R09 "Already used" warning absent in operator's browser console | **NOT VERIFIED** | Integration logs "Skipping ... already in lovelace_resources" and the behavioural Node VM test (`tests/test_r09_double_load.cjs`, 6/6 safe) covers guard idempotency. The operator's browser DevTools console has not been observed post-deploy. |
 
 ---
 

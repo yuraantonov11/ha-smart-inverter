@@ -14,105 +14,284 @@ new registrations; skip the URL when the path is already
 present. The custom-element JS now also has its own
 ``if (!customElements.get(...))`` guard as defence in depth.
 
-These tests pin two contracts:
+These tests drive the PRODUCTION ``_install_flow_card``
+helper against synthetic ``lovelace_resources`` stores,
+plus a static contract test that each bundled frontend JS
+file still guards ``customElements.define``.
 
-1. The dedup logic correctly parses
-   ``.storage/lovelace_resources`` and returns the set of
-   paths (without cache-bust query strings).
-
-2. Each bundled frontend JS file guards
-   ``customElements.define`` with
-   ``if (!customElements.get(...))`` so a double-load is
-   safe even if the dedup step is bypassed.
+REPO is resolved from ``__file__`` so the test runs from
+any checkout location. Temporary directories are cleaned up
+via ``TemporaryDirectory`` to avoid file pollution.
 """
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
-REPO = Path("/opt/data/powmr-ai-work/powmr_inverter")
+# REPO is computed from this test file's location so the
+# test runs from any checkout. parents[1] = the directory
+# that contains the tests/ folder.
+REPO = Path(__file__).resolve().parents[1]
 
 
-class TestR09ResourcePathExtraction(unittest.TestCase):
-    """The dedup logic strips cache-bust query strings so
-    ``?v=2.0.0-92c25bc9`` matches the canonical
-    ``/local/community/.../<file>.js`` path.
+def _load_integration_module():
+    """Load the integration's __init__.py by file path so
+    the test does not depend on the package layout.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "_powmr_inverter_under_test", REPO / "__init__.py"
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(
+            f"could not load integration __init__.py from {REPO}"
+        )
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _write_store(tmp: Path, items: list) -> Path:
+    """Write a synthetic lovelace_resources store inside
+    ``tmp`` and return its path.
+    """
+    store_dir = tmp / ".storage"
+    store_dir.mkdir(parents=True, exist_ok=True)
+    p = store_dir / "lovelace_resources"
+    p.write_text(
+        json.dumps({"data": {"items": items}}),
+        encoding="utf-8",
+    )
+    return p
+
+
+def _build_hass(tmp: Path):
+    """Stub hass with the minimum surface used by
+    ``_install_flow_card``.
     """
 
-    def _extract(self, store_items):
-        tmp = Path(tempfile.mkdtemp())
-        try:
-            store = tmp / ".storage" / "lovelace_resources"
-            store.parent.mkdir(parents=True, exist_ok=True)
-            store.write_text(
-                json.dumps({"data": {"items": store_items}}),
-                encoding="utf-8",
+    class _Hass:
+        class _Cfg:
+            config_dir = str(tmp)
+
+        config = _Cfg()
+
+        async def async_add_executor_job(self, fn, *a, **kw):
+            return fn(*a, **kw)
+
+    return _Hass()
+
+
+def _capture_add_extra_js_url():
+    """Patch ``homeassistant.components.frontend.add_extra_js_url``
+    with a capture function. Returns ``(captured, restore)``.
+    """
+    import homeassistant.components.frontend as fe  # type: ignore
+
+    captured: list[str] = []
+    orig = fe.add_extra_js_url
+
+    def _capture(hass_arg, url):
+        captured.append(url)
+
+    fe.add_extra_js_url = _capture
+
+    def _restore():
+        fe.add_extra_js_url = orig
+
+    return captured, _restore
+
+
+class TestR09ResourceExtraction(unittest.IsolatedAsyncioTestCase):
+    """Drive the real ``_install_flow_card`` through the
+    real ``_existing_resource_paths`` helper. Each test
+    uses a fresh TemporaryDirectory so the filesystem is
+    clean on entry and clean on exit.
+    """
+
+    async def test_missing_storage_file_registers_full_set(self):
+        # Fresh install: no .storage file at all.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            mod = _load_integration_module()
+            captured, restore = _capture_add_extra_js_url()
+            try:
+                await mod._install_flow_card(_build_hass(tmp))
+            finally:
+                restore()
+            # The dedup helper must return an empty set
+            # for a missing storage file, so every URL
+            # the integration knows about is registered.
+            self.assertTrue(
+                len(captured) >= 1,
+                f"fresh install should register at least one URL, "
+                f"got {captured}",
             )
-            # Inline the same logic the integration uses
-            # so we can test it without importing the
-            # whole integration module.
-            import json as _json
-            data = _json.loads(store.read_text(encoding="utf-8"))
-            urls: set[str] = set()
-            for item in (data.get("data") or {}).get("items") or []:
-                raw = str(item.get("url") or "")
-                path = raw.split("?", 1)[0]
-                if path:
-                    urls.add(path)
-            return urls
-        finally:
-            pass
 
-    def test_empty_store_returns_empty_set(self):
-        self.assertEqual(self._extract([]), set())
+    async def test_empty_store_registers_full_set(self):
+        # Store exists with an empty items list. Same
+        # semantics as a fresh install.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _write_store(tmp, [])
+            mod = _load_integration_module()
+            captured, restore = _capture_add_extra_js_url()
+            try:
+                await mod._install_flow_card(_build_hass(tmp))
+            finally:
+                restore()
+            self.assertTrue(
+                len(captured) >= 1,
+                f"empty store should yield full registration set, "
+                f"got {captured}",
+            )
 
-    def test_single_url_strips_query(self):
-        result = self._extract(
-            [
-                {
-                    "id": "x",
-                    "url": "/local/community/powmr-inverter/power-history-card.js?v=2.0.0-92c25bc9",
-                },
+    async def test_malformed_storage_does_not_crash(self):
+        # Store file with invalid JSON: the dedup helper
+        # MUST swallow the parse error and fall through to
+        # a full registration. The setup must not raise.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            store = _write_store(tmp, [])
+            store.write_text(
+                "{ this is not valid JSON", encoding="utf-8"
+            )
+            mod = _load_integration_module()
+            captured, restore = _capture_add_extra_js_url()
+            try:
+                # Should NOT raise even though the store
+                # is malformed.
+                await mod._install_flow_card(_build_hass(tmp))
+            finally:
+                restore()
+            self.assertTrue(
+                len(captured) >= 1,
+                f"malformed store should fall through to "
+                f"full registration, got {captured}",
+            )
+
+    async def test_pinned_power_history_not_reregistered(self):
+        # Operator has pinned power-history-card.js with
+        # a custom cache-bust version. The integration
+        # MUST NOT add a second registration.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _write_store(
+                tmp,
+                [
+                    {
+                        "id": "operator-ph",
+                        "url": (
+                            "/local/community/powmr-inverter/"
+                            "power-history-card.js?v=2.0.0-92c25bc9"
+                        ),
+                        "type": "module",
+                    },
+                ],
+            )
+            mod = _load_integration_module()
+            captured, restore = _capture_add_extra_js_url()
+            try:
+                await mod._install_flow_card(_build_hass(tmp))
+            finally:
+                restore()
+            ph_calls = [
+                u for u in captured
+                if "power-history-card" in u
             ]
-        )
-        self.assertEqual(
-            result,
-            {"/local/community/powmr-inverter/power-history-card.js"},
-        )
+            self.assertEqual(
+                ph_calls, [],
+                f"power-history-card was re-registered despite "
+                f"being in lovelace_resources: {ph_calls}",
+            )
 
-    def test_multiple_urls_kept(self):
-        result = self._extract(
-            [
-                {"id": "a", "url": "/local/community/powmr-inverter/k-flow-card.js?v=1.9.1-610b4520"},
-                {"id": "b", "url": "/local/community/powmr-inverter/forecast-card.js"},
-                {"id": "c", "url": "/local/community/powmr-inverter/pv-comparison-card.js?v=2"},
+    async def test_pinned_pv_comparison_with_static_v2_skipped(self):
+        # Operator has pinned
+        # pv-comparison-card.js?v=2 (the legacy static
+        # version). The integration MUST NOT add a
+        # second registration.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _write_store(
+                tmp,
+                [
+                    {
+                        "id": "operator-pc",
+                        "url": (
+                            "/local/community/powmr-inverter/"
+                            "pv-comparison-card.js?v=2"
+                        ),
+                        "type": "module",
+                    },
+                ],
+            )
+            mod = _load_integration_module()
+            captured, restore = _capture_add_extra_js_url()
+            try:
+                await mod._install_flow_card(_build_hass(tmp))
+            finally:
+                restore()
+            pc_calls = [
+                u for u in captured
+                if "pv-comparison-card" in u
             ]
-        )
-        self.assertEqual(
-            result,
-            {
-                "/local/community/powmr-inverter/k-flow-card.js",
-                "/local/community/powmr-inverter/forecast-card.js",
-                "/local/community/powmr-inverter/pv-comparison-card.js",
-            },
-        )
+            self.assertEqual(
+                pc_calls, [],
+                f"pv-comparison-card was re-registered despite "
+                f"being in lovelace_resources: {pc_calls}",
+            )
 
-    def test_missing_storage_file_returns_empty(self):
-        # Simulate a fresh install with no .storage file.
-        tmp = Path(tempfile.mkdtemp())
-        store = tmp / ".storage" / "lovelace_resources"
-        self.assertFalse(store.exists())
+    async def test_all_five_pinned_skipped(self):
+        # Operator has pinned all 5 cards. The
+        # integration MUST NOT register any of them.
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            _write_store(
+                tmp,
+                [
+                    {
+                        "id": f"op-{n}",
+                        "url": (
+                            f"/local/community/powmr-inverter/{path}"
+                            f"?v=1.9.1-610b4520"
+                        ),
+                        "type": "module",
+                    }
+                    for n, path in enumerate(
+                        [
+                            "k-flow-card.js",
+                            "forecast-card.js",
+                            "pv-comparison-card.js",
+                            "power-history-card.js",
+                            "total-energy-card.js",
+                        ]
+                    )
+                ],
+            )
+            mod = _load_integration_module()
+            captured, restore = _capture_add_extra_js_url()
+            try:
+                await mod._install_flow_card(_build_hass(tmp))
+            finally:
+                restore()
+            self.assertEqual(
+                captured, [],
+                f"no URL should be re-registered when operator "
+                f"pinned all 5: {captured}",
+            )
 
 
 class TestR09CustomElementGuard(unittest.TestCase):
-    """Each bundled frontend JS file MUST guard
-    ``customElements.define`` with
+    """Static contract: each bundled frontend JS file MUST
+    wrap ``customElements.define`` in
     ``if (!customElements.get(...))`` so a double-load is
-    safe. This is the contract pin — if a future edit
-    removes the guard, this test fails immediately.
+    safe. Regression pin — if a future edit removes the
+    guard, this test fails immediately.
     """
 
     CASES = [
@@ -129,124 +308,36 @@ class TestR09CustomElementGuard(unittest.TestCase):
             needle = f"if (!customElements.get('{name}'))"
             self.assertIn(
                 needle, text,
-                f"{path} missing guard `if (!customElements.get('{name}'))`",
+                f"{path} missing guard "
+                f"`if (!customElements.get('{name}'))`",
             )
+
+    def test_k_flow_card_editor_is_guarded(self):
+        # k-flow-card.js registers TWO custom elements:
+        # ``k-flow-card`` (main) and ``k-flow-card-editor``
+        # (the editor panel). Both must be guarded so a
+        # double-load is safe.
+        text = (REPO / "frontend/k-flow-card.js").read_text()
+        self.assertIn(
+            "if (!customElements.get('k-flow-card-editor'))",
+            text,
+            "k-flow-card.js missing guard for k-flow-card-editor",
+        )
 
     def test_each_file_still_calls_define(self):
         for path, name in self.CASES:
             text = (REPO / path).read_text()
-            # Either the original `customElements.define('NAME', ...)`
-            # or the guarded form `if (!customElements.get('NAME')) {
-            # customElements.define('NAME', ...) }` should reference
-            # the symbol.
             self.assertIn(
                 f"customElements.define('{name}'", text,
                 f"{path} missing customElements.define for {name}",
             )
 
     def test_pv_comparison_card_already_guarded(self):
-        # pv-comparison-card was the first file to add the
-        # guard. We keep it on the list as a regression
-        # guard.
         text = (REPO / "frontend/pv-comparison-card.js").read_text()
         self.assertIn(
             "if (!customElements.get('pv-comparison-card'))",
             text,
         )
-
-
-class TestR09IntegrationSkipsAlreadyRegistered(unittest.IsolatedAsyncioTestCase):
-    """End-to-end: when lovelace_resources already lists
-    power-history-card.js, the integration's
-    _install_flow_card MUST NOT call add_extra_js_url for
-    that path again.
-    """
-
-    async def test_power_history_not_reregistered(self):
-        import importlib.util
-        import json as _json
-        import sys
-        import tempfile
-
-        # Build a synthetic config_dir with the operator's
-        # lovelace_resources.
-        tmp = Path(tempfile.mkdtemp())
-        store_dir = tmp / ".storage"
-        store_dir.mkdir()
-        store_dir.joinpath("lovelace_resources").write_text(
-            _json.dumps(
-                {
-                    "data": {
-                        "items": [
-                            {
-                                "id": "operator-ph",
-                                "url": (
-                                    "/local/community/powmr-inverter/"
-                                    "power-history-card.js?v=2.0.0-92c25bc9"
-                                ),
-                                "type": "module",
-                            },
-                        ]
-                    },
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        # Load the integration module by file path so the
-        # test does not depend on the package layout.
-        spec = importlib.util.spec_from_file_location(
-            "_powmr_inverter_under_test", REPO / "__init__.py"
-        )
-        if spec is None or spec.loader is None:
-            self.skipTest("could not load integration __init__.py")
-            return
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = mod
-        spec.loader.exec_module(mod)
-        _install_flow_card = mod._install_flow_card
-
-        # Stub hass.
-        class _Hass:
-            class _Cfg:
-                config_dir = str(tmp)
-
-            config = _Cfg()
-
-            async def async_add_executor_job(self, fn, *a, **kw):
-                return fn(*a, **kw)
-
-        hass = _Hass()
-
-        # Capture add_extra_js_url calls. The integration
-        # imports it lazily inside the function:
-        # ``from homeassistant.components.frontend import
-        # add_extra_js_url``. We patch the symbol in
-        # ``homeassistant.components.frontend``.
-        import homeassistant.components.frontend as fe  # type: ignore
-
-        called: list[str] = []
-
-        def _capture(hass_arg, url):
-            called.append(url)
-
-        orig = fe.add_extra_js_url
-        fe.add_extra_js_url = _capture
-        try:
-            await _install_flow_card(hass)
-        finally:
-            fe.add_extra_js_url = orig
-
-        ph_calls = [u for u in called if "power-history-card" in u]
-        self.assertEqual(
-            ph_calls, [],
-            f"power-history-card was re-registered despite being in "
-            f"lovelace_resources: {ph_calls}",
-        )
-
-
-async def _async_run(fn, *args, **kwargs):
-    return fn(*args, **kwargs)
 
 
 if __name__ == "__main__":
