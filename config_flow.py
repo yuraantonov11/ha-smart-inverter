@@ -259,7 +259,65 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         needed), so the client is closed
         before returning to the form
         regardless of outcome.
+
+        R07 follow-up #5 (state hygiene):
+        at the START of this handler we
+        clear any pending state left
+        over from a previous attempt.
+        Without this, the following
+        sequence leaks the OLD
+        credentials into a NEW attempt:
+
+          1. operator submits
+             credentials A → picker for
+             [A1, A2]; pending state
+             stored (email=A, password=A,
+             devices=[A1, A2]).
+          2. operator navigates back and
+             submits credentials B.
+          3. Phase 1 succeeds for B.
+          4. Phase 2 ``_list_devices``
+             fails for B (server 503).
+          5. B's client is closed (the
+             previous fix) — but
+             ``_pending_email`` still
+             contains ``A``.
+          6. Operator now sees the
+             credentials form with
+             ``auth_failed`` and clicks
+             "back to picker" (or the
+             flow re-enters
+             ``async_step_select_device``).
+          7. Picker renders ``[A1, A2]``
+             from the stale cache; on
+             submit it creates an entry
+             with ``email=A, password=A``
+             even though the operator
+             intended B.
+
+        Clearing pending state at the
+        entry of this handler makes the
+        new attempt a hard reset: the
+        picker from a previous attempt
+        is no longer reachable with
+        stale credentials.
         """
+        # R07 follow-up #5: clear any
+        # pending state from a previous
+        # attempt. The new submit is a
+        # hard reset. We do NOT close
+        # the previous client here (the
+        # previous flow is responsible
+        # for its own close). We only
+        # drop the references to the
+        # cached list / credentials so
+        # a later ``async_step_select_device``
+        # cannot use them.
+        self._pending_devices = []
+        self._pending_email = None
+        self._pending_password = None
+        self._pending_predictive = None
+        self._pending_api = None
         try:
             predictive_options = parse_predictive_options(user_input)
         except ValueError:

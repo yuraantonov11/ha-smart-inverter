@@ -931,6 +931,314 @@ class TestConfigFlowProduction(unittest.IsolatedAsyncioTestCase):
         self.assertIn("A", selector._options)
         self.assertIn("B", selector._options)
 
+    # ── R07 follow-up #5: pending state reset ──
+
+    async def test_picker_then_list_devices_error_clears_pending(self):
+        """Юра scenario: first attempt
+        succeeds (picker for [A, B]).
+        Second attempt with new
+        credentials fails on
+        ``_list_devices``. The stale
+        pending state from the first
+        attempt MUST be cleared; the
+        picker must NOT render the old
+        device list.
+        """
+        from powmr_inverter_fake.api import InverterApiError
+
+        class _ListErrorResponder:
+            def __init__(self):
+                self._devices = []
+            def respond(self, preferred):
+                raise InverterApiError("server 503")
+
+        # First attempt: successful picker
+        # for [A, B].
+        flow = _make_flow_harness(self._flow_mod, [
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+            {"id": "B", "stationId": "SB",
+             "dailyProducedQuantity": 2.0},
+        ])
+        await flow.async_step_user({
+            "email": "first@example.com",
+            "password": "first-pw",
+            "predictive_default_mode": "Shadow",
+            "predictive_night_window_start_hour": 23,
+            "predictive_night_window_end_hour": 7,
+            "predictive_min_confidence_for_assist": 0.2,
+        })
+        # After first attempt, pending
+        # state holds the FIRST
+        # credentials.
+        self.assertEqual(flow._pending_email, "first@example.com")
+        self.assertEqual(flow._pending_password, "first-pw")
+        self.assertEqual(len(flow._pending_devices), 2)
+        # Now swap to a failing responder
+        # and submit a NEW attempt.
+        flow._list_responder = _ListErrorResponder()
+        original_factory = self._flow_mod.InverterApiClient
+        def _factory(*args, **kwargs):
+            client = original_factory(*args, **kwargs)
+            client._list_responder = flow._list_responder
+            return client
+        self._flow_mod.InverterApiClient = _factory
+        try:
+            result2 = await flow.async_step_user({
+                "email": "second@example.com",
+                "password": "second-pw",
+                "predictive_default_mode": "Shadow",
+                "predictive_night_window_start_hour": 23,
+                "predictive_night_window_end_hour": 7,
+                "predictive_min_confidence_for_assist": 0.2,
+            })
+        finally:
+            self._flow_mod.InverterApiClient = original_factory
+        # After the failed second
+        # attempt, the picker form is
+        # shown (with auth_failed), and
+        # pending state is CLEARED — the
+        # stale first-credentials cache
+        # is gone.
+        self.assertEqual(flow._pending_email, None)
+        self.assertEqual(flow._pending_password, None)
+        self.assertEqual(flow._pending_devices, [])
+        self.assertEqual(flow._pending_predictive, None)
+        self.assertIsNone(flow._pending_api)
+        # The credentials form was shown
+        # (NOT the picker).
+        flow.async_show_form.assert_called()
+        form_kwargs = flow.async_show_form.call_args.kwargs
+        self.assertEqual(form_kwargs["step_id"], "user")
+        self.assertEqual(form_kwargs["errors"]["base"], "auth_failed")
+        # The second client was closed.
+        _MockApiClient = globals()["_MockApiClient"]
+        instances = list(_MockApiClient.instances)
+        self.assertTrue(instances[-1]._closed)
+
+    async def test_picker_then_cancel_clears_pending(self):
+        """Юра scenario: first attempt
+        succeeds (picker). Second
+        attempt is CANCELLED during
+        ``_list_devices``. The
+        ``CancelledError`` propagates and
+        the pending state MUST be
+        cleared.
+        """
+
+        class _CancelResponder:
+            def __init__(self):
+                self._devices = []
+            def respond(self, preferred):
+                raise asyncio.CancelledError("user cancelled")
+
+        # First attempt: successful
+        # picker.
+        flow = _make_flow_harness(self._flow_mod, [
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+            {"id": "B", "stationId": "SB",
+             "dailyProducedQuantity": 2.0},
+        ])
+        await flow.async_step_user({
+            "email": "first@example.com",
+            "password": "first-pw",
+            "predictive_default_mode": "Shadow",
+            "predictive_night_window_start_hour": 23,
+            "predictive_night_window_end_hour": 7,
+            "predictive_min_confidence_for_assist": 0.2,
+        })
+        self.assertEqual(flow._pending_email, "first@example.com")
+        # Swap to a cancellation
+        # responder.
+        flow._list_responder = _CancelResponder()
+        original_factory = self._flow_mod.InverterApiClient
+        def _factory(*args, **kwargs):
+            client = original_factory(*args, **kwargs)
+            client._list_responder = flow._list_responder
+            return client
+        self._flow_mod.InverterApiClient = _factory
+        try:
+            with self.assertRaises(asyncio.CancelledError):
+                await flow.async_step_user({
+                    "email": "second@example.com",
+                    "password": "second-pw",
+                    "predictive_default_mode": "Shadow",
+                    "predictive_night_window_start_hour": 23,
+                    "predictive_night_window_end_hour": 7,
+                    "predictive_min_confidence_for_assist": 0.2,
+                })
+        finally:
+            self._flow_mod.InverterApiClient = original_factory
+        # Pending state is cleared even
+        # though the cancellation
+        # propagated.
+        _MockApiClient = globals()["_MockApiClient"]
+        self.assertEqual(flow._pending_email, None)
+        self.assertEqual(flow._pending_password, None)
+        self.assertEqual(flow._pending_devices, [])
+
+    async def test_picker_does_not_create_entry_with_stale_credentials(self):
+        """Юра scenario: after the
+        failed second attempt, a
+        direct call to
+        ``async_step_select_device``
+        (which is what the picker
+        re-entry would do) MUST NOT
+        create an entry. The pending
+        state was cleared; the picker
+        falls back to the credentials
+        form.
+        """
+        from powmr_inverter_fake.api import InverterApiError
+
+        class _ListErrorResponder:
+            def __init__(self):
+                self._devices = []
+            def respond(self, preferred):
+                raise InverterApiError("server 503")
+
+        flow = _make_flow_harness(self._flow_mod, [
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+            {"id": "B", "stationId": "SB",
+             "dailyProducedQuantity": 2.0},
+        ])
+        # First attempt: successful.
+        await flow.async_step_user({
+            "email": "first@example.com",
+            "password": "first-pw",
+            "predictive_default_mode": "Shadow",
+            "predictive_night_window_start_hour": 23,
+            "predictive_night_window_end_hour": 7,
+            "predictive_min_confidence_for_assist": 0.2,
+        })
+        # Second attempt: fails.
+        flow._list_responder = _ListErrorResponder()
+        original_factory = self._flow_mod.InverterApiClient
+        def _factory(*args, **kwargs):
+            client = original_factory(*args, **kwargs)
+            client._list_responder = flow._list_responder
+            return client
+        self._flow_mod.InverterApiClient = _factory
+        try:
+            await flow.async_step_user({
+                "email": "second@example.com",
+                "password": "second-pw",
+                "predictive_default_mode": "Shadow",
+                "predictive_night_window_start_hour": 23,
+                "predictive_night_window_end_hour": 7,
+                "predictive_min_confidence_for_assist": 0.2,
+            })
+        finally:
+            self._flow_mod.InverterApiClient = original_factory
+        # ``async_set_unique_id`` and
+        # ``async_create_entry`` were
+        # NEVER called with the
+        # first-credentials values.
+        # (We have already called
+        # ``async_set_unique_id`` once
+        # during the first attempt's
+        # pending → picker transition,
+        # but only with the first
+        # attempt's logic — the second
+        # attempt did NOT call them.)
+        # The second call to
+        # ``async_step_select_device``
+        # must fall back to the
+        # credentials form (NOT create
+        # an entry).
+        flow.async_create_entry.reset_mock()
+        flow.async_set_unique_id.reset_mock()
+        result = await flow.async_step_select_device({
+            "selected_device_sn": "B",
+        })
+        # ``async_create_entry`` was
+        # NOT called.
+        flow.async_create_entry.assert_not_called()
+        # The form shown is the
+        # credentials form, not the
+        # picker.
+        form_kwargs = flow.async_show_form.call_args.kwargs
+        self.assertEqual(form_kwargs["step_id"], "user")
+
+    async def test_successful_retry_uses_new_credentials_only(self):
+        """Юра scenario: a successful
+        retry after a failed first
+        attempt MUST use the NEW
+        credentials. We verify the
+        second attempt's
+        ``InverterApiClient`` received
+        the new email and password.
+        """
+
+        # First attempt: fails on
+        # list_devices (using an error
+        # responder).
+        class _ListErrorResponder:
+            def __init__(self):
+                self._devices = []
+            def respond(self, preferred):
+                from powmr_inverter_fake.api import InverterApiError
+                raise InverterApiError("server 503")
+
+        flow = _make_flow_harness(self._flow_mod, [
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+        ])
+        flow._list_responder = _ListErrorResponder()
+        original_factory = self._flow_mod.InverterApiClient
+        def _factory(*args, **kwargs):
+            client = original_factory(*args, **kwargs)
+            client._list_responder = flow._list_responder
+            return client
+        self._flow_mod.InverterApiClient = _factory
+        try:
+            await flow.async_step_user({
+                "email": "first@example.com",
+                "password": "first-pw",
+                "predictive_default_mode": "Shadow",
+                "predictive_night_window_start_hour": 23,
+                "predictive_night_window_end_hour": 7,
+                "predictive_min_confidence_for_assist": 0.2,
+            })
+        finally:
+            self._flow_mod.InverterApiClient = original_factory
+        # Restore a successful
+        # responder for the second
+        # attempt.
+        flow._list_responder = _FakeDeviceList([
+            {"id": "A", "stationId": "SA",
+             "dailyProducedQuantity": 1.0},
+        ])
+        # Second attempt: succeeds.
+        await flow.async_step_user({
+            "email": "second@example.com",
+            "password": "second-pw",
+            "predictive_default_mode": "Shadow",
+            "predictive_night_window_start_hour": 23,
+            "predictive_night_window_end_hour": 7,
+            "predictive_min_confidence_for_assist": 0.2,
+        })
+        # The second client received
+        # the new credentials.
+        _MockApiClient = globals()["_MockApiClient"]
+        instances = list(_MockApiClient.instances)
+        self.assertEqual(len(instances), 2)
+        self.assertEqual(instances[0].email, "first@example.com")
+        self.assertEqual(instances[0].password, "first-pw")
+        self.assertEqual(instances[1].email, "second@example.com")
+        self.assertEqual(instances[1].password, "second-pw")
+        # The created entry uses the
+        # NEW credentials.
+        create_kwargs = flow.async_create_entry.call_args.kwargs
+        self.assertEqual(
+            create_kwargs["data"]["email"], "second@example.com"
+        )
+        self.assertEqual(
+            create_kwargs["data"]["password"], "second-pw"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
