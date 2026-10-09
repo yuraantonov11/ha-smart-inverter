@@ -115,16 +115,17 @@ def test_check_forecast_diagnostic_rejects_nan_contract() -> None:
     assert "radiation_contract_version is non-finite" in msg
 
 
-def test_check_forecast_diagnostic_rejects_inf_received_at() -> None:
-    """received_at is a string; the validator only checks
-    that it's non-empty (string is fine). But the
-    production code MUST produce an ISO-8601 string when
-    rows_total > 0 — a non-ISO string is a FAIL.
+def test_check_forecast_diagnostic_rejects_empty_received_at_string() -> None:
+    """An empty received_at string is a FAIL when rows_total
+    > 0 (the production sensor must update the time on every
+    successful refresh). A non-empty, non-ISO string is
+    also a FAIL because the contract requires a parseable
+    ISO-8601 timestamp.
     """
-    state = {
+    state_empty_str = {
         "attributes": {
             "forecast_diagnostic": {
-                "forecast_received_at": "not-a-valid-iso",
+                "forecast_received_at": "   ",
                 "forecast_timezone": "Europe/Kyiv",
                 "radiation_contract_version": 2,
                 "forecast_dates": ["2026-10-09", "2026-10-10", "2026-10-11"],
@@ -136,14 +137,26 @@ def test_check_forecast_diagnostic_rejects_inf_received_at() -> None:
             }
         }
     }
-    # A non-ISO string is "non-finite" by the validator's
-    # number check (it expects None or a number; the
-    # production code emits an ISO string). The validator
-    # should treat a string received_at as FAIL when
-    # rows_total > 0 because the production code MUST
-    # update the time on success.
-    status, name, msg = probe.check_forecast_diagnostic(state)
+    status, _, _ = probe.check_forecast_diagnostic(state_empty_str)
     assert status == "FAIL"
+    # A valid ISO-8601 string is accepted (PASS).
+    state_ok = {
+        "attributes": {
+            "forecast_diagnostic": {
+                "forecast_received_at": "2026-10-09T10:00:00+00:00",
+                "forecast_timezone": "Europe/Kyiv",
+                "radiation_contract_version": 2,
+                "forecast_dates": ["2026-10-09", "2026-10-10", "2026-10-11"],
+                "intervals_per_date": {"2026-10-09": 24},
+                "sample_row": None,
+                "rows_with_diff_ne_3600": 0,
+                "forecast_model_tags": ["hourly_response_v2"],
+                "forecast_rows_total": 72,
+            }
+        }
+    }
+    status, _, _ = probe.check_forecast_diagnostic(state_ok)
+    assert status == "PASS"
 
 
 def _build_pair_check_journal_real(journal_pairs, real_pairs):

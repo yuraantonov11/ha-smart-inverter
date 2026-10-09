@@ -426,11 +426,15 @@ def check_forecast_diagnostic(
         )
     if not diag["forecast_dates"]:
         return "FAIL", "forecast_diagnostic", "forecast_dates is empty"
-    if not _is_finite_number(diag["forecast_received_at"]):
+    # The production sensor emits an ISO-8601 string for
+    # ``forecast_received_at`` on success. A None here
+    # despite rows_total > 0 means a refresh succeeded but
+    # the receive-time stamp was not updated — FAIL.
+    r_at = diag["forecast_received_at"]
+    if r_at is None or (isinstance(r_at, str) and not r_at.strip()):
         return "FAIL", "forecast_diagnostic", (
-            f"forecast_received_at is non-finite or None "
-            f"despite rows_total={diag['forecast_rows_total']}: "
-            f"{diag['forecast_received_at']!r}"
+            f"forecast_received_at is None or empty despite "
+            f"rows_total={diag['forecast_rows_total']}: {r_at!r}"
         )
     return "PASS", "forecast_diagnostic", (
         f"forecast_diagnostic OK: dates={diag['forecast_dates']}, "
