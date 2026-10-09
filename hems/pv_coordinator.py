@@ -52,6 +52,19 @@ class PvLearningCoordinatorMixin:
         self._pv_matrix_at = None
         self._pv_calibrator_log_at = None
         self._archive_attempt_at = None
+        # ``_forecast_last_received_at`` is the SUCCESS time
+        # of the last forecast fetch (NOT the attempt/throttle
+        # time, which is ``_forecast_last_fetch``). It is set
+        # only after the new rows are written to
+        # ``_raw_hourly_forecast``. Failed refreshes leave
+        # this field alone so the sensor can honestly report
+        # the previous good fetch.
+        self._forecast_last_received_at = None
+        # Per-day model tag (v2 family) for the last
+        # successful refresh. Keys are ISO date strings; the
+        # value is ``current_forecast_model_identity(...)``.
+        # Empty until the first successful refresh.
+        self._forecast_model_tags = {}
         self._pv_state_loaded = False
         self._pv_state_dirty = False
         self._night_window_last_persist_at = None
@@ -518,6 +531,10 @@ class PvLearningCoordinatorMixin:
         if self._forecast_last_fetch and now - self._forecast_last_fetch < timedelta(minutes=15):
             return
         # Throttle failures too; missing forecasts are marked unknown below.
+        # ``_forecast_last_fetch`` is the *attempt* time (used for
+        # back-off). The *successful receive* time lives on
+        # ``_forecast_last_received_at`` and is updated only when
+        # the fetch path reaches the data-publish line.
         self._forecast_last_fetch = now
         try:
             local_now = self._pv_local_now()
@@ -546,6 +563,13 @@ class PvLearningCoordinatorMixin:
             self.forecast_day_after_kwh = fc2.energy_kwh if fc2 else None
             self._raw_forecast_kwh = {d: fc.energy_kwh for d, fc in complete.items()}
             self._raw_hourly_forecast = [dict(h) for h in hourly if h["time"][:10] in complete]
+            # Per-day model tag (v2 family) — derived from
+            # the production helper, attached to the
+            # coordinator state for the sensor to read.
+            self._forecast_model_tags = {
+                d: self._forecast_model_for_day(datetime.fromisoformat(d).date())
+                for d in complete
+            }
             self.weather_tomorrow_code = fc.dominant_weather_code if fc else None
             self.weather_day_after_code = fc2.dominant_weather_code if fc2 else None
             today = local_now.date().isoformat()
@@ -560,6 +584,10 @@ class PvLearningCoordinatorMixin:
                     self.hourly_weather_today.append(bucket[0].get("weather_code") if bucket else None)
             self._adjust_daily_forecasts()
             await self._save_pv_state()
+            # SUCCESS: stamp the *receive* time. Failed refreshes
+            # below do NOT touch this — the old forecast is then
+            # honestly reported as "not received this cycle".
+            self._forecast_last_received_at = now
         except Exception as exc:
             # A previous day's chart must not masquerade as today's forecast.
             self.forecast_tomorrow_kwh = None

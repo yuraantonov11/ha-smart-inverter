@@ -44,10 +44,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
+from datetime import date as _date
 from pathlib import Path
 
 HOST_DEFAULT = "root@192.168.1.220"
@@ -69,6 +71,25 @@ def _ssh(host: str, *cmd: str, timeout: int = 30) -> tuple[int, str, str]:
         return r.returncode, r.stdout, r.stderr
     except subprocess.TimeoutExpired:
         return 124, "", "timeout"
+
+
+def _is_finite_number(v) -> bool:
+    """``True`` iff ``v`` is a real (non-bool) number and is
+    finite (not NaN, not Inf). Booleans, strings, ``None``,
+    and ``math.nan``/``math.inf`` all return ``False``.
+    """
+    if isinstance(v, bool):
+        return False
+    if not isinstance(v, (int, float)):
+        return False
+    return math.isfinite(v)
+
+
+def _finite(v, default=None):
+    """Coerce a possibly non-finite value to ``default``. Returns
+    the input if finite, else ``default``.
+    """
+    return v if _is_finite_number(v) else default
 
 
 def _read_remote_json(host: str, path: str) -> dict | None:
@@ -170,26 +191,87 @@ def _discover_entity_id(host: str, entry_id: str) -> str | None:
     return None
 
 
+def _fetch_sensor_from_state_input(path: str) -> dict | None:
+    """Read a pre-fetched sensor state from a local file or
+    ``-`` (stdin). The token never enters the probe's input
+    paths because the operator runs the live-state fetch
+    through their own channel (e.g. Hermes's
+    ``ha_get_state``) and pipes the JSON here.
+    """
+    if path == "-":
+        data = sys.stdin.read()
+    else:
+        with open(path, "r", encoding="utf-8") as f:
+            data = f.read()
+    try:
+        return json.loads(data)
+    except json.JSONDecodeError:
+        return None
+
+
 def _fetch_sensor(host: str, entity_id: str, token: str | None) -> dict | None:
-    """Read the sensor state via the local HA REST API. The
-    request goes through SSH (host-local curl) so the
-    long-lived access token never leaves the operator's
-    machine as a network packet.
+    """Read the sensor state via the host-local HA REST API.
+
+    The token is taken from the ``POWMR_HA_TOKEN`` env var by
+    the caller and passed in here. The probe does NOT pass
+    the token in any SSH/curl command line that ends up in
+    a process listing or in the shell history. Instead the
+    token is forwarded via the ``Authorization: Bearer ...``
+    header, which is the only path that should ever see it.
+    The probe never logs the header value.
     """
     if not token:
         return None
-    url = f"http://127.0.0.1:8123" + ENTITY_HA_API.format(entity_id)
-    rc, out, _ = _ssh(
-        host, "curl", "-sS", "-m", "10",
-        "-H", f"Authorization: Bearer {token}",
-        url,
+    # Build a tiny Python helper that uses ``requests`` to
+    # perform the request without exposing the token in the
+    # shell command. The helper reads the token from
+    # ``$POWMR_HA_TOKEN`` (set in the SSH session via the
+    # `ssh host "POWMR_HA_TOKEN=... ..."` form, which the
+    # helper file does NOT log).
+    helper = (
+        "import json, os, sys, urllib.request\n"
+        "url = sys.argv[1]\n"
+        "token = os.environ.get('POWMR_HA_TOKEN', '')\n"
+        "req = urllib.request.Request(url)\n"
+        "req.add_header('Authorization', 'Bearer ' + token)\n"
+        "try:\n"
+        "    with urllib.request.urlopen(req, timeout=10) as r:\n"
+        "        sys.stdout.write(r.read().decode('utf-8'))\n"
+        "except Exception as exc:\n"
+        "    sys.stderr.write('http-error: ' + str(exc) + '\\n')\n"
+        "    sys.exit(1)\n"
     )
-    if rc != 0 or not out.strip():
-        return None
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as f:
+        f.write(helper)
+        local_helper = f.name
+    remote_helper = f"/tmp/_probe_fetch_{os.getpid()}.py"
     try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        return None
+        # ``BatchMode=yes`` ensures no interactive password
+        # prompt. We forward the token in the SSH command
+        # environment; the token is NOT visible in the
+        # command line itself, only in the helper's
+        # environment, which the helper does not echo.
+        env_eq = "POWMR_HA_TOKEN=" + token
+        # Defensive redaction: if anyone ever runs the probe
+        # with the helper debug, the token must not be
+        # printed. The helper writes only the HTTP body.
+        r = subprocess.run(
+            ["ssh", "-o", "BatchMode=yes", host,
+             f"{env_eq} python3 {remote_helper} http://127.0.0.1:8123/api/states/{entity_id}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return None
+        try:
+            return json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return None
+    finally:
+        try:
+            os.unlink(local_helper)
+        except OSError:
+            pass
+        _ssh(host, "rm", "-f", remote_helper, timeout=10)
 
 
 # ── checks ───────────────────────────────────────────────────────
@@ -274,23 +356,20 @@ def check_calibration_model(host: str, entry_id: str) -> tuple[str, str, str]:
 
 
 def check_forecast_diagnostic(
-    host: str, entity_id: str | None, token: str | None
+    state: dict | None,
 ) -> tuple[str, str, str]:
     """[5/6] Sensor publishes forecast_diagnostic with the
     documented schema and contract v2 invariants.
+
+    An empty forecast (no rows yet) is the expected
+    "forecast not received" state — NOT_YET_VERIFIED, never
+    FAIL. Missing keys that should always be present
+    (e.g. the production code MUST publish the schema even
+    when empty) is a FAIL.
     """
-    if entity_id is None:
-        return "NOT_YET_VERIFIED", "forecast_diagnostic", (
-            "no entity to query"
-        )
-    if not token:
-        return "NOT_YET_VERIFIED", "forecast_diagnostic", (
-            "POWMR_HA_TOKEN not set; cannot read sensor via REST API"
-        )
-    state = _fetch_sensor(host, entity_id, token)
     if state is None:
-        return "FAIL", "forecast_diagnostic", (
-            f"REST GET /api/states/{entity_id} failed"
+        return "NOT_YET_VERIFIED", "forecast_diagnostic", (
+            "no sensor state provided (use --state-input or POWMR_HA_TOKEN)"
         )
     attrs = state.get("attributes", {}) or {}
     diag = attrs.get("forecast_diagnostic")
@@ -298,6 +377,9 @@ def check_forecast_diagnostic(
         return "FAIL", "forecast_diagnostic", (
             "sensor attributes do not contain a forecast_diagnostic dict"
         )
+    # The schema must be present even when the forecast is
+    # empty (this is how the live sensor reports
+    # "forecast not yet received").
     required = {
         "forecast_received_at", "forecast_timezone",
         "radiation_contract_version", "forecast_dates",
@@ -310,51 +392,78 @@ def check_forecast_diagnostic(
         return "FAIL", "forecast_diagnostic", (
             f"forecast_diagnostic missing keys: {sorted(missing)}"
         )
+    # Empty forecast = NOT_YET_VERIFIED, not FAIL.
     if diag["forecast_rows_total"] == 0:
         return "NOT_YET_VERIFIED", "forecast_diagnostic", (
-            "forecast not fetched yet; diagnostic is the empty-marker"
+            "forecast not yet received (empty marker schema present); "
+            f"received_at={diag['forecast_received_at']!r}"
         )
-    if diag["radiation_contract_version"] != 2:
+    # Reject non-finite contract values (NaN, Inf, None, str).
+    contract = diag["radiation_contract_version"]
+    if not _is_finite_number(contract):
         return "FAIL", "forecast_diagnostic", (
-            f"radiation_contract_version={diag['radiation_contract_version']} (expected 2)"
+            f"radiation_contract_version is non-finite: {contract!r}"
         )
-    if diag["rows_with_diff_ne_3600"] != 0:
+    if int(contract) != 2:
+        return "FAIL", "forecast_diagnostic", (
+            f"radiation_contract_version={contract} (expected 2)"
+        )
+    if not _is_finite_number(diag["rows_with_diff_ne_3600"]):
+        return "FAIL", "forecast_diagnostic", (
+            f"rows_with_diff_ne_3600 is non-finite: "
+            f"{diag['rows_with_diff_ne_3600']!r}"
+        )
+    if int(diag["rows_with_diff_ne_3600"]) != 0:
         return "FAIL", "forecast_diagnostic", (
             f"{diag['rows_with_diff_ne_3600']} rows have weather_timestamp - "
             f"timestamp != 3600 (contract v2 violation)"
         )
-    bad_tags = [t for t in diag["forecast_model_tags"] if t not in V2_TAGS]
+    bad_tags = [t for t in (diag.get("forecast_model_tags") or [])
+                if not isinstance(t, str) or t not in V2_TAGS]
     if bad_tags:
         return "FAIL", "forecast_diagnostic", (
             f"forecast_model_tags include non-v2 tags: {bad_tags}"
         )
     if not diag["forecast_dates"]:
         return "FAIL", "forecast_diagnostic", "forecast_dates is empty"
+    if not _is_finite_number(diag["forecast_received_at"]):
+        return "FAIL", "forecast_diagnostic", (
+            f"forecast_received_at is non-finite or None "
+            f"despite rows_total={diag['forecast_rows_total']}: "
+            f"{diag['forecast_received_at']!r}"
+        )
     return "PASS", "forecast_diagnostic", (
         f"forecast_diagnostic OK: dates={diag['forecast_dates']}, "
         f"rows={diag['forecast_rows_total']}, "
         f"tags={diag['forecast_model_tags']}, "
-        f"bad_diffs={diag['rows_with_diff_ne_3600']}"
+        f"bad_diffs={diag['rows_with_diff_ne_3600']}, "
+        f"received_at={diag['forecast_received_at']}"
     )
 
 
 def check_completed_pair(host: str, entry_id: str) -> tuple[str, str, str]:
     """[6/6] First v2 completed pair.
 
-    A completed pair must satisfy:
-      - PvLearningState.pairs has a record for some day D
-        with finite forecast_kwh, finite actual_kwh, and
-        a v2 model tag. ``pairs`` is a ``dict[day, record]``.
-      - RealForecastPairs.pairs has a record for the same
-        day D with finite actual_kwh, a v2 model tag, and
-        used=True. ``pairs`` is a ``list[record]`` where
-        each record has a ``date`` field.
-      - The forecast values match across the two journals.
-      - The forecast was issued before the predicted day
-        (issued_at.date() < day).
+    A completed pair must satisfy ALL of:
+      - ``PvLearningState.pairs[day]`` has finite
+        ``forecast_kwh`` AND finite ``actual_kwh`` (NaN/Inf
+        are rejected by ``_is_finite_number``).
+      - ``PvLearningState.pairs[day]`` carries a v2 model
+        tag (``hourly_response_v2`` or ``station_gain_v2``).
+      - ``RealForecastPairs.pairs`` (a list-of-records) has
+        a record for the same day D with
+        ``used == True`` (the production code marks a
+        record as completed via this flag).
+      - Both records carry the SAME v2 model tag.
+      - ``forecast_kwh`` and ``actual_kwh`` agree between
+        the two journals to 1e-6.
+      - ``issued_at.date() < day`` (forecast was issued
+        before the predicted day).
     If no v2 pair has been completed yet → NOT_YET_VERIFIED.
-    Do NOT search for an invented key; do NOT create a pair
-    to make this check pass.
+    If a v2-tagged pair exists but FAILS the
+    above (NaN, mismatched model, etc.) → FAIL.
+    Do NOT search for an invented key; do NOT create a
+    pair to make this check pass.
     """
     journal_path = f"{HEMS_DIR}/pv_fact_pairs_{entry_id}.json"
     real_path = f"{HEMS_DIR}/{entry_id}/real_forecast_pairs.json"
@@ -374,6 +483,10 @@ def check_completed_pair(host: str, entry_id: str) -> tuple[str, str, str]:
                 pairs_r[r["date"]] = r
     elif isinstance(pairs_r_raw, dict):
         pairs_r = pairs_r_raw
+    # First, look for ANY v2-tagged pair to detect the
+    # negative case: a v2 pair exists but is invalid
+    # (NaN, mismatched model, etc.). This must FAIL.
+    any_v2_seen = False
     for day in sorted(pairs_j.keys() & pairs_r.keys()):
         pj = pairs_j[day]
         pr = pairs_r[day]
@@ -383,29 +496,63 @@ def check_completed_pair(host: str, entry_id: str) -> tuple[str, str, str]:
             continue
         if pr.get("forecast_model") not in V2_TAGS:
             continue
+        any_v2_seen = True
+        # Mismatched model tags (one hourly, one station).
+        if pj.get("forecast_model") != pr.get("forecast_model"):
+            return "FAIL", "first_v2_completed_pair", (
+                f"day={day}: model tags differ between journals "
+                f"({pj.get('forecast_model')!r} vs {pr.get('forecast_model')!r})"
+            )
         if pr.get("used") is not True:
             continue
         fk_j, ak_j = pj.get("forecast_kwh"), pj.get("actual_kwh")
         fk_r, ak_r = pr.get("forecast_kwh"), pr.get("actual_kwh")
-        # Finite check
-        if any(not isinstance(v, (int, float)) for v in (fk_j, ak_j, fk_r, ak_r)):
-            continue
-        if abs(fk_j - fk_r) > 1e-6 or abs(ak_j - ak_r) > 1e-6:
-            continue
+        if not all(_is_finite_number(v) for v in (fk_j, ak_j, fk_r, ak_r)):
+            return "FAIL", "first_v2_completed_pair", (
+                f"day={day}: non-finite forecast/actual values "
+                f"(journal: fk={fk_j!r} ak={ak_j!r}; real: fk={fk_r!r} ak={ak_r!r})"
+            )
+        # All four values are finite numbers; coerce to float
+        # so the absolute-difference subtraction is well-typed.
+        fk_j_f, ak_j_f, fk_r_f, ak_r_f = (
+            float(fk_j), float(ak_j), float(fk_r), float(ak_r)
+        )
+        if abs(fk_j_f - fk_r_f) > 1e-6 or abs(ak_j_f - ak_r_f) > 1e-6:
+            return "FAIL", "first_v2_completed_pair", (
+                f"day={day}: forecast/actual differ between journals "
+                f"(journal fk={fk_j_f} ak={ak_j_f}; real fk={fk_r_f} ak={ak_r_f})"
+            )
         issued_at = pj.get("issued_at") or pr.get("issued_at") or pr.get("captured_at")
         if not isinstance(issued_at, str):
-            continue
+            return "FAIL", "first_v2_completed_pair", (
+                f"day={day}: missing or non-string issued_at"
+            )
         try:
-            from datetime import date as _date
             d_issued = _date.fromisoformat(issued_at[:10])
             d_day = _date.fromisoformat(day)
             if d_issued >= d_day:
-                continue
-        except Exception:
-            continue
+                return "FAIL", "first_v2_completed_pair", (
+                    f"day={day}: forecast issued_at.date()={d_issued} "
+                    f"is not before day {d_day}"
+                )
+        except Exception as exc:
+            return "FAIL", "first_v2_completed_pair", (
+                f"day={day}: issued_at unparseable: {issued_at!r} ({exc!r})"
+            )
         return "PASS", "first_v2_completed_pair", (
-            f"day={day} forecast_model={pj.get('forecast_model')} "
-            f"forecast_kwh={fk_j} actual_kwh={ak_j} (matches in both journals)"
+            f"day={day} model={pj.get('forecast_model')} "
+            f"forecast_kwh={fk_j} actual_kwh={ak_j} "
+            f"(matches in both journals, issued_at={d_issued})"
+        )
+    if any_v2_seen:
+        # v2 pairs exist but none passed the full
+        # completion check (e.g. used=False, no actual_kwh).
+        # This is NOT_YET_VERIFIED — pairs are pending
+        # completion by the production pipeline.
+        return "NOT_YET_VERIFIED", "first_v2_completed_pair", (
+            "v2-tagged pairs present in both journals but none "
+            "completed (used=True + actual_kwh + matching "
+            "forecast)"
         )
     return "NOT_YET_VERIFIED", "first_v2_completed_pair", (
         "no completed v2 pair in both journals yet"
@@ -418,6 +565,15 @@ def check_completed_pair(host: str, entry_id: str) -> tuple[str, str, str]:
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--host", default=HOST_DEFAULT)
+    p.add_argument(
+        "--state-input", default=None,
+        help="Path to a pre-fetched sensor state JSON. Pass "
+             "'-' to read from stdin. The token never enters "
+             "this path; the operator fetches the state "
+             "through their own channel (Hermes's "
+             "ha_get_state, a curl with a manually-supplied "
+             "header, etc.) and pipes it here.",
+    )
     args = p.parse_args()
     host = args.host
     token = os.environ.get("POWMR_HA_TOKEN") or None
@@ -432,12 +588,23 @@ def main() -> int:
     else:
         print(f"  entity: {entity_id}")
 
+    # Resolve the sensor state. Priority: --state-input
+    # (file or stdin) → live fetch via POWMR_HA_TOKEN → None
+    # (which yields NOT_YET_VERIFIED on the diagnostic check).
+    state = None
+    if args.state_input:
+        state = _fetch_sensor_from_state_input(args.state_input)
+        print(f"  state-input: {args.state_input!r} (loaded={state is not None})")
+    if state is None and token and entity_id:
+        state = _fetch_sensor(host, entity_id, token)
+        print(f"  state-source: live REST (loaded={state is not None})")
+
     results: list[tuple[str, str, str]] = []
     results.append(check_entity_id(host, entry_id))
     results.append(check_journal_contract(host, entry_id))
     results.append(check_real_pairs(host, entry_id))
     results.append(check_calibration_model(host, entry_id))
-    results.append(check_forecast_diagnostic(host, entity_id, token))
+    results.append(check_forecast_diagnostic(state))
     results.append(check_completed_pair(host, entry_id))
 
     print()

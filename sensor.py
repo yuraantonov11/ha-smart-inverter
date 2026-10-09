@@ -1492,8 +1492,33 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
         this from the published ``extra_state_attributes`` of
         ``sensor.garazh_smart_solar_inverter_predictive_decision_state``.
 
+        Sources (production, NOT synthetic):
+
+          * ``_raw_hourly_forecast`` — coordinator's published
+            hourly rows for the last successful refresh.
+            Empty before the first successful refresh
+            (and after a failed refresh).
+          * ``_forecast_last_received_at`` — the SUCCESS
+            time of the last refresh, set only after the
+            rows above are written. Failed refreshes do not
+            update this field, so the previous good fetch
+            is honestly reported.
+          * ``_forecast_model_tags`` — per-day v2 family
+            tag, computed by the production helper
+            ``_forecast_model_for_day``. Empty until the
+            first successful refresh.
+          * ``learning.radiation_contract_version`` —
+            journal contract version (default = current
+            production contract = 2).
+          * ``_site_timezone`` — coordinator's actual
+            site timezone (``ZoneInfo``), keyed by
+            ``hass.config.time_zone``.
+
         Fields:
-            forecast_received_at      ISO-8601, last fetch time (UTC).
+            forecast_received_at      ISO-8601, last SUCCESS
+                                      time (UTC). ``None``
+                                      until the first
+                                      successful refresh.
             forecast_timezone         The local timezone the
                                       forecast was built for.
             radiation_contract_version  2 (= interval-start
@@ -1508,7 +1533,7 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
                                       with timestamp,
                                       weather_timestamp,
                                       radiation, power_w, and
-                                      model tag.
+                                      per-day model tag.
             rows_with_diff_ne_3600    Count of rows whose
                                       ``weather_timestamp -
                                       timestamp != 3600`` —
@@ -1519,14 +1544,27 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
             forecast_rows_total       Total row count (for
                                       cross-check).
         """
+        # Per-date interval count, sample row, and the
+        # contract v2 invariant check all read from the
+        # production-coordinator field. If no successful
+        # refresh has happened yet, the field is empty and
+        # every derived value below is honestly ``None``.
         raw = getattr(self.coordinator, "_raw_hourly_forecast", None) or []
         if not raw:
-            return {"forecast_received_at": None, "forecast_rows_total": 0}
-        # Per-date interval count
+            return {
+                "forecast_received_at": None,
+                "forecast_timezone": self._site_timezone_name(),
+                "radiation_contract_version": self._radiation_contract_version(),
+                "forecast_dates": [],
+                "intervals_per_date": {},
+                "sample_row": None,
+                "rows_with_diff_ne_3600": 0,
+                "forecast_model_tags": [],
+                "forecast_rows_total": 0,
+            }
         intervals_per_date: dict[str, int] = {}
         sample = None
         bad_diff = 0
-        model_tags: set[str] = set()
         for h in raw:
             day = h.get("time", "")[:10]
             if day:
@@ -1536,26 +1574,27 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
             if isinstance(ts, (int, float)) and isinstance(wts, (int, float)):
                 if int(wts) - int(ts) != 3600:
                     bad_diff += 1
-            tag = h.get("forecast_model")
-            if isinstance(tag, str):
-                model_tags.add(tag)
             if sample is None and isinstance(ts, (int, float)):
                 sample = {
                     "timestamp": int(ts),
                     "weather_timestamp": int(wts) if isinstance(wts, (int, float)) else None,
                     "radiation_wm2": h.get("radiation_wm2"),
                     "power_w": h.get("power_w"),
-                    "forecast_model": h.get("forecast_model"),
                 }
-        last_at = getattr(self.coordinator, "_forecast_last_fetch", None)
-        if isinstance(last_at, (int, float)) and last_at > 0:
-            from datetime import datetime, timezone as _tz
-            received_at = datetime.fromtimestamp(last_at, _tz.utc).isoformat()
-        else:
-            received_at = None
-        learning = getattr(self.coordinator, "_pv_learning", None)
-        contract = getattr(learning, "radiation_contract_version", None) if learning is not None else None
-        tz_name = getattr(self.coordinator, "_site_timezone_name", None) or getattr(self.coordinator, "timezone_name", None)
+        received_at = self._received_at_iso()
+        tz_name = self._site_timezone_name()
+        contract = self._radiation_contract_version()
+        # Per-day model tags from the production helper.
+        # Rows do NOT carry ``forecast_model`` — the
+        # coordinator stamps the per-day tag separately
+        # on a successful refresh, so we look it up by
+        # the row's local date.
+        per_day_tags = dict(getattr(self.coordinator, "_forecast_model_tags", {}) or {})
+        if sample is not None:
+            sample["forecast_model"] = per_day_tags.get(
+                list(intervals_per_date.keys())[0]
+            ) if intervals_per_date else None
+        unique_tags = sorted(set(per_day_tags.values()))
         return {
             "forecast_received_at": received_at,
             "forecast_timezone": tz_name,
@@ -1564,9 +1603,57 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
             "intervals_per_date": dict(sorted(intervals_per_date.items())),
             "sample_row": sample,
             "rows_with_diff_ne_3600": bad_diff,
-            "forecast_model_tags": sorted(model_tags),
+            "forecast_model_tags": unique_tags,
             "forecast_rows_total": len(raw),
         }
+
+    def _site_timezone_name(self) -> str | None:
+        """Return the site timezone key, sourced from
+        ``coordinator._site_timezone`` (a ``ZoneInfo``).
+        """
+        tz_obj = getattr(self.coordinator, "_site_timezone", None)
+        if tz_obj is not None:
+            try:
+                if hasattr(tz_obj, "key"):
+                    return str(tz_obj.key)
+                return str(tz_obj)
+            except Exception:
+                return None
+        return (
+            getattr(self.coordinator, "_site_timezone_name", None)
+            or getattr(self.coordinator, "timezone_name", None)
+        )
+
+    def _radiation_contract_version(self):
+        """Return the journal's contract version, sourced from
+        ``coordinator._pv_learning.radiation_contract_version``.
+        The attribute is initialised to
+        ``RADIATION_INTERVAL_CONTRACT_VERSION`` in
+        ``PvLearningState.__init__`` and rewritten by
+        ``PvLearningState.load()`` from the journal.
+        """
+        learning = getattr(self.coordinator, "_pv_learning", None)
+        if learning is None:
+            return None
+        return getattr(learning, "radiation_contract_version", None)
+
+    def _received_at_iso(self) -> str | None:
+        """Return ISO-8601 for the *successful* receive time.
+        Source: ``coordinator._forecast_last_received_at``.
+        Failed refreshes do not update this — the previous
+        good fetch is then honestly reported.
+        """
+        from datetime import datetime, timezone as _tz
+        last_at = getattr(self.coordinator, "_forecast_last_received_at", None)
+        if last_at is None or last_at == 0:
+            return None
+        if isinstance(last_at, datetime):
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=_tz.utc)
+            return last_at.isoformat()
+        if isinstance(last_at, (int, float)) and last_at > 0:
+            return datetime.fromtimestamp(last_at, _tz.utc).isoformat()
+        return None
 
 
 class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):

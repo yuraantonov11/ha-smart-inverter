@@ -358,6 +358,12 @@ class PvLearningState:
         self.archive_checked_day = None
         self.model = None
         self.calibration_model = None
+        # Default to the production contract version so the
+        # sensor's ``forecast_diagnostic.forecast_diagnostic.radiation_contract_version``
+        # is populated even before ``load()`` is called. The
+        # ``load()`` path overwrites this with the on-disk
+        # value when the journal exists.
+        self.radiation_contract_version = RADIATION_INTERVAL_CONTRACT_VERSION
         self.calibrator = ForecastCalibrator(max_samples=30, unit="kWh")
 
     def calibration_pairs(self):

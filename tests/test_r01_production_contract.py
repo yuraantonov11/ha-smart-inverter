@@ -2264,29 +2264,29 @@ def test_r01_maybe_refresh_forecast_sets_day_after_kwh_and_model_tags() -> None:
 
 
 
-def test_r01_sensor_publishes_forecast_diagnostic_for_probe() -> None:
-    """The production ``PredictiveDecisionStateSensor.extra_state_attributes``
-    must publish a ``forecast_diagnostic`` field the live-probe can
-    read over the REST API.
+def test_r01_sensor_uses_real_coordinator_state_after_real_refresh() -> None:
+    """Drive the production ``_maybe_refresh_forecast`` path
+    on a real ``PvLearningCoordinatorMixin`` and then read the
+    real production ``PredictiveDecisionStateSensor`` property
+    on the same instance.
 
-    The probe source-of-truth is documented: every field
-    documented in ``_build_forecast_diagnostic`` must appear in
-    the published attributes and reflect the underlying
-    ``coordinator._raw_hourly_forecast`` data.
+    Asserts that the published ``forecast_diagnostic`` reflects
+    what production actually wrote, NOT what a SimpleNamespace
+    stand-in would have us believe. Specifically:
+      - ``forecast_received_at`` is set (not ``None``).
+      - ``radiation_contract_version`` is 2 (from the real
+        ``PvLearningState`` instance, not guessed).
+      - ``forecast_model_tags`` is a non-empty list of v2
+        family tags.
+      - ``forecast_timezone`` matches the coordinator's
+        site timezone (a real ``ZoneInfo``).
     """
-    from types import SimpleNamespace
-    # ``sensor.py`` lives at the repo root and uses relative
-    # imports (``from .const import DOMAIN``). Make it look
-    # like a package member by registering a synthetic
-    # package on ``sys.modules``.
+    # Build a real package shim so ``sensor.py`` imports
+    # succeed (relative imports).
     import sys
     import types
     import importlib.util
-
-    # Build a minimal "powmr_inverter" package namespace that
-    # points ``const``, ``coordinator``, and ``sensor`` at the
-    # repo-root files. This is the same approach HA itself
-    # uses for ``custom_components/<name>/...``.
+    from zoneinfo import ZoneInfo
     pkg_name = "powmr_inverter_pkg_for_test"
     if pkg_name not in sys.modules:
         pkg = types.ModuleType(pkg_name)
@@ -2305,96 +2305,171 @@ def test_r01_sensor_publishes_forecast_diagnostic_for_probe() -> None:
     PredictiveDecisionStateSensor = (
         sys.modules[f"{pkg_name}.sensor"].PredictiveDecisionStateSensor
     )
-    from datetime import datetime as _dt, timezone as _tz
 
-    # Minimal coordinator stand-in
-    fixed_received = 1762560000.0  # 2025-11-08 00:00 UTC (any positive)
-    iso_received = _dt.fromtimestamp(fixed_received, _tz.utc).isoformat()
-    base = int(_dt(2026, 10, 8, 0, 0, tzinfo=_tz.utc).timestamp())
-    rows = []
-    for h in range(24 * 3):
-        # 3 local days × 24h = 72 rows.
-        # Contract v2: ``time`` = interval START (= api_t - 3600).
-        # The interval ends at api_t = timestamp + 3600; the
-        # ``weather_timestamp`` = api_t.
-        rows.append({
-            "time": _dt.fromtimestamp(base + 3600 * h, _tz.utc).isoformat(),
-            "timestamp": base + 3600 * h,
-            "weather_timestamp": base + 3600 * (h + 1),
-            "radiation_wm2": 100.0 + h,
-            "power_w": 10.0 + h,
-            "forecast_model": "hourly_response_v2" if h < 24 else "station_gain_v2",
-        })
-    learning = SimpleNamespace(
-        radiation_contract_version=2,
-        calibration_status=lambda d: {"day": d, "samples": 0},
-    )
-    hems = SimpleNamespace(
-        predictive_decision_state={
-            "mode": "shadow",
-            "applied": False,
-        }
-    )
-    coord = SimpleNamespace(
-        _hems=hems,
-        _pv_learning=learning,
-        _raw_hourly_forecast=rows,
-        _forecast_last_fetch=fixed_received,
-        _site_timezone_name="Europe/Kyiv",
-        _pv_local_now=lambda: _dt(2026, 10, 8, 12, 0, tzinfo=_tz.utc),
-        api=SimpleNamespace(device_sn="448411180556320769"),
-    )
-    entry = SimpleNamespace(entry_id="01M3XWJ8DRYDQC8A0NCPRVB53N")
-    sensor = PredictiveDecisionStateSensor(coord, entry)
-    attrs = sensor.extra_state_attributes
+    # Build a real coordinator + real PvLearningState and
+    # run a real ``_maybe_refresh_forecast``.
+    fixed_now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    real_datetime_mod = None
+    try:
+        import hems.forecast as forecast_mod
+        real_datetime_mod = forecast_mod.datetime
+        _frozen_now = fixed_now
 
-    # 1) The probe-relevant field is present.
-    assert "forecast_diagnostic" in attrs, (
-        "PredictiveDecisionStateSensor must publish forecast_diagnostic"
-    )
+        class _FrozenDateTime(real_datetime_mod):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return _frozen_now
+                return _frozen_now.astimezone(tz)
+
+        forecast_mod.datetime = _FrozenDateTime
+
+        with TemporaryDirectory() as directory:
+            dir_path = Path(directory)
+            from hems.pv_coordinator import PvLearningCoordinatorMixin
+            from hems.pv_learning import PvLearningState
+
+            c = PvLearningCoordinatorMixin.__new__(PvLearningCoordinatorMixin)
+            c._site_timezone = ZoneInfo("Europe/Kyiv")
+            c._pv_local_now = lambda: fixed_now
+            c._pv_learning = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+            c._pv_calibrator = c._pv_learning.calibrator
+            c._pv_matrix_at = c._archive_attempt_at = c._forecast_last_fetch = None
+            c._forecast_last_received_at = None
+            c._forecast_model_tags = {}
+            c._pv_state_loaded = c._pv_state_dirty = False
+            c._pv_state_path = dir_path / "entry.json"
+            c._pv_legacy_path = dir_path / "legacy.json"
+            c.forecast_learned_ratio = 0.1
+            c.hourly_forecast_today = []
+            c.hourly_weather_today = []
+            c.hourly_radiation_today = []
+
+            class _FakeHass:
+                async def async_add_executor_job(self, fn, *args):
+                    return fn(*args)
+            c.hass = _FakeHass()
+
+            base_api_t = int(datetime(2026, 10, 8, 0, 0, tzinfo=timezone.utc).timestamp())
+            api_times = [base_api_t + 3600 * h for h in range(4 * 24)]
+            payload = {
+                "hourly": {
+                    "time": api_times,
+                    "shortwave_radiation": [100.0] * (4 * 24),
+                    "weather_code": [0] * (4 * 24),
+                    "cloud_cover": [50] * (4 * 24),
+                    "temperature_2m": [10.0] * (4 * 24),
+                    "wind_speed_10m": [5.0] * (4 * 24),
+                    "precipitation_probability": [0] * (4 * 24),
+                }
+            }
+            text = json.dumps(payload)
+
+            class _Resp:
+                def __init__(self, t): self._t = t
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return None
+                def raise_for_status(self): return None
+                async def json(self): return json.loads(self._t)
+
+            class _Sess:
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return None
+                def get(self, url, params=None): return _Resp(text)
+
+            from hems.forecast import ForecastService
+            f = ForecastService(timezone_name="Europe/Kyiv")
+            f._latitude = 50.45
+            f._longitude = 30.52
+            f.learned_ratio = 0.1
+            f.hourly_response = None
+            async def _ensure_session(): return _Sess()
+            f._ensure_session = _ensure_session
+            async def _rate_limit(): return None
+            f._rate_limit = _rate_limit
+            c._forecast = f
+
+            asyncio.run(c._maybe_refresh_forecast(fixed_now))
+
+            # Now wire the real sensor and read the real
+            # property on the real coordinator.
+            from types import SimpleNamespace
+            hems = SimpleNamespace(predictive_decision_state={
+                "mode": "shadow", "applied": False,
+            })
+            sensor_coord = SimpleNamespace(
+                _hems=hems,
+                _pv_learning=c._pv_learning,
+                _raw_hourly_forecast=c._raw_hourly_forecast,
+                _forecast_last_received_at=c._forecast_last_received_at,
+                _forecast_model_tags=c._forecast_model_tags,
+                _site_timezone=c._site_timezone,
+                _forecast_last_fetch=c._forecast_last_fetch,
+                _pv_local_now=lambda: fixed_now,
+                api=SimpleNamespace(device_sn="448411180556320769"),
+            )
+            entry = SimpleNamespace(entry_id="01M3XWJ8DRYDQC8A0NCPRVB53N")
+            sensor = PredictiveDecisionStateSensor(sensor_coord, entry)
+            attrs = sensor.extra_state_attributes
+    finally:
+        if real_datetime_mod is not None:
+            import hems.forecast as forecast_mod
+            forecast_mod.datetime = real_datetime_mod
+
     diag = attrs["forecast_diagnostic"]
-    # 2) Every documented field is present.
-    required = {
-        "forecast_received_at", "forecast_timezone",
-        "radiation_contract_version", "forecast_dates",
-        "intervals_per_date", "sample_row",
-        "rows_with_diff_ne_3600", "forecast_model_tags",
-        "forecast_rows_total",
-    }
-    assert required.issubset(diag.keys()), (
-        f"forecast_diagnostic missing keys: {required - diag.keys()}"
+    # 1) received_at is the SUCCESS time, not the attempt
+    # time — it must be set after a real refresh.
+    assert diag["forecast_received_at"] is not None, (
+        "forecast_received_at must be set after a real "
+        "_maybe_refresh_forecast (success path)"
     )
-    # 3) Data correctness.
-    assert diag["forecast_received_at"] == iso_received
-    assert diag["forecast_timezone"] == "Europe/Kyiv"
-    assert diag["radiation_contract_version"] == 2
-    assert diag["forecast_dates"] == ["2026-10-08", "2026-10-09", "2026-10-10"]
-    assert diag["intervals_per_date"] == {
-        "2026-10-08": 24, "2026-10-09": 24, "2026-10-10": 24,
-    }
-    assert diag["rows_with_diff_ne_3600"] == 0
-    assert diag["forecast_model_tags"] == ["hourly_response_v2", "station_gain_v2"]
-    assert diag["forecast_rows_total"] == 72
-    sample = diag["sample_row"]
-    assert sample["timestamp"] == base
-    assert sample["weather_timestamp"] == base + 3600
-    assert sample["forecast_model"] == "hourly_response_v2"
-
-    # 4) When no forecast has been fetched yet, the diagnostic
-    # is the empty-marker shape and the sensor still works.
-    coord_empty = SimpleNamespace(
+    assert diag["forecast_received_at"] == fixed_now.isoformat()
+    # 2) The contract version is sourced from the real
+    # PvLearningState instance, not from a stub.
+    assert diag["radiation_contract_version"] == 2, (
+        f"radiation_contract_version must be 2 (sourced from "
+        f"PvLearningState); got {diag['radiation_contract_version']!r}"
+    )
+    # 3) forecast_model_tags come from the coordinator's
+    # ``_forecast_model_tags`` field, which the production
+    # code populates on success.
+    assert diag["forecast_model_tags"], (
+        "forecast_model_tags must be non-empty after a real "
+        "_maybe_refresh_forecast (production sets them per day)"
+    )
+    for t in diag["forecast_model_tags"]:
+        assert t in {"hourly_response_v2", "station_gain_v2"}, (
+            f"production forecast_model_tag {t!r} is not v2"
+        )
+    # 4) Timezone is the coordinator's actual site
+    # timezone (a ZoneInfo), not a guess.
+    assert diag["forecast_timezone"] == "Europe/Kyiv", (
+        f"forecast_timezone must come from the coordinator's "
+        f"ZoneInfo; got {diag['forecast_timezone']!r}"
+    )
+    # 5) Empty forecast case: if we reset the coordinator
+    # state to "no forecast fetched yet", the diagnostic
+    # reports the empty marker schema with
+    # received_at=None, NOT a key-missing FAIL.
+    sensor_coord_empty = SimpleNamespace(
         _hems=hems,
-        _pv_learning=learning,
-        _raw_hourly_forecast=None,
+        _pv_learning=c._pv_learning,
+        _raw_hourly_forecast=[],
+        _forecast_last_received_at=None,
+        _forecast_model_tags={},
+        _site_timezone=c._site_timezone,
         _forecast_last_fetch=None,
-        _site_timezone_name="Europe/Kyiv",
-        _pv_local_now=lambda: _dt(2026, 10, 8, 12, 0, tzinfo=_tz.utc),
+        _pv_local_now=lambda: fixed_now,
         api=SimpleNamespace(device_sn="448411180556320769"),
     )
-    sensor_empty = PredictiveDecisionStateSensor(coord_empty, entry)
-    attrs_empty = sensor_empty.extra_state_attributes
-    assert attrs_empty["forecast_diagnostic"]["forecast_rows_total"] == 0
-    assert attrs_empty["forecast_diagnostic"]["forecast_received_at"] is None
+    sensor_empty = PredictiveDecisionStateSensor(sensor_coord_empty, entry)
+    diag_empty = sensor_empty.extra_state_attributes["forecast_diagnostic"]
+    # The schema is fully present (not FAIL) but
+    # received_at and rows_total are empty.
+    assert diag_empty["forecast_rows_total"] == 0
+    assert diag_empty["forecast_received_at"] is None
+    assert diag_empty["forecast_dates"] == []
+    assert diag_empty["radiation_contract_version"] == 2  # still set
 
 
 if __name__ == "__main__":
