@@ -1087,6 +1087,17 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         )
         # Build 24h tariff schedule from coordinator tariffs
         self._hems._tariff_schedule = self._build_tariff_schedule()
+        # R04+R05: mirror the configured day/night
+        # rates to the engine so ``_evaluate_predictive``
+        # sees the operator's tariffs at FIRST setup,
+        # not only after the options listener fires.
+        # Without this, a corrupted schedule at
+        # setup time makes the planner fall back
+        # to module-level ``TARIFF_DAY=4.32`` /
+        # ``TARIFF_NIGHT=2.16`` constants instead
+        # of the operator's configured rates.
+        self._hems._day_tariff_uah = self._day_tariff_uah
+        self._hems._night_tariff_uah = self._night_tariff_uah
         # Audit T19: ``build_hourly_load_matrix``
         # now returns ``list[tuple[date,
         # list[float], bool]]``. We propagate the
