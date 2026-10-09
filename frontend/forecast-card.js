@@ -6,6 +6,18 @@
 class ForecastCard extends HTMLElement {
   constructor() {
     super();
+    // R06 closing block: production
+    // forecast-card writes to
+    // ``this.shadowRoot.innerHTML``
+    // later in ``_render``. Without
+    // ``attachShadow`` the native
+    // ``shadowRoot`` is ``null``
+    // and the render throws on
+    // real browsers. The shadow
+    // root is a per-instance
+    // resource and is therefore
+    // installed in the constructor.
+    this.attachShadow({ mode: "open" });
     this._config = {};
     this._hass = null;
   }

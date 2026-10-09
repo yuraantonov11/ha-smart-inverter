@@ -1,49 +1,34 @@
 /**
- * R06 follow-up #2 — browser path coverage.
+ * R06 — SMOKE test (Node VM, not a browser).
  *
- * Юра asked: do NOT substitute a no-op DOM stub
- * for browser-behaviour verification. The test
- * must exercise the real production card
- * code under a fixture that approximates a
- * browser environment closely enough to expose
- * leak, resize, and reconnect defects.
+ * Юра's standing rule: a real headless
+ * browser is required for the actual
+ * R06 verification. The full coverage
+ * lives in
+ * ``test_r06_browser_playwright.py``
+ * (Playwright + Chromium 153.0) and
+ * the control-failure check lives in
+ * ``test_r06_browser_mutation.py``.
  *
- * Coverage matrix:
- *   1. Two independent cards: each card's
- *      state is isolated (no cross-talk).
- *   2. Mobile viewport (small width) and
- *      desktop viewport (large width): the
- *      card's render path runs under both
- *      widths without exception.
- *   3. Resize: changing the viewport width
- *      after the card is mounted triggers
- *      a re-render and the ResizeObserver
- *      fires only once per actual change.
- *   4. Disconnect → reconnect: the
- *      ``disconnectedCallback`` clears the
- *      ResizeObserver, and reconnecting the
- *      card installs a fresh observer (no
- *      double-listener).
- *   5. Zero / unknown / empty data: the card
- *      renders a real value for zero and a
- *      fallback marker for unknown / empty.
+ * This file is a SMOKE check: it
+ * loads the production card source
+ * in a Node VM and asserts that
+ * the cards' zero / unknown / empty
+ * data paths produce non-throwing
+ * output. It is intentionally
+ * conservative — it does NOT claim
+ * to be a browser test. The Node
+ * VM cannot exercise ResizeObserver,
+ * shadow DOM, layout, or any
+ * spec-driven lifecycle. Use the
+ * Playwright suite for that.
  *
- * The "Already used" mixed-version scenario
- * is covered in ``test_r09_double_load.cjs``:
- *   - ``loadCardOnce`` (old, no guard) and
- *     ``loadCardOnce`` (new, with guard)
- *     are loaded in a single VM context; the
- *     guard suppresses the second ``define``
- *     so the operator's old URL doesn't
- *     throw when the new URL also loads.
- *
- * This file does NOT install jsdom: the
- * ``HTMLElement`` and ``ResizeObserver``
- * stubs from ``test_cards_r06_siblings.cjs``
- * are sufficient. We extend the same
- * minimal surface to track observer /
- * listener registration so a leak is
- * observable.
+ * One assertion that this file
+ * DOES make: it removes the
+ * ``catch (_) {}`` swallow that
+ * Юра flagged in the previous
+ * version. A render exception
+ * now propagates to the runner.
  */
 
 'use strict';
@@ -81,7 +66,15 @@ class HTMLElement {
 global.HTMLElement = HTMLElement;
 global.window = {
   customCards: [],
-  innerWidth: 1280,
+  // ``innerWidth`` is declared as
+  // a getter/setter to keep the
+  // shape realistic. The smoke
+  // test does NOT rely on it
+  // for assertions because the
+  // Node VM has no layout
+  // engine.
+  get innerWidth() { return 1280; },
+  set innerWidth(v) { /* no-op */ },
   addEventListener() {},
   removeEventListener() {},
   dispatchEvent() {},
@@ -259,33 +252,40 @@ function test_two_independent_cards_no_crosstalk() {
 }
 
 function test_resize_then_disconnect_releases_observer() {
-  const Klass = loadCardFactory(CARDS.total);
+  // SMOKE check only: we cannot
+  // exercise ResizeObserver in
+  // the Node VM. The full
+  // verification is in the
+  // Playwright suite. This
+  // smoke test asserts that
+  // connect / disconnect /
+  // reconnect do not throw
+  // and that ``_resizeObserver``
+  // is null after disconnect.
+  const Klass = loadCardFactory(CARDS.power);
   const c = new Klass();
-  c._config = { entity: 'sensor.lifetime' };
-  c._hass = makeHassForCard('total', 'zero');
-  c.hass = c._hass;
-  // Simulate connect: the card may
-  // register a ResizeObserver.
+  c._config = { entity: 'sensor.power_history' };
+  c._hass = makeHassForCard('forecast', 'empty');
   c.connectedCallback();
-  // Simulate resize: changing the
-  // viewport width must NOT throw
-  // and must NOT register an extra
-  // observer instance.
-  global.window.innerWidth = 360;  // mobile
-  c.hass = c._hass;  // re-render
-  global.window.innerWidth = 1920; // desktop
-  c.hass = c._hass;
-  // Disconnect: any observer must
-  // be released.
+  assert.ok(
+    c._resizeObserver,
+    'connectedCallback must install a ResizeObserver',
+  );
   c.disconnectedCallback();
-  // The exact count of observers
-  // depends on the card's code; we
-  // assert the operation does not
-  // throw and the card stays
-  // responsive on reconnect.
+  assert.strictEqual(
+    c._resizeObserver, null,
+    'disconnectedCallback must release the ResizeObserver',
+  );
+  // Reconnect: a fresh observer
+  // is installed.
   c.connectedCallback();
-  c.hass = c._hass;
-  console.log('  resize + disconnect: no exception, no observer leak');
+  assert.ok(
+    c._resizeObserver,
+    'reconnect must install a fresh ResizeObserver',
+  );
+  c.disconnectedCallback();
+  console.log('  power-history resize: ResizeObserver installed, '
+    + 'disconnected, reconnected, no leak');
 }
 
 function test_zero_unknown_empty_for_total_energy() {
@@ -322,45 +322,54 @@ function test_zero_unknown_empty_for_forecast() {
   const Klass = loadCardFactory(CARDS.forecast);
   for (const scenario of ['zero', 'unknown', 'empty']) {
     const c = new Klass();
-    try {
-      c.setConfig && c.setConfig({ entity: 'sensor.fcst' });
-    } catch (_) {}
+    c.setConfig && c.setConfig({ entity: 'sensor.fcst' });
     c._hass = makeHassForCard('forecast', scenario);
-    try {
-      c.hass = c._hass;
-    } catch (_) {
-      // shadow DOM stubs may throw; the
-      // important thing is no uncaught
-      // error escapes the test.
-    }
+    // The render must NOT throw. The
+    // previous version caught
+    // exceptions silently which
+    // hid real defects. We let any
+    // exception propagate to the
+    // runner. The Playwright
+    // suite in
+    // ``test_r06_browser_playwright.py``
+    // is the proper verification;
+    // this is a smoke check that
+    // the basic data shapes do
+    // not crash the card.
+    c.hass = c._hass;
   }
   console.log('  forecast: zero / unknown / empty all render (no throw)');
 }
 
 function test_disconnect_reconnect_does_not_double_observe() {
   // The previous R06 audit flagged
-  // that some cards accumulate
-  // ResizeObserver instances if
-  // disconnectedCallback is missing
-  // or incomplete. We assert that
-  // the card does not throw on
-  // repeated mount/unmount and that
-  // the listener count does not grow
-  // unbounded.
-  const Klass = loadCardFactory(CARDS.total);
+  // cards accumulating
+  // ResizeObserver instances. The
+  // Playwright suite is the
+  // authoritative check. This
+  // smoke test asserts the basic
+  // invariant: a 5x connect /
+  // disconnect cycle does not
+  // throw and the observer is
+  // null after each disconnect.
+  const Klass = loadCardFactory(CARDS.power);
   const c = new Klass();
-  c._config = { entity: 'sensor.lifetime' };
-  c._hass = makeHassForCard('total', 'zero');
-  c.hass = c._hass;
+  c._config = { entity: 'sensor.power_history' };
+  c._hass = makeHassForCard('forecast', 'empty');
   for (let i = 0; i < 5; i += 1) {
     c.connectedCallback();
-    c.hass = c._hass;
+    assert.ok(
+      c._resizeObserver,
+      `cycle ${i}: connect installs observer`,
+    );
     c.disconnectedCallback();
+    assert.strictEqual(
+      c._resizeObserver, null,
+      `cycle ${i}: disconnect releases observer`,
+    );
   }
-  // Reconnect at the end.
-  c.connectedCallback();
-  c.hass = c._hass;
-  console.log('  repeated disconnect/reconnect: no exception');
+  console.log('  repeated disconnect/reconnect: observer installed and '
+    + 'released cleanly');
 }
 
 test_two_independent_cards_no_crosstalk();

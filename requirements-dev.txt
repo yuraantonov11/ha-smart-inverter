@@ -97,3 +97,20 @@ homeassistant>=2024.1.0
 # tzdata as a sibling to
 # ``zoneinfo``.
 tzdata>=2024.1
+# R06 final closing block: the
+# browser-path coverage
+# (``test_r06_browser_playwright.py``,
+# ``test_r06_browser_mutation.py``)
+# runs the production card
+# source in a real headless
+# Chromium. Playwright is a
+# dev-only dependency: the
+# production ``manifest.json``
+# does NOT list it. The
+# browser binary is provisioned
+# via
+# ``python -m playwright install chromium``
+# which downloads to
+# ``$PLAYWRIGHT_BROWSERS_PATH``
+# (default ``~/.cache/ms-playwright``).
+playwright>=1.40,<2.0
