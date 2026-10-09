@@ -26,6 +26,8 @@ from pv_test_support import Checks
 
 V2_ID = current_forecast_model_identity()
 V1_ID = "hourly_response_v1"
+V1_STATION = "station_gain_v1"
+V2_STATION = current_forecast_model_identity("station_gain")
 check = Checks()
 now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
 state = PvLearningState('UTC', 50., 30.)
@@ -92,7 +94,7 @@ c._forecast = SimpleNamespace(hourly_response={'last_day': '2026-10-02'})
 # NOT ``hourly_response_v1`` (which would mix v1 and v2 pairs).
 check(c._forecast_model_for_day(now.date()+timedelta(days=2)) == V2_ID,
       'fresh hourly model identified')
-check(c._forecast_model_for_day(now.date()+timedelta(days=17)) == 'station_gain_v1',
+check(c._forecast_model_for_day(now.date()+timedelta(days=17)) == V2_STATION,
       'expired hourly model identified as fallback')
 # Mixed-horizon bias: only the active calibration is applied.
 state.set_calibration_model(V1_ID)

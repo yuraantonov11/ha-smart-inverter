@@ -23,6 +23,7 @@ from .pv_learning import (
     finite,
     radiation_interval_start_of,
     shift_radiation_to_interval_start,
+    trim_hourly_to_local_dates,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -346,28 +347,32 @@ class ForecastService:
         """
         await self._rate_limit()
         session = await self._ensure_session()
+        tz = ZoneInfo(self.timezone_name)
+        # We want 3 local calendar days fully populated. Open-Meteo
+        # returns hours at the END of the radiation interval, so the
+        # last local hour of ``today + 2`` is the API hour
+        # ``00:00 local on today + 3``. To get that hour we must ask
+        # for 4 forecast days from the API. After the interval-shift
+        # the very first row of the response is the interval
+        # ``[00:00 today, 01:00 today)`` (i.e. the API hour
+        # ``01:00 today`` shifted back by 1h), and the very last row
+        # of the response is the interval that ENDS at
+        # ``00:00 today + 3`` (i.e. the last hour of the day
+        # ``today + 2`` local).
         params = {
             "latitude": self._latitude,
             "longitude": self._longitude,
-            # Request shortwave_radiation AND
-            # weather_code so we can show cloud/rain
-            # conditions alongside the power curve.
-            # T09 follow-up: also pull wind and
-            # precipitation probability for the
-            # storm-risk evaluator — same call, no
-            # extra request.
             "hourly": (
                 "shortwave_radiation,weather_code,cloud_cover,"
                 "temperature_2m,wind_speed_10m,precipitation_probability"
             ),
-            # Pin the unit explicitly. Without this
-            # Open-Meteo defaults to km/h which is
-            # the wrong scale for the storm-risk
-            # thresholds (≥ 15 m/s and ≥ 25 m/s).
             "wind_speed_unit": "ms",
             "timezone": self.timezone_name,
             "timeformat": "unixtime",
-            "forecast_days": 3,
+            # 4 days from the API = 96 hours = 3 full local
+            # calendar days after the interval-shift + the spillover
+            # hour at the start of day 4.
+            "forecast_days": 4,
         }
         try:
             async with session.get(OPEN_METEO_BASE, params=params) as resp:
@@ -392,7 +397,13 @@ class ForecastService:
 
         result: list[dict[str, Any]] = []
         for i, t in enumerate(times):
-            rad = radiations[i] if i < len(radiations) else 0
+            # Unknown radiation is not a measured zero. If the API
+            # returned fewer radiation values than timestamps, the
+            # shorter array means the row is incomplete — we drop
+            # the row rather than fabricate a zero.
+            if i >= len(radiations):
+                continue
+            rad = radiations[i]
             wcode = weather_codes[i] if i < len(weather_codes) else None
             cc = cloud_covers[i] if i < len(cloud_covers) else None
             temp = temperatures[i] if i < len(temperatures) else None
@@ -476,7 +487,27 @@ class ForecastService:
                 "wind_speed_ms": wind_ms,
                 "precipitation_probability": precip_pct,
             })
-        return result
+        # Trim to the 3 local calendar days we promised to
+        # callers. The API returned 4 days so the interval-shift
+        # does not eat the last hour of day 3 — that means the
+        # final row of ``result`` may belong to day 4 (interval
+        # ``[23:00 day3, 00:00 day4)``) and must be dropped.
+        # The trim is keyed on today's local date (computed at
+        # the moment of the fetch) plus two offsets. This is the
+        # same calendar dates the production consumer uses via
+        # ``_pv_local_now().date()``; yesterday's spillover
+        # row (if any) is excluded. ``day_bounds`` is the same
+        # timezone-aware function used by the archive and
+        # ``complete_hourly_days``, so the day boundaries line
+        # up across the whole pipeline.
+        if not result:
+            return result
+        local_today = datetime.now(timezone.utc).astimezone(
+            ZoneInfo(self.timezone_name)
+        ).date()
+        return trim_hourly_to_local_dates(
+            result, local_today, days=3,
+        )
 
     async def _fetch_daily(self, days: int) -> dict[str, SolarForecast]:
         """Aggregate hourly data into daily forecasts."""

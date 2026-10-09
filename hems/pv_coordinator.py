@@ -577,12 +577,15 @@ class PvLearningCoordinatorMixin:
         """Pipeline family, not daily coefficients that change during training.
 
         Each radiation interval contract version gets its own
-        identity (``hourly_response_v2`` under the new contract,
-        ``hourly_response_v1`` under the old). Pairs and snapshots
-        issued under one identity are NOT mixed into the calibrator
-        of the other.
+        identity for every family. The current contract v2 returns
+        ``"hourly_response_v2"`` for the active hourly pipeline and
+        ``"station_gain_v2"`` for the daily-fallback pipeline.
+        Pairs and snapshots issued under the previous contract v1
+        (tags ``"hourly_response_v1"`` / ``"station_gain_v1"``) are
+        kept in the journal verbatim and never appear in the active
+        calibrator.
         """
         response = getattr(getattr(self, "_forecast", None), "hourly_response", None)
         if response and 0 <= (day-datetime.fromisoformat(response["last_day"]).date()).days <= 14:
-            return current_forecast_model_identity()
-        return "station_gain_v1"
+            return current_forecast_model_identity("hourly_response")
+        return current_forecast_model_identity("station_gain")

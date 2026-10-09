@@ -468,9 +468,30 @@ async def _drive_fetch_hourly(payload: dict) -> tuple[list[dict], dict]:
     # Pin it as a literal so this test does not
     # require the aiohttp dependency.
     OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
+    # Freeze ``datetime.now()`` to ``_make_open_meteo_response``'s
+    # ``today`` so the production trim keeps the rows. The
+    # binding is namespace-local (AST harness), so it does not
+    # leak to other tests.
+    _harness_today = datetime.utcnow().date()
+    _harness_now = datetime(
+        _harness_today.year, _harness_today.month, _harness_today.day,
+        12, 0, tzinfo=timezone.utc,
+    )
+
+    class _HarnessDateTime(datetime):
+        @classmethod
+        def utcnow(cls):
+            return _harness_now.replace(tzinfo=None)
+
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return _harness_now.replace(tzinfo=None)
+            return _harness_now.astimezone(tz)
+
     ns: dict[str, Any] = {
         "__name__": "_t09_fetch_hourly",
-        "datetime": datetime,
+        "datetime": _HarnessDateTime,
         "timezone": timezone,
         # ``ZoneInfo`` is the test-harness fallback
         # factory that delegates to the real
@@ -487,6 +508,14 @@ async def _drive_fetch_hourly(payload: dict) -> tuple[list[dict], dict]:
         "radiation_interval_start_of": (
             __import__("hems.pv_learning", fromlist=["radiation_interval_start_of"])
             .radiation_interval_start_of
+        ),
+        # Trim helper: keep only the 3 local calendar days
+        # starting from today. Without this binding, the
+        # exec'd body would ``NameError`` when it tries to
+        # call the production trim.
+        "trim_hourly_to_local_dates": (
+            __import__("hems.pv_learning", fromlist=["trim_hourly_to_local_dates"])
+            .trim_hourly_to_local_dates
         ),
         "_LOGGER": logging.getLogger("t09_fetch"),
         "OPEN_METEO_BASE": OPEN_METEO_BASE,

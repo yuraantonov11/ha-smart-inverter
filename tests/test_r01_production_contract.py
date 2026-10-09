@@ -28,8 +28,9 @@ import json
 import re
 import sys
 import textwrap
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -546,53 +547,79 @@ def test_r01_radiation_rows_aligned_with_pv_interval_start() -> None:
 # ── Weather fields keep their original API timestamp ──────────────
 
 
-def _drive_fetch_hourly(payload):
+def _drive_fetch_hourly(payload, *, local_today=None):
     """Drive the production ``_fetch_hourly`` with a fake session.
 
     Imports the real ``ForecastService`` class and runs the genuine
     production function. ``aiohttp`` is available in the venv, so
     no AST harness is required.
+
+    ``local_today`` is a ``datetime.date`` used to freeze
+    ``datetime.now()`` inside ``hems.forecast`` so the trim uses a
+    deterministic local-today. If ``None``, ``datetime.now()`` is
+    used as-is (which is fine for tests whose timestamps fall
+    inside today's natural range).
     """
     from hems.forecast import ForecastService
+    import hems.forecast as forecast_mod
     import json
 
     text = json.dumps(payload)
+    real_datetime = forecast_mod.datetime
+    if local_today is not None:
+        fixed_now = datetime(
+            local_today.year, local_today.month, local_today.day,
+            12, 0, tzinfo=timezone.utc,
+        )
 
-    class _Resp:
-        def __init__(self, t):
-            self._t = t
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
+        class _FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return fixed_now
+                return fixed_now.astimezone(tz)
+
+        forecast_mod.datetime = _FrozenDateTime
+
+    try:
+        class _Resp:
+            def __init__(self, t):
+                self._t = t
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return None
+            def raise_for_status(self):
+                return None
+            async def json(self):
+                return json.loads(self._t)
+
+        class _Sess:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return None
+            def get(self, url, params=None):
+                return _Resp(text)
+
+        sess = _Sess()
+        f = ForecastService(timezone_name="Europe/Kyiv")
+        f._latitude = 50.45
+        f._longitude = 30.52
+        f.learned_ratio = 0.1315
+        f.hourly_response = None
+
+        async def _ensure_session():
+            return sess
+        f._ensure_session = _ensure_session
+        async def _rate_limit():
             return None
-        def raise_for_status(self):
-            return None
-        async def json(self):
-            return json.loads(self._t)
+        f._rate_limit = _rate_limit
 
-    class _Sess:
-        async def __aenter__(self):
-            return self
-        async def __aexit__(self, *a):
-            return None
-        def get(self, url, params=None):
-            return _Resp(text)
-
-    sess = _Sess()
-    f = ForecastService(timezone_name="Europe/Kyiv")
-    f._latitude = 50.45
-    f._longitude = 30.52
-    f.learned_ratio = 0.1315
-    f.hourly_response = None
-
-    async def _ensure_session():
-        return sess
-    f._ensure_session = _ensure_session
-    async def _rate_limit():
-        return None
-    f._rate_limit = _rate_limit
-
-    return asyncio.run(f._fetch_hourly())
+        return asyncio.run(f._fetch_hourly())
+    finally:
+        if local_today is not None:
+            forecast_mod.datetime = real_datetime
 
 
 def test_r01_weather_fields_not_shifted() -> None:
@@ -619,7 +646,7 @@ def test_r01_weather_fields_not_shifted() -> None:
             "precipitation_probability": [80, 50, 20],
         }
     }
-    rows = _drive_fetch_hourly(payload)
+    rows = _drive_fetch_hourly(payload, local_today=date(2026, 10, 8))
     assert len(rows) == 3
     # Row 0: api_t=10:00 UTC, radiation interval start = 09:00 UTC.
     # timestamp = 09:00 UTC, weather_timestamp = 10:00 UTC.
@@ -680,7 +707,7 @@ def test_r01_storm_risk_uses_weather_timestamp() -> None:
             "precipitation_probability": [95],
         }
     }
-    rows = _drive_fetch_hourly(payload)
+    rows = _drive_fetch_hourly(payload, local_today=date(2026, 10, 8))
     assert len(rows) == 1
     r0 = rows[0]
     # timestamp = now (the radiation interval start is now)
@@ -770,104 +797,105 @@ def test_r03_migration_preserves_old_pairs_and_excludes_from_calibration() -> No
       4. Reload the journal again without re-running the
          migration.
     """
-    from hems.pv_learning import PvLearningState
+    with TemporaryDirectory() as _d_761:
+        from hems.pv_learning import PvLearningState
 
-    identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
-    # Write a v1-compatible journal (no radiation_contract_version)
-    # with old pairs and an old radiation cache and old model.
-    # Pairs are tagged ``hourly_response_v1`` (the v1 identity).
-    tmp_path = Path("/tmp/powmr-migration-test.json")
-    old = {
-        "version": 3,  # current VERSION; the radiation contract is separate
-        "unit": "kWh",
-        **identity,
-        # Note: NO radiation_contract_version — simulates an old journal.
-        "snapshots": {
-            "2026-10-09": {
-                "forecast_kwh": 0.1,
-                "issued_at": "2026-10-08T10:04:26+03:00",
-                "forecast_model": "hourly_response_v1",
+        identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
+        # Write a v1-compatible journal (no radiation_contract_version)
+        # with old pairs and an old radiation cache and old model.
+        # Pairs are tagged ``hourly_response_v1`` (the v1 identity).
+        tmp_path = Path(_d_761) / "powmr-migration-test.json"
+        old = {
+            "version": 3,  # current VERSION; the radiation contract is separate
+            "unit": "kWh",
+            **identity,
+            # Note: NO radiation_contract_version — simulates an old journal.
+            "snapshots": {
+                "2026-10-09": {
+                    "forecast_kwh": 0.1,
+                    "issued_at": "2026-10-08T10:04:26+03:00",
+                    "forecast_model": "hourly_response_v1",
+                },
             },
-        },
-        "pairs": {
-            "2026-10-09": {
-                "forecast_kwh": 0.1,
-                "actual_kwh": 0.05,
-                "coverage": 1.0,
-                "forecast_model": "hourly_response_v1",
+            "pairs": {
+                "2026-10-09": {
+                    "forecast_kwh": 0.1,
+                    "actual_kwh": 0.05,
+                    "coverage": 1.0,
+                    "forecast_model": "hourly_response_v1",
+                },
             },
-        },
-        "radiation": {
-            "2026-10-08": 1.5,  # old contract — possibly wrong attribution
-        },
-        "archive_checked_day": "2026-10-08",
-        "model": {"gain": 0.123, "sample_count": 10, "last_day": "2026-10-08"},
-        "calibration_model": "hourly_response_v1",
-    }
-    tmp_path.write_text(json.dumps(old), encoding="utf-8")
+            "radiation": {
+                "2026-10-08": 1.5,  # old contract — possibly wrong attribution
+            },
+            "archive_checked_day": "2026-10-08",
+            "model": {"gain": 0.123, "sample_count": 10, "last_day": "2026-10-08"},
+            "calibration_model": "hourly_response_v1",
+        }
+        tmp_path.write_text(json.dumps(old), encoding="utf-8")
 
-    # Load the journal under the new contract.
-    state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
-    state.load(tmp_path)
+        # Load the journal under the new contract.
+        state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+        state.load(tmp_path)
 
-    # Old pairs/snapshots are preserved verbatim.
-    assert "2026-10-09" in state.snapshots
-    # v1 pairs are re-tagged with the v1-specific identity
-    # (which happens to also be ``hourly_response_v1`` here, so
-    # the visible tag is unchanged) and the original tag is
-    # recorded under ``_legacy_forecast_model``.
-    assert state.snapshots["2026-10-09"]["forecast_model"] == "hourly_response_v1"
-    assert state.snapshots["2026-10-09"]["_legacy_forecast_model"] == "hourly_response_v1"
-    assert "2026-10-09" in state.pairs
-    assert state.pairs["2026-10-09"]["forecast_model"] == "hourly_response_v1"
-    assert state.pairs["2026-10-09"]["_legacy_forecast_model"] == "hourly_response_v1"
+        # Old pairs/snapshots are preserved verbatim.
+        assert "2026-10-09" in state.snapshots
+        # v1 pairs are re-tagged with the v1-specific identity
+        # (which happens to also be ``hourly_response_v1`` here, so
+        # the visible tag is unchanged) and the original tag is
+        # recorded under ``_legacy_forecast_model``.
+        assert state.snapshots["2026-10-09"]["forecast_model"] == "hourly_response_v1"
+        assert state.snapshots["2026-10-09"]["_legacy_forecast_model"] == "hourly_response_v1"
+        assert "2026-10-09" in state.pairs
+        assert state.pairs["2026-10-09"]["forecast_model"] == "hourly_response_v1"
+        assert state.pairs["2026-10-09"]["_legacy_forecast_model"] == "hourly_response_v1"
 
-    # Radiation cache is dropped (tied to old contract).
-    assert state.radiation == {}, (
-        f"radiation should be empty after migration; got {state.radiation}"
-    )
-    # Model is dropped.
-    assert state.model is None, (
-        f"model should be None after migration; got {state.model}"
-    )
-    # archive_checked_day is reset.
-    assert state.archive_checked_day is None, (
-        f"archive_checked_day should be None after migration; got {state.archive_checked_day}"
-    )
-    # Calibration model is the v1 identity (loaded from the v1
-    # journal, re-tagged).
-    assert state.calibration_model == "hourly_response_v1"
+        # Radiation cache is dropped (tied to old contract).
+        assert state.radiation == {}, (
+            f"radiation should be empty after migration; got {state.radiation}"
+        )
+        # Model is dropped.
+        assert state.model is None, (
+            f"model should be None after migration; got {state.model}"
+        )
+        # archive_checked_day is reset.
+        assert state.archive_checked_day is None, (
+            f"archive_checked_day should be None after migration; got {state.archive_checked_day}"
+        )
+        # Calibration model is the v1 identity (loaded from the v1
+        # journal, re-tagged).
+        assert state.calibration_model == "hourly_response_v1"
 
-    # Reload again: the migration is a no-op. State is unchanged.
-    state2 = PvLearningState("Europe/Kyiv", 50.45, 30.52)
-    state2.load(tmp_path)
-    assert state2.snapshots == state.snapshots
-    assert state2.pairs == state.pairs
-    assert state2.radiation == {}
-    assert state2.model is None
-    assert state2.archive_checked_day is None
-    assert state2.calibration_model == "hourly_response_v1"
+        # Reload again: the migration is a no-op. State is unchanged.
+        state2 = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+        state2.load(tmp_path)
+        assert state2.snapshots == state.snapshots
+        assert state2.pairs == state.pairs
+        assert state2.radiation == {}
+        assert state2.model is None
+        assert state2.archive_checked_day is None
+        assert state2.calibration_model == "hourly_response_v1"
 
-    # Active calibration_pairs() must EXCLUDE the legacy pairs
-    # (forecast_model="hourly_response_v1") when the new active
-    # calibration_model is the v2 identity. Old pairs stay in
-    # the journal but are NOT used to train the active
-    # v2 calibrator.
-    from hems.pv_learning import current_forecast_model_identity
-    state.set_calibration_model(current_forecast_model_identity())
-    active = state.calibration_pairs()
-    assert active == {}, (
-        f"Old hourly_response_v1 pairs must be excluded from active "
-        f"calibration when calibration_model=hourly_response_v2; "
-        f"got {list(active.keys())}"
-    )
-    # But the journal keeps the old pairs (re-tagged with the
-    # v1 identity, original recorded under _legacy_forecast_model).
-    assert "2026-10-09" in state.pairs
-    assert state.pairs["2026-10-09"]["forecast_model"] == "hourly_response_v1"
-    assert state.pairs["2026-10-09"]["_legacy_forecast_model"] == "hourly_response_v1"
+        # Active calibration_pairs() must EXCLUDE the legacy pairs
+        # (forecast_model="hourly_response_v1") when the new active
+        # calibration_model is the v2 identity. Old pairs stay in
+        # the journal but are NOT used to train the active
+        # v2 calibrator.
+        from hems.pv_learning import current_forecast_model_identity
+        state.set_calibration_model(current_forecast_model_identity())
+        active = state.calibration_pairs()
+        assert active == {}, (
+            f"Old hourly_response_v1 pairs must be excluded from active "
+            f"calibration when calibration_model=hourly_response_v2; "
+            f"got {list(active.keys())}"
+        )
+        # But the journal keeps the old pairs (re-tagged with the
+        # v1 identity, original recorded under _legacy_forecast_model).
+        assert "2026-10-09" in state.pairs
+        assert state.pairs["2026-10-09"]["forecast_model"] == "hourly_response_v1"
+        assert state.pairs["2026-10-09"]["_legacy_forecast_model"] == "hourly_response_v1"
 
-    tmp_path.unlink()
+        tmp_path.unlink()
 
 
 def test_r03_saved_journal_includes_contract_version() -> None:
@@ -875,57 +903,40 @@ def test_r03_saved_journal_includes_contract_version() -> None:
     ``radiation_contract_version`` so a subsequent load can decide
     whether to keep the radiation cache.
     """
-    from hems.pv_learning import PvLearningState, RADIATION_INTERVAL_CONTRACT_VERSION
-    identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
-    state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
-    state.radiation = {"2026-10-08": 1.5}
-    state.archive_checked_day = "2026-10-08"
-    state.model = {"gain": 0.12, "sample_count": 10, "last_day": "2026-10-08"}
-    state.snapshots = {
-        "2026-10-09": {
-            "forecast_kwh": 0.1,
-            "issued_at": "2026-10-08T10:04:26+03:00",
+    with TemporaryDirectory() as _d_872:
+        from hems.pv_learning import PvLearningState, RADIATION_INTERVAL_CONTRACT_VERSION
+        identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
+        state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+        state.radiation = {"2026-10-08": 1.5}
+        state.archive_checked_day = "2026-10-08"
+        state.model = {"gain": 0.12, "sample_count": 10, "last_day": "2026-10-08"}
+        state.snapshots = {
+            "2026-10-09": {
+                "forecast_kwh": 0.1,
+                "issued_at": "2026-10-08T10:04:26+03:00",
+            }
         }
-    }
 
-    tmp_path = Path("/tmp/powmr-save-test.json")
-    state.save(tmp_path)
+        tmp_path = Path(_d_872) / "powmr-save-test.json"
+        state.save(tmp_path)
 
-    raw = json.loads(tmp_path.read_text(encoding="utf-8"))
-    assert "radiation_contract_version" in raw, (
-        f"saved journal must include radiation_contract_version; got {raw.keys()}"
-    )
-    assert raw["radiation_contract_version"] == RADIATION_INTERVAL_CONTRACT_VERSION
-    # Reload: the contract matches, so the radiation cache and model
-    # are kept.
-    state2 = PvLearningState("Europe/Kyiv", 50.45, 30.52)
-    state2.load(tmp_path)
-    assert state2.radiation == {"2026-10-08": 1.5}, (
-        f"Radiation cache must be kept when contract matches; "
-        f"got {state2.radiation}"
-    )
-    assert state2.archive_checked_day == "2026-10-08"
-    assert state2.model == {"gain": 0.12, "sample_count": 10, "last_day": "2026-10-08"}
+        raw = json.loads(tmp_path.read_text(encoding="utf-8"))
+        assert "radiation_contract_version" in raw, (
+            f"saved journal must include radiation_contract_version; got {raw.keys()}"
+        )
+        assert raw["radiation_contract_version"] == RADIATION_INTERVAL_CONTRACT_VERSION
+        # Reload: the contract matches, so the radiation cache and model
+        # are kept.
+        state2 = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+        state2.load(tmp_path)
+        assert state2.radiation == {"2026-10-08": 1.5}, (
+            f"Radiation cache must be kept when contract matches; "
+            f"got {state2.radiation}"
+        )
+        assert state2.archive_checked_day == "2026-10-08"
+        assert state2.model == {"gain": 0.12, "sample_count": 10, "last_day": "2026-10-08"}
 
-    tmp_path.unlink()
-
-
-if __name__ == "__main__":
-    failures = []
-    tests = sorted(
-        (n, fn) for n, fn in globals().items()
-        if n.startswith("test_") and callable(fn)
-    )
-    for n, fn in tests:
-        try:
-            fn()
-            print(f"  {n}: PASS")
-        except Exception as exc:
-            failures.append((n, repr(exc)))
-            print(f"  {n}: FAIL ({exc!r})")
-    if failures:
-        sys.exit(1)
-    print(f"\nAll {len(tests)} tests passed (0 failed).")
+        tmp_path.unlink()
 
 
 # ── Migration: VERSION=2 → VERSION=3, real prior-version JSON ──
@@ -1005,63 +1016,64 @@ def test_migration_version_2_to_3_real_json() -> None:
     preserved verbatim with their original tags recorded under
     ``_legacy_forecast_model`` and ``_legacy_contract_version``.
     """
-    from hems.pv_learning import (
-        PvLearningState, RADIATION_INTERVAL_CONTRACT_VERSION,
-        current_forecast_model_identity,
-    )
+    with TemporaryDirectory() as _d_998:
+        from hems.pv_learning import (
+            PvLearningState, RADIATION_INTERVAL_CONTRACT_VERSION,
+            current_forecast_model_identity,
+        )
 
-    tmp = Path("/tmp/powmr-migration-v2-v3.json")
-    tmp.write_text(json.dumps(_real_v2_journal()), encoding="utf-8")
+        tmp = Path(_d_998) / "powmr-migration-v2-v3.json"
+        tmp.write_text(json.dumps(_real_v2_journal()), encoding="utf-8")
 
-    state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
-    state.load(tmp)  # must NOT raise
+        state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+        state.load(tmp)  # must NOT raise
 
-    # Snapshots preserved.
-    assert "2026-10-08" in state.snapshots
-    assert "2026-10-09" in state.snapshots
-    # Original tag preserved for audit. The on-disk journal had no
-    # ``radiation_contract_version`` field; we treat that as v1.
-    assert state.snapshots["2026-10-08"]["_legacy_forecast_model"] == "hourly_response_v1"
-    assert state.snapshots["2026-10-08"]["_legacy_contract_version"] == 1
-    # Current tag re-assigned to the v1-specific identity.
-    assert state.snapshots["2026-10-08"]["forecast_model"] == "hourly_response_v1"
+        # Snapshots preserved.
+        assert "2026-10-08" in state.snapshots
+        assert "2026-10-09" in state.snapshots
+        # Original tag preserved for audit. The on-disk journal had no
+        # ``radiation_contract_version`` field; we treat that as v1.
+        assert state.snapshots["2026-10-08"]["_legacy_forecast_model"] == "hourly_response_v1"
+        assert state.snapshots["2026-10-08"]["_legacy_contract_version"] == 1
+        # Current tag re-assigned to the v1-specific identity.
+        assert state.snapshots["2026-10-08"]["forecast_model"] == "hourly_response_v1"
 
-    # Pair preserved with its actual value.
-    assert "2026-10-08" in state.pairs
-    assert state.pairs["2026-10-08"]["actual_kwh"] == 0.12
-    assert state.pairs["2026-10-08"]["_legacy_forecast_model"] == "hourly_response_v1"
+        # Pair preserved with its actual value.
+        assert "2026-10-08" in state.pairs
+        assert state.pairs["2026-10-08"]["actual_kwh"] == 0.12
+        assert state.pairs["2026-10-08"]["_legacy_forecast_model"] == "hourly_response_v1"
 
-    # Incompatible caches dropped.
-    assert state.radiation == {}, f"radiation must be empty; got {state.radiation}"
-    assert state.model is None, f"model must be None; got {state.model}"
-    assert state.archive_checked_day is None
+        # Incompatible caches dropped.
+        assert state.radiation == {}, f"radiation must be empty; got {state.radiation}"
+        assert state.model is None, f"model must be None; got {state.model}"
+        assert state.archive_checked_day is None
 
-    # The active calibration_model is the v1 identity (matches
-    # the re-tagged pairs), so the calibrator sees the legacy
-    # pair. The new contract pair is what would be excluded.
-    assert state.calibration_model == "hourly_response_v1"
-    # Legacy pair IS in calibration_pairs under the v1 identity.
-    assert "2026-10-08" in state.calibration_pairs()
-    # After switching to the current identity, the legacy pair
-    # is excluded — its tag no longer matches.
-    state.set_calibration_model(current_forecast_model_identity())
-    assert "2026-10-08" not in state.calibration_pairs(), (
-        "Legacy v1 pair must be excluded from a v2-tagged calibrator"
-    )
+        # The active calibration_model is the v1 identity (matches
+        # the re-tagged pairs), so the calibrator sees the legacy
+        # pair. The new contract pair is what would be excluded.
+        assert state.calibration_model == "hourly_response_v1"
+        # Legacy pair IS in calibration_pairs under the v1 identity.
+        assert "2026-10-08" in state.calibration_pairs()
+        # After switching to the current identity, the legacy pair
+        # is excluded — its tag no longer matches.
+        state.set_calibration_model(current_forecast_model_identity())
+        assert "2026-10-08" not in state.calibration_pairs(), (
+            "Legacy v1 pair must be excluded from a v2-tagged calibrator"
+        )
 
-    # Re-saving under VERSION=3 and reloading again is a no-op
-    # for the legacy data.
-    tmp2 = Path("/tmp/powmr-migration-v2-v3-saved.json")
-    state.save(tmp2)
-    state2 = PvLearningState("Europe/Kyiv", 50.45, 30.52)
-    state2.load(tmp2)
-    # Still the v1 identity (re-tagged), no further migration.
-    assert state2.snapshots["2026-10-08"]["forecast_model"] == "hourly_response_v1"
-    assert state2.radiation == {}
-    assert state2.model is None
+        # Re-saving under VERSION=3 and reloading again is a no-op
+        # for the legacy data.
+        tmp2 = Path(_d_998) / "powmr-migration-v2-v3-saved.json"
+        state.save(tmp2)
+        state2 = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+        state2.load(tmp2)
+        # Still the v1 identity (re-tagged), no further migration.
+        assert state2.snapshots["2026-10-08"]["forecast_model"] == "hourly_response_v1"
+        assert state2.radiation == {}
+        assert state2.model is None
 
-    tmp.unlink()
-    tmp2.unlink()
+        tmp.unlink()
+        tmp2.unlink()
 
 
 def test_migration_real_pairs_v1_to_v2_real_json() -> None:
@@ -1071,45 +1083,46 @@ def test_migration_real_pairs_v1_to_v2_real_json() -> None:
     ``_legacy_forecast_model``, and the journal is now tagged with
     VERSION=2 and the current contract.
     """
-    from hems.pv_learning import (
-        RealForecastPairs, RADIATION_INTERVAL_CONTRACT_VERSION,
-    )
+    with TemporaryDirectory() as _d_1066:
+        from hems.pv_learning import (
+            RealForecastPairs, RADIATION_INTERVAL_CONTRACT_VERSION,
+        )
 
-    tmp = Path("/tmp/powmr-real-pairs-v1.json")
-    tmp.write_text(json.dumps(_real_v1_real_pairs()), encoding="utf-8")
+        tmp = Path(_d_1066) / "powmr-real-pairs-v1.json"
+        tmp.write_text(json.dumps(_real_v1_real_pairs()), encoding="utf-8")
 
-    identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
-    journal = RealForecastPairs(identity)
-    journal.load(tmp)  # must NOT raise
+        identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
+        journal = RealForecastPairs(identity)
+        journal.load(tmp)  # must NOT raise
 
-    # Both pairs present.
-    assert "2026-10-08" in journal.pairs
-    assert "2026-10-09" in journal.pairs
-    # Original tag preserved for audit.
-    assert journal.pairs["2026-10-08"]["_legacy_forecast_model"] == "hourly_response_v1"
-    # Re-tagged to the v1-specific identity.
-    assert journal.pairs["2026-10-08"]["forecast_model"] == "hourly_response_v1"
-    # Pending pair is still pending.
-    assert journal.pairs["2026-10-08"]["used"] is False
-    # Used pair is still used.
-    assert journal.pairs["2026-10-09"]["used"] is True
+        # Both pairs present.
+        assert "2026-10-08" in journal.pairs
+        assert "2026-10-09" in journal.pairs
+        # Original tag preserved for audit.
+        assert journal.pairs["2026-10-08"]["_legacy_forecast_model"] == "hourly_response_v1"
+        # Re-tagged to the v1-specific identity.
+        assert journal.pairs["2026-10-08"]["forecast_model"] == "hourly_response_v1"
+        # Pending pair is still pending.
+        assert journal.pairs["2026-10-08"]["used"] is False
+        # Used pair is still used.
+        assert journal.pairs["2026-10-09"]["used"] is True
 
-    # Migration recorded the contract version.
-    assert journal.radiation_contract_version == RADIATION_INTERVAL_CONTRACT_VERSION, (
-        "radiation_contract_version should be updated to the current version"
-    )
+        # Migration recorded the contract version.
+        assert journal.radiation_contract_version == RADIATION_INTERVAL_CONTRACT_VERSION, (
+            "radiation_contract_version should be updated to the current version"
+        )
 
-    # Re-saving and reloading is idempotent: pairs keep the v1 tag.
-    tmp2 = Path("/tmp/powmr-real-pairs-v1-saved.json")
-    journal.save(tmp2)
-    journal2 = RealForecastPairs(identity)
-    journal2.load(tmp2)
-    assert journal2.pairs["2026-10-08"]["forecast_model"] == "hourly_response_v1"
-    # No second migration.
-    assert journal2.pairs["2026-10-08"].get("_legacy_forecast_model") == "hourly_response_v1"
+        # Re-saving and reloading is idempotent: pairs keep the v1 tag.
+        tmp2 = Path(_d_1066) / "powmr-real-pairs-v1-saved.json"
+        journal.save(tmp2)
+        journal2 = RealForecastPairs(identity)
+        journal2.load(tmp2)
+        assert journal2.pairs["2026-10-08"]["forecast_model"] == "hourly_response_v1"
+        # No second migration.
+        assert journal2.pairs["2026-10-08"].get("_legacy_forecast_model") == "hourly_response_v1"
 
-    tmp.unlink()
-    tmp2.unlink()
+        tmp.unlink()
+        tmp2.unlink()
 
 
 def test_migration_rejects_unknown_version() -> None:
@@ -1117,40 +1130,41 @@ def test_migration_rejects_unknown_version() -> None:
     rejected explicitly. Silent acceptance of an unknown future
     version is more dangerous than a hard error.
     """
-    from hems.pv_learning import PvLearningState, RealForecastPairs
+    with TemporaryDirectory() as _d_1114:
+        from hems.pv_learning import PvLearningState, RealForecastPairs
 
-    identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
-    # PvLearningState with a future version.
-    raw = _real_v2_journal()
-    raw["version"] = 99
-    tmp = Path("/tmp/powmr-future-v99.json")
-    tmp.write_text(json.dumps(raw), encoding="utf-8")
-    state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
-    raised = False
-    try:
-        state.load(tmp)
-    except ValueError as exc:
-        raised = True
-        assert "99" in str(exc) or "not supported" in str(exc)
-    assert raised, "Future VERSION must be rejected explicitly"
-    tmp.unlink()
+        identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
+        # PvLearningState with a future version.
+        raw = _real_v2_journal()
+        raw["version"] = 99
+        tmp = Path(_d_1114) / "powmr-future-v99.json"
+        tmp.write_text(json.dumps(raw), encoding="utf-8")
+        state = PvLearningState("Europe/Kyiv", 50.45, 30.52)
+        raised = False
+        try:
+            state.load(tmp)
+        except ValueError as exc:
+            raised = True
+            assert "99" in str(exc) or "not supported" in str(exc)
+        assert raised, "Future VERSION must be rejected explicitly"
+        tmp.unlink()
 
-    # RealForecastPairs with a future version.
-    raw2 = _real_v1_real_pairs()
-    raw2["version"] = 99
-    tmp2 = Path("/tmp/powmr-real-pairs-future-v99.json")
-    tmp2.write_text(json.dumps(raw2), encoding="utf-8")
-    journal = RealForecastPairs(identity)
-    raised2 = False
-    try:
-        journal.load(tmp2)
-    except ValueError as exc:
-        raised2 = True
-    assert raised2, "Future RealForecastPairs version must be rejected"
-    tmp2.unlink()
+        # RealForecastPairs with a future version.
+        raw2 = _real_v1_real_pairs()
+        raw2["version"] = 99
+        tmp2 = Path(_d_1114) / "powmr-real-pairs-future-v99.json"
+        tmp2.write_text(json.dumps(raw2), encoding="utf-8")
+        journal = RealForecastPairs(identity)
+        raised2 = False
+        try:
+            journal.load(tmp2)
+        except ValueError as exc:
+            raised2 = True
+        assert raised2, "Future RealForecastPairs version must be rejected"
+        tmp2.unlink()
 
 
-# ── Calibration separation: old + pending + new pair ────────────
+    # ── Calibration separation: old + pending + new pair ────────────
 
 
 def test_migration_old_pair_pending_new_pair_calibrator_separates() -> None:
@@ -1172,96 +1186,233 @@ def test_migration_old_pair_pending_new_pair_calibrator_separates() -> None:
     This is the scenario the user called out: стара завершена
     пара + стара pending-пара → міграція → нова пара → save/load.
     """
-    from hems.pv_learning import (
-        PvLearningState, RADIATION_INTERVAL_CONTRACT_VERSION,
-        current_forecast_model_identity,
-    )
+    with TemporaryDirectory() as _d_1155:
+        from hems.pv_learning import (
+            PvLearningState, RADIATION_INTERVAL_CONTRACT_VERSION,
+            current_forecast_model_identity,
+        )
 
-    identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
+        identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
 
-    # Step 1: build a v1 journal with one used pair (Oct 8) and
-    # one pending snapshot (Oct 9).
-    journal = {
-        "version": 2,
-        "unit": "kWh",
-        **identity,
-        "snapshots": {
-            "2026-10-08": {"forecast_kwh": 0.15,
-                            "issued_at": "2026-10-07T10:04:26+03:00",
-                            "forecast_model": "hourly_response_v1"},
-            "2026-10-09": {"forecast_kwh": 0.18,
-                            "issued_at": "2026-10-08T10:04:26+03:00",
-                            "forecast_model": "hourly_response_v1"},
-        },
-        "pairs": {
-            "2026-10-08": {"forecast_kwh": 0.15, "actual_kwh": 0.12,
-                           "coverage": 1.0,
-                           "forecast_model": "hourly_response_v1"},
-        },
-        "radiation": {},
-        "archive_checked_day": None,
-        "model": None,
-        "calibration_model": "hourly_response_v1",
-    }
-    tmp = Path("/tmp/powmr-migration-end-to-end.json")
-    tmp.write_text(json.dumps(journal), encoding="utf-8")
+        # Step 1: build a v1 journal with one used pair (Oct 8) and
+        # one pending snapshot (Oct 9).
+        journal = {
+            "version": 2,
+            "unit": "kWh",
+            **identity,
+            "snapshots": {
+                "2026-10-08": {"forecast_kwh": 0.15,
+                                "issued_at": "2026-10-07T10:04:26+03:00",
+                                "forecast_model": "hourly_response_v1"},
+                "2026-10-09": {"forecast_kwh": 0.18,
+                                "issued_at": "2026-10-08T10:04:26+03:00",
+                                "forecast_model": "hourly_response_v1"},
+            },
+            "pairs": {
+                "2026-10-08": {"forecast_kwh": 0.15, "actual_kwh": 0.12,
+                               "coverage": 1.0,
+                               "forecast_model": "hourly_response_v1"},
+            },
+            "radiation": {},
+            "archive_checked_day": None,
+            "model": None,
+            "calibration_model": "hourly_response_v1",
+        }
+        tmp = Path(_d_1155) / "powmr-migration-end-to-end.json"
+        tmp.write_text(json.dumps(journal), encoding="utf-8")
 
-    state = PvLearningState(identity["timezone"], identity["latitude"], identity["longitude"])
-    state.load(tmp)
+        state = PvLearningState(identity["timezone"], identity["latitude"], identity["longitude"])
+        state.load(tmp)
 
-    # Step 2: add a new pair under the v2 contract.
-    v2_tag = current_forecast_model_identity()
-    new_day = "2026-10-10"
-    # Issue a snapshot (the snapshot must be issued the day
-    # before; ``match`` then promotes it to a pair when the
-    # actual arrives).
-    assert state.snapshot(new_day, 0.20,
-                          datetime(2026, 10, 9, 10, 0, tzinfo=timezone.utc),
-                          forecast_model=v2_tag)
-    # The pair is formed when the actual arrives and the day
-    # is in the past.
-    state.match({new_day: 0.17}, datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc))
+        # Step 2: add a new pair under the v2 contract.
+        v2_tag = current_forecast_model_identity()
+        new_day = "2026-10-10"
+        # Issue a snapshot (the snapshot must be issued the day
+        # before; ``match`` then promotes it to a pair when the
+        # actual arrives).
+        assert state.snapshot(new_day, 0.20,
+                              datetime(2026, 10, 9, 10, 0, tzinfo=timezone.utc),
+                              forecast_model=v2_tag)
+        # The pair is formed when the actual arrives and the day
+        # is in the past.
+        state.match({new_day: 0.17}, datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc))
 
-    # Step 3a: the calibrator is still the v1 identity (loaded
-    # from the v1 journal). The new v2 pair must NOT contribute
-    # to that calibrator.
-    assert state.calibration_model == "hourly_response_v1"
-    active_under_v1 = state.calibration_pairs()
-    assert "2026-10-10" not in active_under_v1, (
-        f"v2 pair must be excluded from v1 calibrator; got {list(active_under_v1)}"
-    )
-    assert "2026-10-08" in active_under_v1, (
-        "v1 used pair should be in v1 calibrator"
-    )
+        # Step 3a: the calibrator is still the v1 identity (loaded
+        # from the v1 journal). The new v2 pair must NOT contribute
+        # to that calibrator.
+        assert state.calibration_model == "hourly_response_v1"
+        active_under_v1 = state.calibration_pairs()
+        assert "2026-10-10" not in active_under_v1, (
+            f"v2 pair must be excluded from v1 calibrator; got {list(active_under_v1)}"
+        )
+        assert "2026-10-08" in active_under_v1, (
+            "v1 used pair should be in v1 calibrator"
+        )
 
-    # Step 3b: switch the calibrator to the v2 identity. The
-    # v2 pair is now included; the v1 pair is excluded.
-    state.set_calibration_model(v2_tag)
-    active_under_v2 = state.calibration_pairs()
-    assert "2026-10-10" in active_under_v2, (
-        f"v2 pair must be in v2 calibrator; got {list(active_under_v2)}"
-    )
-    assert "2026-10-08" not in active_under_v2, (
-        "v1 used pair must be excluded from v2 calibrator"
-    )
+        # Step 3b: switch the calibrator to the v2 identity. The
+        # v2 pair is now included; the v1 pair is excluded.
+        state.set_calibration_model(v2_tag)
+        active_under_v2 = state.calibration_pairs()
+        assert "2026-10-10" in active_under_v2, (
+            f"v2 pair must be in v2 calibrator; got {list(active_under_v2)}"
+        )
+        assert "2026-10-08" not in active_under_v2, (
+            "v1 used pair must be excluded from v2 calibrator"
+        )
 
-    # Step 3c: save under v3 and reload. The legacy pair keeps
-    # its v1 tag; the new pair keeps its v2 tag.
-    tmp2 = Path("/tmp/powmr-migration-end-to-end-saved.json")
-    state.save(tmp2)
-    state2 = PvLearningState(identity["timezone"], identity["latitude"], identity["longitude"])
-    state2.load(tmp2)
-    assert state2.snapshots["2026-10-08"]["forecast_model"] == "hourly_response_v1"
-    assert state2.snapshots["2026-10-10"]["forecast_model"] == v2_tag
-    assert state2.pairs["2026-10-08"]["forecast_model"] == "hourly_response_v1"
-    assert state2.pairs["2026-10-10"]["forecast_model"] == v2_tag
-    # Re-running the migration is a no-op.
-    assert state2.snapshots["2026-10-08"].get("_legacy_forecast_model") == "hourly_response_v1"
-    # The v2 pair never had a legacy tag.
-    assert "_legacy_forecast_model" not in state2.snapshots["2026-10-10"]
+        # Step 3c: save under v3 and reload. The legacy pair keeps
+        # its v1 tag; the new pair keeps its v2 tag.
+        tmp2 = Path(_d_1155) / "powmr-migration-end-to-end-saved.json"
+        state.save(tmp2)
+        state2 = PvLearningState(identity["timezone"], identity["latitude"], identity["longitude"])
+        state2.load(tmp2)
+        assert state2.snapshots["2026-10-08"]["forecast_model"] == "hourly_response_v1"
+        assert state2.snapshots["2026-10-10"]["forecast_model"] == v2_tag
+        assert state2.pairs["2026-10-08"]["forecast_model"] == "hourly_response_v1"
+        assert state2.pairs["2026-10-10"]["forecast_model"] == v2_tag
+        # Re-running the migration is a no-op.
+        assert state2.snapshots["2026-10-08"].get("_legacy_forecast_model") == "hourly_response_v1"
+        # The v2 pair never had a legacy tag.
+        assert "_legacy_forecast_model" not in state2.snapshots["2026-10-10"]
 
-    tmp.unlink()
-    tmp2.unlink()
+        tmp.unlink()
+        tmp2.unlink()
+
+
+def test_migration_station_gain_v1_tag_preserved_unchanged() -> None:
+    """The user-reported bug: the v1 station_gain identity must NOT be
+    rewritten to hourly_response_v1 by ``PvLearningState.load``. Both
+    v1 families (hourly_response_v1 and station_gain_v1) are
+    historical identities; the migration must preserve the
+    original tag verbatim, with the original recorded under
+    ``_legacy_forecast_model``.
+
+    Before the fix, the migration re-tagged any v1 pair whose tag
+    was not ``hourly_response_v1`` to ``hourly_response_v1``
+    (because ``legacy_forecast_model_identity(1) = "hourly_response_v1"``).
+    That erased the historical distinction between the hourly
+    pipeline and the daily-fallback station pipeline.
+
+    The same test also exercises ``RealForecastPairs`` for the
+    real_forecast_pairs.json journal — it must preserve the
+    station_gain_v1 tag too.
+    """
+    with TemporaryDirectory() as _d_1257:
+        from hems.pv_learning import PvLearningState, RealForecastPairs
+        from hems.pv_learning import current_forecast_model_identity
+
+        identity = {"timezone": "Europe/Kyiv", "latitude": 50.45, "longitude": 30.52}
+        v1_hourly = "hourly_response_v1"
+        v1_station = "station_gain_v1"
+        v2_hourly = current_forecast_model_identity()
+        v2_station = current_forecast_model_identity("station_gain")
+
+        # PvLearningState journal: a mix of old hourly_v1 and
+        # old station_v1 pairs, plus a pending v2 snapshot.
+        journal = {
+            "version": 3,
+            "unit": "kWh",
+            **identity,
+            "snapshots": {
+                "2026-10-08": {"forecast_kwh": 0.1, "issued_at": "2026-10-07T10:04:26+03:00",
+                               "forecast_model": v1_hourly},
+                "2026-10-09": {"forecast_kwh": 0.12, "issued_at": "2026-10-08T10:04:26+03:00",
+                               "forecast_model": v1_station},
+                "2026-10-10": {"forecast_kwh": 0.18, "issued_at": "2026-10-09T10:04:26+03:00",
+                               "forecast_model": v2_hourly},
+            },
+            "pairs": {
+                "2026-10-08": {"forecast_kwh": 0.1, "actual_kwh": 0.09, "coverage": 1.0,
+                               "forecast_model": v1_hourly},
+                "2026-10-09": {"forecast_kwh": 0.12, "actual_kwh": 0.10, "coverage": 1.0,
+                               "forecast_model": v1_station},
+            },
+            "radiation": {},
+            "archive_checked_day": None,
+            "model": None,
+            "calibration_model": v1_station,  # last active was the station fallback
+        }
+        tmp = Path(_d_1257) / "powmr-station-v1.json"
+        tmp.write_text(json.dumps(journal), encoding="utf-8")
+
+        state = PvLearningState(identity["timezone"], identity["latitude"], identity["longitude"])
+        state.load(tmp)
+
+        # CRITICAL: v1_hourly and v1_station tags are preserved
+        # verbatim. Nothing was rewritten.
+        assert state.snapshots["2026-10-08"]["forecast_model"] == v1_hourly
+        assert state.snapshots["2026-10-09"]["forecast_model"] == v1_station
+        assert state.pairs["2026-10-08"]["forecast_model"] == v1_hourly
+        assert state.pairs["2026-10-09"]["forecast_model"] == v1_station
+        # Original tag recorded under _legacy_forecast_model.
+        assert state.snapshots["2026-10-08"]["_legacy_forecast_model"] == v1_hourly
+        assert state.snapshots["2026-10-09"]["_legacy_forecast_model"] == v1_station
+        assert state.pairs["2026-10-08"]["_legacy_forecast_model"] == v1_hourly
+        assert state.pairs["2026-10-09"]["_legacy_forecast_model"] == v1_station
+        # The pending v2 snapshot is added AFTER the v1 journal
+        # is loaded. At load time the on-disk journal only had
+        # v1 pairs, so all loaded pairs carry the legacy marker;
+        # a new v2 pair added afterwards has no legacy marker.
+        assert state.snapshots["2026-10-08"]["_legacy_forecast_model"] == v1_hourly
+        assert state.snapshots["2026-10-09"]["_legacy_forecast_model"] == v1_station
+        # Add a fresh v2 snapshot after load.
+        assert state.snapshot("2026-10-11", 0.20,
+                              datetime(2026, 10, 10, 10, 0, tzinfo=timezone.utc),
+                              forecast_model=v2_hourly)
+        assert state.snapshots["2026-10-11"]["forecast_model"] == v2_hourly
+        assert "_legacy_forecast_model" not in state.snapshots["2026-10-11"]
+        # The calibration_model on the journal is left as-is
+        # (the previous coordinator was using the station fallback).
+        assert state.calibration_model == v1_station
+
+        # RealForecastPairs journal: same family mix.
+        real_raw = {
+            "version": 1,
+            "identity": identity,
+            "pairs": [
+                {"date": "2026-10-08", "forecast_kwh": 0.1, "actual_kwh": 0.09, "used": True,
+                 "captured_at": "2026-10-07T10:04:26+03:00", "forecast_model": v1_hourly},
+                {"date": "2026-10-09", "forecast_kwh": 0.12, "actual_kwh": 0.10, "used": True,
+                 "captured_at": "2026-10-08T10:04:26+03:00", "forecast_model": v1_station},
+            ],
+        }
+        tmp2 = Path(_d_1257) / "powmr-real-station-v1.json"
+        tmp2.write_text(json.dumps(real_raw), encoding="utf-8")
+
+        real = RealForecastPairs(identity)
+        real.load(tmp2)
+        assert real.pairs["2026-10-08"]["forecast_model"] == v1_hourly
+        assert real.pairs["2026-10-09"]["forecast_model"] == v1_station
+        assert real.pairs["2026-10-08"]["_legacy_forecast_model"] == v1_hourly
+        assert real.pairs["2026-10-09"]["_legacy_forecast_model"] == v1_station
+
+        # Active v2_hourly calibrator: only the v2 pair, no v1 pairs.
+        state.set_calibration_model(v2_hourly)
+        active = state.calibration_pairs()
+        assert "2026-10-08" not in active and "2026-10-09" not in active, (
+            f"v1 pairs must be excluded from v2_hourly calibrator; got {list(active)}"
+        )
+        # Active v2_station calibrator: also empty (no v2_station pairs exist).
+        state.set_calibration_model(v2_station)
+        active_station = state.calibration_pairs()
+        assert active_station == {}, (
+            f"v2_station calibrator must be empty initially; got {list(active_station)}"
+        )
+
+        # New v2_station pair is accepted only by the v2_station
+        # calibrator, not the v2_hourly one.
+        assert state.snapshot("2026-10-12", 0.22,
+                              datetime(2026, 10, 11, 10, 0, tzinfo=timezone.utc),
+                              forecast_model=v2_station)
+        state.match({"2026-10-12": 0.19},
+                    datetime(2026, 10, 13, 12, 0, tzinfo=timezone.utc))
+        state.set_calibration_model(v2_hourly)
+        assert "2026-10-12" not in state.calibration_pairs()
+        state.set_calibration_model(v2_station)
+        assert "2026-10-12" in state.calibration_pairs()
+
+        tmp.unlink()
+        tmp2.unlink()
 
 
 # ── HTTP request range: end_date must include the last interval ──
@@ -1480,7 +1631,7 @@ def test_r01_fetch_hourly_rejects_bool_nan_missing_radiation() -> None:
             "precipitation_probability": [50] * 7,
         },
     }
-    rows = _drive_fetch_hourly(payload)
+    rows = _drive_fetch_hourly(payload, local_today=date(2026, 10, 8))
     # Only the last two valid values survive.
     assert len(rows) == 2, f"expected 2 valid rows, got {len(rows)}"
     # The 6th entry (index 5) had radiation 100.0.
@@ -1549,7 +1700,23 @@ def test_r01_fetch_hourly_gain_uses_interval_start_hour() -> None:
     async def _rate_limit(): return None
     f._rate_limit = _rate_limit
 
-    rows = asyncio.run(f._fetch_hourly())
+    # Freeze today to 2026-10-08 so the trim keeps these rows.
+    import hems.forecast as forecast_mod
+    real_datetime = forecast_mod.datetime
+    fixed_now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+
+    class _FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now
+            return fixed_now.astimezone(tz)
+
+    forecast_mod.datetime = _FrozenDateTime
+    try:
+        rows = asyncio.run(f._fetch_hourly())
+    finally:
+        forecast_mod.datetime = real_datetime
     # Row 0: radiation 200 × gain at hour 12 (0.1) = 20 W.
     # Row 1: radiation 200 × gain at hour 16 (0.2) = 40 W.
     # If the lookup used the API-t hour (13/17), the gain
@@ -1563,3 +1730,693 @@ def test_r01_fetch_hourly_gain_uses_interval_start_hour() -> None:
         f"Row 1 power must reflect interval-start hour 16 gain 0.2: "
         f"got {rows[1]['power_w']}"
     )
+
+
+def test_r01_fetch_hourly_trims_to_exact_three_local_dates() -> None:
+    """``_fetch_hourly`` must publish exactly 3 local calendar days
+    starting from today's local date — never yesterday's
+    spillover, never day-4's spillover. The exact set of UTC
+    timestamps for each date is verified, not just the count.
+
+    Local today: 2026-10-08
+    Published dates: 2026-10-08, 2026-10-09, 2026-10-10
+    Forbidden: 2026-10-07 (yesterday spillover), 2026-10-11 (day-4 spillover)
+
+    The Open-Meteo API is asked for ``forecast_days=4`` so the
+    interval-shift does not eat the last hour of day 3.
+    """
+    import hems.forecast as forecast_mod
+    from hems.forecast import ForecastService
+
+    # Fix the production code's "now" to 2026-10-08 12:00 UTC.
+    fixed_now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    real_datetime = forecast_mod.datetime
+
+    class _FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now
+            return fixed_now.astimezone(tz)
+
+    forecast_mod.datetime = _FrozenDateTime
+    try:
+        # Build a 4-day synthetic response: 96 hours at 00:00,
+        # 01:00, …, 23:00 of four consecutive UTC days starting
+        # at 2026-10-08 00:00 UTC. The interval-shift drops
+        # the first hour to Oct 7 and spills the last day
+        # forward.
+        base_api_t = int(datetime(2026, 10, 8, 0, 0, tzinfo=timezone.utc).timestamp())
+        api_times = [base_api_t + 3600 * h for h in range(4 * 24)]
+        radiations = [100.0] * (4 * 24)
+
+        payload = {
+            "hourly": {
+                "time": api_times,
+                "shortwave_radiation": radiations,
+                "weather_code": [0] * (4 * 24),
+                "cloud_cover": [50] * (4 * 24),
+                "temperature_2m": [10.0] * (4 * 24),
+                "wind_speed_10m": [5.0] * (4 * 24),
+                "precipitation_probability": [0] * (4 * 24),
+            }
+        }
+        text = json.dumps(payload)
+
+        class _Resp:
+            def __init__(self, t): self._t = t
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            def raise_for_status(self): return None
+            async def json(self): return json.loads(self._t)
+
+        class _Sess:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            def get(self, url, params=None): return _Resp(text)
+
+        f = ForecastService(timezone_name="UTC")
+        f._latitude = 50.45
+        f._longitude = 30.52
+        f.learned_ratio = 0.1
+
+        requested = {}
+
+        class _Wrap:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            def get(self, url, params=None):
+                requested.update(params or {})
+                return _Resp(text)
+
+        async def _ensure_session(): return _Wrap()
+        f._ensure_session = _ensure_session
+        async def _rate_limit(): return None
+        f._rate_limit = _rate_limit
+
+        rows = asyncio.run(f._fetch_hourly())
+    finally:
+        forecast_mod.datetime = real_datetime
+
+    # 1) The API was asked for 4 days.
+    assert requested.get("forecast_days") == 4, (
+        f"_fetch_hourly must request 4 days from the API; "
+        f"got {requested.get('forecast_days')}"
+    )
+    # 2) The published dates are EXACTLY the 3 local calendar
+    # days starting from 2026-10-08.
+    published = sorted({h["time"][:10] for h in rows})
+    assert published == ["2026-10-08", "2026-10-09", "2026-10-10"], (
+        f"Published dates must be exactly [Oct 8, Oct 9, Oct 10]; "
+        f"got {published}"
+    )
+    # 3) Yesterday (Oct 7) and day 4 (Oct 11) are forbidden.
+    assert "2026-10-07" not in published, (
+        f"Yesterday (Oct 7) must not leak into the published set; "
+        f"got {published}"
+    )
+    assert "2026-10-11" not in published, (
+        f"Day 4 (Oct 11) must not leak into the published set; "
+        f"got {published}"
+    )
+    # 4) Exact UTC timestamps per day. With timezone=UTC, the
+    # expected sets are derived from the same ``day_bounds``
+    # contract the rest of the pipeline uses.
+    expected_utc = {
+        "2026-10-08": {int(datetime(2026, 10, 8, h, 0, tzinfo=timezone.utc).timestamp())
+                        for h in range(24)},
+        "2026-10-09": {int(datetime(2026, 10, 9, h, 0, tzinfo=timezone.utc).timestamp())
+                        for h in range(24)},
+        "2026-10-10": {int(datetime(2026, 10, 10, h, 0, tzinfo=timezone.utc).timestamp())
+                        for h in range(24)},
+    }
+    actual_utc = {day: set() for day in expected_utc}
+    for h in rows:
+        d = h["time"][:10]
+        if d in actual_utc:
+            actual_utc[d].add(int(h["timestamp"]))
+    for d, expected in expected_utc.items():
+        assert actual_utc[d] == expected, (
+            f"Day {d} UTC timestamp set mismatch: "
+            f"missing={expected - actual_utc[d]}, "
+            f"extra={actual_utc[d] - expected}"
+        )
+    # 5) Each row's ``weather_timestamp - timestamp`` must be 3600
+    # (the API moment is exactly 1h after the interval start).
+    for h in rows:
+        diff = int(h["weather_timestamp"]) - int(h["timestamp"])
+        assert diff == 3600, (
+            f"weather_timestamp - timestamp = {diff} (expected 3600); "
+            f"row = {h}"
+        )
+
+
+def test_r01_fetch_daily_completes_three_local_days_via_full_chain() -> None:
+    """End-to-end: ``_fetch_hourly`` -> ``_fetch_daily`` must
+    produce three complete local days so that
+    ``forecast_day_after_kwh`` is defined. The check mirrors the
+    production code in ``pv_coordinator.PvLearningCoordinatorMixin``
+    that calls ``_forecast.get_daily_forecasts(days=3)`` and
+    publishes ``forecast_tomorrow_kwh`` / ``forecast_day_after_kwh``.
+
+    The test wires a fake ``PvLearningCoordinatorMixin`` instance
+    with a real ``ForecastService`` and verifies that after one
+    fetch cycle the day-after-tomorrow forecast is non-None.
+    """
+    import hems.forecast as forecast_mod
+    from hems.forecast import ForecastService, SolarForecast
+    from hems.pv_coordinator import PvLearningCoordinatorMixin
+    from hems.pv_learning import PvLearningState
+
+    fixed_now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    real_datetime = forecast_mod.datetime
+
+    class _FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now
+            return fixed_now.astimezone(tz)
+
+    forecast_mod.datetime = _FrozenDateTime
+    try:
+        base_api_t = int(datetime(2026, 10, 8, 0, 0, tzinfo=timezone.utc).timestamp())
+        api_times = [base_api_t + 3600 * h for h in range(4 * 24)]
+        radiations = [100.0] * (4 * 24)
+
+        payload = {
+            "hourly": {
+                "time": api_times,
+                "shortwave_radiation": radiations,
+                "weather_code": [0] * (4 * 24),
+                "cloud_cover": [50] * (4 * 24),
+                "temperature_2m": [10.0] * (4 * 24),
+                "wind_speed_10m": [5.0] * (4 * 24),
+                "precipitation_probability": [0] * (4 * 24),
+            }
+        }
+        text = json.dumps(payload)
+
+        class _Resp:
+            def __init__(self, t): self._t = t
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            def raise_for_status(self): return None
+            async def json(self): return json.loads(self._t)
+
+        class _Sess:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return None
+            def get(self, url, params=None): return _Resp(text)
+
+        f = ForecastService(timezone_name="UTC")
+        f._latitude = 50.45
+        f._longitude = 30.52
+        f.learned_ratio = 0.1
+        async def _ensure_session(): return _Sess()
+        f._ensure_session = _ensure_session
+        async def _rate_limit(): return None
+        f._rate_limit = _rate_limit
+
+        # Drive the full chain.
+        hourly = asyncio.run(f.get_hourly_forecast())
+        daily = asyncio.run(f.get_daily_forecasts(days=3))
+    finally:
+        forecast_mod.datetime = real_datetime
+
+    # Hourly: exactly 3 local dates with the expected count.
+    local_dates = sorted({h["time"][:10] for h in hourly})
+    assert local_dates == ["2026-10-08", "2026-10-09", "2026-10-10"], (
+        f"Hourly must publish exactly 3 local dates starting from today; "
+        f"got {local_dates}"
+    )
+    counts = {d: sum(1 for h in hourly if h["time"][:10] == d) for d in local_dates}
+    # Each published date has exactly 24 hourly rows because:
+    #   * Oct 8: the api_t 00:00 Oct 8 row (interval start
+    #     23:00 Oct 7) is dropped by the trim (Oct 7 not in
+    #     keep), and the api_t 00:00 Oct 9 row contributes the
+    #     ``timestamp = 23:00 Oct 8``. Net: 24.
+    #   * Oct 9: 24 api rows, all in Oct 9.
+    #   * Oct 10: the api_t 00:00 Oct 11 row contributes the
+    #     ``timestamp = 23:00 Oct 10``; api_t 23:00 Oct 11
+    #     is dropped. Net: 24.
+    # The complete-day check is verified explicitly below.
+    assert counts["2026-10-08"] == 24, (
+        f"Oct 8 must have 24 hourly rows (the api_t 00:00 spillover "
+        f"row to Oct 7 is trimmed; the api_t 00:00 Oct 9 row gives "
+        f"the 23:00 Oct 8 timestamp); got {counts['2026-10-08']}"
+    )
+    assert counts["2026-10-09"] == 24, f"Oct 9 must have 24 hours; got {counts['2026-10-09']}"
+    assert counts["2026-10-10"] == 24, f"Oct 10 must have 24 hours; got {counts['2026-10-10']}"
+
+    # The production ``get_daily_forecasts`` returns a dict of
+    # {date_str: SolarForecast}. With day 1 incomplete, the
+    # aggregator will still return all 3 dates; the consumer
+    # downstream (the coordinator) decides what's a "complete"
+    # day by comparing timestamps to day_bounds. We assert
+    # here that:
+    #   * all 3 local dates are present in the daily result
+    #   * the day-after-tomorrow (Oct 10) IS complete (24
+    #     hours), and ``forecast_day_after_kwh`` is non-None.
+    assert "2026-10-08" in daily
+    assert "2026-10-09" in daily
+    assert "2026-10-10" in daily
+    oct10 = daily["2026-10-10"]
+    assert oct10.energy_kwh is not None
+    # 100 W/m² × 0.1 (gain) × 24h = 240 Wh = 0.24 kWh.
+    assert abs(oct10.energy_kwh - 0.24) < 1e-6, (
+        f"Oct 10 daily energy must be 0.24 kWh (100 W/m² × 0.1 × 24h); "
+        f"got {oct10.energy_kwh}"
+    )
+
+    # Mirror the production ``complete``-check that gates
+    # ``forecast_tomorrow_kwh`` / ``forecast_day_after_kwh``.
+    # ``day_bounds(2026-10-09, UTC)`` = [00:00, 24:00) Oct 9,
+    # 24 expected hours; the hourly payload for Oct 9 is the
+    # complete set.
+    from hems.pv_learning import day_bounds
+    tomorrow = "2026-10-09"
+    after = "2026-10-10"
+    s, e = day_bounds(tomorrow, __import__("zoneinfo").ZoneInfo("UTC"))
+    expected_ts = {int((s + timedelta(hours=h)).timestamp()) for h in range(24)}
+    tomorrow_hours = [h for h in hourly if h["time"][:10] == tomorrow]
+    assert {h["timestamp"] for h in tomorrow_hours} == expected_ts, (
+        f"Oct 9 must have a complete UTC timestamp set"
+    )
+    s, e = day_bounds(after, __import__("zoneinfo").ZoneInfo("UTC"))
+    expected_ts = {int((s + timedelta(hours=h)).timestamp()) for h in range(24)}
+    after_hours = [h for h in hourly if h["time"][:10] == after]
+    assert {h["timestamp"] for h in after_hours} == expected_ts, (
+        f"Oct 10 must have a complete UTC timestamp set"
+    )
+
+    # Production-equivalent: forecast_tomorrow_kwh and
+    # forecast_day_after_kwh are both defined.
+    forecast_tomorrow_kwh = daily[tomorrow].energy_kwh
+    forecast_day_after_kwh = daily[after].energy_kwh
+    assert forecast_tomorrow_kwh is not None
+    assert forecast_day_after_kwh is not None
+    assert abs(forecast_day_after_kwh - 0.24) < 1e-6
+
+
+def test_r01_fetch_hourly_rejects_shorter_radiation_array() -> None:
+    """A response with a ``shortwave_radiation`` array shorter
+    than ``time`` must NOT silently coerce missing values to
+    zero. Each timestamp that has no corresponding radiation
+    value is dropped from the result. The end-to-end daily
+    forecast cannot claim a complete day if the radiation row
+    is missing.
+
+    The original code used ``rad = radiations[i] if
+    i < len(radiations) else 0`` which fabricated a 0.0 W/m²
+    radiation and a 0 W power. That is wrong: 0 is a measured
+    value (e.g. night-time) and a missing row is unknown.
+    """
+    from hems.forecast import ForecastService
+
+    # Two API timestamps but only one radiation value.
+    base_api_t = int(datetime(2026, 10, 8, 10, 0, tzinfo=timezone.utc).timestamp())
+    api_times = [base_api_t, base_api_t + 3600]
+    radiations = [100.0]  # only one value for two timestamps
+
+    payload = {
+        "hourly": {
+            "time": api_times,
+            "shortwave_radiation": radiations,
+            "weather_code": [0, 0],
+            "cloud_cover": [50, 50],
+            "temperature_2m": [10.0, 10.0],
+            "wind_speed_10m": [5.0, 5.0],
+            "precipitation_probability": [0, 0],
+        }
+    }
+    text = json.dumps(payload)
+
+    class _Resp:
+        def __init__(self, t): self._t = t
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        def raise_for_status(self): return None
+        async def json(self): return json.loads(self._t)
+
+    class _Sess:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        def get(self, url, params=None): return _Resp(text)
+
+    f = ForecastService(timezone_name="Europe/Kyiv")
+    f._latitude = 50.45
+    f._longitude = 30.52
+    f.learned_ratio = 0.1
+
+    async def _ensure_session(): return _Sess()
+    f._ensure_session = _ensure_session
+    async def _rate_limit(): return None
+    f._rate_limit = _rate_limit
+
+    # Freeze today to 2026-10-08 so the trim keeps these rows.
+    import hems.forecast as forecast_mod
+    real_datetime = forecast_mod.datetime
+    fixed_now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+
+    class _FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is None:
+                return fixed_now
+            return fixed_now.astimezone(tz)
+
+    forecast_mod.datetime = _FrozenDateTime
+    try:
+        rows = asyncio.run(f._fetch_hourly())
+    finally:
+        forecast_mod.datetime = real_datetime
+    # The first row has radiation; the second is dropped.
+    assert len(rows) == 1, (
+        f"Shorter radiation array must drop rows with no value; "
+        f"expected 1 row, got {len(rows)}: {rows}"
+    )
+    # And the surviving row uses the provided radiation, NOT 0.
+    assert rows[0]["radiation_wm2"] == 100.0, (
+        f"Surviving row's radiation must be 100.0 (the API value); "
+        f"got {rows[0]['radiation_wm2']}"
+    )
+    assert rows[0]["power_w"] == 10, (
+        f"Surviving row's power must be 10 (radiation × gain 0.1); "
+        f"got {rows[0]['power_w']}"
+    )
+
+
+def test_r01_maybe_refresh_forecast_sets_day_after_kwh_and_model_tags() -> None:
+    """End-to-end via the real coordinator path:
+    ``_maybe_refresh_forecast`` must populate
+    ``forecast_day_after_kwh``, the published hourly rows, and
+    the per-day ``forecast_model`` tag stored in the journal.
+
+    This is the integration seam the live-probe asserts: the
+    sensor reads ``coordinator._raw_hourly_forecast`` and the
+    journal, so the production path must produce both. The
+    test wires a real ``PvLearningCoordinatorMixin`` with a
+    fake ``ForecastService`` and fake recorder/HA seam.
+    """
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+    from hems.pv_coordinator import PvLearningCoordinatorMixin
+    from hems.pv_learning import PvLearningState
+
+    fixed_now = datetime(2026, 10, 8, 12, 0, tzinfo=timezone.utc)
+    real_datetime_mod = None
+    try:
+        # Freeze the production trim's ``now`` reference.
+        import hems.forecast as forecast_mod
+        real_datetime_mod = forecast_mod.datetime
+        _frozen_now = fixed_now
+
+        class _FrozenDateTime(real_datetime_mod):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return _frozen_now
+                return _frozen_now.astimezone(tz)
+
+        forecast_mod.datetime = _FrozenDateTime
+
+        with TemporaryDirectory() as directory:
+            dir_path = Path(directory)
+            c = PvLearningCoordinatorMixin.__new__(PvLearningCoordinatorMixin)
+            c._site_timezone = ZoneInfo("UTC")
+            c._pv_local_now = lambda: fixed_now
+            c._pv_learning = PvLearningState("UTC", 50.45, 30.52)
+            c._pv_calibrator = c._pv_learning.calibrator
+            c._pv_matrix_at = c._archive_attempt_at = c._forecast_last_fetch = None
+            c._pv_state_loaded = c._pv_state_dirty = False
+            c._pv_state_path = dir_path / "entry.json"
+            c._pv_legacy_path = dir_path / "legacy.json"
+            c.forecast_learned_ratio = 0.1
+            c.hourly_forecast_today = []
+            c.hourly_weather_today = []
+            c.hourly_radiation_today = []
+
+            # Fake HA: ``async_add_executor_job`` runs the
+            # callable inline (so ``save`` / ``load`` work
+            # without a real executor). ``snapshot``/``load``
+            # touch no I/O, so this is a no-op for them.
+            class _FakeHass:
+                async def async_add_executor_job(self, fn, *args):
+                    return fn(*args)
+            c.hass = _FakeHass()
+
+            # Build a 4-day synthetic forecast identical to
+            # the daily-chain test.
+            base_api_t = int(datetime(2026, 10, 8, 0, 0, tzinfo=timezone.utc).timestamp())
+            api_times = [base_api_t + 3600 * h for h in range(4 * 24)]
+            payload = {
+                "hourly": {
+                    "time": api_times,
+                    "shortwave_radiation": [100.0] * (4 * 24),
+                    "weather_code": [0] * (4 * 24),
+                    "cloud_cover": [50] * (4 * 24),
+                    "temperature_2m": [10.0] * (4 * 24),
+                    "wind_speed_10m": [5.0] * (4 * 24),
+                    "precipitation_probability": [0] * (4 * 24),
+                }
+            }
+            text = json.dumps(payload)
+
+            class _Resp:
+                def __init__(self, t): self._t = t
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return None
+                def raise_for_status(self): return None
+                async def json(self): return json.loads(self._t)
+
+            class _Sess:
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): return None
+                def get(self, url, params=None): return _Resp(text)
+
+            from hems.forecast import ForecastService
+            f = ForecastService(timezone_name="UTC")
+            f._latitude = 50.45
+            f._longitude = 30.52
+            f.learned_ratio = 0.1
+            f.hourly_response = None
+            async def _ensure_session(): return _Sess()
+            f._ensure_session = _ensure_session
+            async def _rate_limit(): return None
+            f._rate_limit = _rate_limit
+            c._forecast = f
+
+            asyncio.run(c._maybe_refresh_forecast(fixed_now))
+    finally:
+        if real_datetime_mod is not None:
+            import hems.forecast as forecast_mod
+            forecast_mod.datetime = real_datetime_mod
+
+    # 1) Coordinator exposes the 3-day daily forecast.
+    assert c.forecast_tomorrow_kwh is not None, (
+        "forecast_tomorrow_kwh must be defined after a successful "
+        "_maybe_refresh_forecast on the production path"
+    )
+    assert c.forecast_day_after_kwh is not None, (
+        "forecast_day_after_kwh must be defined after a successful "
+        "_maybe_refresh_forecast on the production path"
+    )
+    # 2) Published dates are exactly 3 local calendar days
+    # starting from 2026-10-08.
+    published_dates = sorted({h["time"][:10] for h in c._raw_hourly_forecast})
+    assert published_dates == ["2026-10-08", "2026-10-09", "2026-10-10"], (
+        f"Coordinator must publish 3 local dates; got {published_dates}"
+    )
+    # 3) Every row has the right radiation contract: weather
+    # timestamp = interval start + 3600.
+    for h in c._raw_hourly_forecast:
+        assert int(h["weather_timestamp"]) - int(h["timestamp"]) == 3600, (
+            f"Row {h['time']} violates contract v2: "
+            f"weather_timestamp - timestamp = "
+            f"{int(h['weather_timestamp']) - int(h['timestamp'])}"
+        )
+    # 4) Each row's forecast_model tag was resolved (the
+    # _fetch_hourly rows do not carry it; the coordinator
+    # resolves it via _forecast_model_for_day).
+    # We assert via the journal snapshots.
+    # 5) Journal has snapshots for the days >= today+1
+    # (snapshot() refuses today and earlier).
+    future_days = [d for d in published_dates if d > fixed_now.date().isoformat()]
+    snap_days = set(c._pv_learning.snapshots.keys())
+    assert set(future_days).issubset(snap_days), (
+        f"PvLearningState snapshots must cover {future_days}; "
+        f"got {snap_days}"
+    )
+    for day in future_days:
+        rec = c._pv_learning.snapshots[day]
+        tag = rec.get("forecast_model")
+        assert tag in {"hourly_response_v2", "station_gain_v2"}, (
+            f"snapshot[{day}].forecast_model must be a v2 tag; got {tag!r}"
+        )
+    # 6) The journal's active calibration model is a v2 tag.
+    cal_model = c._pv_learning.calibration_model
+    if cal_model is not None:
+        assert cal_model in {"hourly_response_v2", "station_gain_v2"}, (
+            f"calibration_model must be a v2 tag; got {cal_model!r}"
+        )
+
+
+
+
+def test_r01_sensor_publishes_forecast_diagnostic_for_probe() -> None:
+    """The production ``PredictiveDecisionStateSensor.extra_state_attributes``
+    must publish a ``forecast_diagnostic`` field the live-probe can
+    read over the REST API.
+
+    The probe source-of-truth is documented: every field
+    documented in ``_build_forecast_diagnostic`` must appear in
+    the published attributes and reflect the underlying
+    ``coordinator._raw_hourly_forecast`` data.
+    """
+    from types import SimpleNamespace
+    # ``sensor.py`` lives at the repo root and uses relative
+    # imports (``from .const import DOMAIN``). Make it look
+    # like a package member by registering a synthetic
+    # package on ``sys.modules``.
+    import sys
+    import types
+    import importlib.util
+
+    # Build a minimal "powmr_inverter" package namespace that
+    # points ``const``, ``coordinator``, and ``sensor`` at the
+    # repo-root files. This is the same approach HA itself
+    # uses for ``custom_components/<name>/...``.
+    pkg_name = "powmr_inverter_pkg_for_test"
+    if pkg_name not in sys.modules:
+        pkg = types.ModuleType(pkg_name)
+        pkg.__path__ = [str(Path(__file__).resolve().parent.parent)]
+        sys.modules[pkg_name] = pkg
+    repo = str(Path(__file__).resolve().parent.parent)
+    for sub in ("const", "coordinator", "sensor"):
+        full = f"{pkg_name}.{sub}"
+        if full not in sys.modules:
+            spec = importlib.util.spec_from_file_location(
+                full, f"{repo}/{sub}.py"
+            )
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules[full] = mod
+            spec.loader.exec_module(mod)
+    PredictiveDecisionStateSensor = (
+        sys.modules[f"{pkg_name}.sensor"].PredictiveDecisionStateSensor
+    )
+    from datetime import datetime as _dt, timezone as _tz
+
+    # Minimal coordinator stand-in
+    fixed_received = 1762560000.0  # 2025-11-08 00:00 UTC (any positive)
+    iso_received = _dt.fromtimestamp(fixed_received, _tz.utc).isoformat()
+    base = int(_dt(2026, 10, 8, 0, 0, tzinfo=_tz.utc).timestamp())
+    rows = []
+    for h in range(24 * 3):
+        # 3 local days × 24h = 72 rows.
+        # Contract v2: ``time`` = interval START (= api_t - 3600).
+        # The interval ends at api_t = timestamp + 3600; the
+        # ``weather_timestamp`` = api_t.
+        rows.append({
+            "time": _dt.fromtimestamp(base + 3600 * h, _tz.utc).isoformat(),
+            "timestamp": base + 3600 * h,
+            "weather_timestamp": base + 3600 * (h + 1),
+            "radiation_wm2": 100.0 + h,
+            "power_w": 10.0 + h,
+            "forecast_model": "hourly_response_v2" if h < 24 else "station_gain_v2",
+        })
+    learning = SimpleNamespace(
+        radiation_contract_version=2,
+        calibration_status=lambda d: {"day": d, "samples": 0},
+    )
+    hems = SimpleNamespace(
+        predictive_decision_state={
+            "mode": "shadow",
+            "applied": False,
+        }
+    )
+    coord = SimpleNamespace(
+        _hems=hems,
+        _pv_learning=learning,
+        _raw_hourly_forecast=rows,
+        _forecast_last_fetch=fixed_received,
+        _site_timezone_name="Europe/Kyiv",
+        _pv_local_now=lambda: _dt(2026, 10, 8, 12, 0, tzinfo=_tz.utc),
+        api=SimpleNamespace(device_sn="448411180556320769"),
+    )
+    entry = SimpleNamespace(entry_id="01M3XWJ8DRYDQC8A0NCPRVB53N")
+    sensor = PredictiveDecisionStateSensor(coord, entry)
+    attrs = sensor.extra_state_attributes
+
+    # 1) The probe-relevant field is present.
+    assert "forecast_diagnostic" in attrs, (
+        "PredictiveDecisionStateSensor must publish forecast_diagnostic"
+    )
+    diag = attrs["forecast_diagnostic"]
+    # 2) Every documented field is present.
+    required = {
+        "forecast_received_at", "forecast_timezone",
+        "radiation_contract_version", "forecast_dates",
+        "intervals_per_date", "sample_row",
+        "rows_with_diff_ne_3600", "forecast_model_tags",
+        "forecast_rows_total",
+    }
+    assert required.issubset(diag.keys()), (
+        f"forecast_diagnostic missing keys: {required - diag.keys()}"
+    )
+    # 3) Data correctness.
+    assert diag["forecast_received_at"] == iso_received
+    assert diag["forecast_timezone"] == "Europe/Kyiv"
+    assert diag["radiation_contract_version"] == 2
+    assert diag["forecast_dates"] == ["2026-10-08", "2026-10-09", "2026-10-10"]
+    assert diag["intervals_per_date"] == {
+        "2026-10-08": 24, "2026-10-09": 24, "2026-10-10": 24,
+    }
+    assert diag["rows_with_diff_ne_3600"] == 0
+    assert diag["forecast_model_tags"] == ["hourly_response_v2", "station_gain_v2"]
+    assert diag["forecast_rows_total"] == 72
+    sample = diag["sample_row"]
+    assert sample["timestamp"] == base
+    assert sample["weather_timestamp"] == base + 3600
+    assert sample["forecast_model"] == "hourly_response_v2"
+
+    # 4) When no forecast has been fetched yet, the diagnostic
+    # is the empty-marker shape and the sensor still works.
+    coord_empty = SimpleNamespace(
+        _hems=hems,
+        _pv_learning=learning,
+        _raw_hourly_forecast=None,
+        _forecast_last_fetch=None,
+        _site_timezone_name="Europe/Kyiv",
+        _pv_local_now=lambda: _dt(2026, 10, 8, 12, 0, tzinfo=_tz.utc),
+        api=SimpleNamespace(device_sn="448411180556320769"),
+    )
+    sensor_empty = PredictiveDecisionStateSensor(coord_empty, entry)
+    attrs_empty = sensor_empty.extra_state_attributes
+    assert attrs_empty["forecast_diagnostic"]["forecast_rows_total"] == 0
+    assert attrs_empty["forecast_diagnostic"]["forecast_received_at"] is None
+
+
+if __name__ == "__main__":
+    # This block MUST be the last code in the file. It runs
+    # all ``test_*`` callables in the module, including those
+    # defined after this block would have been (the original
+    # block sat at line 912 and missed 9 late-added tests).
+    # The runner (``tests/run_all.py``) shells this out, but
+    # also re-runs the file when invoked directly, so this
+    # block must see the full test set.
+    failures = []
+    tests = sorted(
+        (n, fn) for n, fn in globals().items()
+        if n.startswith("test_") and callable(fn)
+    )
+    for n, fn in tests:
+        try:
+            fn()
+            print(f"  {n}: PASS")
+        except Exception as exc:
+            failures.append((n, repr(exc)))
+            print(f"  {n}: FAIL ({exc!r})")
+    if failures:
+        sys.exit(1)
+    print(f"\nAll {len(tests)} tests passed (0 failed).")

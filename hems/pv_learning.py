@@ -116,10 +116,49 @@ def filter_radiation_to_requested_range(rows, first, last):
 # is NO second shift downstream — every consumer reads
 # ``timestamp`` or ``time`` as the interval start.
 def radiation_interval_start_of(api_timestamp):
-    """Return the radiation interval START for a given API timestamp."""
+    """Return the radiation interval START for a given API timestamp.
+
+    The Open-Meteo ``shortwave_radiation`` value at API timestamp
+    ``t`` represents the mean over ``[t - 3600, t)``. The internal
+    radiation row contract is ``{start, mean}`` where ``start`` is
+    the **interval start**. This helper is the single source of
+    truth used by ``shift_radiation_to_interval_start`` (archive
+    path), the ``_fetch_hourly`` hourly path, and the gain-lookup
+    helper. There is NO second shift downstream.
+    """
     if not isinstance(api_timestamp, (int, float)) or isinstance(api_timestamp, bool):
         raise ValueError("api_timestamp must be a numeric epoch second")
     return int(api_timestamp) - 3600
+
+
+def trim_hourly_to_local_dates(rows, local_today, *, days=3):
+    """Keep only rows whose local date is in ``[local_today, local_today + days)``.
+
+    Production uses this to drop:
+      * the yesterday-spillover row (if any), where the first
+        API hour shifted back to ``local_today - 1 day``;
+      * the day-4 spillover (if any), where the last API hour
+        shifted forward to ``local_today + days``.
+
+    The contract is "exactly the 3 (or ``days``) local calendar
+    days starting from local_today". A row whose ``time`` is
+    ``YYYY-MM-DDTHH:00`` keeps the row when ``YYYY-MM-DD`` is in
+    that set. A row with no ``time`` key is dropped.
+
+    The same function is exported and exercised by tests so the
+    trim contract is independent of the API fetch path.
+    """
+    if not isinstance(rows, list):
+        return []
+    if not hasattr(local_today, "isoformat"):
+        return list(rows)
+    keep = {
+        (local_today + timedelta(days=offset)).isoformat()
+        for offset in range(int(days))
+    }
+    return [h for h in rows
+            if isinstance(h, dict) and isinstance(h.get("time"), str)
+            and h["time"][:10] in keep]
 
 
 def finite(value, low=0.0, high=float("inf")):
@@ -157,16 +196,55 @@ def day_bounds(day, tz):
 # stored as ``start``); a pair tagged with ``hourly_response_v2``
 # was issued under contract 2 (interval START stored as
 # ``start``). They MUST NOT be mixed.
-def current_forecast_model_identity(contract_version=RADIATION_INTERVAL_CONTRACT_VERSION):
+def current_forecast_model_identity(family="hourly_response",
+                                    contract_version=RADIATION_INTERVAL_CONTRACT_VERSION):
+    """Identity of the active forecast model under the current radiation
+    interval contract.
+
+    Each family (``hourly_response`` or ``station_gain``) and each
+    contract version get a distinct identity so that
+    ``calibration_pairs()`` (which filters by
+    ``forecast_model == state.calibration_model``) keeps legacy pairs
+    and new pairs strictly separate.
+
+    Examples:
+
+    * ``current_forecast_model_identity()`` (defaults):
+      ``"hourly_response_v2"`` — the active hourly pipeline under
+      contract v2.
+    * ``current_forecast_model_identity("station_gain")``:
+      ``"station_gain_v2"`` — the active daily-fallback pipeline
+      under contract v2.
+
+    The legacy v1 identities ``"hourly_response_v1"`` and
+    ``"station_gain_v1"`` are NEVER returned by this function — they
+    belong to pairs that were issued under contract v1. Pairs that
+    carry those tags stay in the journal untouched; the
+    ``calibration_model`` field on the journal is the single signal
+    that says which family a calibrator is currently using.
+    """
+    if not isinstance(family, str) or not family or len(family) > 64:
+        raise ValueError("family must be a non-empty string")
     if not isinstance(contract_version, int) or contract_version < 1:
         raise ValueError("contract_version must be a positive integer")
-    return f"hourly_response_v{contract_version}"
+    return f"{family}_v{contract_version}"
 
 
-def legacy_forecast_model_identity(contract_version):
+def legacy_forecast_model_identity(family, contract_version):
+    """Identity of a forecast model under a previous contract.
+
+    Returns ``f"{family}_v{contract_version}"`` for any (family,
+    contract_version) pair. Used for re-tagging on disk during
+    migration if needed, but the production ``load()`` paths
+    intentionally do NOT overwrite the original ``forecast_model``
+    field — they only record the original under
+    ``_legacy_forecast_model``.
+    """
+    if not isinstance(family, str) or not family or len(family) > 64:
+        raise ValueError("family must be a non-empty string")
     if not isinstance(contract_version, int) or contract_version < 1:
         raise ValueError("contract_version must be a positive integer")
-    return f"hourly_response_v{contract_version}"
+    return f"{family}_v{contract_version}"
 
 
 def complete_hourly_days(rows, tz, today, *, field="mean", ceiling=20000):
@@ -418,32 +496,34 @@ class PvLearningState:
         # ``_legacy_forecast_model`` for audit.
         contract_version = raw.get("radiation_contract_version")
         if contract_version is None:
-            # Old journals from before the contract field was
-            # introduced. Treat as v1 (the only contract that
-            # pre-dates v2). ``legacy_forecast_model_identity``
-            # rejects ``None`` so we normalise here.
             effective_legacy_contract = 1
         else:
             effective_legacy_contract = contract_version
         if contract_version != RADIATION_INTERVAL_CONTRACT_VERSION:
+            # The radiation cache is tied to the interval contract. If
+            # the on-disk journal was written under an older contract,
+            # drop the cache and let the next coordinator refresh
+            # rebuild it. The trained ``model`` and
+            # ``archive_checked_day`` are also tied to the old daily
+            # attribution; drop them too. Snapshots and pairs (the
+            # issued forecast journal) are preserved VERBATIM —
+            # including their original ``forecast_model`` field. The
+            # original tag is recorded under ``_legacy_forecast_model``
+            # for audit, but the visible tag is NEVER rewritten. The
+            # ``calibration_model`` field on the journal is the single
+            # signal that says which family the live calibrator
+            # accepts, and it is left untouched (it stays as the
+            # identity the previous coordinator was using).
             self.radiation = {}
             self.archive_checked_day = None
             self.model = None
-            legacy_tag = legacy_forecast_model_identity(effective_legacy_contract)
             for d, snap in list(self.snapshots.items()):
                 tag = snap.get("forecast_model")
                 if not tag:
                     continue
-                # Always record the legacy provenance for every
-                # snapshot from a pre-v2 journal, even if the
-                # visible tag is already the v1 identity. This
-                # way the operator can audit which snapshots
-                # were carried over.
                 if not snap.get("_legacy_forecast_model"):
                     snap["_legacy_forecast_model"] = tag
                     snap["_legacy_contract_version"] = effective_legacy_contract
-                if tag != legacy_tag:
-                    snap["forecast_model"] = legacy_tag
             for d, pair in list(self.pairs.items()):
                 tag = pair.get("forecast_model")
                 if not tag:
@@ -451,8 +531,6 @@ class PvLearningState:
                 if not pair.get("_legacy_forecast_model"):
                     pair["_legacy_forecast_model"] = tag
                     pair["_legacy_contract_version"] = effective_legacy_contract
-                if tag != legacy_tag:
-                    pair["forecast_model"] = legacy_tag
         else:
             self.radiation = {d: float(r) for d, r in sorted(radiation.items())[-120:]}
             if model is not None:
@@ -527,26 +605,25 @@ class RealForecastPairs:
         # Re-tag pairs issued under an older contract. v1 journals
         # had ``forecast_model="station_gain_v1"`` or
         # ``"hourly_response_v1"`` — neither matches the active
-        # v2 identity. The original tag is preserved.
+        # v2 identity. The original tag is preserved verbatim; we
+        # only record the original provenance under
+        # ``_legacy_forecast_model`` and ``_legacy_contract_version``
+        # for audit. The visible ``forecast_model`` field is NEVER
+        # rewritten — that is the published forecast identity and it
+        # must remain stable.
         on_disk_contract = raw.get("radiation_contract_version")
         if on_disk_contract is None:
             effective_legacy_contract = 1
         else:
             effective_legacy_contract = on_disk_contract
-        if on_disk_contract is None or on_disk_contract != RADIATION_INTERVAL_CONTRACT_VERSION:
-            # Always record the legacy provenance for every pair
-            # from a pre-v2 journal, even if the visible tag is
-            # already the v1 identity (which the
-            # ``migrate_to_contract`` helper would treat as a
-            # no-op). This way the operator can audit which pairs
-            # were carried over from the old contract.
-            legacy_tag = legacy_forecast_model_identity(effective_legacy_contract)
+        if on_disk_contract != RADIATION_INTERVAL_CONTRACT_VERSION:
             for row in self.pairs.values():
+                tag = row.get("forecast_model")
+                if not tag:
+                    continue
                 if not row.get("_legacy_forecast_model"):
-                    row["_legacy_forecast_model"] = row.get("forecast_model")
+                    row["_legacy_forecast_model"] = tag
                     row["_legacy_contract_version"] = effective_legacy_contract
-                    if row.get("forecast_model") != legacy_tag:
-                        row["forecast_model"] = legacy_tag
         self.radiation_contract_version = (
             on_disk_contract if on_disk_contract is not None
             else RADIATION_INTERVAL_CONTRACT_VERSION
@@ -563,25 +640,6 @@ class RealForecastPairs:
                                "captured_at": snap["issued_at"], "used": pair is not None}
             if "forecast_model" in snap:
                 self.pairs[day]["forecast_model"] = snap["forecast_model"]
-
-    def migrate_to_contract(self, target_contract_version):
-        """Re-tag pairs that were issued under an older radiation
-        contract with a version-specific identity. The original
-        ``forecast_model`` is preserved as ``_legacy_forecast_model``
-        and the original contract version is preserved as
-        ``_legacy_contract_version`` for audit. Pairs already tagged
-        with the target contract are left unchanged.
-
-        Idempotent: re-running on an already-migrated journal is a
-        no-op.
-        """
-        target_tag = legacy_forecast_model_identity(target_contract_version)
-        for row in self.pairs.values():
-            tag = row.get("forecast_model")
-            if tag and tag != target_tag and not row.get("_legacy_forecast_model"):
-                row["_legacy_forecast_model"] = tag
-                row["_legacy_contract_version"] = target_contract_version
-                row["forecast_model"] = target_tag
 
     def snapshot(self, day, forecast_kwh, now, *, forecast_model=None):
         value = finite(forecast_kwh, high=500)

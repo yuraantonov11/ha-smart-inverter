@@ -142,7 +142,22 @@ async def exercise():
         _check(rec.statistics.statistics_during_period.call_count == 1,'recorder failures also respect hour limit')
     # Test actual transport conversion and station gain cache invalidation.
     tz = kyiv_2026()
-    with patch('hems.forecast.ZoneInfo',return_value=tz):
+    # Patch ZoneInfo to the test zone for the whole block.
+    # Freeze datetime.now() to 2026-10-02 so the trim keeps
+    # the rows whose local date is 2026-10-02.
+    import hems.forecast as forecast_mod
+    real_datetime = forecast_mod.datetime
+    real_zoneinfo = forecast_mod.ZoneInfo
+
+    class _FrozenDateTime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            base = datetime(2026, 10, 2, 12, 0, tzinfo=timezone.utc)
+            return base if tz is None else base.astimezone(tz)
+
+    forecast_mod.datetime = _FrozenDateTime
+    forecast_mod.ZoneInfo = lambda _name: tz
+    try:
         f = ForecastService(timezone_name='Test/Kyiv2026')
         f._hourly_cache,f._daily_cache = (1,[]),(1,{})
         _check(f.set_station_gain(2) and f._hourly_cache is None and f._daily_cache is None,'gain invalidates both forecast caches')
@@ -162,7 +177,13 @@ async def exercise():
         # (api_t - 1h = 09:00 UTC = 12:00 Kyiv in EEST). Previously
         # this was 10:00 UTC = 13:00 Kyiv.
         _check(result[0]['time'] == '2026-10-02T12:00','forecast radiation interval start in local timezone')
-        _check(session.get.call_args.kwargs['params']['forecast_days'] == 3,'three forecast dates requested')
+        # Contract v2: the production code asks for 4 days from
+        # the API so the interval-shift does not eat the last
+        # local hour of the third day, then trims to 3 local
+        # calendar days.
+        _check(session.get.call_args.kwargs['params']['forecast_days'] == 4,
+           'four forecast days requested (one extra so the last '
+           'local hour of day 3 survives the interval-shift)')
         f.set_station_gain(100)
         result = await f._fetch_hourly()
         _check(result[0]['power_w'] == 20000,'PV power capped at twenty kW')
@@ -171,15 +192,17 @@ async def exercise():
         # Test the actual archive transport on a 25-hour local day.
         start = datetime(2026,10,24,tzinfo=timezone.utc)
         data['hourly'] = {'time':[int((start+timedelta(hours=h)).timestamp()) for h in range(48)],
-                          'shortwave_radiation':[500.]*48}
+                      'shortwave_radiation':[500.]*48}
         session.get.reset_mock()
         day = datetime(2026,10,25).date()
         archive = await f.get_archive_radiation(day,day)
         _check(archive == {'2026-10-25':12.5},'archive UTC hours integrate twenty-five-hour local day')
         _check(session.get.call_count == 1 and session.get.call_args.kwargs['params']['timezone'] == 'UTC',
-               'archive fetched in one bounded UTC request')
+           'archive fetched in one bounded UTC request')
         data['hourly']['shortwave_radiation'][24] = None
         _check(not await f.get_archive_radiation(day,day),'incomplete archive day excluded from station training')
+    finally:
+        forecast_mod.datetime = real_datetime
 
 asyncio.run(exercise())
 # Verify integration ordering on the real coordinator, not a duplicate stub.

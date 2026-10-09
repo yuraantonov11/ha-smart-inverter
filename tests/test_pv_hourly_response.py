@@ -115,12 +115,34 @@ class HourlyResponseTests(unittest.IsolatedAsyncioTestCase):
             async def json(self): return data
         f._ensure_session = AsyncMock(return_value=SimpleNamespace(get=Mock(return_value=Response())))
         f._rate_limit = AsyncMock()
-        with patch('hems.forecast.ZoneInfo', return_value=timezone.utc):
-            rows = await f._fetch_hourly()
+        # Freeze datetime.now() to today so the trim keeps rows
+        # whose local date is today. Without this, the trim
+        # uses real wall-clock now and drops the rows.
+        import hems.forecast as forecast_mod
+        real_datetime = forecast_mod.datetime
+
+        class _FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                base = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
+                return base if tz is None else base.astimezone(tz)
+
+        forecast_mod.datetime = _FrozenDateTime
+        try:
+            with patch('hems.forecast.ZoneInfo', return_value=timezone.utc):
+                rows = await f._fetch_hourly()
+        finally:
+            forecast_mod.datetime = real_datetime
         self.assertEqual([r['power_w'] for r in rows], [50, 450])
         f.hourly_response['last_day'] = '2026-09-01'
-        with patch('hems.forecast.ZoneInfo', return_value=timezone.utc):
-            rows = await f._fetch_hourly()
+        # Re-freeze for the second call; the finally above has
+        # already restored ``datetime``.
+        forecast_mod.datetime = _FrozenDateTime
+        try:
+            with patch('hems.forecast.ZoneInfo', return_value=timezone.utc):
+                rows = await f._fetch_hourly()
+        finally:
+            forecast_mod.datetime = real_datetime
         self.assertEqual([r['power_w'] for r in rows], [60, 60])
 
     async def test_coordinator_throttle_and_no_calibration_seed(self):

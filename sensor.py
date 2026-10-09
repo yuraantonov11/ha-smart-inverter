@@ -1473,7 +1473,100 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
         if learning is not None:
             attributes["forecast_calibration"] = learning.calibration_status(
                 self.coordinator._pv_local_now().date().isoformat())
+        # R01 production probe source: a small, documented
+        # diagnostic describing the *last fetched* hourly
+        # forecast. This is the field the live-probe parses —
+        # not ``_raw_hourly_forecast`` directly, which is
+        # coordinator-internal and never reaches the
+        # ``/api/states/`` response. The diagnostic includes
+        # only metadata + a single example row, never the
+        # full array.
+        attributes["forecast_diagnostic"] = (
+            self._build_forecast_diagnostic()
+        )
         return attributes
+
+    def _build_forecast_diagnostic(self):
+        """Return a compact description of the most recent
+        hourly forecast the coordinator consumed. Probe reads
+        this from the published ``extra_state_attributes`` of
+        ``sensor.garazh_smart_solar_inverter_predictive_decision_state``.
+
+        Fields:
+            forecast_received_at      ISO-8601, last fetch time (UTC).
+            forecast_timezone         The local timezone the
+                                      forecast was built for.
+            radiation_contract_version  2 (= interval-start
+                                         contract).
+            forecast_dates            Sorted list of the 3
+                                      local dates the forecast
+                                      covers.
+            intervals_per_date        {date: count} map of
+                                      hourly rows in the
+                                      trimmed forecast.
+            sample_row                Single example hourly row
+                                      with timestamp,
+                                      weather_timestamp,
+                                      radiation, power_w, and
+                                      model tag.
+            rows_with_diff_ne_3600    Count of rows whose
+                                      ``weather_timestamp -
+                                      timestamp != 3600`` —
+                                      must be 0 in v2.
+            forecast_model_tags       Sorted list of unique
+                                      ``forecast_model`` tags
+                                      seen in the forecast.
+            forecast_rows_total       Total row count (for
+                                      cross-check).
+        """
+        raw = getattr(self.coordinator, "_raw_hourly_forecast", None) or []
+        if not raw:
+            return {"forecast_received_at": None, "forecast_rows_total": 0}
+        # Per-date interval count
+        intervals_per_date: dict[str, int] = {}
+        sample = None
+        bad_diff = 0
+        model_tags: set[str] = set()
+        for h in raw:
+            day = h.get("time", "")[:10]
+            if day:
+                intervals_per_date[day] = intervals_per_date.get(day, 0) + 1
+            ts = h.get("timestamp")
+            wts = h.get("weather_timestamp")
+            if isinstance(ts, (int, float)) and isinstance(wts, (int, float)):
+                if int(wts) - int(ts) != 3600:
+                    bad_diff += 1
+            tag = h.get("forecast_model")
+            if isinstance(tag, str):
+                model_tags.add(tag)
+            if sample is None and isinstance(ts, (int, float)):
+                sample = {
+                    "timestamp": int(ts),
+                    "weather_timestamp": int(wts) if isinstance(wts, (int, float)) else None,
+                    "radiation_wm2": h.get("radiation_wm2"),
+                    "power_w": h.get("power_w"),
+                    "forecast_model": h.get("forecast_model"),
+                }
+        last_at = getattr(self.coordinator, "_forecast_last_fetch", None)
+        if isinstance(last_at, (int, float)) and last_at > 0:
+            from datetime import datetime, timezone as _tz
+            received_at = datetime.fromtimestamp(last_at, _tz.utc).isoformat()
+        else:
+            received_at = None
+        learning = getattr(self.coordinator, "_pv_learning", None)
+        contract = getattr(learning, "radiation_contract_version", None) if learning is not None else None
+        tz_name = getattr(self.coordinator, "_site_timezone_name", None) or getattr(self.coordinator, "timezone_name", None)
+        return {
+            "forecast_received_at": received_at,
+            "forecast_timezone": tz_name,
+            "radiation_contract_version": contract,
+            "forecast_dates": sorted(intervals_per_date.keys()),
+            "intervals_per_date": dict(sorted(intervals_per_date.items())),
+            "sample_row": sample,
+            "rows_with_diff_ne_3600": bad_diff,
+            "forecast_model_tags": sorted(model_tags),
+            "forecast_rows_total": len(raw),
+        }
 
 
 class PredictiveDayAheadSensor(CoordinatorEntity, SensorEntity):
