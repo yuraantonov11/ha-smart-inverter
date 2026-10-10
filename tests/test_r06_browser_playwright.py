@@ -117,39 +117,41 @@ RESIZE_OBSERVER_WRAPPER = """
   if (!RealRO) return;
   window.__wraps = [];
   function DelegatedRO(cb) {
-    const real = new RealRO(function (...args) {
-      // Record that the
-      // callback fired. We
-      // do NOT swallow the
-      // call.
-      try {
-        const entry = window.__wraps[window.__wraps.length - 1];
-        if (entry) entry.callbackFires += 1;
-      } catch (_) {}
-      return cb.apply(this, args);
-    });
     const entry = {
-      real: real,
+      real: null,
       disconnected: false,
+      nativeActive: false,
       observeCount: 0,
       unobserveCount: 0,
       callbackFires: 0,
+      callbackTargets: [],
     };
+    const real = new RealRO(function (...args) {
+      entry.callbackFires += 1;
+      if (args[0]) {
+        entry.callbackTargets.push(...args[0].map(item => item.target));
+      }
+      return cb.apply(this, args);
+    });
+    entry.real = real;
     window.__wraps.push(entry);
     const handler = {
       get(target, prop) {
         const value = target[prop];
         if (typeof value === "function") {
           return function (...args) {
-            const e = window.__wraps[window.__wraps.length - 1];
+            const result = value.apply(target, args);
             if (prop === "disconnect") {
-              e.disconnected = true;
+              entry.disconnected = true;
+              entry.nativeActive = false;
             } else if (prop === "observe") {
-              e.observeCount += 1;
+              entry.observeCount += 1;
+              entry.nativeActive = true;
             } else if (prop === "unobserve") {
-              e.unobserveCount += 1;
+              entry.unobserveCount += 1;
+              entry.nativeActive = false;
             }
-            return value.apply(target, args);
+            return result;
           };
         }
         return value;
@@ -446,11 +448,13 @@ class TestR06BrowserMobileDesktop(unittest.TestCase):
             f"forecast-card not registered; state={ce_state}",
         )
         scenarios = ["zero", "unknown", "empty"]
+        snapshots = {}
         for scenario in scenarios:
-            page.evaluate(
+            snapshots[scenario] = page.evaluate(
                 """([scenario]) => {
+                  const title = `Forecast ${scenario}`;
                   const c = document.createElement('forecast-card');
-                  c.setConfig({ entity: 'sensor.fcst' });
+                  c.setConfig({ entity: 'sensor.fcst', title });
                   let hass;
                   if (scenario === 'zero') {
                     hass = {
@@ -480,20 +484,69 @@ class TestR06BrowserMobileDesktop(unittest.TestCase):
                   }
                   c.hass = hass;
                   document.body.appendChild(c);
-                  c.remove();
+                  const root = c.shadowRoot;
+                  const line = root.querySelector('svg path[fill="none"]');
+                  return {
+                    connected: c.isConnected,
+                    title: root.querySelector('.title')?.textContent.trim(),
+                    placeholder: root.querySelector(
+                      '.card > div:not(.title)'
+                    )?.textContent.trim(),
+                    hasSvg: Boolean(root.querySelector('svg')),
+                    smoothPath: line?.getAttribute('d') || '',
+                    smoothSegments: (line?.getAttribute('d')?.match(/ C/g) || []).length,
+                    hourLabels: root.querySelectorAll('svg text').length,
+                    hasStats: Boolean(root.querySelector('.stats')),
+                    values: Array.from(
+                      root.querySelectorAll('.stats .val'),
+                      el => el.textContent.trim()
+                    ),
+                  };
                 }""",
                 [scenario],
             )
-        # ``pageerror`` captures any
-        # uncaught exception. A
-        # render failure that is
-        # silently swallowed by
-        # ``catch (_) {}`` would NOT
-        # surface here. We assert
-        # that the production
-        # ``forecast-card`` truly
-        # rendered each scenario
-        # without an exception.
+            self.assertTrue(
+                snapshots[scenario]["connected"],
+                f"{scenario} forecast card was not rendered in the document",
+            )
+            self.assertEqual(
+                snapshots[scenario]["title"],
+                f"Forecast {scenario}",
+                f"unexpected rendered title for {scenario}: {snapshots[scenario]}",
+            )
+
+        zero = snapshots["zero"]
+        self.assertTrue(zero["hasSvg"], f"zero data did not render SVG: {zero}")
+        self.assertTrue(
+            zero["smoothPath"].startswith("M")
+            and zero["smoothSegments"] == 23,
+            f"zero data did not render its 24-point chart: {zero}",
+        )
+        self.assertEqual(
+            zero["hourLabels"], 4,
+            f"zero chart should render four 6-hour labels: {zero}",
+        )
+        self.assertTrue(zero["hasStats"], f"zero data has no stats: {zero}")
+        self.assertEqual(
+            zero["values"], ["0 W", "0 kWh"],
+            f"zero data values differ from production output: {zero}",
+        )
+        for scenario in ("unknown", "empty"):
+            rendered = snapshots[scenario]
+            self.assertEqual(
+                rendered["placeholder"], "Завантаження прогнозу...",
+                f"{scenario} data did not render the production placeholder: {rendered}",
+            )
+            self.assertFalse(
+                rendered["hasSvg"],
+                f"{scenario} data unexpectedly rendered a numeric chart: {rendered}",
+            )
+            self.assertFalse(
+                rendered["hasStats"] or rendered["values"],
+                f"{scenario} data unexpectedly rendered numeric stats: {rendered}",
+            )
+        # Let any asynchronous page errors reach Playwright's listener too.
+        page.wait_for_timeout(50)
         self.assertEqual(
             errors, [],
             f"forecast-card threw page errors: {errors}",
@@ -671,6 +724,7 @@ class TestR06BrowserResizeObserver(unittest.TestCase):
         page.evaluate(
             """() => {
               const c = document.createElement('power-history-card');
+              c.style.display = 'block';
               c.style.width = '400px';
               c.setConfig({ entity: 'sensor.power_history' });
               c.hass = {
@@ -687,67 +741,66 @@ class TestR06BrowserResizeObserver(unittest.TestCase):
               window.__c = c;
             }"""
         )
-        page.wait_for_timeout(150)
-        wraps_initial = page.evaluate("() => window.__wraps.length")
-        self.assertEqual(
-            wraps_initial, 1,
-            f"expected 1 wrapped observer, got {wraps_initial}",
+        # Wait for and record the initial native observation callback before
+        # resizing. This prevents that first callback from satisfying the
+        # post-resize assertion.
+        page.wait_for_function(
+            "() => window.__wraps[0]?.callbackFires > 0",
+            timeout=5000,
         )
-        # Verify the production
-        # card installed a
-        # ``_resizeObserver`` that
-        # has the
-        # ``ResizeObserver``
-        # surface.
+        self.assertEqual(page.evaluate("() => window.__wraps.length"), 1)
+        self.assertEqual(page.evaluate("() => window.__wraps[0].observeCount"), 1)
         prod_ro = page.evaluate(
-            """() => {
-              const c = window.__c;
-              if (!c._resizeObserver) return null;
-              return typeof c._resizeObserver.unobserve === 'function'
-                && typeof c._resizeObserver.disconnect === 'function';
-            }"""
+            """() => typeof window.__c._resizeObserver?.unobserve === 'function'
+              && typeof window.__c._resizeObserver?.disconnect === 'function'"""
         )
         self.assertTrue(
             prod_ro,
-            "production _resizeObserver does not look like a "
-            "ResizeObserver (missing unobserve/disconnect)",
+            "production _resizeObserver does not expose the ResizeObserver surface",
         )
-        # The wrapper records
-        # ``observeCount``. After
-        # ``connectedCallback`` it
-        # must be exactly 1.
-        observe_count = page.evaluate(
-            "() => window.__wraps[0].observeCount"
+        initial = page.evaluate(
+            """() => ({
+              fires: window.__wraps[0].callbackFires,
+              lastWidth: window.__c._lastWidth,
+              actualWidth: window.__c.getBoundingClientRect().width,
+            })"""
         )
+        self.assertGreater(
+            initial["fires"], 0,
+            f"initial ResizeObserver callback never fired: {initial}",
+        )
+        self.assertEqual(initial["actualWidth"], 400)
         self.assertEqual(
-            observe_count, 1,
-            f"connectedCallback must observe once; got {observe_count}",
+            initial["lastWidth"], initial["actualWidth"],
+            f"initial production width differs from actual card width: {initial}",
         )
-        # Resize the container.
-        # The native
-        # ResizeObserver fires
-        # the wrapper's callback;
-        # the wrapper records
-        # ``callbackFires``.
-        page.evaluate(
-            """() => {
-              const c = window.__c;
-              c.style.width = '800px';
-            }"""
+        page.evaluate("() => { window.__c.style.width = '800px'; }")
+        new_width = page.evaluate(
+            "() => window.__c.getBoundingClientRect().width"
         )
-        page.wait_for_timeout(300)
-        # The native observer
-        # must have fired at
-        # least once (initial
-        # observation on
-        # ``connectedCallback`` +
-        # the resize).
-        fires = page.evaluate(
-            "() => window.__wraps[0].callbackFires"
+        self.assertEqual(new_width, 800)
+        page.wait_for_function(
+            "initial => window.__wraps[0].callbackFires > initial",
+            arg=initial["fires"],
+            timeout=5000,
         )
-        self.assertGreaterEqual(
-            fires, 1,
-            f"ResizeObserver callback never fired; fires={fires}",
+        after_resize = page.evaluate(
+            """() => ({
+              fires: window.__wraps[0].callbackFires,
+              lastWidth: window.__c._lastWidth,
+              actualWidth: window.__c.getBoundingClientRect().width,
+            })"""
+        )
+        self.assertGreater(
+            after_resize["fires"], initial["fires"],
+            f"ResizeObserver callback count did not increase after resize: "
+            f"initial={initial}, current={after_resize}",
+        )
+        self.assertEqual(after_resize["actualWidth"], new_width)
+        self.assertEqual(
+            after_resize["lastWidth"], new_width,
+            f"production _lastWidth did not track the actual resized width: "
+            f"expected {new_width}, got {after_resize}",
         )
         self.assertEqual(
             errors, [],
@@ -763,12 +816,11 @@ class TestR06BrowserResizeObserver(unittest.TestCase):
             self._fx.base_url + "/index.html",
             wait_until="load",
         )
-        # First mount via real
-        # ``appendChild``.
         page.evaluate(
             """() => {
               const c = document.createElement('power-history-card');
               c.id = 'card-ph';
+              c.style.display = 'block';
               c.style.width = '400px';
               c.setConfig({ entity: 'sensor.power_history' });
               c.hass = {
@@ -783,120 +835,184 @@ class TestR06BrowserResizeObserver(unittest.TestCase):
               };
               document.body.appendChild(c);
               window.__c = c;
+              window.__originalCard = c;
             }"""
         )
-        page.wait_for_timeout(150)
-        baseline = page.evaluate(
-            "() => window.__wraps.length"
+        page.wait_for_function(
+            "() => window.__wraps.length === 1 "
+            "&& window.__wraps[0].callbackFires > 0",
+            timeout=5000,
         )
-        self.assertEqual(
-            baseline, 1,
-            f"baseline wraps expected 1, got {baseline}",
+        baseline = page.evaluate("() => window.__wraps.length")
+        self.assertEqual(baseline, 1)
+        original = page.evaluate(
+            """() => ({
+              connected: window.__c.isConnected,
+              width: window.__c.getBoundingClientRect().width,
+              lastWidth: window.__c._lastWidth,
+              callbackFires: window.__wraps[0].callbackFires,
+              callbackTargetsMatch: window.__wraps[0].callbackTargets.length > 0
+                && window.__wraps[0].callbackTargets.every(
+                  target => target === window.__c
+                ),
+            })"""
         )
-        # Five real
-        # ``remove``/``appendChild``
-        # cycles. NO manual
-        # callbacks.
+        self.assertTrue(original["connected"], f"initial card disconnected: {original}")
+        self.assertGreater(original["callbackFires"], 0)
+        self.assertEqual(original["lastWidth"], original["width"])
+        self.assertTrue(
+            original["callbackTargetsMatch"],
+            f"initial callback was not attributed to the observed card: {original}",
+        )
+
+        # Five real remove/append cycles of the SAME node; no element is
+        # created in this loop. The lifecycle callbacks run through the DOM.
         for i in range(5):
-            page.evaluate(
+            removed = page.evaluate(
                 """() => {
-                  const c = document.getElementById('card-ph');
+                  const c = window.__originalCard;
                   c.remove();
-                }"""
-            )
-            # Spec disconnectedCallback
-            # fires on real
-            # ``remove()``; the
-            # wrapper records
-            # ``disconnect`` as
-            # ``true``.
-            page.wait_for_timeout(50)
-            active = page.evaluate(
-                """() => window.__wraps.filter(
-                  w => !w.disconnected
-                ).length"""
-            )
-            self.assertEqual(
-                active, 0,
-                f"cycle {i}: no active observers after "
-                f"remove (got {active})",
-            )
-            # Reconnect: a fresh
-            # element registered
-            # and appended. The
-            # spec
-            # ``connectedCallback``
-            # creates a new
-            # observer.
-            page.evaluate(
-                """() => {
-                  const c = document.createElement(
-                    'power-history-card'
-                  );
-                  c.id = 'card-ph';
-                  c.style.width = '400px';
-                  c.setConfig({
-                    entity: 'sensor.power_history',
-                  });
-                  c.hass = {
-                    states: {
-                      'sensor.power_history': {
-                        state: '1500',
-                        attributes: {
-                          hourly_kwh: new Array(24).fill(0.5),
-                        },
-                      },
-                    },
+                  return {
+                    sameObject: window.__c === window.__originalCard,
+                    connected: c.isConnected,
+                    activeDelegated: window.__wraps.filter(
+                      w => !w.disconnected
+                    ).length,
+                    activeNative: window.__wraps.filter(
+                      w => w.nativeActive
+                    ).length,
                   };
-                  document.body.appendChild(c);
-                  window.__c = c;
                 }"""
             )
-            page.wait_for_timeout(150)
-            active_after = page.evaluate(
-                """() => window.__wraps.filter(
-                  w => !w.disconnected
-                ).length"""
+            self.assertTrue(
+                removed["sameObject"],
+                f"cycle {i}: card identity changed on removal: {removed}",
+            )
+            self.assertFalse(
+                removed["connected"],
+                f"cycle {i}: card remained connected after remove(): {removed}",
             )
             self.assertEqual(
-                active_after, 1,
-                f"cycle {i}: expected 1 active observer after "
-                f"reconnect, got {active_after}",
+                removed["activeDelegated"], 0,
+                f"cycle {i}: delegated observers active after removal: {removed}",
             )
-            total = page.evaluate("() => window.__wraps.length")
             self.assertEqual(
-                total, baseline + i + 1,
-                f"cycle {i}: total wraps expected "
-                f"{baseline + i + 1}, got {total}",
+                removed["activeNative"], 0,
+                f"cycle {i}: native observers active after removal: {removed}",
             )
-        # After reconnect, a width
-        # change must still fire
-        # the wrapper. We assert
-        # the wrapper observed the
-        # callback, not
-        # ``_lastWidth`` (which is
-        # a production-side
-        # concern that depends on
-        # ``contentRect.width``
-        # being non-zero in this
-        # Chromium build).
-        page.evaluate(
-            """() => {
-              const c = document.getElementById('card-ph');
-              c.style.width = '900px';
-            }"""
+
+            appended = page.evaluate(
+                """() => {
+                  const c = window.__originalCard;
+                  document.body.appendChild(c);
+                  return {
+                    sameObject: window.__c === window.__originalCard,
+                    connected: c.isConnected,
+                    activeDelegated: window.__wraps.filter(
+                      w => !w.disconnected
+                    ).length,
+                    activeNative: window.__wraps.filter(
+                      w => w.nativeActive
+                    ).length,
+                    total: window.__wraps.length,
+                  };
+                }"""
+            )
+            self.assertTrue(
+                appended["sameObject"],
+                f"cycle {i}: reconnect replaced the original card: {appended}",
+            )
+            self.assertTrue(
+                appended["connected"],
+                f"cycle {i}: original card not connected after append: {appended}",
+            )
+            self.assertEqual(
+                appended["activeDelegated"], 1,
+                f"cycle {i}: expected exactly 1 delegated observer: {appended}",
+            )
+            self.assertEqual(
+                appended["activeNative"], 1,
+                f"cycle {i}: expected exactly 1 active native observer: {appended}",
+            )
+            expected_total = baseline + i + 1
+            self.assertEqual(
+                appended["total"], expected_total,
+                f"cycle {i}: expected {expected_total} observer instances: {appended}",
+            )
+            page.wait_for_function(
+                """() => {
+                  const w = window.__wraps[window.__wraps.length - 1];
+                  return w && w.callbackFires > 0;
+                }""",
+                timeout=5000,
+            )
+            callback_owner = page.evaluate(
+                """() => {
+                  const w = window.__wraps[window.__wraps.length - 1];
+                  return w.callbackTargets.length > 0
+                    && w.callbackTargets.every(target => target === window.__c);
+                }"""
+            )
+            self.assertTrue(
+                callback_owner,
+                f"cycle {i}: native callback was not attributed to this card",
+            )
+
+        # On the final reconnected observer, wait for its initial callback,
+        # then require a strictly later callback and the production width state
+        # to reflect the actual new DOM width.
+        initial = page.evaluate(
+            """() => ({
+              fires: window.__wraps[window.__wraps.length - 1].callbackFires,
+              lastWidth: window.__c._lastWidth,
+              actualWidth: window.__c.getBoundingClientRect().width,
+            })"""
         )
-        page.wait_for_timeout(300)
-        last_idx = page.evaluate(
-            "() => window.__wraps.length - 1"
+        self.assertGreater(
+            initial["fires"], 0,
+            f"final observer's initial callback did not fire: {initial}",
         )
-        fires = page.evaluate(
-            f"() => window.__wraps[{last_idx}].callbackFires"
+        self.assertEqual(initial["actualWidth"], 400)
+        self.assertEqual(
+            initial["lastWidth"], initial["actualWidth"],
+            f"final reconnect did not initialize production width: {initial}",
         )
-        self.assertGreaterEqual(
-            fires, 1,
-            f"ResizeObserver did not fire after reconnect "
-            f"(last index {last_idx}, fires={fires})",
+        page.evaluate("() => { window.__c.style.width = '900px'; }")
+        new_width = page.evaluate(
+            "() => window.__c.getBoundingClientRect().width"
+        )
+        self.assertNotEqual(new_width, initial["actualWidth"])
+        self.assertEqual(new_width, 900)
+        page.wait_for_function(
+            "initial => window.__wraps[window.__wraps.length - 1]"
+            ".callbackFires > initial",
+            arg=initial["fires"],
+            timeout=5000,
+        )
+        after_resize = page.evaluate(
+            """() => ({
+              fires: window.__wraps[window.__wraps.length - 1].callbackFires,
+              lastWidth: window.__c._lastWidth,
+              actualWidth: window.__c.getBoundingClientRect().width,
+              callbackTargetsMatch: window.__wraps[
+                window.__wraps.length - 1
+              ].callbackTargets.every(target => target === window.__c),
+            })"""
+        )
+        self.assertGreater(
+            after_resize["fires"], initial["fires"],
+            f"final observer callback count did not increase: "
+            f"initial={initial}, current={after_resize}",
+        )
+        self.assertEqual(after_resize["actualWidth"], new_width)
+        self.assertEqual(
+            after_resize["lastWidth"], new_width,
+            f"production _lastWidth did not reflect final reconnected width: "
+            f"expected {new_width}, got {after_resize}",
+        )
+        self.assertTrue(
+            after_resize["callbackTargetsMatch"],
+            f"final callback target was misattributed: {after_resize}",
         )
         self.assertEqual(
             errors, [],
