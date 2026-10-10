@@ -97,10 +97,10 @@ homeassistant>=2024.1.0
 # tzdata as a sibling to
 # ``zoneinfo``.
 tzdata>=2024.1
-# R06 final closing block: the
-# browser-path coverage
-# (``test_r06_browser_playwright.py``,
-# ``test_r06_browser_mutation.py``)
+# R06 browser-path coverage
+# (``test_r06_browser_playwright.py`` including
+# ``TestR06ControlFailure``, and
+# ``test_r06_browser_additions.py``)
 # runs the production card
 # source in a real headless
 # Chromium. Playwright is a

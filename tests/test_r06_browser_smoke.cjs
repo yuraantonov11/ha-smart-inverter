@@ -6,9 +6,10 @@
  * R06 verification. The full coverage
  * lives in
  * ``test_r06_browser_playwright.py``
- * (Playwright + Chromium 153.0) and
- * the control-failure check lives in
- * ``test_r06_browser_mutation.py``.
+ * and ``test_r06_browser_additions.py``
+ * (Playwright + Chromium); the control-failure
+ * check is ``TestR06ControlFailure`` in
+ * ``test_r06_browser_playwright.py``.
  *
  * This file is a SMOKE check: it
  * loads the production card source

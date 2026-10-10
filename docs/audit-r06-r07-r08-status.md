@@ -54,7 +54,7 @@
 | `energy-flow-card` unit-attribute HTML escape | **DONE** | `tests/test_r06_browser_additions.py::R06BrowserAddedCoverage::test_energy_flow_untrusted_unit_is_text_not_live_html` verifies raw attribute payload is displayed as text, creates no image/handler, does not execute its sentinel, and causes no `pageerror`; Node coverage remains `tests/test_cards_r06_siblings.cjs::test_energy_flow_card_html_escape`. |
 | `pv-comparison-card` source/cadence honesty | **DONE** | `tests/test_pv_comparison_card.cjs` (Cadence: unknown (not in config) when absent) |
 | Mobile / browser visual / resize / reconnect (aggregate) | **PARTIAL** | Six cards have real-Chromium 360/1280 px DOM, overflow and `pageerror` checks plus 12 saved screenshots. Reconnect evidence is in the dedicated rows below. Visual review found a few legibility limitations; see the visual row. |
-| Unique DOM IDs per instance | **PARTIAL** | The cards currently rely on card-instance `this` for state isolation. No global DOM-id registry. Deferred. |
+| Repeated IDs across separate ShadowRoots | **DONE** | IDs are scoped by each card's own ShadowRoot; identical IDs in different roots do not require global renaming. The browser isolation checks cover the targeted flow instances. This does not claim uniqueness for any future document-global IDs. |
 
 ---
 
@@ -160,7 +160,6 @@ guarded.
 | `first_v2_completed_pair` (real-forecast + actual pair, both v2) | **NOT YET VERIFIED** | Verified constraint: `PvLearningStore.snapshot()` rejects past-or-today dates (`if date.fromisoformat(day) <= now.date(): return False`) and never overwrites an existing snapshot (`if day in self.snapshots: return False`). The current JSON has 3 snapshots for 2026-10-09/10/11 with v1 models (`station_gain_v1` × 2, `hourly_response_v1` × 1). With `calibration_model=hourly_response_v2`, the next unused +1 / +2 dates are 2026-10-12 / 2026-10-13. A v2 snapshot can first be written when polling runs on or after 2026-10-10 (which would write 12 + 13). The closed-fact pair is then expected no earlier than 2026-10-13. The `forecast_model_tags` attribute in the sensor is the engine's calibration model, not the snapshot's stored `forecast_model`; the two are not the same field. |
 | Hardware PV limit (`pv_max_w`) | **UNKNOWN** | Inverter API does not expose a max-watts field. The MiniMax M3 cloud endpoints (`/v1/token_plan/remains`, `/anthropic/v1/models`) are billing / model-list endpoints and DO NOT contain the inverter's hardware spec; they are not valid evidence for this question. Status remains UNKNOWN until an inverter-side endpoint (e.g. the SOLARsiseli API or the device's local Wi-Fi module) exposes the field. |
 | Mobile / browser visual / resize / reconnect | **PARTIAL** | See dedicated "R06 browser-path coverage" below: forecast and total-energy same-object lifecycle, all-six viewport checks, and screenshots are now evidenced in real Chromium. Visual review is documented as partial, not as a claim of pixel-perfect correctness. |
-| Unique DOM IDs per card instance | **PARTIAL** | No global registry. |
 | Root `__version__` ↔ manifest reconciliation | **DONE** | `__version__ = "1.9.0"` ↔ `manifest.json: "version": "1.9.0"` (verified in `3b3a5a0` deploy). No release tag created per Юра's standing instruction. |
 | README / WORKFLOW rewrite | **DONE** | `README.md` and `WORKFLOW.md` updated in `3b3a5a0` to reflect `powmr_inverter` domain, `cryptography` requirement, and the manual release-tag workflow. |
 
@@ -180,34 +179,32 @@ scope".
 |------|--------|----------|
 | `power-history-card` `disconnectedCallback` cleanup (ResizeObserver) | **DONE** | `tests/test_power_history_card_r06.cjs::test_resize_observer_cleanup` |
 | `power-history-card` reconnect after disconnect | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserResizeObserver::test_disconnect_reconnect_does_not_leak_observers` runs 5 cycles in real Chromium. After each cycle the active observer count returns to 0 and the cumulative total grows by 1 (no duplication). |
-| Same-element reconnect for all six audited cards | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserCardLifecycle` covers five genuine same-object `remove()` / `appendChild()` cycles for power-history, k-flow, pv-comparison and energy-flow. `tests/test_r06_browser_additions.py::R06BrowserAddedCoverage::test_forecast_same_element_five_real_document_reconnects` and `::test_total_energy_same_element_five_real_document_reconnects` cover forecast and total-energy: each keeps one registered element reference, changes `hass`, reconnects that same node five times, then checks real DOM values and `pageerror`. |
+| Same-element reconnect for all six audited cards | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserResizeObserver::test_disconnect_reconnect_does_not_leak_observers` covers power-history; `tests/test_r06_browser_playwright.py::TestR06BrowserCardLifecycle` covers k-flow, pv-comparison and energy-flow. `tests/test_r06_browser_additions.py::R06BrowserAddedCoverage::test_forecast_same_element_five_real_document_reconnects` and `::test_total_energy_same_element_five_real_document_reconnects` cover forecast and total-energy: each keeps one registered element reference, changes `hass`, reconnects that same node five times, then checks real DOM values and `pageerror`. |
 | Requested-card resource inventory (host/global vs DOM-owned) | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserCardLifecycle::test_source_inventory_distinguishes_owned_resources_from_native_animation` covers k-flow, energy-flow and pv-comparison. `tests/test_r06_browser_additions.py::R06BrowserAddedCoverage::test_forecast_and_total_energy_resource_inventory` confirms forecast owns only its per-element shadow root and total-energy renders in light DOM; neither class creates observers, listeners or JS timers requiring cleanup. Existing k-flow editor/native animation details and pv-comparison's host `ResizeObserver` cleanup remain as described above. |
 | Mobile / desktop viewport checks (360 / 1280 px) | **DONE** | `tests/test_r06_browser_additions.py::R06BrowserAddedCoverage::test_all_six_production_cards_at_360_and_1280_with_nonzero_data_and_screenshots` loads all six production scripts unchanged with representative nonzero fixtures and long titles, asserts rendered values, `document.documentElement.scrollWidth <= innerWidth`, and no `pageerror`, and saves 12 screenshots under `/opt/data/cache/scratch/powmr-r06-visual/` (outside git). |
-| Visual review (layout, clipping, readability) | **PARTIAL** | The 12 Chromium screenshots were reviewed. Power-history's final x-axis label is now fully inside the plot at both sizes. K-flow keeps the long inverter name inside its central box using a visible ellipsis and full `aria-label`/`title`; several chart labels and smaller flow values remain tiny, and the flow-card icon/readout area is visually crowded. `energy-flow-card` wraps its value tiles at 360 px but does not render the supplied title. These findings are documented; this is not a pixel-perfect sign-off. |
-| R09 "Already used" warning absent in operator's browser console | **DONE** | Three behavioural layers: (1) `tests/test_r09_double_load.cjs` — same-version double-load (6/6 safe). (2) `tests/test_r09_mixed_load.cjs` — operator's old-unguarded pinned URL + integration's new-guarded URL in the same VM context (6/6 safe). (3) `tests/test_r06_browser_playwright.py` — 5/5 repeated connect/disconnect cycles in real Chromium without exception. (4) `tests/test_r06_browser_mutation.py` — control failure: production `_render` patched to throw, suite exits non-zero with the sentinel surfaced. Live verification: 5/5 pinned URLs in `lovelace_resources` return the current production `frontend/*.js` by md5. |
+| Live Lovelace activation of deployed `energy-flow-card.js` | **PARTIAL** | On HA, `/config/.storage/lovelace_resources` has no `energy-flow-card.js` entry. Its installed file and direct HTTP URL are verified, but it is not an active Lovelace resource; no dashboard/resource configuration was changed. Existing k-flow and power-history resource URLs return the deployed file hashes when requested, but cached browser content was not verified. |
+| Visual review (layout, clipping, readability) | **PARTIAL** | All 12 Chromium screenshots were reviewed. Page-level horizontal overflow is absent, but internal card clipping remains: in the 1280px forecast screenshot the far-left x-axis tick is clipped and lower labels crowd the curve; in k-flow at 1280px the right graphic encroaches on the `0.00 kWh`/red-flow area and the lower graphic is cut by the panel edge. Power-history's final x-axis label is inside the plot at both sizes, though chart labels are tiny and `kW` sits close to the time row. The long k-flow name is abbreviated with full `aria-label`/`title`; smaller flow values remain hard to read. The energy-flow title is not rendered, and its tile labels are small. This remains a visual limitation, not pixel-perfect sign-off. |
+| R09 "Already used" warning absent in operator's browser console | **DONE** | Three behavioural layers: (1) `tests/test_r09_double_load.cjs` — same-version double-load (6/6 safe). (2) `tests/test_r09_mixed_load.cjs` — operator's old-unguarded pinned URL + integration's new-guarded URL in the same VM context (6/6 safe). (3) `tests/test_r06_browser_playwright.py` — 5/5 repeated connect/disconnect cycles in real Chromium without exception. (4) `tests/test_r06_browser_playwright.py::TestR06ControlFailure::test_renderer_exception_is_caught` — injected production render failure produces the sentinel/non-zero subprocess result. Live verification: 5/5 pinned URLs in `lovelace_resources` return the current production `frontend/*.js` by md5. |
 | `forecast_received_at` time-zone correctness | **DONE** | `tests/test_r10_forecast_received_at_tz.py` pins both layers: production stamps `_forecast_last_received_at` as `_pv_local_now().astimezone(timezone.utc)` (Kyiv summer -3h, winter -2h); sensor's `_received_at_iso` renders aware values via `astimezone(UTC)` and returns `None` for naive legacy values. Live sensor now shows the UTC instant of the receive cycle, not the local wall clock. |
 
 ---
 
 ## Honesty rules
 
-- The Node harness does NOT verify "browser/mobile" behavior. Real-browser
-  resize/reconnect and viewport evidence is listed in the R06 table above.
-  The 12 screenshots were inspected; visual status remains **PARTIAL** because
-  the chart axes/small flow labels are difficult to read and the k-flow card
-  abbreviates long visible inverter names (while retaining the full accessible
-  label/title).
-- "Sibling component" tests do NOT cover all sibling components
-  equally. The forecast/energy-flow/k-flow cards use shadow DOM
-  with `getElementById` / `querySelectorAll`; the Node harness
-  stubs the entry points but cannot exercise the full render
-  path. Their full verification requires a real browser.
+- The Node harness does NOT verify "browser/mobile" behavior. The real-browser
+  lifecycle, escaping, isolation and viewport evidence is listed in the R06
+  table above. The screenshots were inspected; visual status remains **PARTIAL**
+  because the forecast left tick is clipped, k-flow graphics crowd/clip readouts,
+  chart labels are small, and the energy-flow title is not rendered.
+- The new browser harness loads production scripts in a local fixture, not an
+  authenticated live Lovelace dashboard. In particular, `energy-flow-card.js`
+  is installed and HTTP-served but is absent from live `lovelace_resources`; the
+  direct browser tests prove its rendering contract, not live dashboard activation.
 - `pv-comparison-card` has a dedicated suite
   (`tests/test_pv_comparison_card.cjs`) with real data fixtures.
   The siblings share the generic
-  `tests/test_cards_r06_siblings.cjs`. Coverage of forecast
-  / energy-flow / k-flow is more limited than the
-  pv-comparison coverage — that is HONESTY, not a bug.
+  `tests/test_cards_r06_siblings.cjs`; browser-only evidence for forecast,
+  total-energy and flow cards is named individually in the R06 table above.
 - The "multi-device flow" is **DONE** for the production
   `async_step_user → async_step_select_device` path, evidenced
   by the 10 tests in
