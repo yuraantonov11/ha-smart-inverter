@@ -1356,7 +1356,15 @@ class KFlowCard extends HTMLElement {
     if (badge) { badge.textContent = absPwr1 < 50 ? 'IDLE' : isCharging1 ? 'CHG' : 'DISCHG'; badge.style.color = absPwr1 < 50 ? '#8b949e' : isCharging1 ? '#00d7ff' : '#3ce878'; }
 
     setText('invTempFlow', invTemp.toFixed(1) + ' °C');
-    setText('invNameLabel', this.config.inverter_name || 'INV');
+    const inverterName = String(this.config.inverter_name || 'INV');
+    const inverterNameLabel = getEl('invNameLabel');
+    if (inverterNameLabel) {
+      inverterNameLabel.textContent = inverterName.length > 9
+        ? `${inverterName.slice(0, 8)}…`
+        : inverterName;
+      inverterNameLabel.setAttribute('aria-label', inverterName);
+      inverterNameLabel.setAttribute('title', inverterName);
+    }
     setAttr('invTempFlow', 'fill', invTemp <= 45 ? '#58a6ff' : invTemp <= 55 ? '#f39c4b' : '#f85149');
     const invLoadPct = Math.min(load / invMax * 100, 100).toFixed(0);
     // Fix #8: toFixed() returns a string; use Number() for the colour comparison

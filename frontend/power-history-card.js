@@ -270,7 +270,9 @@ class PowerHistoryCard extends HTMLElement {
       if (idx >= 0) {
         lblAt = firstSeries.points[idx].label || '';
       }
-      svg += `<text x="${x}" y="${H - 4}" text-anchor="middle" fill="#999" font-size="8">${this._escape(lblAt)}</text>`;
+      const isFinalLabel = i > 0 && i + xLabelStep >= canonicalN;
+      const anchor = isFinalLabel ? 'end' : 'middle';
+      svg += `<text x="${x}" y="${H - 4}" text-anchor="${anchor}" fill="#999" font-size="8">${this._escape(lblAt)}</text>`;
     }
 
     // Render each series. Each series

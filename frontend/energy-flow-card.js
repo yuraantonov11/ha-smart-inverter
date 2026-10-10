@@ -54,7 +54,10 @@ class SmartSolarEnergyFlow extends HTMLElement {
       const u = st.attributes.unit_of_measurement || "";
       return { v: Number(st.state).toFixed(0), u };
     };
-    const u = (entityId) => (s(entityId).u || "W");
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[c]);
+    const u = (entityId) => escapeHtml(s(entityId).u || "W");
 
     flow.innerHTML = `
       <div class="node solar">${this._icon("mdi:solar-power")}<span class="value">${s(solar).v}</span><span class="label">PV ${u(solar)}</span></div>
