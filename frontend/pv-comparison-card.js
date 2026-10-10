@@ -72,7 +72,10 @@ class PvComparisonCard extends HTMLElement {
     const x=h=>+(L+h/24*cw).toFixed(2), y=v=>+(T+ch-v/top*ch).toFixed(2);
     let grid='';
     for(let i=0;i<=5;i++) grid+=`<line x1="${L}" x2="${W-R}" y1="${y(top*i/5)}" y2="${y(top*i/5)}" class="grid"/><text x="${L-8}" y="${y(top*i/5)+4}" text-anchor="end">${top*i/5}</text>`;
-    for(let h=0;h<=24;h+=W>=900?1:W>=600?2:3) grid+=`<text x="${x(h)}" y="${H-7}" text-anchor="middle">${String(h).padStart(2,'0')}:00</text>`;
+    const tickStep=W>=900?1:W>=600?2:3;
+    for(let h=0;h<=24;h+=tickStep) {
+      grid+=`<text x="${x(h)}" y="${H-7}" text-anchor="middle" textLength="32" lengthAdjust="spacingAndGlyphs">${String(h).padStart(2,'0')}:00</text>`;
+    }
     const numbers=new Intl.NumberFormat('uk-UA',{maximumFractionDigits:2});
     const tip=(name,p)=>`${name} · ${p.date} ${p.label} · ${numbers.format(p.value)} Вт`;
     const dots=(points,color,name)=>points.map(p=>`<circle class="point" cx="${x(p.hour)}" cy="${y(p.value)}" r="3" fill="${color}" tabindex="0" data-tip="${esc(tip(name,p))}"><title>${esc(tip(name,p))}</title></circle>`).join('');
@@ -86,7 +89,7 @@ class PvComparisonCard extends HTMLElement {
         h2{margin:0;font-size:18px;line-height:1.4}.sub,.hint{color:var(--secondary-text-color);font-size:12px;line-height:1.5}.sub{margin:5px 0 16px}
         .stats{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:15px}.value{font-size:25px;font-weight:600}.caption{font-size:12px;color:var(--secondary-text-color)}
         .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin-bottom:16px}.legend span::before{content:'';display:inline-block;width:18px;border-top:2px solid var(--line);margin-right:6px;vertical-align:middle}
-        svg{width:100%;height:auto;min-height:240px;display:block;overflow:visible}svg text{font-size:11px;fill:var(--secondary-text-color)}.grid{stroke:var(--divider-color,#444);stroke-width:.7;stroke-dasharray:2 5;opacity:.65}.point{cursor:pointer;opacity:.4}.point:hover,.point:focus{opacity:1;outline:none;stroke:var(--primary-text-color);stroke-width:2}
+        svg{width:100%;height:auto;min-height:240px;display:block;overflow:visible}svg text{font-size:12px;fill:var(--secondary-text-color)}.grid{stroke:var(--divider-color,#444);stroke-width:.7;stroke-dasharray:2 5;opacity:.65}.point{cursor:pointer;opacity:.4}.point:hover,.point:focus{opacity:1;outline:none;stroke:var(--primary-text-color);stroke-width:2}
         button{background:none;border:1px solid var(--divider-color,#555);border-radius:8px;color:var(--primary-text-color);padding:7px 10px;cursor:pointer;font:inherit;font-size:12px;margin-top:12px}.hint{margin-top:10px;min-height:36px}
         @media(max-width:450px){ha-card{padding:16px}.value{font-size:23px}}
       </style>
@@ -95,7 +98,7 @@ class PvComparisonCard extends HTMLElement {
       <div class="stats"><div><div class="value">${latest ? numbers.format(latest.value)+' Вт' : 'Немає даних'}</div><div class="caption">Факт API${latest?' · '+esc(latest.label):''}</div></div>
       <div><div class="value">${forecast.length && Number.isFinite(fc.total_kwh) ? numbers.format(fc.total_kwh)+' кВт·год' : 'Немає прогнозу'}</div><div class="caption">Прогноз за всю сьогоднішню добу</div></div></div>
       <div class="legend"><span style="--line:#2ecc71">Факт сьогодні</span><span style="--line:#36a9ff">Прогноз сьогодні</span>${prior.length?`<span style="--line:#a3aab5">Учора · ${esc(previous.date)} · ${previous.basis==='cloud_half_hour_samples'?'факт API':'погодинне середнє'}</span>`:''}</div>
-      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Фактична генерація та погодинний прогноз у ватах"><text x="${L}" y="10">Вт</text>${grid}
+      <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Фактична генерація та погодинний прогноз у ватах"><text x="${L}" y="15">Вт</text>${grid}
       <defs><linearGradient id="pv-area" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#36a9ff" stop-opacity=".16"/><stop offset="100%" stop-color="#36a9ff" stop-opacity="0"/></linearGradient></defs>
       ${forecast.length===24?`<path d="${forecastPath} L${x(forecast.at(-1).hour)},${y(0)} L${x(forecast[0].hour)},${y(0)} Z" fill="url(#pv-area)"/>`:''}
       ${prior.length?`<path d="${this._smoothPath(prior,x,y,previous.basis==='cloud_half_hour_samples'?.51:1.01)}" stroke="#a3aab5" stroke-width="1.8" stroke-dasharray="5 5" opacity=".75" fill="none"/>`:''}

@@ -218,7 +218,9 @@ class PowerHistoryCard extends HTMLElement {
     const lbls = resolved[0].points.map(
       p => p.label || '',
     );
-    const W = 500, H = 180, padL = 45, padR = 10, padT = 10, padB = 30;
+    const compact = Boolean(window.matchMedia?.('(max-width: 450px)')?.matches);
+    const W = 500, H = compact ? 225 : 180, padL = 45, padR = 10;
+    const padT = compact ? 35 : 10, padB = compact ? 50 : 30;
     const chartW = W - padL - padR, chartH = H - padT - padB;
 
     // Compute max across all series
@@ -242,7 +244,7 @@ class PowerHistoryCard extends HTMLElement {
       const yLabel = this._isFiniteNumber(val)
         ? (val < 1 ? val.toFixed(2) : val.toFixed(1))
         : '0';
-      svg += `<text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="#999" font-size="9">${yLabel}</text>`;
+      svg += `<text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="#999" font-size="${compact ? 15 : 9}">${yLabel}</text>`;
     }
 
     // X labels: only for points on the
@@ -252,10 +254,22 @@ class PowerHistoryCard extends HTMLElement {
     // gap, we still want a label at the
     // gap position (use the gap's expected
     // label from the raw input).
-    const xLabelStep = Math.max(
-      1, Math.floor(canonicalN / 8),
-    );
+    const xLabelStep = compact
+      ? Math.max(2, Math.ceil(canonicalN / 6))
+      : Math.max(1, Math.floor(canonicalN / 8));
+    const xLabelIndices = [];
     for (let i = 0; i < canonicalN; i += xLabelStep) {
+      if (compact && i > 0 && i + xLabelStep >= canonicalN) break;
+      xLabelIndices.push(i);
+    }
+    if (compact && canonicalN > 0
+      && xLabelIndices[xLabelIndices.length - 1] !== canonicalN - 1) {
+      xLabelIndices.push(canonicalN - 1);
+    }
+    const compactLabelLength = Math.max(1, Math.min(
+      38, chartW * xLabelStep / Math.max(canonicalN - 1, 1) - 3,
+    ));
+    for (const i of xLabelIndices) {
       const x = padL
         + (i / Math.max(canonicalN - 1, 1))
         * chartW;
@@ -271,8 +285,12 @@ class PowerHistoryCard extends HTMLElement {
         lblAt = firstSeries.points[idx].label || '';
       }
       const isFinalLabel = i > 0 && i + xLabelStep >= canonicalN;
-      const anchor = isFinalLabel ? 'end' : 'middle';
-      svg += `<text x="${x}" y="${H - 4}" text-anchor="${anchor}" fill="#999" font-size="8">${this._escape(lblAt)}</text>`;
+      const anchor = compact ? 'end' : isFinalLabel ? 'end' : 'middle';
+      if (compact && lblAt) {
+        svg += `<text x="${x}" y="${H - 26}" text-anchor="${anchor}" textLength="${compactLabelLength}" lengthAdjust="spacingAndGlyphs" fill="#999" font-size="15">${this._escape(lblAt)}</text>`;
+      } else {
+        svg += `<text x="${x}" y="${compact ? H - 26 : H - 4}" text-anchor="${anchor}" fill="#999" font-size="${compact ? 15 : 8}">${this._escape(lblAt)}</text>`;
+      }
     }
 
     // Render each series. Each series
@@ -359,9 +377,13 @@ class PowerHistoryCard extends HTMLElement {
     if (resolved.length > 1) {
       let lx = padL;
       for (const r of resolved) {
-        legend += `<rect x="${lx}" y="2" width="10" height="6" fill="${this._escape(r.color)}"/>`;
-        legend += `<text x="${lx + 13}" y="8" fill="#ccc" font-size="8">${this._escape(r.name)}</text>`;
-        lx += r.name.length * 5.5 + 25;
+        const legendY = compact ? 20 : 2;
+        const legendTextY = compact ? 30 : 8;
+        const legendFont = compact ? 15 : 8;
+        const labelWidth = r.name.length * (compact ? 9 : 5.5) + (compact ? 35 : 25);
+        legend += `<rect x="${lx}" y="${legendY}" width="10" height="6" fill="${this._escape(r.color)}"/>`;
+        legend += `<text x="${lx + 13}" y="${legendTextY}" fill="#ccc" font-size="${legendFont}">${this._escape(r.name)}</text>`;
+        lx += labelWidth;
       }
     }
 
@@ -390,7 +412,7 @@ class PowerHistoryCard extends HTMLElement {
       <div style="padding:0 8px 8px">
         <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
           ${svg}${legend}
-          <text x="${padL + chartW / 2}" y="${H}" text-anchor="middle" fill="#666" font-size="8">${this._escape(unit)}</text>
+          <text x="${padL + chartW / 2}" y="${compact ? H - 5 : H - 4}" text-anchor="middle" fill="#666" font-size="${compact ? 15 : 8}">${this._escape(unit)}</text>
         </svg>
       </div>
     </ha-card>`;

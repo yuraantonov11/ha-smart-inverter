@@ -260,6 +260,7 @@ class _Fixture:
     def __init__(self) -> None:
         self._tmpdir = tempfile.mkdtemp(prefix="r06-fixture-")
         self._root = Path(self._tmpdir)
+        self.response_logs: dict[int, list] = {}
         # Mirror the production
         # layout: ``www/`` for the
         # cards and a top-level
@@ -269,6 +270,12 @@ class _Fixture:
             src = FRONTEND / card
             dst = self._root / "www" / card
             dst.write_text(src.read_text())
+        # Serve the real package assets at the same static paths used by the
+        # production SVG hrefs; do not synthesize or redraw these icons.
+        icon_root = self._root / "local" / "community" / "powmr-inverter"
+        icon_root.mkdir(parents=True)
+        for icon in ("home-icon.png", "ev-charger-icon.png", "grid-icon.png"):
+            shutil.copy2(FRONTEND / icon, icon_root / icon)
         # The page uses
         # ``<script src>`` to load
         # the card source. The

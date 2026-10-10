@@ -115,7 +115,8 @@ class ForecastCard extends HTMLElement {
     // Hour labels (every 6h)
     const hourLabels = [0, 6, 12, 18].map(h => {
       const x = PAD + h * step;
-      return `<text x="${x.toFixed(1)}" y="${H - 1}" text-anchor="middle" font-size="7" fill="#8b949e">${h}:00</text>`;
+      const anchor = h === 0 ? 'start' : 'middle';
+      return `<text class="hour-label" x="${x.toFixed(1)}" y="${H - 3}" text-anchor="${anchor}" font-size="9.2" fill="#8b949e">${h}:00</text>`;
     }).join('');
 
     // Grid lines
@@ -150,6 +151,8 @@ class ForecastCard extends HTMLElement {
         .stats span { font-weight: 600; }
         .stats .val { color: #f4d03f; }
         svg { display: block; width: 100%; }
+        .hour-label { font-size: 9.2px; }
+        @media (min-width: 451px) { .hour-label { font-size: 7px; } }
       </style>
       <div class="card">
         <div class="title">${title}</div>
