@@ -53,7 +53,7 @@
 | `energy-flow-card` two instances isolated | **DONE** | `tests/test_cards_r06_siblings.cjs::test_energy_flow_card_two_instances_isolated` |
 | `energy-flow-card` HTML escape | **PARTIAL** | `tests/test_cards_r06_siblings.cjs::test_energy_flow_card_html_escape` (Node harness only; full assertion in browser) |
 | `pv-comparison-card` source/cadence honesty | **DONE** | `tests/test_pv_comparison_card.cjs` (Cadence: unknown (not in config) when absent) |
-| Mobile / browser visual / resize / reconnect | **NOT VERIFIED** | Out of scope for Node harness. Browser-based verification deferred. |
+| Mobile / browser visual / resize / reconnect (aggregate) | **PARTIAL** | Real-Chromium reconnect, resize and viewport checks are evidenced below; visual layout correctness remains **NOT VERIFIED** (see the dedicated visual row). |
 | Unique DOM IDs per instance | **PARTIAL** | The cards currently rely on card-instance `this` for state isolation. No global DOM-id registry. Deferred. |
 
 ---
@@ -159,7 +159,7 @@ guarded.
 |------|--------|------|
 | `first_v2_completed_pair` (real-forecast + actual pair, both v2) | **NOT YET VERIFIED** | Verified constraint: `PvLearningStore.snapshot()` rejects past-or-today dates (`if date.fromisoformat(day) <= now.date(): return False`) and never overwrites an existing snapshot (`if day in self.snapshots: return False`). The current JSON has 3 snapshots for 2026-10-09/10/11 with v1 models (`station_gain_v1` × 2, `hourly_response_v1` × 1). With `calibration_model=hourly_response_v2`, the next unused +1 / +2 dates are 2026-10-12 / 2026-10-13. A v2 snapshot can first be written when polling runs on or after 2026-10-10 (which would write 12 + 13). The closed-fact pair is then expected no earlier than 2026-10-13. The `forecast_model_tags` attribute in the sensor is the engine's calibration model, not the snapshot's stored `forecast_model`; the two are not the same field. |
 | Hardware PV limit (`pv_max_w`) | **UNKNOWN** | Inverter API does not expose a max-watts field. The MiniMax M3 cloud endpoints (`/v1/token_plan/remains`, `/anthropic/v1/models`) are billing / model-list endpoints and DO NOT contain the inverter's hardware spec; they are not valid evidence for this question. Status remains UNKNOWN until an inverter-side endpoint (e.g. the SOLARsiseli API or the device's local Wi-Fi module) exposes the field. |
-| Mobile / browser visual / resize / reconnect | **NOT VERIFIED** | See dedicated "R06 browser-path coverage" section below for the breakdown. Node harness only. |
+| Mobile / browser visual / resize / reconnect | **PARTIAL** | See dedicated "R06 browser-path coverage" below: requested card lifecycle checks now have real-Chromium evidence; visual correctness remains **NOT VERIFIED**. |
 | Unique DOM IDs per card instance | **PARTIAL** | No global registry. |
 | Root `__version__` ↔ manifest reconciliation | **DONE** | `__version__ = "1.9.0"` ↔ `manifest.json: "version": "1.9.0"` (verified in `3b3a5a0` deploy). No release tag created per Юра's standing instruction. |
 | README / WORKFLOW rewrite | **DONE** | `README.md` and `WORKFLOW.md` updated in `3b3a5a0` to reflect `powmr_inverter` domain, `cryptography` requirement, and the manual release-tag workflow. |
@@ -180,7 +180,8 @@ scope".
 |------|--------|----------|
 | `power-history-card` `disconnectedCallback` cleanup (ResizeObserver) | **DONE** | `tests/test_power_history_card_r06.cjs::test_resize_observer_cleanup` |
 | `power-history-card` reconnect after disconnect | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserResizeObserver::test_disconnect_reconnect_does_not_leak_observers` runs 5 cycles in real Chromium. After each cycle the active observer count returns to 0 and the cumulative total grows by 1 (no duplication). |
-| `total-energy-card`, `forecast-card`, `k-flow-card`, `energy-flow-card` `disconnectedCallback` cleanup | **DONE for `forecast-card`, `total-energy-card` (in real Chromium 153.0); NOT YET VERIFIED for `k-flow-card`, `pv-comparison-card`, `energy-flow-card`** | `tests/test_r06_browser_playwright.py::TestR06BrowserMobileDesktop` exercises the real spec `appendChild` / `remove()` lifecycle for `total-energy-card` (mobile 360 px and desktop 1280 px, no horizontal overflow) and `forecast-card` (zero / unknown / empty render paths). The `k-flow-card`, `pv-comparison-card`, and `energy-flow-card` paths are NOT yet exercised in the real browser; the Node smoke harness `tests/test_r06_browser_smoke.cjs` covers their constructor only and does NOT verify cleanup. |
+| `total-energy-card`, `forecast-card`, `k-flow-card`, `pv-comparison-card`, `energy-flow-card` lifecycle / reconnect | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserCardLifecycle` runs five genuine same-object `remove()` / `appendChild()` cycles for each requested card in real Chromium. `pv-comparison-card` disconnects its host-targeted ResizeObserver on every removal and recreates exactly one live observer on reattach. `k-flow-card` and `energy-flow-card` have no lifecycle-owned external observers, event listeners or JS timers; source inventory and post-reconnect hass rendering are tested. Existing `forecast-card` / `total-energy-card` evidence remains in `TestR06BrowserMobileDesktop`. |
+| Requested-card resource inventory (host/global vs DOM-owned) | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserCardLifecycle::test_source_inventory_distinguishes_owned_resources_from_native_animation` pins the production-source inventory. `k-flow-card` (main class, `frontend/k-flow-card.js::KFlowCard`): no lifecycle callbacks, observers, event registrations/property handlers or JS timers; data is instance/shadow-DOM-owned. The separate `KFlowCardEditor` binds listeners to generated local controls only (no global listener, observer or timer). SVG `<animate>` elements are native SMIL; the power-bar CSS transition is browser-native; `svgPulseOrange` is a declared but unused `@keyframes` rule. `energy-flow-card` (`SmartSolarEnergyFlow`): no callbacks, observers, listeners/property handlers or JS timers; `.flow-line` uses browser-native CSS `pulse` animation. `pv-comparison-card`: one card-owned native `ResizeObserver` observes the host and disconnects in `disconnectedCallback`; button/point handlers are direct properties on regenerated descendants (`onclick`, `onfocus`, `onmouseenter`), not global listeners; no JS timers or SVG/CSS animations. Browser cycle assertions verify zero active PV observers after removal and exactly one after each reattach (six instances total over initial attach + five cycles). |
 | Mobile viewport (≤ 480 px) layout for all 6 cards | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserMobileDesktop` runs the production `frontend/*.js` in real headless Chromium 153.0 at viewport 360 px and 1280 px. Real `documentElement.scrollWidth` is checked against `innerWidth` (no horizontal overflow). |
 | Visual rendering correctness (icon positions, alignment, font sizing) | **NOT VERIFIED** | Requires visual inspection in a real browser. |
 | R09 "Already used" warning absent in operator's browser console | **DONE** | Three behavioural layers: (1) `tests/test_r09_double_load.cjs` — same-version double-load (6/6 safe). (2) `tests/test_r09_mixed_load.cjs` — operator's old-unguarded pinned URL + integration's new-guarded URL in the same VM context (6/6 safe). (3) `tests/test_r06_browser_playwright.py` — 5/5 repeated connect/disconnect cycles in real Chromium without exception. (4) `tests/test_r06_browser_mutation.py` — control failure: production `_render` patched to throw, suite exits non-zero with the sentinel surfaced. Live verification: 5/5 pinned URLs in `lovelace_resources` return the current production `frontend/*.js` by md5. |
@@ -190,10 +191,10 @@ scope".
 
 ## Honesty rules
 
-- "Browser/mobile" is **NOT VERIFIED** by the Node harness. The harness
-  tests what it can (state isolation, escape, two-instance
-  non-contamination, lifecycle). Visual / resize / reconnect are
-  explicitly out of scope.
+- The Node harness does NOT verify "browser/mobile" behavior. Real-browser
+  resize/reconnect and viewport evidence is listed in the R06 table above;
+  visual rendering correctness remains **NOT VERIFIED** without screenshot
+  inspection.
 - "Sibling component" tests do NOT cover all sibling components
   equally. The forecast/energy-flow/k-flow cards use shadow DOM
   with `getElementById` / `querySelectorAll`; the Node harness

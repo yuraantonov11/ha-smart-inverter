@@ -67,6 +67,7 @@ from __future__ import annotations
 
 import http.server
 import os
+import re
 import shutil
 import socketserver
 import subprocess
@@ -1018,6 +1019,376 @@ class TestR06BrowserResizeObserver(unittest.TestCase):
             errors, [],
             f"power-history-card threw during reconnect: {errors}",
         )
+
+
+# ==== Remaining R06 card lifecycle tests ====
+
+
+class TestR06BrowserCardLifecycle(unittest.TestCase):
+    """Resource inventory and real-DOM reconnect checks for the three
+    remaining R06 cards. The production scripts are loaded unmodified in
+    Chromium; each lifecycle test keeps one registered element instance for
+    five genuine remove/append cycles.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._fx = _Fixture()
+        cls._fx.start_browser()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._fx.stop()
+
+    @staticmethod
+    def _class_source(filename: str, class_name: str) -> str:
+        lines = (FRONTEND / filename).read_text().splitlines()
+        start = next(
+            i for i, line in enumerate(lines)
+            if line == f"class {class_name} extends HTMLElement {{"
+        )
+        end = next(i for i in range(start + 1, len(lines)) if lines[i] == "}")
+        return "\n".join(lines[start : end + 1])
+
+    def _load_page(self, tag: str) -> tuple[Page, list[str]]:
+        page, errors = self._fx.new_page({"width": 1280, "height": 900})
+        self.addCleanup(page.context.close)
+        self._fx.install_init_scripts(page.context)
+        page.goto(self._fx.base_url + "/index.html", wait_until="load")
+        self.assertTrue(
+            page.evaluate("tag => Boolean(customElements.get(tag))", tag),
+            f"production custom element {tag!r} did not register",
+        )
+        return page, errors
+
+    def test_source_inventory_distinguishes_owned_resources_from_native_animation(self) -> None:
+        kflow = self._class_source("k-flow-card.js", "KFlowCard")
+        kflow_editor = self._class_source("k-flow-card.js", "KFlowCardEditor")
+        energy = self._class_source("energy-flow-card.js", "SmartSolarEnergyFlow")
+        pv = self._class_source("pv-comparison-card.js", "PvComparisonCard")
+        lifecycle_api = re.compile(
+            r"\b(?:new\s+(?:Resize|Mutation|Intersection)Observer|"
+            r"addEventListener|removeEventListener|setTimeout|setInterval|"
+            r"requestAnimationFrame|cancelAnimationFrame)\s*\(|"
+            r"\.on[a-z]+\s*=|\.animate\s*\("
+        )
+
+        for name, source in (("k-flow-card", kflow), ("energy-flow-card", energy)):
+            self.assertNotRegex(source, lifecycle_api, f"unexpected lifecycle-owned resource in {name}")
+            self.assertNotIn("connectedCallback()", source)
+            self.assertNotIn("disconnectedCallback()", source)
+
+        # The bundled editor is a distinct element, not part of KFlowCard's
+        # lifecycle. Its listeners are attached to generated local controls;
+        # there are no window/document listeners, observers or timer loops.
+        self.assertGreater(kflow_editor.count(".addEventListener("), 0)
+        self.assertNotRegex(kflow_editor, re.compile(r"\b(?:window|document)\.addEventListener\s*\("))
+        self.assertNotRegex(kflow_editor, re.compile(r"\b(?:new\s+(?:Resize|Mutation|Intersection)Observer|setTimeout|setInterval|requestAnimationFrame)\s*\("))
+        self.assertNotRegex(kflow_editor, re.compile(r"\.on[a-z]+\s*="))
+
+        # K-flow's active animations are declarative SVG SMIL elements; its
+        # power-bar transitions are CSS/browser-native. The svgPulseOrange
+        # @keyframes rule is declared but has no animation-property consumer.
+        self.assertIn("<animate attributeName=", kflow)
+        self.assertIn("transition:width .4s,background .4s", kflow)
+        self.assertIn("@keyframes svgPulseOrange", kflow)
+        self.assertNotIn("animation:", kflow)
+
+        # Energy-flow owns only its shadow-DOM data/render state. Its pulse is
+        # a browser-native CSS animation attached to each rendered flow line.
+        self.assertIn(".flow-line { font-size: 1.4em; opacity: 0.4; animation: pulse 1.5s infinite; }", energy)
+        self.assertIn("@keyframes pulse", energy)
+
+        # PV comparison owns one host-targeted native ResizeObserver, closed
+        # by disconnectedCallback. UI callbacks are direct properties on
+        # regenerated descendants (button.onclick and point onclick/focus/
+        # mouseenter), not document/window listeners or accumulating timers.
+        self.assertEqual(len(re.findall(r"\bnew\s+ResizeObserver\s*\(", pv)), 1)
+        self.assertEqual(len(re.findall(r"\.observe\(this\)", pv)), 1)
+        self.assertEqual(len(re.findall(r"\.disconnect\(\)", pv)), 1)
+        self.assertIn("this._resizeObserver?.disconnect()", pv)
+        self.assertEqual(pv.count(".onclick="), 2)
+        self.assertEqual(pv.count(".onfocus="), 1)
+        self.assertEqual(pv.count(".onmouseenter="), 1)
+        self.assertNotRegex(pv, re.compile(r"\b(?:addEventListener|setTimeout|setInterval|requestAnimationFrame)\s*\("))
+        self.assertNotIn("animation:", pv)
+        self.assertNotIn("<animate", pv)
+
+    def test_k_flow_same_object_renders_updated_hass_after_five_reconnects(self) -> None:
+        page, errors = self._load_page("k-flow-card")
+        page.evaluate(
+            """() => {
+              const c = document.createElement('k-flow-card');
+              c.style.display = 'block';
+              c.setConfig({
+                pv1_power: 'sensor.r06_pv1',
+                pv2_power: 'sensor.r06_pv2',
+                pv_total_power: 'sensor.r06_pv_total',
+                grid_active_power: 'sensor.r06_grid',
+                consump: 'sensor.r06_load',
+                battery_soc: 'sensor.r06_soc',
+                battery_power: 'sensor.r06_battery_power',
+              });
+              window.__r06Card = c;
+              window.__r06OriginalCard = c;
+              window.__r06Hass = (i) => ({ states: {
+                'sensor.r06_pv1': { state: String(100 + i), attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_pv2': { state: '50', attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_pv_total': { state: String(150 + i), attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_grid': { state: String(20 + i), attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_load': { state: String(400 + i), attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_soc': { state: '60', attributes: { unit_of_measurement: '%' } },
+                'sensor.r06_battery_power': { state: '0', attributes: { unit_of_measurement: 'W' } },
+              } });
+              document.body.appendChild(c);
+              c.hass = window.__r06Hass(0);
+            }"""
+        )
+        initial = page.evaluate(
+            """() => ({
+              registered: window.__r06Card instanceof customElements.get('k-flow-card'),
+              connected: window.__r06Card.isConnected,
+              pv: window.__r06Card.shadowRoot.getElementById('pv1FlowVal')?.textContent,
+              load: window.__r06Card.shadowRoot.getElementById('fcLoadVal')?.textContent,
+            })"""
+        )
+        self.assertTrue(initial["registered"] and initial["connected"], initial)
+        self.assertEqual((initial["pv"], initial["load"]), ("100 W", "400 W"), initial)
+
+        for cycle in range(1, 6):
+            removed = page.evaluate(
+                """() => {
+                  const c = window.__r06Card;
+                  c.remove();
+                  return { same: c === window.__r06OriginalCard, connected: c.isConnected, shadowRoot: Boolean(c.shadowRoot) };
+                }"""
+            )
+            self.assertTrue(removed["same"], f"cycle {cycle}: identity changed on remove: {removed}")
+            self.assertFalse(removed["connected"], f"cycle {cycle}: remove() left card connected: {removed}")
+            self.assertTrue(removed["shadowRoot"], f"cycle {cycle}: expected host-owned shadow DOM: {removed}")
+
+            rendered = page.evaluate(
+                """i => {
+                  const c = window.__r06Card;
+                  document.body.appendChild(c);
+                  c.hass = window.__r06Hass(i);
+                  return {
+                    same: c === window.__r06OriginalCard,
+                    connected: c.isConnected,
+                    pv: c.shadowRoot.getElementById('pv1FlowVal')?.textContent,
+                    pvTotal: c.shadowRoot.getElementById('arcPvLabelText')?.textContent,
+                    load: c.shadowRoot.getElementById('fcLoadVal')?.textContent,
+                    hasNativeSvgAnimation: Boolean(c.shadowRoot.querySelector('svg animate')),
+                  };
+                }""",
+                cycle,
+            )
+            self.assertTrue(rendered["same"] and rendered["connected"], f"cycle {cycle}: {rendered}")
+            self.assertEqual(rendered["pv"], f"{100 + cycle} W", f"cycle {cycle}: {rendered}")
+            self.assertEqual(rendered["pvTotal"], f"{150 + cycle} W ⚡", f"cycle {cycle}: {rendered}")
+            self.assertEqual(rendered["load"], f"{400 + cycle} W", f"cycle {cycle}: {rendered}")
+            self.assertTrue(rendered["hasNativeSvgAnimation"], f"cycle {cycle}: SVG SMIL animation missing: {rendered}")
+
+        self.assertEqual(errors, [], f"k-flow-card page errors: {errors}")
+
+    def test_energy_flow_same_object_renders_updated_hass_after_five_reconnects(self) -> None:
+        page, errors = self._load_page("smart-solar-energy-flow")
+        page.evaluate(
+            """() => {
+              const c = document.createElement('smart-solar-energy-flow');
+              c.setConfig({ entities: {
+                solar: 'sensor.r06_solar', home: 'sensor.r06_home',
+                grid: 'sensor.r06_grid', battery: 'sensor.r06_battery',
+              } });
+              window.__r06Card = c;
+              window.__r06OriginalCard = c;
+              window.__r06Hass = (i) => ({ states: {
+                'sensor.r06_solar': { state: String(100 + i), attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_home': { state: String(200 + i), attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_grid': { state: String(300 + i), attributes: { unit_of_measurement: 'W' } },
+                'sensor.r06_battery': { state: String(400 + i), attributes: { unit_of_measurement: 'W' } },
+              } });
+              document.body.appendChild(c);
+              c.hass = window.__r06Hass(0);
+            }"""
+        )
+        for cycle in range(1, 6):
+            removed = page.evaluate(
+                """() => {
+                  const c = window.__r06Card;
+                  c.remove();
+                  return { same: c === window.__r06OriginalCard, connected: c.isConnected, shadowRoot: Boolean(c.shadowRoot) };
+                }"""
+            )
+            self.assertTrue(removed["same"], f"cycle {cycle}: identity changed on remove: {removed}")
+            self.assertFalse(removed["connected"], f"cycle {cycle}: remove() left card connected: {removed}")
+            self.assertTrue(removed["shadowRoot"], f"cycle {cycle}: expected persistent host-owned shadow DOM: {removed}")
+
+            rendered = page.evaluate(
+                """i => {
+                  const c = window.__r06Card;
+                  document.body.appendChild(c);
+                  c.hass = window.__r06Hass(i);
+                  const values = Array.from(c.shadowRoot.querySelectorAll('.node .value'), el => el.textContent);
+                  const line = c.shadowRoot.querySelector('.flow-line');
+                  return {
+                    same: c === window.__r06OriginalCard,
+                    connected: c.isConnected,
+                    values,
+                    animationName: getComputedStyle(line).animationName,
+                  };
+                }""",
+                cycle,
+            )
+            self.assertTrue(rendered["same"] and rendered["connected"], f"cycle {cycle}: {rendered}")
+            self.assertEqual(
+                rendered["values"],
+                [str(100 + cycle), str(200 + cycle), str(300 + cycle), str(400 + cycle)],
+                f"cycle {cycle}: hass values did not render after reconnect: {rendered}",
+            )
+            self.assertEqual(rendered["animationName"], "pulse", f"cycle {cycle}: native CSS animation missing: {rendered}")
+
+        self.assertEqual(errors, [], f"energy-flow-card page errors: {errors}")
+
+    def test_pv_comparison_same_object_observer_and_interactions_after_five_reconnects(self) -> None:
+        page, errors = self._load_page("pv-comparison-card")
+        page.evaluate(
+            """() => {
+              const c = document.createElement('pv-comparison-card');
+              c.style.display = 'block';
+              c.style.width = '900px';
+              c.setConfig({ entity: 'sensor.r06_actual', forecast_entity: 'sensor.r06_forecast', title: 'R06 reconnect' });
+              const parts = new Intl.DateTimeFormat('en-CA', {
+                timeZone: 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+              }).formatToParts(new Date());
+              const part = type => parts.find(item => item.type === type).value;
+              const today = `${part('year')}-${part('month')}-${part('day')}`;
+              const previousDate = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+              window.__r06Today = today;
+              window.__r06Hass = i => ({ config: { time_zone: 'UTC' }, states: {
+                'sensor.r06_actual': { state: 'on', attributes: {
+                  points: [{ time: `${today}T00:00:00Z`, power_w: 700 + i }],
+                  previous_day: { date: previousDate, basis: 'cloud_half_hour_samples', points: [
+                    { time: `${previousDate}T23:30:00Z`, power_w: 50 + i },
+                  ] },
+                } },
+                'sensor.r06_forecast': { state: 'on', attributes: {
+                  hourly_forecast_date: today,
+                  hourly_forecast_w: new Array(24).fill(120 + i),
+                  total_kwh: (120 + i) * 24 / 1000,
+                } },
+              } });
+              window.__r06Card = c;
+              window.__r06OriginalCard = c;
+              document.body.appendChild(c);
+              c.hass = window.__r06Hass(0);
+            }"""
+        )
+        page.wait_for_function(
+            "() => window.__wraps.length === 1 && window.__wraps[0].callbackFires > 0",
+            timeout=5000,
+        )
+        initial = page.evaluate(
+            """() => ({
+              registered: window.__r06Card instanceof customElements.get('pv-comparison-card'),
+              connected: window.__r06Card.isConnected,
+              identity: window.__r06Card === window.__r06OriginalCard,
+              activeDelegated: window.__wraps.filter(w => !w.disconnected).length,
+              activeNative: window.__wraps.filter(w => w.nativeActive).length,
+              total: window.__wraps.length,
+              observeCount: window.__wraps[0].observeCount,
+              targetMatch: window.__wraps[0].callbackTargets.length > 0
+                && window.__wraps[0].callbackTargets.every(target => target === window.__r06Card),
+              button: window.__r06Card.querySelector('button')?.getAttribute('aria-pressed'),
+              actual: window.__r06Card.querySelector('.stats .value')?.textContent,
+            })"""
+        )
+        self.assertTrue(initial["registered"] and initial["connected"] and initial["identity"], initial)
+        self.assertEqual((initial["activeDelegated"], initial["activeNative"], initial["total"], initial["observeCount"]), (1, 1, 1, 1), initial)
+        self.assertTrue(initial["targetMatch"], f"initial observer target was not this card: {initial}")
+        self.assertEqual(initial["button"], "true", initial)
+        self.assertIn("700 Вт", initial["actual"], initial)
+        show_previous = True
+
+        for cycle in range(1, 6):
+            removed = page.evaluate(
+                """() => {
+                  const c = window.__r06Card;
+                  c.remove();
+                  return {
+                    same: c === window.__r06OriginalCard,
+                    connected: c.isConnected,
+                    activeDelegated: window.__wraps.filter(w => !w.disconnected).length,
+                    activeNative: window.__wraps.filter(w => w.nativeActive).length,
+                    lastDisconnected: window.__wraps.at(-1).disconnected,
+                  };
+                }"""
+            )
+            self.assertTrue(removed["same"], f"cycle {cycle}: identity changed on remove: {removed}")
+            self.assertFalse(removed["connected"], f"cycle {cycle}: remove() left card connected: {removed}")
+            self.assertEqual((removed["activeDelegated"], removed["activeNative"]), (0, 0), f"cycle {cycle}: observer survived removal: {removed}")
+            self.assertTrue(removed["lastDisconnected"], f"cycle {cycle}: production did not disconnect observer: {removed}")
+
+            reattached = page.evaluate(
+                """i => {
+                  const c = window.__r06Card;
+                  document.body.appendChild(c);
+                  c.hass = window.__r06Hass(i);
+                  return { same: c === window.__r06OriginalCard, connected: c.isConnected };
+                }""",
+                cycle,
+            )
+            self.assertTrue(reattached["same"] and reattached["connected"], f"cycle {cycle}: {reattached}")
+            expected_total = cycle + 1
+            page.wait_for_function(
+                "n => window.__wraps.length === n && window.__wraps.at(-1).callbackFires > 0",
+                arg=expected_total,
+                timeout=5000,
+            )
+            state = page.evaluate(
+                """() => ({
+                  activeDelegated: window.__wraps.filter(w => !w.disconnected).length,
+                  activeNative: window.__wraps.filter(w => w.nativeActive).length,
+                  total: window.__wraps.length,
+                  observeCount: window.__wraps.at(-1).observeCount,
+                  targetMatch: window.__wraps.at(-1).callbackTargets.length > 0
+                    && window.__wraps.at(-1).callbackTargets.every(target => target === window.__r06Card),
+                  button: window.__r06Card.querySelector('button')?.getAttribute('aria-pressed'),
+                  actual: window.__r06Card.querySelector('.stats .value')?.textContent,
+                  previousVisible: Array.from(window.__r06Card.querySelectorAll('.legend span'))
+                    .some(item => item.textContent.includes('Учора')),
+                })"""
+            )
+            self.assertEqual((state["activeDelegated"], state["activeNative"]), (1, 1), f"cycle {cycle}: expected one live native observer: {state}")
+            self.assertEqual((state["total"], state["observeCount"]), (expected_total, 1), f"cycle {cycle}: observer count multiplied: {state}")
+            self.assertTrue(state["targetMatch"], f"cycle {cycle}: observer callback target mismatch: {state}")
+            self.assertEqual(state["button"], str(show_previous).lower(), f"cycle {cycle}: toggle state changed on reconnect: {state}")
+            self.assertEqual(state["previousVisible"], show_previous, f"cycle {cycle}: previous-day render state changed on reconnect: {state}")
+            self.assertIn(f"{700 + cycle} Вт", state["actual"], f"cycle {cycle}: hass update not rendered: {state}")
+
+            # Exercise the point's direct onclick property through an actual
+            # browser click; its tooltip must reflect this cycle's fixture.
+            page.locator('circle.point[fill="#2ecc71"]').first.click()
+            tip = page.locator('.hint').text_content()
+            self.assertTrue(tip and tip.startswith('Факт · '), f"cycle {cycle}: chart click handler did not update hint: {tip!r}")
+            self.assertIn(page.evaluate("() => window.__r06Today"), tip)
+            self.assertIn(str(700 + cycle), tip)
+
+            # Click the toggle once. A single native click must flip exactly
+            # once after every reconnect (no stacked handlers).
+            page.locator('button').click()
+            show_previous = not show_previous
+            interaction = page.evaluate(
+                """() => ({
+                  pressed: window.__r06Card.querySelector('button')?.getAttribute('aria-pressed'),
+                  previousVisible: Array.from(window.__r06Card.querySelectorAll('.legend span'))
+                    .some(item => item.textContent.includes('Учора')),
+                })"""
+            )
+            self.assertEqual(interaction["pressed"], str(show_previous).lower(), f"cycle {cycle}: toggle handler did not fire exactly once: {interaction}")
+            self.assertEqual(interaction["previousVisible"], show_previous, f"cycle {cycle}: prior-day visibility mismatch after click: {interaction}")
+
+        self.assertEqual(errors, [], f"pv-comparison-card page errors: {errors}")
 
 
 # ==== Control-failure test ====
