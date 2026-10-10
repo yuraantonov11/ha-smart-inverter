@@ -203,6 +203,8 @@ class HemsEngine:
         self._pending_output_previous_switch_at: datetime | None = None
         self._manual_override_until: datetime | None = None
         self._last_manual_override_log: datetime | None = None
+        self._manual_override_output_mismatch: tuple[datetime, str, str] | None = None
+        self._manual_override_charger_mismatch: tuple[datetime, str, str] | None = None
 
         # Command dedup
         self._command_dedup_window = timedelta(
@@ -510,7 +512,7 @@ class HemsEngine:
         elif self._manual_override_until and now < self._manual_override_until:
             if self._last_manual_override_log is None or now - self._last_manual_override_log > timedelta(minutes=5):
                 remaining = (self._manual_override_until - now).total_seconds()
-                _LOGGER.info("HEMS: manual override hold (%.0fs remaining)", remaining)
+                _LOGGER.info("HEMS: observed command-readback mismatch hold (%.0fs remaining)", remaining)
                 self._last_manual_override_log = now
             reason = _Reason.MANUAL_OVERRIDE
         elif smart_mode not in (SmartMode.ADAPTIVE, SmartMode.ARBITRAGE, SmartMode.STORM):
@@ -721,40 +723,60 @@ class HemsEngine:
         actual_charger: str | None,
         now: datetime | None = None,
     ) -> bool:
-        """Detect if user manually changed mode.
+        """Detect a mismatch between observed device modes and last HEMS commands.
 
-        If device mode differs from last HEMS command for >30s,
-        arm a manual override hold for 30 minutes.
+        A mismatch's source is unknown to this method. A new mismatch for a
+        command older than 30 seconds arms the configured protective hold.
         """
         now = now or datetime.now()
+        hold_active = bool(self._manual_override_until and self._manual_override_until > now)
+        output_mismatch_active = False
+        charger_mismatch_active = False
+        new_output_mismatch = False
+        new_charger_mismatch = False
 
         norm_out = _normalize_output(actual_output)
         norm_last = _normalize_output(self._last_cmd_output)
         if norm_out and norm_last and norm_out != norm_last:
             if self._last_cmd_output_at and (now - self._last_cmd_output_at).total_seconds() > 30:
-                # Don't keep re-arming if we already detected override recently
-                # (prevents log-spam loops when HEMS keeps writing same target)
-                if self._manual_override_until and self._manual_override_until > now:
-                    return True
-                self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
-                _LOGGER.info(
-                    "HEMS: manual override detected (output %s → %s), hold for %d min",
-                    self._last_cmd_output, actual_output, self.tun.manual_override_hold_min,
-                )
-                return True
+                output_mismatch_active = True
+                mismatch = (self._last_cmd_output_at, norm_last, norm_out)
+                if mismatch != self._manual_override_output_mismatch:
+                    self._manual_override_output_mismatch = mismatch
+                    new_output_mismatch = True
+        elif norm_out and norm_last:
+            self._manual_override_output_mismatch = None
 
         norm_chg = _normalize_charger(actual_charger)
         norm_last_c = _normalize_charger(self._last_cmd_charger)
         if norm_chg and norm_last_c and norm_chg != norm_last_c:
             if self._last_cmd_charger_at and (now - self._last_cmd_charger_at).total_seconds() > 30:
-                if self._manual_override_until and self._manual_override_until > now:
-                    return True
-                self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
+                charger_mismatch_active = True
+                mismatch = (self._last_cmd_charger_at, norm_last_c, norm_chg)
+                if mismatch != self._manual_override_charger_mismatch:
+                    self._manual_override_charger_mismatch = mismatch
+                    new_charger_mismatch = True
+        elif norm_chg and norm_last_c:
+            self._manual_override_charger_mismatch = None
+
+        # Process both channels before returning for an existing hold or
+        # starting one. Otherwise the first mismatch masks the second and it
+        # can arm a sequential hold after the first one expires.
+        if hold_active:
+            return output_mismatch_active or charger_mismatch_active
+        if new_output_mismatch or new_charger_mismatch:
+            self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
+            if new_output_mismatch:
                 _LOGGER.info(
-                    "HEMS: manual override detected (charger %s → %s), hold for %d min",
+                    "HEMS: observed output command-readback mismatch (%s commanded → %s observed), hold for %d min",
+                    self._last_cmd_output, actual_output, self.tun.manual_override_hold_min,
+                )
+            if new_charger_mismatch:
+                _LOGGER.info(
+                    "HEMS: observed charger command-readback mismatch (%s commanded → %s observed), hold for %d min",
                     self._last_cmd_charger, actual_charger, self.tun.manual_override_hold_min,
                 )
-                return True
+            return True
 
         return False
 
