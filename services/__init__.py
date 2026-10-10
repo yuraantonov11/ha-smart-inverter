@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
 import os
 from typing import Any
@@ -15,6 +15,7 @@ from homeassistant.exceptions import (
 )
 
 from ..const import DOMAIN
+from ..hems import evidence_journal
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,6 +47,15 @@ FORCE_GRID_CHARGE_SCHEMA = vol.Schema(
         vol.Optional("entry_id"): str,
         vol.Optional("duration_minutes", default=60): vol.All(
             vol.Coerce(int), vol.Range(min=5, max=480)
+        ),
+    }
+)
+
+EXPORT_INCIDENT_EVIDENCE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("entry_id"): str,
+        vol.Optional("hours", default=24): vol.All(
+            vol.Coerce(int), vol.Range(min=1, max=168)
         ),
     }
 )
@@ -410,6 +420,43 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def _get_api(call: ServiceCall):
         """T11: delegate to the module-level resolver."""
         return _resolve_entry(hass, call)
+
+    async def handle_export_incident_evidence(call: ServiceCall) -> None:
+        """Export a sanitized, bounded evidence bundle without blocking HA."""
+        _, coordinator = await _get_api(call)
+        entry_id = call.data.get("entry_id") or getattr(
+            getattr(coordinator, "_entry", None), "entry_id", None
+        )
+        if not entry_id:
+            raise ServiceValidationError("Could not resolve the selected inverter entry")
+        end = datetime.now(timezone.utc)
+        start = end - timedelta(hours=int(call.data.get("hours", 24)))
+        drained = await hass.async_add_executor_job(evidence_journal.drain, 5.0)
+        if not drained:
+            raise ServiceValidationError("Incident evidence could not be fully flushed; export was not created")
+        try:
+            path, count = await hass.async_add_executor_job(
+                evidence_journal.export_bundle_sync,
+                hass.config.config_dir,
+                entry_id,
+                start,
+                end,
+            )
+        except ValueError as exc:
+            raise ServiceValidationError(f"Incident evidence export rejected: {exc}") from exc
+        evidence_journal.record_event(entry_id, "export", outcome="exported", critical=True)
+        hass.bus.async_fire(
+            f"{DOMAIN}_incident_evidence_exported",
+            {"entry_id": entry_id, "path": str(path), "records": count},
+        )
+        _LOGGER.info("Incident evidence exported: entry_id=%s records=%d file=%s", entry_id, count, path)
+
+    hass.services.async_register(
+        DOMAIN,
+        "export_incident_evidence",
+        handle_export_incident_evidence,
+        schema=EXPORT_INCIDENT_EVIDENCE_SCHEMA,
+    )
 
     async def handle_set_output_priority(call: ServiceCall) -> None:
         api, coordinator = await _get_api(call)

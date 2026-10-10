@@ -157,18 +157,53 @@ assert soc_index < eval_index, (
     "soc_unknown must be computed BEFORE _hems.evaluate; otherwise the "
     "engine would already have been called with a fallback SOC."
 )
-# And the gate must come AFTER _hems.evaluate so the engine can
-# still produce a decision for diagnostics, but the dispatch is
-# blocked. The actual hard gate is the block guarded by
-# `if soc_unknown:` before `_execute_hems_command`.
-gate_index = run_hems_src.find("if soc_unknown:")
-exec_index = run_hems_src.find("await self._execute_hems_command(decision)")
-assert gate_index != -1, "soc_unknown dispatch gate not found in _run_hems_engine"
-assert exec_index != -1, "_execute_hems_command call not found"
-assert gate_index < exec_index, (
-    "The soc_unknown dispatch gate must come before _execute_hems_command; "
-    "otherwise the engine could already have written to the inverter."
+# The hard gate is an ``if soc_unknown`` statement whose body returns
+# from _run_hems_engine before either dispatch path can run. Check the
+# production AST, not a brittle literal spelling of the dispatch call.
+run_hems_node = next(
+    node for node in ast.walk(tree)
+    if isinstance(node, ast.AsyncFunctionDef)
+    and node.name == "_run_hems_engine"
 )
+gate_stmt_index = next(
+    index for index, stmt in enumerate(run_hems_node.body)
+    if isinstance(stmt, ast.If)
+    and isinstance(stmt.test, ast.Name)
+    and stmt.test.id == "soc_unknown"
+)
+gate_stmt = run_hems_node.body[gate_stmt_index]
+assert isinstance(gate_stmt, ast.If)
+assert gate_stmt.body and isinstance(gate_stmt.body[-1], ast.Return), (
+    "the soc_unknown branch must unconditionally return before dispatch"
+)
+command_dispatches = [
+    (index, node)
+    for index, stmt in enumerate(run_hems_node.body)
+    for node in ast.walk(stmt)
+    if isinstance(node, ast.Await)
+    and isinstance(node.value, ast.Call)
+    and isinstance(node.value.func, ast.Attribute)
+    and node.value.func.attr == "_execute_hems_command"
+    and node.value.args
+    and isinstance(node.value.args[0], ast.Name)
+    and node.value.args[0].id == "decision"
+]
+assert len(command_dispatches) == 1, (
+    "expected one regular decision dispatch through _execute_hems_command"
+)
+dispatch_stmt_index, dispatch_await = command_dispatches[0]
+assert gate_stmt_index < dispatch_stmt_index, (
+    "soc_unknown return gate must precede regular command dispatch"
+)
+dispatch_call = dispatch_await.value
+assert isinstance(dispatch_call, ast.Call)
+keywords = {keyword.arg: keyword.value for keyword in dispatch_call.keywords}
+command_id = keywords.get("command_id")
+assert isinstance(command_id, ast.Name)
+assert command_id.id == "decision_id"
+evidence_recorded = keywords.get("evidence_recorded")
+assert isinstance(evidence_recorded, ast.Constant)
+assert evidence_recorded.value is True
 
 
 print("T01-gate OK — unknown SOC blocks every command, real SOC passes")

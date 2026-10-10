@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import uuid
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
@@ -36,6 +37,7 @@ from .hems.engine import (
     _finite_number,
 )
 from .hems import debug_logging
+from .hems import evidence_journal
 from .hems.options_helpers import compute_reserve_soc
 from .hems.tuning import HemsTunables, HemsTuningService, PredictiveTuning
 from .hems.storm_risk import evaluate_storm_risk
@@ -181,6 +183,53 @@ def _validate_force_telemetry(
         "grid_w": grid_w,
         "battery_w": battery_w,
     }
+
+
+def _evidence_setting_value(value: Any) -> str | int | float | None:
+    """Normalize only a setting value safe for the journal's allowlist."""
+    if isinstance(value, dict):
+        value = value.get("value")
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return value if math.isfinite(float(value)) else None
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    labels = {"USB": "0", "SBU": "2", "CSO": "0", "SNU": "1", "OSO": "2", "UTO": "3"}
+    if value in labels:
+        return labels[value]
+    if len(value) <= 32 and value.replace(".", "", 1).isdigit():
+        return value
+    return None
+
+
+def _evidence_mode(value: Any) -> str:
+    try:
+        return {0: "adaptive", 1: "arbitrage", 2: "storm"}.get(int(value), "unknown")
+    except (TypeError, ValueError):
+        return "unknown"
+
+
+_EVIDENCE_HOLD_REASONS = {
+    "circuit_breaker": "circuit_breaker",
+    "manual_override_hold": "manual_override",
+    "invalid_telemetry": "invalid_telemetry",
+    "reserve_soc_protection": "reserve_soc_protection",
+    "reserve_floor": "reserve_soc_protection",
+    "hems_auto_off": "hems_auto_off",
+    "keepalive_in_progress": "keepalive_in_progress",
+    "inverter_offline": "inverter_offline",
+    "emergency_stale_data": "inverter_offline",
+}
+
+
+def _evidence_active_holds(reason: str, *, soc_unknown: bool = False) -> list[str]:
+    """Map only explicit coordinator/engine safety holds to journal codes."""
+    if soc_unknown:
+        return ["soc_unknown"]
+    hold = _EVIDENCE_HOLD_REASONS.get(reason)
+    return [hold] if hold is not None else []
 
 
 class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
@@ -724,6 +773,172 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             _LOGGER.debug("persist user option %s=%s failed: %s", key, value, exc)
 
     # ═══════════════════════════════════════════════════════════════════
+    # INCIDENT EVIDENCE
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _record_poll_evidence(
+        self,
+        outcome: str,
+        raw: dict[str, Any] | None = None,
+        error_class: str | None = None,
+        *,
+        confirmed_offline: bool = False,
+        device_settings: dict[str, Any] | None = None,
+        settings_refreshed: bool = False,
+    ) -> None:
+        entry_id = getattr(getattr(self, "_entry", None), "entry_id", None)
+        if not entry_id:
+            return
+        raw = raw if isinstance(raw, dict) else {}
+        is_fresh = outcome == "fresh_success"
+        cached = not is_fresh and getattr(self, "data", None) is not None
+        source = getattr(self.api, "last_realtime_source", "unavailable") if is_fresh else ("cache" if cached else "unavailable")
+        state_source = raw if is_fresh else (getattr(self, "data", None) or {})
+        current_output = _evidence_setting_value(state_source.get("outputSourcePriority"))
+        current_charger = _evidence_setting_value(state_source.get("chargerSourcePriority"))
+        received_at = getattr(self.api, "last_realtime_response_received_at", None)
+        last_success = getattr(self.api, "last_realtime_success_received_at", None)
+        age_since_success = None
+        try:
+            if isinstance(last_success, str):
+                last_success = datetime.fromisoformat(last_success.replace("Z", "+00:00"))
+            if isinstance(last_success, datetime) and last_success.tzinfo is not None:
+                age = (datetime.now(timezone.utc) - last_success.astimezone(timezone.utc)).total_seconds()
+                if math.isfinite(age) and age >= 0:
+                    age_since_success = age
+        except (TypeError, ValueError, OverflowError):
+            pass
+        availability = (
+            "online" if is_fresh else
+            "offline" if confirmed_offline or getattr(self.api, "last_realtime_offline", False) is True else
+            "unknown"
+        )
+        state = {
+            "raw_soc": state_source.get("batterySoc"),
+            "corrected_soc": state_source.get("correctedSoc"),
+            "battery_voltage_v": state_source.get("batteryVoltage"),
+            "battery_current_a": state_source.get("batteryCurrent"),
+            "battery_power_w": state_source.get("batteryPower"),
+            "pv_power_w": state_source.get("pvPower"),
+            "load_power_w": state_source.get("loadPower"),
+            "grid_power_w": state_source.get("gridPower"),
+            "grid_voltage_v": state_source.get("gridVoltage"),
+            "source": source,
+            "availability": availability,
+            "age_since_last_success_s": age_since_success,
+            "cached": cached,
+            "fallback": not is_fresh,
+            "stale": not is_fresh,
+            "current_output_mode": current_output,
+            "current_charger_mode": current_charger,
+        }
+        raw_fields = raw.get("rawFields")
+        if is_fresh and isinstance(raw_fields, dict):
+            state.update({
+                "alarms": raw_fields,
+                "alarms_source": getattr(self.api, "last_realtime_source", None),
+                "alarms_fetched_at": received_at,
+            })
+        if is_fresh and settings_refreshed and isinstance(device_settings, dict):
+            state.update({
+                "thresholds": device_settings,
+                "thresholds_source": "device_config",
+                "thresholds_fetched_at": getattr(self.api, "last_device_configs_received_at", None),
+            })
+        self._record_command_readbacks(raw if is_fresh else {})
+        evidence_journal.record_event(
+            entry_id,
+            "cycle",
+            outcome=outcome,
+            cloud_response_received_at=received_at,
+            device_measurement_at=getattr(self.api, "last_realtime_measurement_at", None) if is_fresh else None,
+            ha_state_published_at=None,
+            state=state,
+            error={"class": error_class, "code": None} if error_class else None,
+            critical=False,
+        )
+
+    def _record_hems_evidence(
+        self,
+        outcome: str,
+        reason: str,
+        *,
+        command_id: str | None = None,
+        raw: dict[str, Any] | None = None,
+        current_mode: Any = None,
+        target_mode: Any = None,
+        target_output: Any = None,
+        target_charger: Any = None,
+        active_holds: list[str] | None = None,
+    ) -> None:
+        entry_id = getattr(getattr(self, "_entry", None), "entry_id", None)
+        if not entry_id:
+            return
+        raw = raw if isinstance(raw, dict) else {}
+        command = {"command_id": command_id} if command_id else None
+        evidence_journal.record_event(
+            entry_id,
+            "hems_cycle",
+            outcome=outcome,
+            state={
+                "raw_soc": raw.get("batterySoc"),
+                "corrected_soc": raw.get("correctedSoc"),
+                "battery_voltage_v": raw.get("batteryVoltage"),
+                "battery_current_a": raw.get("batteryCurrent"),
+                "battery_power_w": raw.get("batteryPower"),
+                "pv_power_w": raw.get("pvPower"),
+                "load_power_w": raw.get("loadPower"),
+                "grid_power_w": raw.get("gridPower"),
+                "grid_voltage_v": raw.get("gridVoltage"),
+                "availability": "online",
+                "source": getattr(self.api, "last_realtime_source", "unavailable"),
+                "current_mode": _evidence_mode(current_mode) if current_mode is not None else None,
+                "target_mode": _evidence_mode(target_mode) if target_mode is not None else None,
+                "current_output_mode": _evidence_setting_value(raw.get("outputSourcePriority")),
+                "current_charger_mode": _evidence_setting_value(raw.get("chargerSourcePriority")),
+                "target_output_mode": _evidence_setting_value(target_output),
+                "target_charger_mode": _evidence_setting_value(target_charger),
+                "predictive_mode": getattr(self, "predictive_mode", "unknown"),
+                "effective_hems_auto": getattr(self, "hems_auto_mode", None),
+                "reserve_soc": getattr(self._entry, "options", {}).get("reserve_soc", 20.0),
+                "decision_reason": reason,
+                "active_holds": active_holds or [],
+            },
+            command=command,
+            critical=False,
+        )
+
+    def _record_command_readbacks(
+        self,
+        raw: dict[str, Any],
+        device_settings: dict[str, Any] | None = None,
+        *,
+        settings_refreshed: bool = False,
+    ) -> None:
+        entry_id = getattr(getattr(self, "_entry", None), "entry_id", None)
+        if not entry_id:
+            return
+        realtime_observations: dict[str, Any] = {}
+        for key, aliases in {
+            "outputSourcePrioritySetting": ("outputSourcePriority", "outputSourcePrioritySetting"),
+            "chargerSourcePrioritySetting": ("chargerSourcePriority", "chargerSourcePrioritySetting"),
+        }.items():
+            for alias in aliases:
+                if alias in raw:
+                    value = _evidence_setting_value(raw[alias])
+                    if value is not None:
+                        realtime_observations[key] = value
+                        break
+        measurement_at = getattr(self.api, "last_realtime_measurement_at", None)
+        response_received_at = getattr(self.api, "last_realtime_response_received_at", None)
+        evidence_journal.record_readbacks(
+            entry_id,
+            realtime_observations,
+            measurement_at,
+            cloud_response_received_at=response_received_at,
+        )
+
+    # ═══════════════════════════════════════════════════════════════════
     # MAIN UPDATE LOOP
     # ═══════════════════════════════════════════════════════════════════
 
@@ -737,14 +952,22 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         except TokenExpiredError:
             _LOGGER.error("Token expired — triggering re-auth")
             self._entry.async_start_reauth(self.hass)
-            return self._build_offline_state(now)
+            fallback = self._build_offline_state(now)
+            self._record_poll_evidence("reauth_required", fallback)
+            return fallback
         except InverterOfflineError:
             self._consecutive_nulls += 1
             _LOGGER.warning(
                 "Realtime offline (attempt #%d), using fallback state",
                 self._consecutive_nulls,
             )
-            return self._build_offline_state(now)
+            fallback = self._build_offline_state(now)
+            self._record_poll_evidence("offline", fallback, confirmed_offline=True)
+            return fallback
+        except Exception as exc:
+            outcome = "timeout" if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) else "poll_error"
+            self._record_poll_evidence(outcome, error_class=type(exc).__name__)
+            raise
 
         if raw is None:
             self._consecutive_nulls += 1
@@ -752,7 +975,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 "No realtime data (attempt #%d), using fallback state",
                 self._consecutive_nulls,
             )
-            return self._build_offline_state(now)
+            outcome = getattr(self.api, "last_realtime_outcome", "empty_response")
+            if outcome not in {"empty_response", "malformed_response", "timeout", "offline", "auth_failure"}:
+                outcome = "empty_response"
+            fallback = self._build_offline_state(now)
+            self._record_poll_evidence(outcome, fallback)
+            return fallback
 
         self._consecutive_nulls = 0
 
@@ -887,6 +1115,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         # ── Device settings (cooldown 60s to respect API rate limit) ──
         device_settings = self.data.get("deviceSettings", {}) if self.data else {}
+        settings_refreshed = False
         config_fetch_cooldown = (
             self._last_config_fetch_at is None
             or (now - self._last_config_fetch_at).total_seconds() > 60
@@ -897,6 +1126,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 self._last_config_fetch_at = now
                 if isinstance(fetched, dict) and fetched:
                     device_settings = fetched
+                    settings_refreshed = True
                     _LOGGER.info("Device settings loaded: %d keys", len(fetched))
                 else:
                     _LOGGER.info("Device settings empty - no data from API")
@@ -919,8 +1149,9 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             await self._run_hems_engine(raw, corrected_soc, now)
         else:
             self._hems.invalidate_predictive("hems_auto_off")
+            self._record_hems_evidence("held", "hems_auto_off", raw=raw, active_holds=["hems_auto_off"])
 
-        return {
+        result = {
             **raw,
             "correctedSoc": corrected_soc,
             "gridAvailable": grid_available,
@@ -929,6 +1160,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             "lastUpdated": now.isoformat(),
             "deviceSettings": device_settings,
         }
+        self._record_poll_evidence(
+            "fresh_success", result,
+            device_settings=device_settings,
+            settings_refreshed=settings_refreshed,
+        )
+        return result
 
     # ═══════════════════════════════════════════════════════════════════
     # HEMS ENGINE INTEGRATION
@@ -1046,6 +1283,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # Skip if keepalive in progress
         if self._hems.keepalive.in_progress:
             self._hems.invalidate_predictive("keepalive_in_progress")
+            self._record_hems_evidence("held", "keepalive_in_progress", raw=raw, active_holds=["keepalive_in_progress"])
             return
 
         # Skip HEMS if disabled (monitor-only mode)
@@ -1054,6 +1292,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             self.hems_last_reason = "hems_disabled"
             self.hems_last_output_cmd = None
             self.hems_last_charger_cmd = None
+            self._record_hems_evidence("held", "hems_disabled", raw=raw, active_holds=["hems_disabled"])
             return
 
         # Run main HEMS evaluation
@@ -1159,6 +1398,24 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
             # the planner emit a "fully charged" recommendation
             # while the meter was unreadable.
             soc_unknown=soc_unknown,
+        )
+        decision_id = str(uuid.uuid4())
+        has_target = (
+            decision.output_priority is not None
+            or decision.charger_priority is not None
+            or decision.buzzer_off
+        )
+        decision_outcome = "held" if soc_unknown or decision.skip else ("decision" if has_target else "skipped")
+        self._record_hems_evidence(
+            decision_outcome,
+            "soc_unknown" if soc_unknown else decision.reason,
+            command_id=decision_id,
+            raw={**raw, "correctedSoc": corrected_soc},
+            current_mode=self.smart_mode,
+            target_mode=effective_mode,
+            target_output=decision.output_priority,
+            target_charger=decision.charger_priority,
+            active_holds=_evidence_active_holds(decision.reason, soc_unknown=soc_unknown),
         )
 
         self._persist_night_recommendation(now)
@@ -1378,48 +1635,64 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         # Execute command
         if not decision.skip:
-            await self._execute_hems_command(decision)
+            await self._execute_hems_command(decision, command_id=decision_id, evidence_recorded=True)
 
-    async def _execute_hems_command(self, decision: HemsDecision) -> None:
-        """Execute a HEMS decision by calling the API."""
+    async def _execute_hems_command(
+        self,
+        decision: HemsDecision,
+        command_id: str | None = None,
+        *,
+        evidence_recorded: bool = False,
+    ) -> None:
+        """Execute a HEMS decision and correlate its writes with readback."""
+        command_id = command_id or str(uuid.uuid4())
+        if not evidence_recorded:
+            self._record_hems_evidence(
+                "decision",
+                decision.reason,
+                command_id=command_id,
+                target_output=decision.output_priority,
+                target_charger=decision.charger_priority,
+            )
         success = True
         # A channel remains failed until its write is acknowledged, including
         # writes skipped because an earlier API call raised an exception.
         output_failed = decision.output_priority is not None
         charger_failed = decision.charger_priority is not None
 
-        try:
-            if decision.output_priority is not None:
-                ok = await self.api.set_output_priority(decision.output_priority)
-                output_failed = not ok
-                if not ok:
-                    success = False
-                    _LOGGER.warning("HEMS: failed to set output → %s (%s)", decision.output_priority, decision.reason)
-                else:
-                    _LOGGER.debug("HEMS: output → %s (%s)", decision.output_priority, decision.reason)
+        with evidence_journal.command_scope(command_id):
+            try:
+                if decision.output_priority is not None:
+                    ok = await self.api.set_output_priority(decision.output_priority)
+                    output_failed = not ok
+                    if not ok:
+                        success = False
+                        _LOGGER.warning("HEMS: failed to set output → %s (%s)", decision.output_priority, decision.reason)
+                    else:
+                        _LOGGER.debug("HEMS: output → %s (%s)", decision.output_priority, decision.reason)
 
-            if decision.charger_priority is not None:
-                ok = await self.api.set_charger_priority(decision.charger_priority)
-                charger_failed = not ok
-                if not ok:
-                    success = False
-                    _LOGGER.warning("HEMS: failed to set charger → %s (%s)", decision.charger_priority, decision.reason)
-                else:
-                    _LOGGER.debug("HEMS: charger → %s (%s)", decision.charger_priority, decision.reason)
+                if decision.charger_priority is not None:
+                    ok = await self.api.set_charger_priority(decision.charger_priority)
+                    charger_failed = not ok
+                    if not ok:
+                        success = False
+                        _LOGGER.warning("HEMS: failed to set charger → %s (%s)", decision.charger_priority, decision.reason)
+                    else:
+                        _LOGGER.debug("HEMS: charger → %s (%s)", decision.charger_priority, decision.reason)
 
-            # Acoustic comfort: toggle buzzer
-            if decision.buzzer_off and self._hems._last_buzzer != "0":
-                await self.api.set_config_item("buzzerAlarmSetting", "0")
-                self._hems._last_buzzer = "0"
-                _LOGGER.debug("HEMS: buzzer OFF (acoustic comfort)")
-            elif not decision.buzzer_off and self._hems._last_buzzer != "1":
-                await self.api.set_config_item("buzzerAlarmSetting", "1")
-                self._hems._last_buzzer = "1"
-                _LOGGER.debug("HEMS: buzzer ON")
+                # Acoustic comfort: toggle buzzer
+                if decision.buzzer_off and self._hems._last_buzzer != "0":
+                    await self.api.set_config_item("buzzerAlarmSetting", "0")
+                    self._hems._last_buzzer = "0"
+                    _LOGGER.debug("HEMS: buzzer OFF (acoustic comfort)")
+                elif not decision.buzzer_off and self._hems._last_buzzer != "1":
+                    await self.api.set_config_item("buzzerAlarmSetting", "1")
+                    self._hems._last_buzzer = "1"
+                    _LOGGER.debug("HEMS: buzzer ON")
 
-        except Exception as exc:
-            _LOGGER.error("HEMS: control command failed: %s", exc)
-            success = False
+            except Exception as exc:
+                _LOGGER.error("HEMS: control command failed: %s", exc)
+                success = False
 
         if success:
             self._hems.report_control_success()

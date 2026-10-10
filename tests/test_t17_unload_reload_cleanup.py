@@ -86,11 +86,30 @@ class _RecorderCoordinator:
         self.shutdown_calls += 1
 
 
+class _RecorderJournal:
+    def __init__(self, order: list[str] | None = None) -> None:
+        self.order = order
+        self.drain_calls: list[float] = []
+        self.unbind_calls: list[str] = []
+
+    def drain(self, timeout: float) -> bool:
+        self.drain_calls.append(timeout)
+        if self.order is not None:
+            self.order.append("journal.drain")
+        return True
+
+    def unbind_entry(self, entry_id: str) -> None:
+        self.unbind_calls.append(entry_id)
+        if self.order is not None:
+            self.order.append("journal.unbind")
+
+
 class _StubHass:
     def __init__(self) -> None:
         self.data: dict[str, dict[str, object]] = {"powmr_inverter": {}}
         self.platforms_unloaded: list[tuple[str, ...]] = []
         self.forwarded: list[tuple[str, ...]] = []
+        self.executor_jobs: list[tuple[object, tuple[object, ...]]] = []
         # Mirror the real HA interface used by
         # ``__init__.py``. ``config_entries`` is a
         # namespace object that exposes the
@@ -105,6 +124,10 @@ class _StubHass:
         ce.async_unload_platforms = _unload_platforms
         ce.async_forward_entry_setups = _forward_entry_setups
         self.config_entries = ce
+
+    async def async_add_executor_job(self, func, *args):
+        self.executor_jobs.append((func, args))
+        return func(*args)
 
     def _entry_id(self, entry_id: str) -> None:
         pass
@@ -126,6 +149,7 @@ def _stub_debug_logging():
 class T17CleanupTests(unittest.TestCase):
     def setUp(self) -> None:
         self._init_source = _load_init_source()
+        self.journal = _RecorderJournal()
 
     # ── 1. async_unload_entry calls api.close() once and only once ──
 
@@ -140,6 +164,7 @@ class T17CleanupTests(unittest.TestCase):
             "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
+            "evidence_journal": self.journal,
             "PLATFORMS": ("sensor",),
         }
         exec(compile(body, "<t17-unload>", "exec"), ns)
@@ -160,6 +185,8 @@ class T17CleanupTests(unittest.TestCase):
             self.assertNotIn(entry.entry_id, hass.data["powmr_inverter"])
 
         asyncio.run(_run())
+        self.assertEqual(self.journal.drain_calls, [5.0])
+        self.assertEqual(self.journal.unbind_calls, ["entry-1"])
 
     # ── 2. async_reload_entry skips setup if unload failed ──
 
@@ -215,6 +242,7 @@ class T17CleanupTests(unittest.TestCase):
             "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
+            "evidence_journal": self.journal,
             "PLATFORMS": ("sensor",),
         }
         exec(compile(body, "<t17-unload>", "exec"), ns)
@@ -242,6 +270,8 @@ class T17CleanupTests(unittest.TestCase):
             self.assertEqual(api.closed, 1)
 
         asyncio.run(_run())
+        self.assertEqual(self.journal.drain_calls, [5.0])
+        self.assertEqual(self.journal.unbind_calls, ["entry-1"])
 
     # ── 4. partial setup failure releases created resources ────────
 
@@ -348,6 +378,7 @@ class T17CleanupTests(unittest.TestCase):
             "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
+            "evidence_journal": self.journal,
             "PLATFORMS": ("sensor",),
         }
         exec(compile(body, "<t17-unload>", "exec"), ns)
@@ -383,6 +414,8 @@ class T17CleanupTests(unittest.TestCase):
         records the call order.
         """
         order: list[str] = []
+        journal = _RecorderJournal(order)
+        self.journal = journal
 
         class _OrderApi:
             async def close(self) -> None:
@@ -403,6 +436,7 @@ class T17CleanupTests(unittest.TestCase):
             "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
+            "evidence_journal": self.journal,
             "PLATFORMS": ("sensor",),
         }
         exec(compile(body, "<t17-unload>", "exec"), ns)
@@ -419,22 +453,24 @@ class T17CleanupTests(unittest.TestCase):
             await unload(hass, entry)
 
         asyncio.run(_run())
-        # Coordinator must run first, then
-        # history, then API close. The entry
-        # is dropped from hass.data after all
-        # three.
+        # Coordinator and history shutdown, journal drain/unbind, and API
+        # close are all observable, with the journal drained before close.
         self.assertEqual(
             order,
             [
                 "coordinator.shutdown",
                 "history_coordinator.shutdown",
+                "journal.drain",
+                "journal.unbind",
                 "api.close",
             ],
             msg=(
-                f"unload order must be coordinator -> history -> api; "
-                f"got {order}"
+                f"unload order must stop coordinators, drain/unbind journal, "
+                f"then close API; got {order}"
             ),
         )
+        self.assertEqual(journal.drain_calls, [5.0])
+        self.assertEqual(journal.unbind_calls, ["entry-1"])
 
     # ── 7c. api.close() exception does not abort cleanup ─────────
 
@@ -466,6 +502,7 @@ class T17CleanupTests(unittest.TestCase):
             "_get_debug_logging_module": lambda: _stub_debug_logging(),
             "DOMAIN": "powmr_inverter",
             "InverterApiClient": object,
+            "evidence_journal": self.journal,
             "PLATFORMS": ("sensor",),
         }
         exec(compile(body, "<t17-unload>", "exec"), ns)

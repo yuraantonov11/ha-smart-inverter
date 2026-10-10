@@ -4,6 +4,8 @@ import asyncio
 import os
 import sys
 import unittest
+import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -302,7 +304,15 @@ class TestEngineRefactor(unittest.TestCase):
         tree = ast.parse(source.read_text(encoding='utf-8'))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'InverterCoordinator')
         method = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef) and n.name == '_execute_hems_command')
-        ns = {'HemsDecision': HemsDecision, 'datetime': SimpleNamespace(now=lambda: NOW), '_LOGGER': Mock()}
+        ns = {
+            'HemsDecision': HemsDecision,
+            'datetime': SimpleNamespace(now=lambda: NOW),
+            'uuid': uuid,
+            'evidence_journal': SimpleNamespace(
+                command_scope=lambda command_id: nullcontext()
+            ),
+            '_LOGGER': Mock(),
+        }
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), ns)
         for failed_channel in ('output', 'charger', 'exception', 'neither'):
             with self.subTest(failed_channel=failed_channel):
@@ -314,7 +324,9 @@ class TestEngineRefactor(unittest.TestCase):
                 if failed_channel == 'exception':
                     api.set_output_priority.side_effect = OSError('offline')
                 c = SimpleNamespace(_hems=e, api=api)
-                asyncio.run(ns['_execute_hems_command'](c, decision))
+                asyncio.run(ns['_execute_hems_command'](
+                    c, decision, evidence_recorded=True
+                ))
                 self.assertEqual(e._last_cmd_output, None if failed_channel in ('output', 'exception') else '2')
                 self.assertEqual(e._last_cmd_charger, None if failed_channel in ('charger', 'exception') else '2')
                 self.assertEqual(e._consecutive_failures, 0 if failed_channel == 'neither' else 1)

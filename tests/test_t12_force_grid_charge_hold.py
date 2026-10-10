@@ -72,6 +72,7 @@ import textwrap
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -175,6 +176,31 @@ for fn in ast.walk(coord_tree):
         break
 else:
     raise SystemExit("_run_hems_engine not found")
+
+# ``decision_id`` is assigned in the real function before the T12 block.
+# Materialize that exact assignment for the extracted block rather than
+# inventing a replacement value in the harness.
+decision_id_statement = next(
+    stmt for stmt in run_fn.body[:t12_block_idx]
+    if isinstance(stmt, ast.Assign)
+    and any(
+        isinstance(target, ast.Name) and target.id == "decision_id"
+        for target in stmt.targets
+    )
+)
+assert isinstance(decision_id_statement, ast.Assign)
+
+def _production_decision_id():
+    decision_ns = {"uuid": uuid}
+    exec(
+        compile(
+            ast.Module(body=[decision_id_statement], type_ignores=[]),
+            str(ROOT / "coordinator.py"),
+            "exec",
+        ),
+        decision_ns,
+    )
+    return decision_ns["decision_id"]
 
 block_stmts = run_fn.body[t12_block_idx:]
 t12_block_src = ast.unparse(
@@ -445,7 +471,9 @@ class _DispatchStub:
         self.dispatched: list = []
         self.held_reason = None
 
-    async def _execute_hems_command(self, decision):
+    async def _execute_hems_command(
+        self, decision, *, command_id=None, evidence_recorded=False
+    ):
         self.dispatched.append(decision)
 
     def _log_decision(self, *args, **kwargs):
@@ -520,6 +548,7 @@ def _run_t12_block(coordinator, hems, now):
             reason="placeholder", skip=False, output_priority=None,
             charger_priority=None, buzzer_off=False,
         ),
+        "decision_id": _production_decision_id(),
         "raw": {
             "batterySoc": 50.0,
             "outputSourcePriority": "USB",
@@ -551,7 +580,7 @@ def _run_t12_block(coordinator, hems, now):
     prelude = (
         "async def _t12_block(coordinator, hems, now, "
         "soc_unknown, display_soc, current_output, "
-        "current_charger, decision, raw):\n"
+        "current_charger, decision, decision_id, raw):\n"
     )
     body_indented = textwrap.indent(block_text, "    ")
     fn_text = prelude + body_indented
@@ -637,6 +666,7 @@ def _run_t12_block(coordinator, hems, now):
             placeholder_locals["current_output"],
             placeholder_locals["current_charger"],
             placeholder_locals["decision"],
+            placeholder_locals["decision_id"],
             placeholder_locals["raw"],
         )
     return _wrapped

@@ -1,6 +1,7 @@
 """Real asynchronous learning methods with fake recorder/HTTP, no HA installed."""
 import asyncio
 import ast
+import importlib.util
 import os
 import sys
 import tempfile
@@ -80,10 +81,50 @@ async def exercise():
             elif isinstance(node,ast.ImportFrom):
                 if node.module.startswith('homeassistant') or node.module in ('api','const'):
                     continue
-                node.level = 0
+                if not (
+                    node.level == 1
+                    and node.module == 'hems'
+                    and any(alias.name == 'evidence_journal' for alias in node.names)
+                ):
+                    node.level = 0
+                nodes.append(node)
+            elif isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name)
+                and target.id == '_EVIDENCE_HOLD_REASONS'
+                for target in node.targets
+            ):
+                nodes.append(node)
+            elif isinstance(node, ast.FunctionDef) and node.name in {
+                '_evidence_active_holds', '_evidence_mode', '_evidence_setting_value'
+            }:
                 nodes.append(node)
             elif isinstance(node,ast.ClassDef) and node.name == 'InverterCoordinator':
                 nodes.append(node)
+        # The coordinator's evidence import must keep a real package context:
+        # evidence_journal imports ``..const``, which is valid under this
+        # fixture package but invalid if the harness rewrites it to top-level
+        # ``hems.evidence_journal``.
+        package = ModuleType('coordinator_fixture')
+        package.__path__ = [str(source.parent)]
+        package.__package__ = 'coordinator_fixture'
+        package.__spec__ = importlib.util.spec_from_loader(
+            'coordinator_fixture', loader=None, is_package=True
+        )
+        fixture_hems = ModuleType('coordinator_fixture.hems')
+        fixture_hems.__path__ = [str(source.parent / 'hems')]
+        fixture_hems.__package__ = 'coordinator_fixture.hems'
+        fixture_hems.__spec__ = importlib.util.spec_from_loader(
+            'coordinator_fixture.hems', loader=None, is_package=True
+        )
+        sys.modules['coordinator_fixture'] = package
+        sys.modules['coordinator_fixture.hems'] = fixture_hems
+        const_spec = importlib.util.spec_from_file_location(
+            'coordinator_fixture.const', source.parent / 'const.py'
+        )
+        assert const_spec is not None and const_spec.loader is not None
+        fixture_const = importlib.util.module_from_spec(const_spec)
+        sys.modules['coordinator_fixture.const'] = fixture_const
+        const_spec.loader.exec_module(fixture_const)
         class FakeBase:
             def __init__(self,hass,*args,**kwargs):
                 self.hass,self.data = hass,{}
@@ -110,11 +151,11 @@ async def exercise():
         util = ModuleType('homeassistant.util')
         util.dt = SimpleNamespace(utcnow=lambda:now,as_local=lambda ts:ts,
                                   utc_from_timestamp=lambda ts:datetime.fromtimestamp(ts,timezone.utc))
-        package = ModuleType('coordinator_fixture')
-        package.__path__ = [str(source.parent)]
         with patch.dict(sys.modules,{'homeassistant.components.recorder':rec,'homeassistant.util':util,
-                'coordinator_fixture':package,'coordinator_fixture.hems':sys.modules['hems'],
-                'coordinator_fixture.hems.history_builder':sys.modules['hems.history_builder']}):
+                'coordinator_fixture':package,'coordinator_fixture.hems':fixture_hems,
+                'coordinator_fixture.const':fixture_const,
+                'coordinator_fixture.hems.history_builder':sys.modules['hems.history_builder'],
+                'coordinator_fixture.hems.evidence_journal':sys.modules['coordinator_fixture.hems.evidence_journal']}):
             await real._run_hems_engine({'outputSourcePriority':'0','chargerSourcePriority':'2',
                 'batteryPower':0,'pvPower':0,'gridPower':500,'loadPower':500,'gridVoltage':230},60,now.replace(tzinfo=None))
         _check(len(real._hems._consumption_history) == 30,'actual engine receives thirty-day load history')

@@ -17,6 +17,7 @@ import math
 import re
 import secrets
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -48,6 +49,8 @@ from .const import (
     SUMMARY_KEY_ENERGY,
     SUMMARY_KEY_POWER,
 )
+
+from .hems import evidence_journal
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -188,8 +191,17 @@ class InverterApiClient:
         # when both InverterCoordinator and HistoryCoordinator share one api)
         self._rate_limit_lock: asyncio.Lock = asyncio.Lock()
 
-        # Offline tracking
+        # Offline and response evidence metadata. Device measurement time is
+        # intentionally unknown unless the API supplies a documented sample
+        # timestamp; this receipt time is only the cloud response boundary.
         self.last_realtime_offline: bool = False
+        self.last_realtime_outcome: str = "empty_response"
+        self.last_realtime_source: str = "unavailable"
+        self.last_realtime_response_received_at: datetime | None = None
+        self.last_realtime_success_received_at: datetime | None = None
+        self.last_realtime_measurement_at: datetime | None = None
+        self.last_device_configs_received_at: datetime | None = None
+        self.evidence_entry_id: str | None = None
 
         # Decrypt app secret once
         self._app_secret = self._decrypt_app_secret()
@@ -881,6 +893,7 @@ class InverterApiClient:
 
     async def fetch_realtime_data(self) -> dict[str, Any] | None:
         """Fetch real-time inverter data mirroring Dart getRealTimeData."""
+        self.last_realtime_offline = False
         if not self.device_sn:
             _LOGGER.warning("No device selected, trying to re-fetch")
             # R07: re-fetch using the
@@ -929,15 +942,23 @@ class InverterApiClient:
 
     async def _try_realtime_endpoint(self, endpoint: str) -> dict[str, Any] | None:
         """Try a realtime endpoint with GET first, then POST on 405."""
+        self.last_realtime_outcome = "empty_response"
+        self.last_realtime_source = (
+            "cloud_fallback" if endpoint == ENDPOINT_REALTIME_FALLBACK else "cloud_primary"
+        )
+        self.last_realtime_response_received_at = None
+        self.last_realtime_measurement_at = None
         await self._apply_rate_limit(endpoint)
         params = {"deviceId": self.device_sn, "dataSource": 1}
         headers = self._build_headers("GET", None)
 
         raw_text = ""
         data: dict[str, Any] | None = None
+        received_at: datetime | None = None
         try:
             async with self._session.get(endpoint, params=params, headers=headers) as resp:
                 raw_text = await resp.text()
+                received_at = datetime.now(timezone.utc)
                 if resp.status == 405:
                     body = {"deviceId": self.device_sn, "dataSource": 1}
                     headers_post = self._build_headers("POST", body)
@@ -947,11 +968,18 @@ class InverterApiClient:
                         headers=headers_post,
                     ) as resp2:
                         raw_text = await resp2.text()
+                        received_at = datetime.now(timezone.utc)
                 data = json.loads(raw_text)
+            self.last_realtime_response_received_at = received_at
         except aiohttp.ClientError as exc:
+            self.last_realtime_outcome = (
+                "timeout" if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) else "offline"
+            )
             _LOGGER.warning("Realtime request failed for %s: %s", endpoint, exc)
             return None
         except (ValueError, TypeError):
+            self.last_realtime_outcome = "malformed_response"
+            self.last_realtime_response_received_at = received_at
             _LOGGER.warning("Realtime invalid JSON from %s: %s", endpoint, raw_text[:200])
             return None
 
@@ -990,8 +1018,13 @@ class InverterApiClient:
 
         payload = self._extract_realtime_payload(data) if isinstance(data, dict) else None
         if code == 0 and payload is not None:
+            fields = payload.get("deviceAttributeState")
+            if not isinstance(fields, dict) or not fields:
+                self.last_realtime_outcome = "malformed_response"
+                return None
             self.last_realtime_offline = False
-            fields = payload.get("deviceAttributeState", {})
+            self.last_realtime_outcome = "fresh_success"
+            self.last_realtime_success_received_at = received_at
             return self._parse_realtime_fields(fields, payload)
 
         is_offline = code == 71000 or (
@@ -1237,7 +1270,15 @@ class InverterApiClient:
         Some firmware/API paths intermittently return an error payload for a
         valid value. Retry once with a short backoff before surfacing an error.
         """
+        command_id = evidence_journal.current_command_id() or str(uuid.uuid4())
+        evidence_entry_id = getattr(self, "evidence_entry_id", None)
         if not self.device_sn:
+            if evidence_entry_id:
+                evidence_journal.record_event(
+                    evidence_entry_id, "command_result", outcome="api_error",
+                    command={"command_id": command_id, "key": key, "value": value, "status": "api_error"},
+                    error={"class": "InverterOfflineError", "code": None}, critical=True,
+                )
             return False
 
         # Backward compatibility: accept legacy keys and route to API keys
@@ -1262,7 +1303,26 @@ class InverterApiClient:
                 value = str(max(0, min(200, amps)))
             except (TypeError, ValueError):
                 _LOGGER.error("Invalid charging current value for %s: %s", key, value)
+                if evidence_entry_id:
+                    evidence_journal.record_event(
+                        evidence_entry_id, "command_result", outcome="api_error",
+                        command={"command_id": command_id, "key": key, "value": None, "status": "api_error"},
+                        error={"class": "ValueError", "code": None}, critical=True,
+                    )
                 return False
+
+        if evidence_entry_id:
+            evidence_journal.record_event(
+                evidence_entry_id, "command_intent",
+                command={"command_id": command_id, "key": key, "value": value, "status": "intent"},
+                critical=True,
+            )
+            # Preserve intent-before-side-effect on disk. The wait happens in
+            # an executor thread so a slow filesystem cannot block HA's loop.
+            # Evidence remains best-effort: a journal outage must not change
+            # the inverter-control result.
+            if not await asyncio.to_thread(evidence_journal.drain, 5.0):
+                _LOGGER.error("incident journal intent flush failed: entry_id=%s", evidence_entry_id)
 
         last_msg: str | None = None
         for attempt in range(2):
@@ -1279,6 +1339,12 @@ class InverterApiClient:
             headers = self._build_headers("POST", body)
 
             try:
+                if evidence_entry_id:
+                    evidence_journal.record_event(
+                        evidence_entry_id, "command_request", outcome="request_sent",
+                        command={"command_id": command_id, "key": key, "value": value, "status": "request"},
+                        critical=False,
+                    )
                 async with self._session.post(
                     ENDPOINT_DEVICE_CONFIG,
                     params=params,
@@ -1298,10 +1364,27 @@ class InverterApiClient:
                     await asyncio.sleep(backoff)
                     continue
                 _LOGGER.error("set_config_item request failed: %s", exc)
+                if evidence_entry_id:
+                    evidence_journal.record_event(
+                        evidence_entry_id, "command_result", outcome="api_error",
+                        command={"command_id": command_id, "key": key, "value": value, "status": "api_error"},
+                        error={"class": "ClientError", "code": None}, critical=True,
+                    )
                 return False
 
-            ok = data.get("code") == 0
+            received_at = datetime.now(timezone.utc)
+            response_code = data.get("code")
+            ok = response_code == 0
             if ok:
+                if evidence_entry_id:
+                    status = "api_accepted"
+                    evidence_journal.record_event(
+                        evidence_entry_id, "command_result", outcome=status,
+                        cloud_response_received_at=received_at,
+                        command={"command_id": command_id, "key": key, "value": value, "status": status},
+                        error=None,
+                        critical=True,
+                    )
                 _LOGGER.info("Config set: %s=%s", key, value)
                 return True
 
@@ -1309,6 +1392,16 @@ class InverterApiClient:
             if attempt == 0:
                 await asyncio.sleep(0.8)
                 continue
+
+            if evidence_entry_id:
+                status = "api_rejected"
+                evidence_journal.record_event(
+                    evidence_entry_id, "command_result", outcome=status,
+                    cloud_response_received_at=received_at,
+                    command={"command_id": command_id, "key": key, "value": value, "status": status},
+                    error=None if ok else {"class": "unknown", "code": response_code},
+                    critical=True,
+                )
 
         if last_msg:
             _LOGGER.warning("Config write rejected: %s=%s — %s", key, value, last_msg)
@@ -1348,6 +1441,7 @@ class InverterApiClient:
         """
         if not self.device_sn:
             return {}
+        self.last_device_configs_received_at = None
 
         # Step 1: initiate batch read
         await self._apply_rate_limit(ENDPOINT_DEVICE_CONFIGS_READ)
@@ -1404,6 +1498,7 @@ class InverterApiClient:
                 continue
 
             if resp_payload.get("isFinished"):
+                self.last_device_configs_received_at = datetime.now(timezone.utc)
                 config_states = resp_payload.get("configAttributeStates", {})
                 if isinstance(config_states, dict) and config_states:
                     parsed: dict[str, dict] = {}

@@ -36,6 +36,7 @@ from .coordinator import InverterCoordinator, HistoryCoordinator
 from .hems.options_helpers import (
     RELOAD_REQUIRED_OPTION_KEYS as _RELOAD_REQUIRED_OPTION_KEYS,
 )
+from .hems import evidence_journal
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -211,6 +212,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if not await api.authenticate():
             _LOGGER.error("Failed to authenticate with inverter API")
             return False
+
+        # Bind the entry journal before the first coordinator poll so setup's
+        # first realtime/HEMS cycle is captured, not only later refreshes.
+        api.evidence_entry_id = entry.entry_id
+        evidence_journal.configure_entry(
+            entry.entry_id,
+            Path(hass.config.config_dir) / "powmr_inverter_incidents" / entry.entry_id,
+            __version__,
+        )
 
         # Create coordinator
         # T16 audit: the runtime value of
@@ -391,6 +401,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception:
         _LOGGER.error("CRITICAL: Failed to set up inverter integration", exc_info=True)
         try:
+            await hass.async_add_executor_job(evidence_journal.drain, 5.0)
+        except Exception:
+            pass
+        evidence_journal.unbind_entry(entry.entry_id)
+        try:
             await api.close()
         except Exception:
             pass
@@ -461,6 +476,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "unload: %s",
                     err,
                 )
+        # Stop all poll owners, then fsync queued evidence before forgetting
+        # the entry path or closing the shared API session.
+        try:
+            drained = await hass.async_add_executor_job(evidence_journal.drain, 5.0)
+            if not drained:
+                _LOGGER.error("incident journal drain failed during unload: entry_id=%s", entry.entry_id)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("incident journal drain raised during unload: entry_id=%s error_class=%s", entry.entry_id, type(err).__name__)
+        evidence_journal.unbind_entry(entry.entry_id)
+
         api: InverterApiClient | None = entry_data.get("api")
         if api is not None:
             try:

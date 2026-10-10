@@ -65,7 +65,7 @@ WMO_WEATHER_MAP = {
 
 from .const import DOMAIN
 from .coordinator import InverterCoordinator, HistoryCoordinator
-from .hems import debug_logging
+from .hems import debug_logging, evidence_journal
 
 # Audit T20: freshness helpers
 # live in ``hems.energy_freshness``
@@ -1034,6 +1034,13 @@ class HemsReasonSensor(InverterSensor):
     @property
     def native_value(self) -> str | None:
         return self.coordinator.hems_last_reason or None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        entry_id = getattr(getattr(self.coordinator, "_entry", None), "entry_id", None)
+        if not entry_id:
+            return {}
+        return {"incident_evidence_journal": evidence_journal.status(entry_id)}
 
 
 class HemsOutputCmdSensor(InverterSensor):

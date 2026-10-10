@@ -46,6 +46,7 @@ import logging
 import re
 import sys
 import textwrap
+import uuid
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -255,6 +256,7 @@ class _StubCoordinator:
         self._last_energy_persist_at = None
         # The actual gate the audit cares about.
         self.dispatched: list[tuple[str, Any]] = []
+        self.evidence_events: list[tuple[str, str, dict[str, Any]]] = []
         self.suppressed_count: int = 0
 
     # ── The functions the body calls. Most are no-ops; the
@@ -290,7 +292,12 @@ class _StubCoordinator:
     async def _save_pv_state(self):
         return None
 
-    async def _execute_hems_command(self, decision):
+    def _record_hems_evidence(self, outcome, reason, **fields):
+        self.evidence_events.append((outcome, reason, fields))
+
+    async def _execute_hems_command(
+        self, decision, *, command_id=None, evidence_recorded=False
+    ):
         # The spy. This is the real production entry point; the
         # body calls it iff the gate is open. Recording a
         # dispatch here means the test is the real proof that
@@ -309,6 +316,7 @@ ns: dict[str, Any] = {
     "_LOGGER": LOG,
     "datetime": datetime,
     "timedelta": __import__("datetime").timedelta,
+    "uuid": uuid,
     "SmartMode": SimpleNamespace(ADAPTIVE=0, ARBITRAGE=1, STORM=2),
     "HemsDecision": _SpyHemsDecision,
     "calibrated_storm_risk": lambda *a, **k: False,
@@ -317,6 +325,37 @@ ns: dict[str, Any] = {
         "predictive_default_mode": "shadow",
     },
 }
+# Load the production hold mapper used by the real coordinator body.
+# It is a module-level dependency, so extracting only the method requires
+# explicitly executing its source and its constant in this harness.
+helper_nodes = [
+    node for node in tree.body
+    if (
+        isinstance(node, ast.FunctionDef)
+        and node.name == "_evidence_active_holds"
+    ) or (
+        isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_EVIDENCE_HOLD_REASONS"
+            for target in node.targets
+        )
+    )
+]
+helper_module = ast.fix_missing_locations(
+    ast.Module(
+        body=[
+            ast.ImportFrom(
+                module="__future__",
+                names=[ast.alias(name="annotations")],
+                level=0,
+            ),
+            *helper_nodes,
+        ],
+        type_ignores=[],
+    )
+)
+exec(compile(helper_module, str(ROOT / "coordinator.py"), "exec"), ns)
 
 run_hems_src = _function_src("_run_hems_engine")
 exec(run_hems_src, ns)
@@ -531,16 +570,58 @@ assert c.dispatched == [], f"engine skip=True must not dispatch: {c.dispatched!r
 
 # ── 10. Static ordering check (regression on the source) ─────
 
-run_hems_src = _function_src("_run_hems_engine")
-soc_unknown_idx = run_hems_src.find("soc_unknown = corrected_soc is None")
-gate_idx = run_hems_src.find("if soc_unknown:")
-dispatch_idx = run_hems_src.find("await self._execute_hems_command(decision)")
-assert soc_unknown_idx != -1
-assert gate_idx != -1
-assert dispatch_idx != -1
-assert soc_unknown_idx < gate_idx < dispatch_idx, (
-    "soc_unknown must be computed BEFORE the gate, "
-    "and the gate must come BEFORE the dispatch"
+run_hems_node = next(
+    node for node in ast.walk(tree)
+    if isinstance(node, ast.AsyncFunctionDef)
+    and node.name == "_run_hems_engine"
+)
+soc_assignment_idx = next(
+    index for index, stmt in enumerate(run_hems_node.body)
+    if isinstance(stmt, ast.Assign)
+    and any(
+        isinstance(target, ast.Name) and target.id == "soc_unknown"
+        for target in stmt.targets
+    )
+)
+evaluate_idx = next(
+    index for index, stmt in enumerate(run_hems_node.body)
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "evaluate"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "_hems"
+        for node in ast.walk(stmt)
+    )
+)
+gate_idx = next(
+    index for index, stmt in enumerate(run_hems_node.body)
+    if isinstance(stmt, ast.If)
+    and isinstance(stmt.test, ast.Name)
+    and stmt.test.id == "soc_unknown"
+)
+gate_stmt = run_hems_node.body[gate_idx]
+assert isinstance(gate_stmt, ast.If)
+assert gate_stmt.body and isinstance(gate_stmt.body[-1], ast.Return), (
+    "the soc_unknown branch must unconditionally return before dispatch"
+)
+regular_dispatches = [
+    (index, node)
+    for index, stmt in enumerate(run_hems_node.body)
+    for node in ast.walk(stmt)
+    if isinstance(node, ast.Await)
+    and isinstance(node.value, ast.Call)
+    and isinstance(node.value.func, ast.Attribute)
+    and node.value.func.attr == "_execute_hems_command"
+    and node.value.args
+    and isinstance(node.value.args[0], ast.Name)
+    and node.value.args[0].id == "decision"
+]
+assert len(regular_dispatches) == 1
+dispatch_idx, dispatch_await = regular_dispatches[0]
+assert soc_assignment_idx < evaluate_idx < gate_idx < dispatch_idx, (
+    "SOC detection and engine evaluation must precede the returning "
+    "unknown-SOC gate, which must precede regular dispatch"
 )
 
 
