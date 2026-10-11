@@ -603,6 +603,15 @@ class TestLoginEndpointActualPayload(unittest.TestCase):
             "hunter2", expected,
         )
 
+    def test_plain_31_char_password_hashed_with_md5(self):
+        """The 31-character boundary is plain text, not a pre-hash."""
+        import hashlib
+        plain = "plain31-" + "x" * 23
+        self.assertEqual(len(plain), 31)
+        self._assert_password_field(
+            plain, hashlib.md5(plain.encode()).hexdigest(),
+        )
+
     def test_lowercase_32_hex_sent_as_is(self):
         """A 32-char hex string is treated as
         pre-hashed and sent as-is.
@@ -623,6 +632,25 @@ class TestLoginEndpointActualPayload(unittest.TestCase):
         self.assertNotEqual(mixed, prehashed)
         self._assert_password_field(
             mixed, prehashed,
+        )
+
+    def test_32_char_non_hex_password_hashed_with_md5(self):
+        """A 32-character non-hex value is sent as its MD5 digest."""
+        import hashlib
+        plain = "g" + "a" * 31
+        self.assertEqual(len(plain), 32)
+        self._assert_password_field(
+            plain, hashlib.md5(plain.encode()).hexdigest(),
+        )
+
+    def test_33_char_hex_password_hashed_with_md5(self):
+        """Even all-hex input is plain when its length is not 32."""
+        import hashlib
+        plain = "a" * 33
+        self.assertEqual(len(plain), 33)
+        self.assertTrue(all(char in "0123456789abcdef" for char in plain))
+        self._assert_password_field(
+            plain, hashlib.md5(plain.encode()).hexdigest(),
         )
 
     def test_leading_space_32_chars_hashed_with_md5(self):

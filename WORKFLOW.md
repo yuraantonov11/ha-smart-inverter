@@ -3,7 +3,7 @@
 ## Гілки
 
 - **`main`** — стабільна, звідси йдуть релізи в HACS
-- **`develop`** — поточна розробка (тут версія з `-dev` суфіксом)
+- **`develop`** — поточна розробка. Версія тут явно синхронізована з `manifest.json` і root `__init__.py`; автоматичного `-dev` суфікса немає. Поточна версія — **1.9.0**.
 
 ## Щоденна робота
 
@@ -27,20 +27,22 @@ git push origin feature/or-fix
 
 ## Релізний цикл
 
-Release tag і GitHub Release публікуються **вручну Юрою**, не через
-pre-push hook. Поточна гілка `develop` тримає версію, синхронізовану
-з `manifest.json` і root `__version__` (`custom_components/powmr_inverter/__init__.py`).
+Release tag і GitHub Release публікуються **вручну Юрою після review**, не
+автоматично і не через pre-push hook. Корінь цього репозиторію є коренем
+інтеграції: файл версії — `__init__.py` у корені, а не
+`custom_components/powmr_inverter/__init__.py`. Поточні `__version__` і
+`manifest.json:version` — `1.9.0`.
 
 ```bash
 # 1. Переконатись, що все на develop протестовано
 git checkout develop
 python tests/run_all.py
 
-# 2. Узгодити версію (root __version__ ↔ manifest.json)
+# 2. Перевірити узгодженість версії (root __version__ ↔ manifest.json)
 #    — ручна правка обох файлів перед публікацією release tag.
 #    Поточна: 1.9.0 (див. manifest.json: "version": "1.9.0"
 #    і __init__.py: __version__ = "1.9.0").
-grep -n '__version__' custom_components/powmr_inverter/__init__.py
+grep -n '__version__' __init__.py
 python3 -c 'import json; print(json.load(open("manifest.json"))["version"])'
 
 # 3. Push develop (release НЕ створюється автоматично)
@@ -56,15 +58,17 @@ gh release create v1.9.0 --generate-notes
 Версія редагується руками в `manifest.json` і `__init__.py` в одному
 коміті перед публікацією release tag.
 
-## Правила (enforced by hooks)
+## Локальні Git hooks
 
 | Hook | Коли | Що перевіряє |
 |---|---|---|
-| **pre-commit** | `git commit` | Python syntax, manifest.json JSON, секрети, version drift |
-| **pre-push** | `git push` | test runner, force-push protection, branch warning |
-| **post-commit** | `git commit` (після) | reload HA integration (якщо є HASS_TOKEN) |
+| **pre-commit** | `git commit` | Якщо hook встановлений: Python syntax для staged `.py`, JSON-перевірка зміненого manifest, грубий секрет-скан Python-файлів; можливе попередження про версію відносно останнього tag. |
+| **pre-push** | `git push` | У локальному hook `pytest` запускається лише якщо встановлений; за його відсутності hook попереджає і пропускає тести. Також є force-push guard і branch warning. Це не замінює `tests/run_all.py`. |
+| **post-commit** | `git commit` (після) | У локальному hook HA reload виконується лише якщо задані `HASS_URL` і `HASS_TOKEN`; інакше пропускається. Не задавайте їх для роботи без змін HA. |
 
-Bypass: `git commit --no-verify` або `git push --no-verify`
+Не обходьте hooks у звичайному робочому процесі. Перед відправленням змін
+запускайте канонічний `tests/run_all.py` вручну, навіть якщо локальний
+pre-push hook пропустив перевірку через відсутній `pytest`.
 
 ## Змінні середовища для post-commit hook
 
@@ -90,9 +94,11 @@ git push origin main
 
 ## Тестування
 
-Audit T27: єдиний runner для всіх Python + JS suites на Windows і
-Linux. Будь-який відсутній runner або залежність завершують роботу з
-ненульовим exit code; нуль тестів не рахується як pass.
+Audit T27: єдиний runner для всіх Python + JS suites має перевірки
+Windows-шляху та ізоляції. Ці контрактні тести не є доказом виконання на
+реальній Windows-системі; фіксуйте фактичну платформу окремо. Будь-який
+відсутній runner або залежність завершує роботу з ненульовим exit code;
+нуль тестів не рахується як pass.
 
 ```bash
 # Повний прогін: всі Python suites + JS suite

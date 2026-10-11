@@ -1,4 +1,4 @@
-# R06 + R07 + R08 — audit status (2026-10-10, R06 visual follow-up)
+# R06 + R07 + R08 — audit status (2026-10-11 closeout)
 
 > Status updates and evidence for the
 > R06–R08 block. Each item is marked
@@ -28,7 +28,7 @@
 | Item | Status | Evidence |
 |------|--------|----------|
 | `power-history-card` zero vs invalid samples (null / NaN / string) | **DONE** | `tests/test_power_history_card_r06.cjs` is a standalone assertion script (no named test functions); it verifies 0 remains rendered, null/NaN/string samples are omitted, text is escaped and a gap starts a new path. |
-| `power-history-card` empty arrays / unknown entity state | **NOT VERIFIED** | The current power-history suites do not contain explicit assertions for empty arrays or an unknown/missing entity state. |
+| `power-history-card` empty arrays / unknown entity state / missing entity | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserPowerHistoryRender::test_empty_unknown_missing_entity_then_valid_data_recovers` loads the unmodified production script in Chromium, asserts the actual connected DOM for all three states, captures `pageerror`, then verifies the `hass` setter restores three visible data bars/tooltips. |
 | `power-history-card` gaps start new path (M-count) | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_yura_30_point_fixture` (30 raw + gaps 15, 20, 22 → 27 valid, 4 M, 23 L, last tooltip preserved) |
 | `power-history-card` x-position by rawIndex (NOT cleaned index) | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_x_uses_rawIndex_not_cleaned_index` |
 | `power-history-card` shared axis = longest series' raw length | **DONE** | `tests/test_power_history_card_r06_followup.cjs::test_shared_axis_uses_longest_series` (rawIndex 14 → x ≈ 259.8) |
@@ -67,9 +67,9 @@
 | MD5 contract: lowercase 32-char hex → pre-hashed | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_lowercase_32_hex_is_pre_hashed` |
 | MD5 contract: mixed-case 32-char hex → pre-hashed (lowered) | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_mixed_case_32_hex_is_pre_hashed` |
 | MD5 contract: 32-char non-hex → plain (NOT auto-MD5) | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_plain_32_char_password_is_NOT_pre_hashed` |
-| MD5 contract: short / 33+ char → plain | **PARTIAL** | `tests/test_r07_authentication.py::TestPasswordHashing::test_short_string_not_pre_hashed` checks short strings (7 and 0 chars); `::test_long_string_not_pre_hashed` checks 33 and 100 chars. The exact 31-character boundary is not asserted. |
+| MD5 contract: short / 31 / 33+ char → plain | **DONE** | `TestPasswordHashing::test_short_string_not_pre_hashed`, `::test_long_string_not_pre_hashed`; actual request payload tests include `TestLoginEndpointActualPayload::test_plain_31_char_password_hashed_with_md5` and `::test_33_char_hex_password_hashed_with_md5`. |
 | MD5 contract boundary: leading space / sign / underscore | **DONE** | `tests/test_r07_authentication.py::TestPasswordHashing::test_leading_space_not_pre_hashed`, `::test_leading_sign_not_pre_hashed`, `::test_underscore_in_value_not_pre_hashed` |
-| MD5 contract: actual login payload sent | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_plain_short_password_hashed_with_md5`, `::test_lowercase_32_hex_sent_as_is`, `::test_mixed_case_32_hex_sent_lowercased`, `::test_leading_space/sign/underscore_32_chars_hashed_with_md5` (3 cases) |
+| MD5 contract: actual login payload sent | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_plain_short_password_hashed_with_md5`, `::test_plain_31_char_password_hashed_with_md5`, `::test_lowercase_32_hex_sent_as_is`, `::test_mixed_case_32_hex_sent_lowercased`, `::test_32_char_non_hex_password_hashed_with_md5`, `::test_33_char_hex_password_hashed_with_md5`, and the three leading-space/sign/underscore payload tests. |
 | Log safety: 401 login error doesn't log password | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_login_error_does_not_log_password` |
 | Log safety: reauth doesn't log password | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_reauth_does_not_log_password` |
 | `authenticate(preferred_device_sn)` parameter | **DONE** | `api.py::authenticate(self, preferred_device_sn=None, *, skip_device_list=False)` |
@@ -105,8 +105,8 @@
 | Transient response: 1000W → 2000W step, count to 50% | **DONE** | `tests/test_r08_demand_model.py::TestDocumentationStrings::test_transient_response_under_load_change` |
 | Min/Max load clamp | **DONE** | `tests/test_r08_demand_model.py::TestEwmaCadence::test_min_load_clamp`, `::test_max_load_clamp` |
 | p25/p50/p75/p90 field names retained for sensor contract | **DONE** | `tests/test_r08_demand_model.py::TestMultipliersAreNotQuantiles::test_field_names_match_published_contract` |
-| Version reconciliation (root `__version__` vs manifest) | **DEFERRED** | Per Юра's instruction: no release tag. |
-| Doc / translation sync (README, WORKFLOW, manifest, config fields) | **PARTIAL** | Translation keys for new step + errors added in this block. README/WORKFLOW reconciliation deferred. |
+| Version reconciliation (root `__version__` vs manifest) | **DONE** | Root `__init__.py::__version__` and `manifest.json:version` are both `1.9.0`; no release tag is required or created for this documentation/test closeout. |
+| Doc / translation sync (README, WORKFLOW, manifest, config fields) | **DONE** | `README.md` and `WORKFLOW.md` now describe root layout, version `1.9.0`, manifest runtime dependencies, no asserted HA minimum, and manual release policy; translations remain in sync for the new config-flow step/errors. |
 
 ---
 
@@ -155,15 +155,21 @@ either the operator's pinned version or the integration's
 copy has the guard. With `3b3a5a0` deploy all 6 cards are
 guarded.
 
-## Open items (NOT YET VERIFIED or DEFERRED)
+## Independent evidence states
 
-| Item | Status | Note |
-|------|--------|------|
-| `first_v2_completed_pair` (real-forecast + actual pair, both v2) | **NOT YET VERIFIED** | Verified constraint: `PvLearningStore.snapshot()` rejects past-or-today dates (`if date.fromisoformat(day) <= now.date(): return False`) and never overwrites an existing snapshot (`if day in self.snapshots: return False`). The current JSON has 3 snapshots for 2026-10-09/10/11 with v1 models (`station_gain_v1` × 2, `hourly_response_v1` × 1). With `calibration_model=hourly_response_v2`, the next unused +1 / +2 dates are 2026-10-12 / 2026-10-13. A v2 snapshot can first be written when polling runs on or after 2026-10-10 (which would write 12 + 13). The closed-fact pair is then expected no earlier than 2026-10-13. The `forecast_model_tags` attribute in the sensor is the engine's calibration model, not the snapshot's stored `forecast_model`; the two are not the same field. |
-| Hardware PV limit (`pv_max_w`) | **UNKNOWN** | Inverter API does not expose a max-watts field. The MiniMax M3 cloud endpoints (`/v1/token_plan/remains`, `/anthropic/v1/models`) are billing / model-list endpoints and DO NOT contain the inverter's hardware spec; they are not valid evidence for this question. Status remains UNKNOWN until an inverter-side endpoint (e.g. the SOLARsiseli API or the device's local Wi-Fi module) exposes the field. |
-| Mobile / browser visual / resize / reconnect | **DONE** | Isolated Chromium evidence at 360/1280 px plus native same-object reconnect tests for all six cards is listed in "R06 browser-path coverage" below. Live Lovelace activation and cache refresh remain separate open items. |
-| Root `__version__` ↔ manifest reconciliation | **DONE** | `__version__ = "1.9.0"` ↔ `manifest.json: "version": "1.9.0"` (verified in `3b3a5a0` deploy). No release tag created per Юра's standing instruction. |
-| README / WORKFLOW rewrite | **DONE** | `README.md` and `WORKFLOW.md` updated in `3b3a5a0` to reflect `powmr_inverter` domain, `cryptography` requirement, and the manual release-tag workflow. |
+The following items remain explicitly separate; completion of local tests or
+HTTP byte checks does not upgrade these external observations.
+
+| Item | Status | Concrete evidence / exact remaining work |
+|------|--------|------------------------------------------|
+| First genuine completed v2 forecast/actual pair | **NOT YET VERIFIED** | No genuine completed v2 pair is available in the checked evidence. Do not create a synthetic/fake pair. Remaining: wait for real v2 forecast plus completed measured actual data, then verify the stored pair and model tags. |
+| Inverter hardware PV limit (`pv_max_w`) | **UNKNOWN** | Verified inverter API surface exposes no max-watts field. Remaining: obtain a value from a documented inverter-side endpoint/specification; do not infer it from unrelated cloud/model endpoints or send hardware commands. |
+| Live browser cache / browser-side pinned content | **NOT VERIFIED** | Prior resource HTTP-byte/readback evidence proves served bytes only, not what an operator browser cached or loaded. Remaining: inspect browser-side pinned resource/cache after a separately approved deploy; no dashboard/resource edits in this closeout. |
+| UPS | **NOT VERIFIED** | No confirmed UPS presence, telemetry, or operation evidence is recorded. Remaining: provide independently verifiable UPS evidence; do not assume one exists. |
+| Independent receiver / disaster-recovery copy | **NOT VERIFIED** | Same-host/NAS storage is not an independent receiver/DR copy. Remaining: verify a separate off-host receiver and perform a readback/restore check. |
+| T27 actual Windows worktree execution | **NOT VERIFIED / PARTIAL** | `tests/test_t27_runner_contract.py` exercises Windows-specific wrapper/path contracts, and the current run is Linux; neither is Windows worktree execution. Remaining: run the canonical runner on an actual Windows worktree and retain its result. |
+| Live Lovelace activation of `energy-flow-card.js` | **PARTIAL** | HA `.storage/lovelace_resources` had no entry for this card; installed file and direct HTTP response were checked, but the card was not active as a Lovelace resource. Remaining: separate operator-approved resource activation and readback; no dashboard/resource edits here. |
+| R09 "Already used" warning in operator browser console | **NOT VERIFIED** | Node double-load and isolated Chromium checks do not inspect the live operator DevTools console. Remaining: inspect that console after an approved live rollout. |
 
 ---
 
@@ -179,6 +185,7 @@ scope".
 
 | Item | Status | Evidence |
 |------|--------|----------|
+| `power-history-card` empty arrays / `unknown` / missing entity and valid-data recovery | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserPowerHistoryRender::test_empty_unknown_missing_entity_then_valid_data_recovers` asserts connected-DOM placeholders, no chart, no `pageerror`, then visible three-bar/tooltips recovery through production `hass`; `TestR06ControlFailure::test_power_history_render_failure_is_detected` independently mutates this renderer and confirms both error and DOM assertions fail. |
 | `power-history-card` `disconnectedCallback` cleanup (ResizeObserver) | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserResizeObserver::test_disconnect_reconnect_does_not_leak_observers` is the authoritative real-browser cleanup evidence; the legacy Node script also asserts the observer reference is cleared after calling the callback directly. |
 | `power-history-card` reconnect after disconnect | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserResizeObserver::test_disconnect_reconnect_does_not_leak_observers` runs 5 cycles in real Chromium. After each cycle the active observer count returns to 0 and the cumulative total grows by 1 (no duplication). |
 | Same-element reconnect for all six audited cards | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserResizeObserver::test_disconnect_reconnect_does_not_leak_observers` covers power-history; `tests/test_r06_browser_playwright.py::TestR06BrowserCardLifecycle` covers k-flow, pv-comparison and energy-flow. `tests/test_r06_browser_additions.py::R06BrowserAddedCoverage::test_forecast_same_element_five_real_document_reconnects` and `::test_total_energy_same_element_five_real_document_reconnects` cover forecast and total-energy: each keeps one registered element reference, changes `hass`, reconnects that same node five times, then checks real DOM values and `pageerror`. |
@@ -218,12 +225,58 @@ scope".
 
 ## Remaining items from the original audit
 
-- R06 power-history empty arrays / unknown entity state: **NOT VERIFIED**; the current suites have no explicit assertions for these cases.
-- R07 exact 31-character plain-password boundary: **PARTIAL**; short and 33+/100-character inputs are covered, but length 31 is not.
-- R08 README/WORKFLOW reconciliation: **PARTIAL**; version reconciliation remains **DEFERRED** under the no-release-tag instruction.
-- `first_v2_completed_pair`: **NOT YET VERIFIED** until a real completed v2 forecast/actual pair exists.
-- Hardware PV limit (`pv_max_w`): **UNKNOWN**; no inverter-side value is available from verified sources.
-- Live Lovelace: `energy-flow-card.js` remains unregistered; live activation and browser-cache refresh are **NOT VERIFIED**. Dashboard and resource storage were left unchanged.
-- R09 operator DevTools console: absence of the "Already used" warning is **NOT VERIFIED** in the live browser; automated double-load and Chromium lifecycle coverage passed.
+Resolved R06/R07/R08 closeout criteria are recorded above and in the final
+T01–T28/R01–R08 matrix below. Distinct external and platform evidence gaps are
+listed under **Independent evidence states**; none is silently promoted by a
+local test pass.
 
-This follow-up did not change HEMS mode, Shadow, or Assist settings.
+No HA deploy/restart, live settings/dashboard/resource changes, inverter
+commands, hardware changes, or release tag were made. Shadow stays enabled and
+Assist remains off.
+
+## Final audit matrix — T01–T28 and R01–R08
+
+Statuses describe the scoped criterion only. All tests cited here are local;
+they do not imply live hardware/API/browser state unless a live observation is
+explicitly named. Historical commit references are abbreviated real Git SHAs.
+
+| ID | Criterion | Status | Concrete file / test / commit evidence | Live evidence and exact remaining work |
+|----|-----------|--------|----------------------------------------|----------------------------------------|
+| T01 | SOC `unknown` blocks control and numeric zero remains zero | **DONE** | `tests/test_t01_soc_unknown_real_path.py`, `tests/test_t01_soc_unknown_blocks_commands.py`, `tests/test_t01_soc_zero.py`; `69691ab`, `64c4bb6`, `26f284e`. | No live inverter check; none remaining for local contract. |
+| T02 | HEMS user-off / selected mode persists across reload | **DONE** | `tests/test_t02_hems_persistence.py`; `69691ab`. | No live settings changed; none remaining for tested persistence contract. |
+| T03 | NaN / ±Infinity inputs are rejected or sanitized at API boundaries | **DONE** | `tests/test_t03_nan_finite.py`; `69691ab`. | No live API command; none remaining for local validation contract. |
+| T04 | Passwords/tokens are excluded from logs | **DONE** | `tests/test_t04_log_redaction.py`; `69691ab`. | Synthetic test values only; no real credentials used. |
+| T05 | Energy counters use kWh consistently, not Wh | **DONE** | `tests/test_t05_energy_kwh.py`; `69691ab`. | No live energy read; none remaining for unit contract. |
+| T06 | Elapsed energy accounting survives restart without wall-clock errors | **DONE** | `tests/test_t06_elapsed_restart.py`; `69691ab`. | No live runtime data changed; none remaining for tested restart contract. |
+| T07 | Multi-hour source/load/battery/grid energy balance | **DONE** | `tests/test_t07_t08_energy_balance_and_reserve.py::test_t07_simulate_24h_multihour_discharge_balance`, `::test_t07_pv_surplus_charges_battery_usb_snu`; `93ead68`, `00c7263`. | Model simulation only; no hardware behavior claimed. |
+| T08 | Configured reserve SOC is validated, wired, and respected | **DONE** | `tests/test_t07_t08_energy_balance_and_reserve.py::test_t08_production_wiring_reserve_soc_through_build_planner_inputs`, `::test_t08_simulate_24h_respects_custom_reserve_soc`; `93ead68`, `00c7263`. | No live settings changed; none remaining for tested planner contract. |
+| T09 | Real weather inputs, storm thresholds, timezone/DST behavior | **DONE** | `tests/test_t09_storm_risk_forecast.py::test_t09_real_weather_reaches_evaluator`, `::test_t09_six_hours_across_midnight`, `::test_t09_dst_fold_keeps_future_forecast_hour`; `2d1a0d6`, `04f24e6`. | Fake HTTP response fixtures only; live forecast service not exercised here. |
+| T10 | Weather and grid-outage storm causes remain independent | **DONE** | `tests/test_t10_auto_storm_causes.py::test_t10_outage_cause_survives_weather_clearing`, `::test_t10_weather_cause_survives_outage_clearing`, `::test_t10_storm_ends_only_when_both_causes_clear`; `2d1a0d6`, `8cc4641`. | No live control-mode change; none remaining for local cause contract. |
+| T11 | Service calls resolve the intended config entry | **DONE** | `tests/test_t11_service_entry_resolver.py`; `c056341`. | Local fake HA registry; live multi-entry service call not claimed. |
+| T12 | Force-grid-charge hold honors safety guards and timer contract | **DONE** | `tests/test_t12_force_grid_charge_hold.py`; `832447c`, `93ead68`. | No inverter command sent; none remaining for tested guard contract. |
+| T13 | Cloud command entry points validate acknowledgements | **DONE** | `tests/test_t13_command_ack.py`; `c056341`. | Fake responses only; no live command sent. |
+| T14 | History cache preserves last-known-good data on partial failures and real update path | **DONE** | `tests/test_t14_history_lkg_real_path.py`, `tests/test_t14_history_partial_failure.py`; `26f284e`, `fb5c196`, `56fc6e0`. | Fake endpoint failures only; no live history request in this closeout. |
+| T15 | Total-energy card is tracked, copied, and registered safely | **DONE** | `tests/test_t15_total_energy_card.py::T15TotalEnergyCardTests::test_15_01_total_energy_js_is_tracked_and_parseable`, `::test_15_02_copy_step_succeeds_on_fresh_www`; `b40aee0`. | Package-path test only; no HA deploy performed. |
+| T16 | Runtime options apply, persist, and use a consistent reload classifier | **DONE** | `tests/test_t16_behavioral_options.py::T16BehaviouralOptionsTests::test_16_live_01_listener_executes`, `tests/test_t16_options_contract.py::T16OptionsContractTests::test_16_09_options_flow_uses_classifier`; `2a755c9`, `5ad68c0`, `a8ac5b0`. | Local fake config entries; no live options changed. |
+| T17 | Setup/unload/reload cleans entry-owned API, coordinator, and forecast resources | **DONE** | `tests/test_t17_unload_reload_cleanup.py::T17CleanupTests::test_17_07b_unload_order_is_coordinator_first`, `T17ForecastShutdownTests::test_17_12_close_order_cancels_before_closing_session`; `4934db0`, `5ad68c0`. | No HA restart/reload performed. |
+| T18 | Debug logging is bounded, thread-safe, per-entry, and drains on unload | **DONE** | `tests/test_t18_debug_logging_threadsafe.py::T18DebugLoggingTests::test_t18_02_event_loop_not_blocked`, `::test_t18_10_per_entry_isolation_runtime`, `tests/test_t18_async_setup_no_unbound_local.py`; `4d3c422`, `c96147b`, `dad977c`. | Local temporary paths only; no HA log file changed. |
+| T19 | Dated history, weekday selection, and gap-filled rows preserve coverage semantics | **DONE** | `tests/test_t19_weekday_filter.py::test_missing_dates_do_not_shift_weekday_index`, `tests/test_t19_gap_filled_coverage.py::test_predictor_excludes_gap_filled_from_same_weekday`, `tests/test_t19_history_propagation.py::test_telemetry_engine_propagates_dated_history`; `d18cd85`, `005d96e`, `4965f20`. | Offline history fixtures; no live recorder data processed. |
+| T20 | Daily-energy freshness, midnight reset, and selected-device refresh/cache | **DONE** | `tests/test_t20_daily_energy_sensor.py::test_midnight_reset_zeros_value_for_today`, `::test_real_sensor_path_uses_utc_normalization`, `tests/test_t20_energy_stats_refresh.py::test_picks_configured_device_not_devices_zero`, `tests/test_t19_t20_round3.py::test_real_ttl_preserves_cache_on_failure`; `9f2e04d`, `7579b73`, `607f612`, `4b6ca3e`. | Synthetic HTTP/coordinator fixtures; live telemetry freshness remains outside this test. |
+| T21 | Savings are labeled as gross estimates with formula/limitations disclosed | **DONE** | `tests/test_t21_savings_transparency.py::test_daily_savings_docstring_describes_gross_estimate`, `::test_savings_sensor_exposes_formula_attribute`, `::test_dashboard_does_not_mislabel_savings`; `67cfe9e`, `9048ec3`. | No real bill/tariff validation claimed. |
+| T22 | Predictive readiness / zero-pair state is exposed honestly | **DONE** | `tests/test_t22_t23_dashboard.py::test_r71_predictive_control_publishes_readiness_to_state_dict`, `::test_r72_zero_pairs_title_appears_in_view`; `b9a7a42`, `7d19c5f`. | Dashboard generation tests only; live dashboard was not edited. |
+| T23 | Dashboard writes/migrations are per-entry, atomic, and rollback-safe | **DONE** | `tests/test_t22_t23_dashboard.py::test_r73_sidecar_dashboard_is_registered_in_metadata`, `::test_r101_rollback_preserves_existing_sidecar_with_main_present`, `::test_r106_two_entries_isolated_dashboards`; `b9a7a42`, `87279de`, `5c000d1`, `7d19c5f`. | No live dashboard/resource mutation performed. |
+| T24 | Automations are advisory, use live select state, and do not bypass Python HEMS guards | **DONE** | `tests/test_t24_automations.py::TestT24AdvisoryAutomations::test_select_state_read_uses_state_not_option_attribute`, `tests/test_t24_command_paths.py::TestT24GridOutageIsNotificationOnly::test_no_select_option_in_grid_outage`; `4f3acee`, `207690b`. | YAML/HA stubs only; automations were not installed or run. |
+| T25 | Per-entry persistence, round trips, rollback, flush-on-unload, single keepalive owner | **DONE** | `tests/test_t25_round_trip_persistence.py::TestPerEntryIsolation::test_demand_forecast_two_entries_isolated`, `tests/test_t25_persistence.py::TestScheduleServiceRollback::test_add_rule_rollback_when_persist_fails`, `tests/test_t25_keepalive_real_path.py::TestKeepaliveEligibility::test_eligibility_exactly_at_threshold`; `0507f9e`, `260da29`, `8661bf3`, `dad977c`. | Temporary test stores only; no production state touched. |
+| T26 | Battery SoH input/date validation, aging, reserve floor, serialization | **DONE** | `tests/test_t26_battery_soh.py::TestCoerceSoc::test_nan_returns_none`, `TestEstimatedSoHPercentControlledNow::test_one_year_aging_reduces_soh_by_approximately_3_percent`, `TestRecommendedReserveNeverBelowBase::test_base_reserve_already_above_cap_returns_base`; `854ee9b`, `8882168`, `dad977c`. | No live battery measurements changed. |
+| T27 | Unified Python/JS runner and Windows isolation contract | **PARTIAL — Windows NOT VERIFIED** | `tests/test_t27_runner_contract.py::T27RunnerContractTests::test_t27_12_wrapper_handles_windows_paths`, `::test_t27_11_runner_runs_full_suite_with_isolation`; `8a1aac9`, `c6d2014`, `312c6f1`, `44c460e`. | Current full run is Linux. Remaining: execute the canonical runner in an actual Windows worktree; local Linux success and wrapper simulation are not Windows evidence. |
+| T28 | Runtime data/log/backup files are narrowly ignored and failures are diagnosed | **DONE** | `tests/test_t28_runtime_files.py::TestT28GitignoreRuntimePatterns::test_runtime_data_files_ignored`, `TestT28WriteErrorDiagnostics::test_persist_helpers_log_on_failure`, `TestT28SpecificRuntimePaths::test_real_forecast_pairs_per_entry_subdir_ignored`; `81fc002`, `e6e5c6c`. | Local temp/git-ignore checks; no runtime files changed. |
+| R01 | Interval-start v2 radiation contract, DST boundaries, versioned model identity/migration | **DONE** | `tests/test_r01_production_contract.py`, `tests/test_r01_dst_intervals.py`, `tests/test_r01_reproduction_via_http.py`, `tests/test_r01_probe_validator.py`; `de808e7`, `c1cf880`, `d9d26ae`, `1aacb26`. | API/test fixtures; no live data run. |
+| R02 | Cloud/realtime payload evidence and freshness semantics | **PARTIAL — measured freshness unavailable** | `tests/test_r02_realtime_telemetry.py`, `tests/test_r02_cloud_payloads.py`; investigation `d64f9d4`. No API `measured_at` timestamp or sequence identifier is available in the inspected payloads. | Do not claim measured freshness. Remaining: obtain and validate an authoritative server timestamp/sequence field if the API exposes one. |
+| R03 | Real forecast/actual pair storage and immutable snapshot contract | **PARTIAL — first real v2 pair NOT YET VERIFIED** | `tests/test_r03_forecast_pairs.py`; `a49ea5f`, `2b4679a`. Tests establish local pair/snapshot invariants, not the existence of a real completed v2 pair. | Remaining: observe a genuine completed v2 forecast/actual pair; no synthetic/fake pair was created. |
+| R04 | Battery and tariff fixes through production wiring; inverter PV ceiling | **PARTIAL — `pv_max_w` UNKNOWN** | `tests/test_r04_r05_acceptance.py`, `tests/test_r04_integration_load.py`; `49b43c1`, `c505a3d`, `96b2337`, `4e02491` cover validation, tariff path, capacity/recovery and production wiring. | Battery/tariff fixes are tested. Remaining: authoritative inverter-side `pv_max_w` value; API currently exposes none. |
+| R05 | PV daylight/window gating and forecast/tariff acceptance fixes | **DONE** | `tests/test_r04_r05_acceptance.py` and `tests/test_r04_integration_load.py`; `49b43c1`, `96b2337`, `4e02491`. | Automated fixtures only; no live hardware behavior claimed. |
+| R06 | Production-card real-browser rendering, lifecycle, empty/unknown/missing states, recovery | **DONE** | `tests/test_r06_browser_playwright.py::TestR06BrowserPowerHistoryRender::test_empty_unknown_missing_entity_then_valid_data_recovers`, `TestR06ControlFailure::test_power_history_render_failure_is_detected`, and existing ResizeObserver/reconnect tests; `2121416`, `13a1760`, `4e53f8d`. | Isolated Chromium only. Remaining: live browser cache/pinned content is separately **NOT VERIFIED**; no deploy/dashboard changes here. |
+| R07 | Auth payload MD5 boundary, no secret logs, stable multi-device config flow | **DONE** | `tests/test_r07_authentication.py::TestLoginEndpointActualPayload::test_plain_31_char_password_hashed_with_md5`, `::test_32_char_non_hex_password_hashed_with_md5`, `::test_33_char_hex_password_hashed_with_md5`, plus 32-hex preserved/lowercase tests; `tests/test_r07_config_flow_production.py::TestConfigFlowProduction::test_multi_device_picker_executes_production_flow`; `b6dd024`, `3a7355f`, `280ebd4`, `79c426c`, `ddd61e2`. | Synthetic credentials and fake HTTP only; no real credential, live API, or full response payload used. |
+| R08 | Demand-model wording/cadence and root-layout/version/runtime/release docs | **DONE** | `tests/test_r08_demand_model.py::TestEwmaCadence::test_same_load_steady_state_independent_of_cadence`, `TestDocumentationStrings::test_to_demand_forecast_docstring_heuristic`; `README.md`, `WORKFLOW.md`, `manifest.json`, root `__init__.py`; `0ec10cb`, `280ebd4`. Both version values are `1.9.0`; no tag created. | No live evidence required. Remaining: none for docs/version alignment; release tag remains maintainer-controlled and is not part of this closeout. |
+
+This matrix does not close the separate items in **Independent evidence states**.

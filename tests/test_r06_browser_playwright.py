@@ -1398,6 +1398,157 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
         self.assertEqual(errors, [], f"pv-comparison-card page errors: {errors}")
 
 
+# ==== Power-history production render path ====
+
+
+class TestR06BrowserPowerHistoryRender(unittest.TestCase):
+    """Exercise empty, unavailable and recovered history in real Chromium.
+
+    The fixture serves the unmodified production card script over HTTP. Each
+    state is sent through the production ``hass`` setter and checked in the
+    connected element's actual light-DOM output.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls._fx = _Fixture()
+        cls._fx.start_browser()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._fx.stop()
+
+    def test_empty_unknown_missing_entity_then_valid_data_recovers(self) -> None:
+        page, errors = self._fx.new_page({"width": 1280, "height": 720})
+        self.addCleanup(page.context.close)
+        self._fx.install_init_scripts(page.context)
+        page.goto(self._fx.base_url + "/index.html", wait_until="load")
+        self.assertTrue(
+            page.evaluate("() => Boolean(customElements.get('power-history-card'))"),
+            "production power-history-card did not register",
+        )
+        page.evaluate(
+            """() => {
+              const card = document.createElement('power-history-card');
+              card.style.display = 'block';
+              card.style.width = '600px';
+              card.setConfig({
+                title: 'Power history',
+                series: [{
+                  entity: 'sensor.r06_history',
+                  attribute: 'hourly_power_kw',
+                  labels_attribute: 'hourly_labels',
+                  name: 'PV',
+                }],
+              });
+              document.body.appendChild(card);
+              window.__r06PowerHistory = card;
+            }"""
+        )
+
+        scenarios = (
+            {
+                "name": "configured entity with empty arrays",
+                "state": "0",
+                "attributes": {"hourly_power_kw": [], "hourly_labels": []},
+                "present": True,
+            },
+            {
+                "name": "unknown entity state",
+                "state": "unknown",
+                "attributes": {},
+                "present": True,
+            },
+            {
+                "name": "missing entity",
+                "state": None,
+                "attributes": None,
+                "present": False,
+            },
+        )
+        for scenario in scenarios:
+            with self.subTest(scenario=scenario["name"]):
+                snapshot = page.evaluate(
+                    """scenario => {
+                      const card = window.__r06PowerHistory;
+                      const states = scenario.present
+                        ? { 'sensor.r06_history': {
+                            state: scenario.state,
+                            attributes: scenario.attributes,
+                          } }
+                        : {};
+                      card.hass = { states };
+                      const noData = card.querySelector('ha-card > div');
+                      return {
+                        connected: card.isConnected,
+                        entityPresent: Boolean(states['sensor.r06_history']),
+                        entityState: states['sensor.r06_history']?.state ?? null,
+                        noDataText: noData?.textContent.trim() ?? null,
+                        hasChart: Boolean(card.querySelector('svg')),
+                      };
+                    }""",
+                    scenario,
+                )
+                self.assertTrue(snapshot["connected"], snapshot)
+                self.assertEqual(snapshot["entityPresent"], scenario["present"], snapshot)
+                self.assertEqual(snapshot["entityState"], scenario["state"], snapshot)
+                self.assertEqual(snapshot["noDataText"], "Power history: no data", snapshot)
+                self.assertFalse(snapshot["hasChart"], snapshot)
+
+        # Schedule the valid update so a deliberately injected production
+        # render exception is an uncaught browser error captured by pageerror,
+        # rather than a Playwright evaluate exception that bypasses the sink.
+        page.evaluate(
+            """() => setTimeout(() => {
+              window.__r06PowerHistory.hass = { states: {
+                'sensor.r06_history': {
+                  state: '1234',
+                  attributes: {
+                    hourly_power_kw: [0.25, 0.5, 0.75],
+                    hourly_labels: ['00:00', '01:00', '02:00'],
+                  },
+                },
+              } };
+            }, 0)"""
+        )
+        page.wait_for_timeout(50)
+        recovered = page.evaluate(
+            """() => {
+              const card = window.__r06PowerHistory;
+              const svg = card.querySelector('svg');
+              return {
+                connected: card.isConnected,
+                chartVisible: Boolean(svg && svg.getBoundingClientRect().width > 0
+                  && svg.getBoundingClientRect().height > 0),
+                barCount: svg?.querySelectorAll('rect').length ?? 0,
+                tooltips: Array.from(svg?.querySelectorAll('rect title') ?? [],
+                  title => title.textContent),
+                text: card.textContent,
+              };
+            }"""
+        )
+        self.assertEqual(
+            (
+                errors,
+                recovered["connected"],
+                recovered["chartVisible"],
+                recovered["barCount"],
+                recovered["tooltips"],
+                "Power history" in recovered["text"],
+            ),
+            (
+                [],
+                True,
+                True,
+                3,
+                ["00:00: 0.250", "01:00: 0.500", "02:00: 0.750"],
+                True,
+            ),
+            f"power-history-card page errors and recovered DOM mismatch: "
+            f"errors={errors}, dom={recovered}",
+        )
+
+
 # ==== Control-failure test ====
 
 class TestR06ControlFailure(unittest.TestCase):
@@ -1561,6 +1712,62 @@ class TestR06ControlFailure(unittest.TestCase):
             f"stdout: {result.stdout[:1000]}\n"
             f"stderr: {result.stderr[:1000]}",
         )
+
+    def test_power_history_render_failure_is_detected(self) -> None:
+        """A render-path mutation must trip this card's DOM/error checks.
+
+        This is separate from the forecast-card mutation control: it changes
+        only the power-history production renderer and reruns its real-browser
+        recovery test against the fixture's pageerror and DOM assertions.
+        """
+        target = FRONTEND / "power-history-card.js"
+        original = target.read_text()
+        sentinel = "MUTATION_INJECTED_R06_POWER_HISTORY_RENDER"
+        marker = "  _render() {\n"
+        self.assertEqual(original.count(marker), 1, "power-history render marker must be unique")
+        mutated = original.replace(
+            marker,
+            marker
+            + "    if (this._hass?.states?.['sensor.r06_history']?.state === '1234') {\n"
+            + f"      throw new Error('{sentinel}');\n"
+            + "    }\n",
+            1,
+        )
+        try:
+            target.write_text(mutated)
+            self._fx.refresh_card("power-history-card.js")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "unittest",
+                    "-v",
+                    "tests.test_r06_browser_playwright.TestR06BrowserPowerHistoryRender.test_empty_unknown_missing_entity_then_valid_data_recovers",
+                ],
+                cwd=str(REPO),
+                capture_output=True,
+                text=True,
+                timeout=180,
+            )
+            combined = result.stdout + "\n" + result.stderr
+            self.assertNotEqual(
+                result.returncode,
+                0,
+                "power-history mutation must fail the browser render test",
+            )
+            self.assertIn(
+                "power-history-card page errors and recovered DOM mismatch",
+                combined,
+                "the pageerror and actual DOM assertions must report the renderer failure",
+            )
+            self.assertIn(
+                sentinel,
+                combined,
+                "the production render exception must reach the pageerror/DOM test output",
+            )
+        finally:
+            target.write_text(original)
+            self._fx.refresh_card("power-history-card.js")
 
 
 if __name__ == "__main__":

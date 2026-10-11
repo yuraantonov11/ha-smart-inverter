@@ -2,12 +2,17 @@
 
 [![HACS Default](https://img.shields.io/badge/HACS-Default-orange.svg)](https://hacs.xyz)
 [![Version](https://img.shields.io/github/v/release/yuraantonov11/ha-smart-inverter)](https://github.com/yuraantonov11/ha-smart-inverter/releases)
-![HA](https://img.shields.io/badge/Home%20Assistant-2023.6%2B-41BDF5)
+![Home Assistant](https://img.shields.io/badge/Home%20Assistant-custom%20integration-41BDF5)
 [![Add Integration](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=powmr_inverter)
 
 Custom integration for **solar inverters** with battery storage and HEMS control.
 Currently supports the `solar.siseli.com` cloud platform (POW-HUB, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
 Architecture is designed to support additional data sources in the future (direct inverter connection, other cloud platforms).
+
+The current integration version is **1.9.0**, matching `manifest.json` and the
+root `__init__.py`. Release tags and GitHub Releases are created manually by the
+maintainer after review; the `develop` branch does not receive an automatic
+`-dev` suffix or release tag.
 
 ### Station learning and measured forecast accuracy
 
@@ -96,13 +101,17 @@ Copy `homeassistant/Inverter_dashboard.yaml` → `/config/`
 
 ## 🔧 Requirements
 
-- Home Assistant 2023.6+
+- Home Assistant. This repository does not declare or verify a minimum
+  supported Home Assistant version, so no oldest-version claim is made here.
 - Active account at [solar.siseli.com](https://solar.siseli.com)
 - Wi-Fi module ECO/MAX-730 connected to inverter
+- Runtime Python dependencies declared in `manifest.json`: `aiohttp>=3.9.0`
+  and `cryptography` (Home Assistant installs manifest requirements).
+- `requirements-dev.txt` includes `homeassistant>=2024.1.0` for tests; this is
+  not a supported-minimum claim for the integration.
 
-## 🚫 Zero dependencies
-
-No external API keys, no REST sensors, no cloud services needed beyond the Siseli portal. Solar forecast uses built-in `sun.sun` + your weather entity. Self-learning ratio adapts automatically.
+The integration uses the Siseli cloud service; it is not dependency-free. It
+does not require a separate third-party API key beyond the Siseli account.
 
 ## 📄 License
 
@@ -136,30 +145,25 @@ This is the same algorithm used in the Flutter app (`InverterData.getRealSoc()`)
 
 ## Development
 
+This repository root is the integration package root (`__init__.py`,
+`manifest.json`, `api.py`). For Home Assistant, install/copy that package into
+`custom_components/powmr_inverter/`. Tests are under `tests/`; bundled Lovelace
+sources are under `frontend/`.
+
 ```bash
-# Clone HA dev container
-git clone https://github.com/home-assistant/core.git
-cd core
-script/setup
+# From the repository root, install development/test dependencies
+python3 -m pip install -r requirements-dev.txt
 
-# Link custom component
-ln -s /path/to/this/repo config/custom_components/powmr_inverter
+# Provision Chromium for the real-browser suites
+python3 -m playwright install chromium
 
-# Run tests
-pytest custom_components/powmr_inverter/tests/
+# Run the canonical Python + JavaScript suite runner
+python3 tests/run_all.py --json
 ```
-
-## Requirements
-
-- Home Assistant 2024.1+
-- Python 3.12+
-- `aiohttp` ≥ 3.9.0
-- `cryptography` (HA pulls this in automatically; `manifest.json`
-  declares it as the integration's runtime requirement)
 
 ## License
 
-MIT License — see [LICENSE](../LICENSE)
+MIT License — see [LICENSE](LICENSE)
 
 ## Credits
 
