@@ -247,15 +247,197 @@ class CommandCorrelationTests(unittest.TestCase):
 
 
 class WriterFailureTests(unittest.TestCase):
+    def test_rotation_syncs_old_inode_before_rename_and_new_inode_after_write(self) -> None:
+        import os
+        import stat
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="powmr-rotation-order-") as tmp:
+            writer = journal._JournalWriter(max_queue=2)
+            path = Path(tmp) / "events.jsonl"
+            operations = []
+            original_open = Path.open
+            original_replace = Path.replace
+            original_fsync = os.fsync
+
+            class TrackedHandle:
+                def __init__(self, handle):
+                    self.handle = handle
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return self.handle.__exit__(*args)
+
+                def write(self, data):
+                    inode = os.fstat(self.handle.fileno()).st_ino
+                    operations.append(("write", inode))
+                    return self.handle.write(data)
+
+                def fileno(self):
+                    return self.handle.fileno()
+
+            def tracked_open(target, *args, **kwargs):
+                handle = original_open(target, *args, **kwargs)
+                mode = args[0] if args else kwargs.get("mode", "r")
+                return TrackedHandle(handle) if target == path and mode == "ab" else handle
+
+            def tracked_replace(source, target):
+                old_inode = source.stat().st_ino
+                result = original_replace(source, target)
+                operations.append(("rename", old_inode))
+                return result
+
+            def tracked_fsync(fd):
+                result = original_fsync(fd)
+                info = os.fstat(fd)
+                if stat.S_ISREG(info.st_mode):
+                    operations.append(("fsync", info.st_ino))
+                return result
+
+            with (
+                patch.object(journal, "MAX_FILE_SIZE_BYTES", 1),
+                patch.object(Path, "open", tracked_open),
+                patch.object(Path, "replace", tracked_replace),
+                patch.object(journal.os, "fsync", tracked_fsync),
+            ):
+                writer._write(path, {"entry_id": "rotate-order", "sequence": 1}, critical=False)
+                writer._write(path, {"entry_id": "rotate-order", "sequence": 2}, critical=True)
+
+            writes = [(index, inode) for index, (kind, inode) in enumerate(operations) if kind == "write"]
+            self.assertEqual(len(writes), 2)
+            old_inode = writes[0][1]
+            new_inode = writes[1][1]
+            self.assertNotEqual(old_inode, new_inode)
+            old_fsync = next((index for index, item in enumerate(operations) if item == ("fsync", old_inode)), None)
+            rename = next(index for index, item in enumerate(operations) if item[0] == "rename")
+            new_fsync = next((index for index, item in enumerate(operations) if item == ("fsync", new_inode)), None)
+            self.assertIsNotNone(old_fsync, "old active inode must be fsynced during rotation")
+            self.assertIsNotNone(new_fsync, "critical record inode must be fsynced")
+            self.assertLess(old_fsync if old_fsync is not None else -1, rename, "pending data must be fsynced on the old inode before rename")
+            self.assertLess(writes[1][0], new_fsync if new_fsync is not None else -1, "critical record must be fsynced after its write")
+            self.assertIn(writer.status("rotate-order").get("directory_fsync"), {"supported", "unsupported", "failed"})
+            self.assertTrue(writer.drain(timeout=2.0))
+
+    def test_failed_rotation_fsync_does_not_rename_or_count_pending_records(self) -> None:
+        import errno
+        import os
+        import stat
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="powmr-rotation-fsync-failure-") as tmp:
+            writer = journal._JournalWriter(max_queue=2)
+            path = Path(tmp) / "events.jsonl"
+            writer._write(path, {"entry_id": "rotate-failure", "sequence": 1}, critical=False)
+            old_inode = path.stat().st_ino
+            original_fsync = os.fsync
+
+            def fail_old_inode(fd):
+                info = os.fstat(fd)
+                if stat.S_ISREG(info.st_mode) and info.st_ino == old_inode:
+                    raise OSError(errno.ENOSPC, "private fsync failure")
+                return original_fsync(fd)
+
+            with patch.object(journal, "MAX_FILE_SIZE_BYTES", 1), patch.object(journal.os, "fsync", fail_old_inode):
+                writer._write(path, {"entry_id": "rotate-failure", "sequence": 2}, critical=True)
+
+            self.assertEqual(path.stat().st_ino, old_inode, "failed fsync must leave the active inode in place")
+            self.assertEqual(list(Path(tmp).glob("events.*.jsonl")), [], "failed fsync must prevent rename")
+            self.assertEqual([row["sequence"] for row in journal.read_jsonl(path)], [1])
+            stats = writer.status("rotate-failure")
+            self.assertEqual(stats["fsync_errors"], 1)
+            self.assertEqual(stats["records_written"], 0, "unsynced pending data is not durable")
+            self.assertFalse(writer.drain(timeout=2.0))
+
+    def test_directory_fsync_unsupported_is_reported_explicitly(self) -> None:
+        import errno
+        import os
+        import stat
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="powmr-dir-fsync-unsupported-") as tmp:
+            writer = journal._JournalWriter(max_queue=2)
+            path = Path(tmp) / "events.jsonl"
+            original_fsync = os.fsync
+
+            def unsupported_for_directories(fd):
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    raise OSError(errno.EINVAL, "directory fsync unsupported")
+                return original_fsync(fd)
+
+            with patch.object(journal.os, "fsync", unsupported_for_directories):
+                writer._write(path, {"entry_id": "directory-unsupported", "sequence": 1}, critical=True)
+
+            stats = writer.status("directory-unsupported")
+            self.assertEqual(stats["directory_fsync"], "unsupported")
+            self.assertEqual(stats["records_written"], 1)
+            self.assertEqual(stats["fsync_errors"], 0)
+            self.assertTrue(writer.drain(timeout=2.0))
+
+    def test_active_writer_does_not_rescan_archives_per_append(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="powmr-journal-history-scan-") as tmp:
+            root = Path(tmp)
+            path = root / "events.jsonl"
+            now = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
+            path.write_text(
+                json.dumps({"entry_id": "scan-entry", "sequence": 1, "event_timestamp": now.isoformat()}) + chr(10),
+                encoding="utf-8",
+            )
+            archives = [root / f"events.20261011T12000{index}Z.{index}.jsonl" for index in range(1, 5)]
+            for index, archive in enumerate(archives, start=1):
+                archive.write_text(
+                    json.dumps({"entry_id": "scan-entry", "sequence": index, "event_timestamp": now.isoformat()}) + chr(10),
+                    encoding="utf-8",
+                )
+            writer = journal._JournalWriter(max_queue=8)
+            read_targets = []
+            original_open = Path.open
+
+            def tracked_open(target, *args, **kwargs):
+                mode = args[0] if args else kwargs.get("mode", "r")
+                if "r" in mode or "+" in mode:
+                    read_targets.append(target)
+                return original_open(target, *args, **kwargs)
+
+            with (
+                patch.object(journal, "_utc_now", return_value=now),
+                patch.object(journal, "MAX_FILE_SIZE_BYTES", 1024 * 1024),
+                patch.object(Path, "open", tracked_open),
+            ):
+                for sequence in range(2, 6):
+                    writer._write(
+                        path,
+                        {"entry_id": "scan-entry", "sequence": sequence, "event_timestamp": now.isoformat()},
+                        critical=False,
+                    )
+
+            archive_reads = [target for target in read_targets if target in archives]
+            active_reads = [target for target in read_targets if target == path]
+            self.assertEqual(archive_reads, [], "appends without rotation must not read archive history")
+            self.assertLessEqual(len(active_reads), 1, "active history is rebuilt once per writer open, not per append")
+            self.assertTrue(writer.drain(timeout=2.0))
+
     def test_fsync_failure_is_visible_and_drain_is_not_success(self) -> None:
         import errno
+        import os
+        import stat
         import time
         from unittest.mock import patch
 
         with tempfile.TemporaryDirectory(prefix="powmr-fsync-") as tmp:
             writer = journal._JournalWriter(max_queue=4)
             event = {"entry_id": "fsync-entry", "sequence": 1}
-            with patch.object(journal.os, "fsync", side_effect=OSError(errno.ENOSPC, "private path text")):
+            original_fsync = os.fsync
+
+            def fail_file_fsync(fd):
+                if stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise OSError(errno.ENOSPC, "private path text")
+                return original_fsync(fd)
+
+            with patch.object(journal.os, "fsync", side_effect=fail_file_fsync):
                 self.assertTrue(writer.enqueue("fsync-entry", Path(tmp) / "events.jsonl", event, critical=True))
                 deadline = time.monotonic() + 2.0
                 while sum(writer.status("fsync-entry")[key] for key in ("write_errors", "fsync_errors")) == 0 and time.monotonic() < deadline:
@@ -437,7 +619,7 @@ class WriterFailureTests(unittest.TestCase):
                 attributes = sensor.extra_state_attributes
                 self.assertIsInstance(attributes, dict)
                 health = attributes["incident_evidence_journal"]
-                self.assertTrue({"queue_depth", "queue_full", "write_errors", "fsync_errors", "last_error"} <= set(health))
+                self.assertTrue({"queue_depth", "queue_full", "write_errors", "fsync_errors", "last_error", "directory_fsync"} <= set(health))
                 self.assertEqual(health["write_errors"], 1)
                 self.assertEqual(health["last_error"]["class"], "PermissionError")
                 self.assertNotIn("private disk path", json.dumps(health))
@@ -578,6 +760,51 @@ class CrashDurabilityTests(unittest.TestCase):
         rows = journal.read_records(entry_id)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["sequence"], 1)
+
+
+    def test_reopen_preserves_complete_json_without_trailing_newline(self) -> None:
+        path = self.root / "unterminated" / "events.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(json.dumps({"entry_id": "unterminated", "sequence": 1}).encode("utf-8"))
+
+        writer = journal._JournalWriter(max_queue=2)
+        writer._write(path, {"entry_id": "unterminated", "sequence": 2}, critical=True)
+
+        self.assertEqual([row["sequence"] for row in journal.read_jsonl(path)], [1, 2])
+
+    def test_reopen_recovers_json_and_utf8_tails_before_appending(self) -> None:
+        import subprocess
+        import sys
+
+        tails = {
+            "truncated-json": b'{"partial":',
+            "partial-utf8": bytes((0xE2, 0x82)),
+        }
+        for case, tail in tails.items():
+            with self.subTest(case=case):
+                entry_dir = self.root / case
+                path = entry_dir / "events.jsonl"
+                child_code = (
+                    "import os,sys; "
+                    f"sys.path.insert(0, {str(REPO_ROOT.parent)!r}); "
+                    "from pathlib import Path; "
+                    "from powmr_inverter.hems import evidence_journal as j; "
+                    f"path=Path({str(path)!r}); "
+                    "writer=j._JournalWriter(max_queue=2); "
+                    f"writer._write(path, {{'entry_id': {case!r}, 'sequence': 1}}, critical=True); "
+                    f"fd=os.open(str(path), os.O_WRONLY|os.O_APPEND); os.write(fd, {tail!r}); os.close(fd); "
+                    "os._exit(0)"
+                )
+                child = subprocess.run([sys.executable, "-c", child_code], timeout=10.0)
+                self.assertEqual(child.returncode, 0)
+
+                reopened = journal._JournalWriter(max_queue=2)
+                reopened._write(path, {"entry_id": case, "sequence": 2}, critical=True)
+                self.assertEqual(
+                    [row["sequence"] for row in journal.read_jsonl(path)],
+                    [1, 2],
+                    "reopen must preserve the complete fsynced record and discard only its incomplete suffix",
+                )
 
 
 class CoordinatorCycleEvidenceTests(unittest.IsolatedAsyncioTestCase):

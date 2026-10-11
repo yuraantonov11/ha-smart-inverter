@@ -6,6 +6,7 @@ fields, so it is safe to call from Home Assistant's event loop.
 """
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import math
@@ -460,6 +461,8 @@ class _JournalWriter:
         self._stats: dict[str, dict[str, Any]] = {}
         self._pending_paths: dict[Path, str] = {}
         self._pending_record_counts: dict[Path, int] = {}
+        self._active_state: dict[Path, tuple[int, datetime | None]] = {}
+        self._recovery_pending: set[Path] = set()
         self._last_fsync = time.monotonic()
         self._thread = threading.Thread(target=self._serve, name="powmr-incident-journal", daemon=True)
         self._thread.start()
@@ -468,6 +471,7 @@ class _JournalWriter:
         return self._stats.setdefault(entry_id, {
             "queue_full": 0, "write_errors": 0, "fsync_errors": 0,
             "records_written": 0, "fsyncs": 0, "last_error": None,
+            "directory_fsync": "not_attempted",
         })
 
     def enqueue(self, entry_id: str, path: Path, event: dict[str, Any], *, critical: bool) -> bool:
@@ -546,43 +550,166 @@ class _JournalWriter:
     def _write(self, path: Path, event: dict[str, Any], *, critical: bool) -> None:
         entry_id = str(event["entry_id"])
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            self._ensure_parent(path, entry_id)
             line = json.dumps(event, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8") + b"\n"
-            self._rotate_and_prune(path, len(line), int(event["sequence"]))
+            if not self._rotate_and_prune(path, len(line), int(event["sequence"]), entry_id):
+                return
+            created = not path.exists()
             with path.open("ab", buffering=0) as handle:
                 written = handle.write(line)
                 if written != len(line):
                     raise OSError("short journal write")
+            size, latest_event_at = self._active_state.get(path, (0, None))
+            event_stamp = _iso(event.get("event_timestamp"))
+            event_at = datetime.fromisoformat(event_stamp) if event_stamp is not None else None
+            if event_at is not None and (latest_event_at is None or event_at > latest_event_at):
+                latest_event_at = event_at
+            self._active_state[path] = (size + len(line), latest_event_at)
             self._pending_paths[path] = entry_id
             self._pending_record_counts[path] = self._pending_record_counts.get(path, 0) + 1
             if critical:
                 self._sync_path(path, entry_id)
+            if created:
+                self._sync_directory(path.parent, entry_id)
         except OSError as exc:
             self._set_error(entry_id, "write_errors", exc)
 
-    def _rotate_and_prune(self, path: Path, incoming_size: int, sequence: int) -> None:
-        now = _utc_now()
-        cutoff = now - timedelta(days=RETENTION_DAYS)
+    def _ensure_parent(self, path: Path, entry_id: str) -> None:
+        missing: list[Path] = []
+        directory = path.parent
+        while not directory.exists() and directory != directory.parent:
+            missing.append(directory)
+            directory = directory.parent
+        path.parent.mkdir(parents=True, exist_ok=True)
+        for created in reversed(missing):
+            self._sync_directory(created.parent, entry_id)
+
+    def _load_active_state(self, path: Path, entry_id: str) -> tuple[int, datetime | None] | None:
+        cached = self._active_state.get(path)
+        if cached is not None:
+            return cached
+        if not path.exists():
+            state = (0, None)
+            self._active_state[path] = state
+            return state
+
+        with path.open("r+b", buffering=0) as handle:
+            data = handle.read()
+            complete = data
+            if data and not data.endswith(b"\n"):
+                boundary = data.rfind(b"\n") + 1
+                suffix = data[boundary:]
+                try:
+                    json.loads(suffix)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    complete = data[:boundary]
+                else:
+                    complete = data + b"\n"
+            changed = complete != data
+            if changed:
+                if len(complete) > len(data):
+                    handle.seek(0, os.SEEK_END)
+                    if handle.write(complete[len(data):]) != len(complete) - len(data):
+                        raise OSError("short journal recovery write")
+                else:
+                    handle.seek(0)
+                    handle.truncate(len(complete))
+                    handle.seek(len(complete))
+            if changed or path in self._recovery_pending:
+                try:
+                    os.fsync(handle.fileno())
+                except OSError as exc:
+                    self._recovery_pending.add(path)
+                    self._set_error(entry_id, "fsync_errors", exc)
+                    return None
+                self._recovery_pending.discard(path)
+                with self._stats_lock:
+                    self._entry_stats(entry_id)["fsyncs"] += 1
+
+        latest_event_at: datetime | None = None
+        for raw in complete.split(b"\n"):
+            if not raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(row, dict):
+                continue
+            stamp = _iso(row.get("event_timestamp"))
+            if stamp is None:
+                continue
+            event_at = datetime.fromisoformat(stamp)
+            if latest_event_at is None or event_at > latest_event_at:
+                latest_event_at = event_at
+        state = (len(complete), latest_event_at)
+        self._active_state[path] = state
+        return state
+
+    def _rotate_and_prune(self, path: Path, incoming_size: int, sequence: int, entry_id: str) -> bool:
+        state = self._load_active_state(path, entry_id)
+        if state is None:
+            return False
+        size, latest_event_at = state
         if path.exists():
-            rotate = path.stat().st_size + incoming_size > MAX_FILE_SIZE_BYTES
-            if not rotate:
-                latest_event_at = _latest_event_timestamp(path)
-                rotate = latest_event_at is not None and (
-                    latest_event_at < cutoff or latest_event_at.date() < now.date()
-                )
+            now = _utc_now()
+            cutoff = now - timedelta(days=RETENTION_DAYS)
+            rotate = size + incoming_size > MAX_FILE_SIZE_BYTES
+            if not rotate and latest_event_at is not None:
+                rotate = latest_event_at < cutoff or latest_event_at.date() < now.date()
             if rotate:
+                pending_entry = self._pending_paths.get(path, entry_id)
+                if not self._sync_path(path, pending_entry):
+                    return False
                 stamp = now.strftime("%Y%m%dT%H%M%S%fZ")
                 archive = path.with_name(f"events.{stamp}.{sequence}.jsonl")
                 path.replace(archive)
-        for archive in path.parent.glob("events.*.jsonl"):
-            try:
-                latest_event_at = _latest_event_timestamp(archive)
-                if archive.stat().st_mtime < cutoff.timestamp() or (
-                    latest_event_at is not None and latest_event_at < cutoff
-                ):
-                    archive.unlink()
-            except OSError:
-                raise
+                self._sync_directory(path.parent, entry_id)
+                self._active_state[path] = (0, None)
+                self._prune_archives(path.parent, cutoff)
+        return True
+
+    def _prune_archives(self, directory: Path, cutoff: datetime) -> None:
+        for archive in directory.glob("events.*.jsonl"):
+            latest_event_at = _latest_event_timestamp(archive)
+            if archive.stat().st_mtime < cutoff.timestamp() or (
+                latest_event_at is not None and latest_event_at < cutoff
+            ):
+                archive.unlink()
+
+    def _sync_directory(self, directory: Path, entry_id: str) -> bool:
+        def set_capability(value: str) -> None:
+            with self._stats_lock:
+                self._entry_stats(entry_id)["directory_fsync"] = value
+
+        unsupported = {errno.EBADF, errno.EINVAL}
+        unsupported.update(getattr(errno, name) for name in ("ENOTSUP", "EOPNOTSUPP") if hasattr(errno, name))
+        directory_flag = getattr(os, "O_DIRECTORY", None)
+        if directory_flag is None:
+            set_capability("unsupported")
+            return False
+        try:
+            fd = os.open(str(directory), os.O_RDONLY | directory_flag)
+        except OSError as exc:
+            if exc.errno in unsupported:
+                set_capability("unsupported")
+            else:
+                set_capability("failed")
+                self._set_error(entry_id, "fsync_errors", exc)
+            return False
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            if exc.errno in unsupported:
+                set_capability("unsupported")
+            else:
+                set_capability("failed")
+                self._set_error(entry_id, "fsync_errors", exc)
+            return False
+        finally:
+            os.close(fd)
+        set_capability("supported")
+        return True
 
     def _sync_path(self, path: Path, entry_id: str) -> bool:
         try:
@@ -625,7 +752,7 @@ def status(entry_id: str) -> dict[str, Any]:
     """Return sanitized counters suitable for a diagnostic HA attribute."""
     writer = _WRITER
     if writer is None:
-        return {"queue_full": 0, "write_errors": 0, "fsync_errors": 0, "records_written": 0, "fsyncs": 0, "last_error": None, "queue_depth": 0}
+        return {"queue_full": 0, "write_errors": 0, "fsync_errors": 0, "records_written": 0, "fsyncs": 0, "last_error": None, "directory_fsync": "not_attempted", "queue_depth": 0}
     return writer.status(entry_id)
 
 
