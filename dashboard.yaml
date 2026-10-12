@@ -225,7 +225,7 @@ views:
               {%- if target_is_empty -%}
                 **Стан SOC-цілі:** Автоматично — ручну ціль не задано. Щоб тимчасово скоригувати рекомендацію, обери значення 20–100 у select вище — HEMS стане на паузу на 30 хв.
               {%- else -%}
-                **Стан SOC-цілі:** Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв. Скинути — обери значення select назад до автоматичного.
+                **Стан SOC-цілі:** Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
               {%- endif -%}
           - type: markdown
             title: AI · навчання і точність
@@ -235,30 +235,49 @@ views:
               {%- set APPLIED_LABELS = {true: 'Так (AI рекомендація прийнята HEMS)', false: 'Ні (AI рекомендація не прийнята)'} -%}
               {%- set REASON_LABELS = {
                 'already_in_target': 'Поточна конфігурація вже відповідає цілі — зміни не потрібні (already_in_target)',
-                'battery_drives_load': 'Батарея живить навантаження; підзарядка недоцільна (battery_drives_load)',
-                'day_pv_low': 'Прогнозована PV-потужність нижча за споживання — бережемо заряд (day_pv_low)',
+                'battery_drives_load': 'Батарея живить навантаження — AI не рекомендує підзарядку (battery_drives_load)',
+                'day_pv_low': 'Прогнозована PV-потужність нижча за споживання — AI рекомендує берегти заряд (day_pv_low)',
                 'hysteresis_recovery': 'Повернення до попереднього режиму після тимчасової паузи (hysteresis_recovery)',
-                'night_window_usb': 'Нічна USB-стратегія: мінімізуємо цикли батареї (night_window_usb)',
-                'critical_recovery': 'Критичний SOC — відновлюємо заряд будь-якою ціною (critical_recovery)',
-                'surplus_enter_sbu': 'Надлишок PV — переходимо в SBU для накопичення (surplus_enter_sbu)',
-                'reserve_soc_protection': 'SOC нижче резерву — захист від глибокого розряду (reserve_soc_protection)',
-                'evening_reserve_protection': 'Вечірній резерв — готуємося до нічного споживання (evening_reserve_protection)',
-                'emergency_low_soc_daytime': 'Аварійно низький SOC удень — термінове відновлення (emergency_low_soc_daytime)',
-                'storm_mode': 'Штормовий режим — бережемо заряд для автономії (storm_mode)',
-                'predictive_assist_evening': 'Прогнозна підтримка: підвищуємо SOC до вечора (predictive_assist_evening)',
+                'night_window_usb': 'Нічна USB-стратегія: рекомендація мінімізувати цикли батареї (night_window_usb)',
+                'critical_recovery': 'Критичний SOC — рекомендація: відновлення заряду (critical_recovery)',
+                'surplus_enter_sbu': 'Надлишок PV — рекомендація: перехід у SBU для накопичення (surplus_enter_sbu)',
+                'reserve_soc_protection': 'SOC нижче резерву — рекомендація: захист від глибокого розряду (reserve_soc_protection)',
+                'evening_reserve_protection': 'Вечірній резерв — рекомендація: підготуватися до нічного споживання (evening_reserve_protection)',
+                'emergency_low_soc_daytime': 'Аварійно низький SOC удень — рекомендація: термінове відновлення (emergency_low_soc_daytime)',
+                'storm_mode': 'Штормовий режим — рекомендація: берегти заряд для автономії (storm_mode)',
+                'predictive_assist_evening': 'Прогнозна підтримка — рекомендація: підвищити SOC до вечора (predictive_assist_evening)',
                 'no_hint': 'Планувальник ще не сформував рекомендацію (no_hint)',
                 'hems_auto_off': 'HEMS авто-режим вимкнено (hems_auto_off)',
-                'unknown_mode': 'Невідомий режим — повертаємося до безпечного (unknown_mode)',
+                'unknown_mode': 'Невідомий режим — рекомендація: повернення до безпечного (unknown_mode)',
                 'invalid_telemetry': 'Невалідні дані телеметрії — рішення відкладено (invalid_telemetry)',
                 'soc_unknown': 'SOC невідомий — планувальник утримується (soc_unknown)',
                 'day_default': 'Стандартна денна стратегія без додаткових сигналів (day_default)',
-                'arbitrage_night': 'Арбітраж вночі: заряд від мережі за нічним тарифом (arbitrage_night)',
-                'arbitrage_day_sbu': 'Арбітраж удень: SBU для максимального самозабезпечення (arbitrage_day_sbu)',
-                'arbitrage_day_usb': 'Арбітраж удень: USB для уникнення розряду (arbitrage_day_usb)',
-                'forecast_good_use_battery': 'Прогноз сприятливий — використовуємо батарею (forecast_good_use_battery)',
+                'arbitrage_night': 'Арбітраж вночі — AI рекомендує: заряд від мережі за нічним тарифом (arbitrage_night)',
+                'arbitrage_day_sbu': 'Арбітраж удень — AI рекомендує SBU для максимального самозабезпечення (arbitrage_day_sbu)',
+                'arbitrage_day_usb': 'Арбітраж удень — AI рекомендує USB для уникнення розряду (arbitrage_day_usb)',
+                'forecast_good_use_battery': 'Прогноз сприятливий — AI рекомендує використати батарею (forecast_good_use_battery)',
                 'circuit_breaker': 'Захисне блокування HEMS (circuit_breaker)',
-                'reserve_floor': 'SOC досяг резервної межі — заряджання обовʼязкове (reserve_floor)',
+                'reserve_floor': 'SOC досяг резервної межі — рекомендація: заряджання обовʼязкове (reserve_floor)',
               } -%}
+              {%- macro render_reason(value) -%}
+                {%- if value is none -%}
+                  Дані недоступні
+                {%- elif value in REASON_LABELS -%}
+                  {{ REASON_LABELS[value] }}
+                {%- elif ':' in (value | string) -%}
+                  {%- set parts = (value | string).split(':', 1) -%}
+                  {%- set head = parts[0].strip() -%}
+                  {%- set tail = parts[1].strip() -%}
+                  {%- set ua = REASON_LABELS.get(head) -%}
+                  {%- if ua -%}
+                    {{ ua }} — деталі: {{ tail }}
+                  {%- else -%}
+                    Невідомий reason: {{ head }} — деталі: {{ tail }}
+                  {%- endif -%}
+                {%- else -%}
+                  Невідомий reason: {{ value }}
+                {%- endif -%}
+              {%- endmacro -%}
               {%- set model_key = c.get('forecast_model') -%}
               {%- set MODEL_LABELS = {
                 'hourly_response_v1': 'Погодинна модель станції (v1)',
@@ -290,8 +309,8 @@ views:
               {%- endif %}
               **Застосовано:** {{ APPLIED_LABELS.get(applied, 'Дані недоступні') }}
 
-              **Причина рекомендації:** {{ REASON_LABELS.get(reason, 'Дані недоступні') if reason is not none else 'Дані недоступні' }}
-              **Причина виконання або блокування:** {{ REASON_LABELS.get(execution_reason, 'Дані недоступні') if execution_reason is not none else 'Дані недоступні' }}
+              **Причина рекомендації:** {{ render_reason(reason) }}
+              **Причина виконання або блокування:** {{ render_reason(execution_reason) }}
 
               **Реальні пари поточної моделі:** {{ c.get('samples', 0) }} · **Очікують факту:** {{ c.get('pending_count', 0) }}
 

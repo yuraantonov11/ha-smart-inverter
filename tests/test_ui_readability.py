@@ -178,8 +178,8 @@ class UiReadabilityContracts(unittest.TestCase):
             "soc_unknown": "SOC невідомий",
             "day_default": "Стандартна денна стратегія",
             "arbitrage_night": "Арбітраж вночі",
-            "arbitrage_day_sbu": "Арбітраж удень: SBU",
-            "arbitrage_day_usb": "Арбітраж удень: USB",
+            "arbitrage_day_sbu": "Арбітраж удень",
+            "arbitrage_day_usb": "Арбітраж удень",
             "forecast_good_use_battery": "Прогноз сприятливий",
             "circuit_breaker": "Захисне блокування HEMS",
             "reserve_floor": "SOC досяг резервної межі",
@@ -264,6 +264,106 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertIn("HEMS на паузі 30 хв", rendered)
         # And the inverse: it must not claim Автоматично when user picked a value.
         self.assertNotIn("Автоматично", rendered)
+
+    def test_soc_status_card_manual_reset_hint_is_honest_about_no_auto_option(self) -> None:
+        """Юра fixed: select.smart_solar_inverter_predictive_target_soc only
+        exposes 20–100 as options (no "auto" / "None" / "automatically").
+        The card must NOT mislead the operator into thinking there is an
+        auto option in the select; instead it must point at the AI / pause
+        controls to clear the manual target."""
+        rendered = _render_soc_card("80")
+        self.assertNotIn("назад до автоматичного", rendered,
+                         msg="Old misdirection to a non-existent auto select option")
+        # Honest guidance: approve current AI recommendation or cancel pause.
+        self.assertIn("Скинути ручну ціль", rendered)
+        self.assertIn("схвали поточну AI-рекомендацію", rendered)
+        self.assertIn("скасуй паузу", rendered)
+
+    def test_compound_reason_is_split_into_translated_code_plus_details(self) -> None:
+        """A reason like ``day_pv_low: PV 100W < load 200W`` must surface the
+        translated code AND the diagnostics suffix on a separate line, not
+        the raw hems/predictive.py f-string."""
+        calibration = {"forecast_model": "hourly_response_v2", "samples": 0,
+                       "pending_count": 0, "recent_pairs": [], "pending": []}
+        attrs = {
+            "forecast_calibration": calibration, "override_pending_until": None,
+            "mode": "Assist", "confidence": 0.5, "applied": True,
+            "reason": "day_pv_low: PV 100W < load 200W",
+            "execution_reason": "night_charge: SOC 40% < target 60%",
+        }
+        rendered = _render_learning_card(attrs)
+        # Translated head from REASON_LABELS.
+        self.assertIn("AI рекомендує берегти заряд", rendered)
+        # The diagnostic suffix is preserved as a separate token.
+        self.assertIn("деталі:", rendered)
+        self.assertIn("PV 100W < load 200W", rendered)
+        # And the separate execution_reason.
+        self.assertIn("night_charge", rendered)
+        self.assertIn("SOC 40% < target 60%", rendered)
+
+    def test_unknown_reason_is_shown_as_diagnostic_code_not_dany_nedostupni(self) -> None:
+        """An unknown reason must render as ``Невідомий reason: <code>`` so
+        operators can grep the engine logs instead of seeing the misleading
+        fallback ``Дані недоступні``."""
+        calibration = {"forecast_model": "hourly_response_v2", "samples": 0,
+                       "pending_count": 0, "recent_pairs": [], "pending": []}
+        attrs = {
+            "forecast_calibration": calibration, "override_pending_until": None,
+            "mode": "Assist", "confidence": 0.5, "applied": True,
+            "reason": "no_such_code_2026",
+            "execution_reason": None,
+        }
+        rendered = _render_learning_card(attrs)
+        self.assertIn("Невідомий reason: no_such_code_2026", rendered)
+        # execution_reason None branch must say Дані недоступні.
+        self.assertIn("**Причина виконання або блокування:** Дані недоступні", rendered)
+        # The recommendation reason line must NOT say Дані недоступні.
+        rec_line = next(
+            ln for ln in rendered.splitlines()
+            if ln.startswith("**Причина рекомендації:**")
+        )
+        self.assertNotIn("Дані недоступні", rec_line)
+
+    def test_all_reason_labels_use_recommendation_framing_not_physical_action(self) -> None:
+        """Per Юрина вимога: жоден REASON_LABEL не повинен стверджувати
+        фізичну дію (інвертор зробив, батарея заряджається, мережа
+        відключена). Дозволено: AI рекомендує, HEMS вирішує,
+        очікувана дія."""
+        # Words that assert a physical inverter state vs. allowed recommendation language.
+        forbidden = [
+            "відновлюємо заряд",   # we are recovering the charge
+            "переходимо в SBU",   # we are switching to SBU
+            "мінімізуємо цикли",  # we are minimising cycles
+            "— бережемо заряд",   # we are saving the charge
+            "— готуємося до",     # we are preparing for
+            "— термінове відновлення",  # we are urgently restoring
+            "використовуємо батарею",  # we are using the battery
+            "використовуємо",     # we are using
+        ]
+        import re
+        template = yaml.safe_load((REPO / "dashboard.yaml").read_text(encoding="utf-8"))
+        labels: dict[str, str] = {}
+        for view in template["views"]:
+            for section in view.get("sections", []):
+                for card in section.get("cards", []):
+                    if card.get("title") == "AI · навчання і точність":
+                        content = card["content"]
+                        # Crude extraction: REASON_LABELS dict values.
+                        for line in content.splitlines():
+                            m = re.match(r"\s*'([a-z_]+)':\s*'([^']+)'\s*,", line)
+                            if m:
+                                labels[m.group(1)] = m.group(2)
+        # Sanity — at least 24 labels discovered.
+        self.assertGreaterEqual(len(labels), 24,
+                                msg=f"Expected ≥24 REASON_LABELS, found {len(labels)}")
+        # Forbid physical-action verbs in any label.
+        for code, ua in labels.items():
+            for bad in forbidden:
+                self.assertNotIn(bad, ua,
+                                 msg=f"reason_label[{code}]={ua!r} contains forbidden substring {bad!r}")
+            # Machine-readable code in parentheses must always remain for diagnostics.
+            self.assertIn(f"({code})", ua,
+                          msg=f"machine code {code} must remain in the label {ua!r}")
 
 
 if __name__ == "__main__":
