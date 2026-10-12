@@ -3360,8 +3360,28 @@ class HistoryCoordinator(DataUpdateCoordinator):
         import aiohttp
 
         if not hasattr(self, "_history_coords") or not self._history_coords:
-            # Fall back to Kiev if we never set real coordinates
-            self._history_coords = (50.4501, 30.5234)
+            # Coord audit: ``_history_coords`` is
+            # ALWAYS initialised by
+            # ``_init_pv_learning`` from the
+            # resolved site identity (entry →
+            # HA → default). Reaching this branch
+            # means the coordinator was asked
+            # for the archive before the
+            # identity was resolved; the only
+            # safe response is to log and return
+            # an empty result. The previous
+            # behaviour silently fell back to a
+            # Kyiv constant; that masked a real
+            # production defect for any HA
+            # instance running outside the Kyiv
+            # region and is now removed.
+            _LOGGER.warning(
+                "Open-Meteo archive skipped: "
+                "site coordinates are not yet "
+                "resolved (init order); returning "
+                "empty result"
+            )
+            return {}
 
         lat, lon = self._history_coords
         end = datetime.now().date()

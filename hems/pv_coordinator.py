@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .history_builder import build_hourly_load_matrix
 from .predictive import PredictiveHemsController, normalize_night_window
-from .options_helpers import compute_site_coordinates
+from .options_helpers import resolve_site_identity
 from .pv_learning import (PvLearningState, RealForecastPairs, finite, complete_hourly_days, daily_energy_deltas,
                           day_bounds, timestamp, train_station,
                           current_forecast_model_identity, legacy_forecast_model_identity)
@@ -28,22 +28,48 @@ class PvLearningCoordinatorMixin:
 
     def _init_pv_learning(self):
         self._site_timezone = ZoneInfo(self.hass.config.time_zone)
-        # T16 audit: the runtime default
-        # comes from ``options_helpers.compute_site_coordinates``,
-        # which falls back to the canonical
+        # Coord audit: the resolution order is
+        # entry.options["site_latitude"/"site_longitude"]
+        # (user-overridden station) → HA's own
+        # ``hass.config.latitude`` / ``hass.config.longitude``
+        # (production default for any HA instance
+        # outside the Kyiv region) →
         # ``DEFAULT_SITE_LATITUDE`` /
-        # ``DEFAULT_SITE_LONGITUDE`` in
-        # ``hems.defaults``. ``entry.options``
-        # always wins when the user has set a
-        # value.
-        latitude, longitude = compute_site_coordinates(
-            self._entry.options
+        # ``DEFAULT_SITE_LONGITUDE`` as the absolute
+        # last-resort fallback. ``None`` is never a
+        # valid coordinate. The active source is
+        # recorded on ``self._identity_source`` so
+        # the sensor can surface it to the UI and the
+        # audit can tell which source won without
+        # reading the journal.
+        ha_lat = getattr(self.hass.config, "latitude", None)
+        ha_lon = getattr(self.hass.config, "longitude", None)
+        identity = resolve_site_identity(
+            self._entry.options,
+            ha_latitude=ha_lat,
+            ha_longitude=ha_lon,
         )
+        self._identity_source = identity["source"]
+        latitude, longitude = identity["latitude"], identity["longitude"]
         self._pv_learning = PvLearningState(
             self.hass.config.time_zone,
             latitude,
             longitude,
         )
+        # Coord audit: ``_history_coords`` is the
+        # single source for the Open-Meteo Archive
+        # fetch. It MUST mirror the
+        # ``_pv_learning.identity`` exactly so the
+        # historical-weather lookup matches the
+        # radiation cache and the trained station
+        # model. A previous version of this file
+        # had a Kyiv constant here; that hardcoded
+        # fallback masked a real production defect
+        # for any HA instance running outside the
+        # Kyiv region. The fallback is removed; the
+        # coordinator ALWAYS sets ``_history_coords``
+        # to the resolved site identity above.
+        self._history_coords = (latitude, longitude)
         self._pv_calibrator = self._pv_learning.calibrator
         self._pv_matrix: list[list[float]] = []
         self._pv_actual: dict[str, float] = {}

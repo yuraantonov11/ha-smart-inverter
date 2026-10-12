@@ -770,7 +770,38 @@ class ForecastTomorrowSensor(InverterSensor):
         """Expose hourly forecast for sparkline rendering."""
         hourly = self.coordinator.hourly_forecast_today
         if not hourly:
-            return None
+            # Coord audit: even when no hourly
+            # forecast has been built yet
+            # (first refresh, transient
+            # network failure), the sensor
+            # must surface WHERE the forecast
+            # is targeted so a user can tell
+            # at a glance whether the
+            # integration is running against
+            # the right location. The previous
+            # behaviour exposed no such
+            # attribute and a misconfigured
+            # station was only visible deep
+            # in the journal.
+            identity = getattr(
+                getattr(self.coordinator, "_pv_learning", None),
+                "identity", None,
+            )
+            if not isinstance(identity, dict):
+                return None
+            source = getattr(self.coordinator, "_identity_source", None)
+            attrs: dict[str, Any] = {
+                "hourly_forecast_date": (
+                    self.coordinator._pv_local_now().date().isoformat()
+                ),
+                "forecast_location": {
+                    "source": source or "unknown",
+                    "latitude": identity.get("latitude"),
+                    "longitude": identity.get("longitude"),
+                    "timezone": identity.get("timezone"),
+                },
+            }
+            return attrs
         # Weather conditions for each hour (WMO codes)
         weather = list(getattr(self.coordinator, "hourly_weather_today", []) or [])
         # Solar radiation in W/m² for each hour (drives the forecast)
@@ -824,6 +855,21 @@ class ForecastTomorrowSensor(InverterSensor):
             "peak_power_w": max(hourly) if hourly else 0,
             "total_kwh": round(sum(hourly) / 1000.0, 2),
             "hourly_weather": hourly_weather,
+            "forecast_location": {
+                "source": getattr(self.coordinator, "_identity_source", None) or "unknown",
+                "latitude": getattr(
+                    getattr(self.coordinator, "_pv_learning", None),
+                    "identity", {},
+                ).get("latitude"),
+                "longitude": getattr(
+                    getattr(self.coordinator, "_pv_learning", None),
+                    "identity", {},
+                ).get("longitude"),
+                "timezone": getattr(
+                    getattr(self.coordinator, "_pv_learning", None),
+                    "identity", {},
+                ).get("timezone"),
+            },
             "dominant_today": {
                 "code": today_code,
                 **{

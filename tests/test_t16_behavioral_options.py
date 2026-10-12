@@ -161,22 +161,58 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
         site coordinates. ``compute_site_coordinates``
         is the same function called from
         ``PvLearningCoordinatorMixin``.
+
+        Coord audit: the resolution order is
+        ``entry.options`` → ``hass.config`` →
+        ``DEFAULT_*``. A partial entry
+        override (only latitude, no
+        longitude, or vice versa) is
+        rejected and falls through to the
+        next source — emitting a half-set
+        coordinate pair would silently
+        produce wrong forecast radiation
+        and is forbidden.
         """
         from hems.options_helpers import compute_site_coordinates
-        # Defaults: Kyiv.
+        # Defaults: Kyiv (only when entry
+        # is empty AND HA is missing).
         lat, lon = compute_site_coordinates(None)
         self.assertAlmostEqual(lat, 50.45)
         self.assertAlmostEqual(lon, 30.52)
-        # User override.
+        # User override (both keys set):
+        # the entry wins over HA.
         lat, lon = compute_site_coordinates(
-            {"site_latitude": 49.0, "site_longitude": 31.0}
+            {"site_latitude": 49.0, "site_longitude": 31.0},
+            ha_latitude=49.83, ha_longitude=24.0,
         )
         self.assertAlmostEqual(lat, 49.0)
         self.assertAlmostEqual(lon, 31.0)
-        # Partial override: lat only — lon falls back.
-        lat, lon = compute_site_coordinates({"site_latitude": 49.5})
-        self.assertAlmostEqual(lat, 49.5)
-        self.assertAlmostEqual(lon, 30.52)
+        # Partial override: lat only —
+        # BOTH keys must be present and
+        # valid for the entry to override;
+        # otherwise the helper falls
+        # through to the next source.
+        # Here that is HA (49.83, 24.0).
+        lat, lon = compute_site_coordinates(
+            {"site_latitude": 49.5},
+            ha_latitude=49.83, ha_longitude=24.0,
+        )
+        self.assertAlmostEqual(
+            lat, 49.83,
+            msg=(
+                "Partial entry override must fall through to HA; "
+                "the previous behaviour of accepting a half-set "
+                "override silently produced a mixed coordinate pair."
+            ),
+        )
+        self.assertAlmostEqual(lon, 24.0)
+        # HA-only when the user has not
+        # overridden anything.
+        lat, lon = compute_site_coordinates(
+            None, ha_latitude=49.83, ha_longitude=24.0,
+        )
+        self.assertAlmostEqual(lat, 49.83)
+        self.assertAlmostEqual(lon, 24.0)
 
     # ── 4. reserve_soc apply ─────────────────────────────────
 
@@ -339,12 +375,25 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
         def _zone_info(_key):
             return _zone_info
 
-        def _compute_site_coordinates(options):
+        def _resolve_site_identity(options, *, ha_latitude=None, ha_longitude=None):
             opt = options or {}
-            return (
-                float(opt.get("site_latitude", 50.45)),
-                float(opt.get("site_longitude", 30.52)),
-            )
+            if "site_latitude" in opt and "site_longitude" in opt:
+                return {
+                    "latitude": float(opt["site_latitude"]),
+                    "longitude": float(opt["site_longitude"]),
+                    "source": "entry",
+                }
+            if ha_latitude is not None and ha_longitude is not None:
+                return {
+                    "latitude": float(ha_latitude),
+                    "longitude": float(ha_longitude),
+                    "source": "ha",
+                }
+            return {
+                "latitude": 50.45,
+                "longitude": 30.52,
+                "source": "default",
+            }
 
         class _StubPredictiveController:
             calibrator = None
@@ -354,7 +403,16 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
                 "H",
                 (),
                 {
-                    "config": type("C", (), {"time_zone": "Europe/Kyiv"})(),
+                    "config": type(
+                        "C",
+                        (),
+                        {"time_zone": "Europe/Kyiv",
+                         # Coord audit: the runtime now reads
+                         # the HA location too. Stubbed here
+                         # so the test asserts the option
+                         # override wins over HA.
+                         "latitude": 49.83, "longitude": 24.0},
+                    )(),
                     "async_add_executor_job": lambda *_a, **_k: None,
                 },
             )()
@@ -404,7 +462,7 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
             "__name__": "t16b_pvlearn",
             "__file__": str(REPO_ROOT / "hems" / "pv_coordinator.py"),
             "ZoneInfo": _zone_info,
-            "compute_site_coordinates": _compute_site_coordinates,
+            "resolve_site_identity": _resolve_site_identity,
             "PvLearningState": _RecordingPvLearning,
             "PredictiveHemsController": _StubPredictiveController,
             "Path": __import__("pathlib").Path,

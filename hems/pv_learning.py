@@ -196,6 +196,100 @@ def day_bounds(day, tz):
 # stored as ``start``); a pair tagged with ``hourly_response_v2``
 # was issued under contract 2 (interval START stored as
 # ``start``). They MUST NOT be mixed.
+def _backup_journal_on_identity_mismatch(path, raw, new_identity, logger_name):
+    """Write a side-by-side backup of an
+    identity-mismatched journal so the
+    original snapshots, pairs, model,
+    calibration model, archive day and
+    tags are preserved verbatim for audit.
+
+    The backup file lives next to ``path``
+    with a deterministic stamp built from
+    the previous identity and the UTC
+    timestamp of the backup. The filename
+    contains no whitespace and no secret
+    values (only the previous public
+    coordinates and the UTC instant).
+
+    The backup ``dict`` is the full
+    ``raw`` payload plus three diagnostic
+    keys:
+
+      * ``_backup_reason`` — always the
+        string ``"coordinates_mismatch"``.
+      * ``_backup_at`` — UTC ISO timestamp
+        of the moment the backup was
+        written.
+      * ``_new_identity`` — the identity
+        the live coordinator just resolved
+        (so an auditor can compare it to
+        the previous identity recorded on the
+        payload).
+
+    The backup file is best-effort: any
+    exception while writing it is logged
+    via the module logger and swallowed
+    so the load() path can still complete
+    (with an empty live state) instead
+    of failing the whole coordinator
+    startup.
+    """
+    import logging as _logging
+    from datetime import datetime as _dt, timezone as _tz
+    iso_ts = _dt.now(tz=_tz.utc).isoformat()
+    # The previous identity lives on the
+    # raw payload. ``PvLearningState.save``
+    # spreads the identity fields at the
+    # top level (``raw["latitude"]``,
+    # ``raw["longitude"]``, etc.),
+    # whereas ``RealForecastPairs.save``
+    # nests them under ``raw["identity"]``.
+    # We accept both shapes — newer code
+    # uses the nested shape consistently,
+    # but legacy journals use the
+    # flat shape and must still produce a
+    # sensible backup filename.
+    prev = raw.get("identity")
+    if isinstance(prev, dict):
+        old_lat = prev.get("latitude")
+        old_lon = prev.get("longitude")
+    else:
+        old_lat = raw.get("latitude")
+        old_lon = raw.get("longitude")
+    safe_lat = f"{old_lat:.4f}" if isinstance(old_lat, (int, float)) and old_lat == old_lat else "unknown"
+    safe_lon = f"{old_lon:.4f}" if isinstance(old_lon, (int, float)) and old_lon == old_lon else "unknown"
+    # ISO timestamps may contain colons;
+    # sanitise them out of the filename so
+    # the backup survives Windows and
+    # filesystems that disallow ``:`` in
+    # filenames.
+    safe_ts = iso_ts.replace(":", "-").replace(".", "-")
+    backup_name = f"{path.name}.coords_backup_{safe_lat}_{safe_lon}_{safe_ts}"
+    backup_path = path.with_name(backup_name)
+    payload = dict(raw)
+    payload["_backup_reason"] = "coordinates_mismatch"
+    payload["_backup_at"] = iso_ts
+    payload["_new_identity"] = dict(new_identity)
+    try:
+        backup_path.write_text(
+            json.dumps(payload, allow_nan=False), encoding="utf-8"
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        _logging.getLogger(logger_name).warning(
+            "PV-learning backup write failed for %s: %s",
+            backup_path, exc,
+        )
+        return None
+    _logging.getLogger(logger_name).info(
+        "PV-learning rebuilt for new coordinates: "
+        "from (%s, %s) to (%s, %s); backup at %s",
+        safe_lat, safe_lon,
+        new_identity.get("latitude"), new_identity.get("longitude"),
+        backup_path,
+    )
+    return backup_path
+
+
 def current_forecast_model_identity(family="hourly_response",
                                     contract_version=RADIATION_INTERVAL_CONTRACT_VERSION):
     """Identity of the active forecast model under the current radiation
@@ -452,7 +546,44 @@ class PvLearningState:
         if raw.get("unit") != "kWh":
             raise ValueError("Unsupported PV state unit")
         if any(raw.get(key) != value for key, value in self.identity.items()):
-            raise ValueError("PV state belongs to different coordinates/timezone")
+            # Coord audit: the previous journal
+            # belongs to a different station
+            # (or a different timezone). The
+            # previous behaviour raised a
+            # ``ValueError`` which left the
+            # coordinator with no PV-learning
+            # state at all — the on-disk
+            # snapshots, pairs, model and
+            # calibration model were simply
+            # abandoned, and there was no way
+            # for the operator to recover them
+            # or to prove they had ever been
+            # issued.
+            #
+            # The new behaviour writes a
+            # side-by-side backup next to the
+            # original ``path`` (using the
+            # public previous coordinates and
+            # the UTC instant of the backup;
+            # no secrets, no whitespace) and
+            # then leaves the live state at its
+            # defaults so the radiation cache,
+            # trained model and archive day are
+            # rebuilt against the new
+            # coordinates on the next ``_archive``
+            # refresh. The original snapshots,
+            # pairs, ``radiation``, ``model``,
+            # ``calibration_model``,
+            # ``archive_checked_day`` and
+            # ``forecast_model`` tags stay
+            # inside the backup file verbatim
+            # — they are NEVER overwritten on
+            # the live state.
+            _backup_journal_on_identity_mismatch(
+                path, raw, self.identity,
+                logger_name="custom_components.powmr_inverter.coordinator",
+            )
+            return
         # Validate everything before modifying the live state.
         snapshots, pairs, radiation = (raw.get(k, {}) for k in ("snapshots", "pairs", "radiation"))
         for day, snap in snapshots.items():
@@ -589,7 +720,21 @@ class RealForecastPairs:
                 f"(max supported: {self.VERSION})"
             )
         if raw.get("identity") != self.identity:
-            raise ValueError("Real forecast journal version/site mismatch")
+            # Coord audit: side-by-side backup
+            # for the real-forecast journal
+            # (the same shape as the
+            # ``PvLearningState`` backup above).
+            # The original ``pairs`` and
+            # ``forecast_model`` tags stay in
+            # the backup file; the live state
+            # stays at its defaults (empty
+            # ``pairs`` dict).
+            _backup_journal_on_identity_mismatch(
+                path, raw, self.identity,
+                logger_name="custom_components.powmr_inverter.coordinator",
+            )
+            self.pairs = {}
+            return False
         validated = {}
         for row in raw["pairs"]:
             day = date.fromisoformat(row["date"])

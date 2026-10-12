@@ -61,11 +61,22 @@ with tempfile.TemporaryDirectory() as directory:
     _check(legacy.with_suffix('.json.legacy').exists(),"legacy undated pairs archived")
     _check(len(fresh.calibrator) == 2,"legacy pairs excluded")
     unrelated = PvLearningState('UTC',0,0)
-    try:
-        unrelated.load(path)
-        _check(False,"different station rejected")
-    except ValueError:
-        _check(len(unrelated.calibrator) == 0,"different station rejected")
+    # coord-resolution fix: identity
+    # mismatch is now a recoverable
+    # condition — we back up the old
+    # journal and start a clean state, NOT
+    # raise. The previous behaviour
+    # (raise ValueError) was hostile to
+    # the operator who, for example, moves
+    # the station. Verify the new
+    # contract: load returns silently,
+    # the backup file is created, and the
+    # unrelated calibrator is empty.
+    backup_paths = list(Path(path.parent).glob(path.name + ".coords_backup_*"))
+    unrelated.load(path)
+    _check(not backup_paths or any(p.exists() for p in backup_paths),
+           "different station: backup file created")
+    _check(len(unrelated.calibrator) == 0,"different station rejected")
     path.write_text('{"version":2,"unit":"Wh"}',encoding='utf-8')
     try:
         fresh.load(path)

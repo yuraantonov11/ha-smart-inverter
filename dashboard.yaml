@@ -358,6 +358,26 @@ views:
               HEMS на паузу на 30 хвилин. На час паузи HEMS утримує ручний контроль.
               Для кількох інверторів у кнопках потрібен entry_id.
           - type: markdown
+            title: Прогноз · фактична місцевість
+            content: |
+              {%- set loc = state_attr('sensor.smart_solar_inverter_forecast_tomorrow', 'forecast_location') or {} -%}
+              {%- set source = loc.get('source') -%}
+              {%- set SOURCE_LABELS = {
+                'entry': 'Стеція · задане в options flow (site_latitude / site_longitude)',
+                'ha': 'Home Assistant · hass.config.latitude / hass.config.longitude',
+                'default': 'Інтеграційний fallback (DEFAULT_SITE_LATITUDE / DEFAULT_SITE_LONGITUDE)',
+                'unknown': 'невідомо',
+              } -%}
+              {%- if loc.get('latitude') is none -%}
+                **Координати прогнозу:** дані ще не готові. Перезапусти інтеграцію або зачекай першого циклу оновлення.
+              {%- else -%}
+                **Координати прогнозу:** {{ '%.4f'|format(loc.get('latitude')) }}°, {{ '%.4f'|format(loc.get('longitude')) }}°
+                **Часовий пояс:** {{ loc.get('timezone') or '—' }}
+                **Джерело:** {{ SOURCE_LABELS.get(source, source) }}
+
+                Якщо джерело — `Home Assistant`, прогноз успадковує локацію HA; щоб задати окрему точку для PV-станції, обери `site_latitude` / `site_longitude` в options flow.
+              {%- endif -%}
+          - type: markdown
             content: |
               # Налаштування HEMS
               Резерв SOC, тарифи та стратегія без редагування YAML.

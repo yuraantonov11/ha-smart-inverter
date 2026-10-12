@@ -233,22 +233,26 @@ class T16OptionsContractTests(unittest.TestCase):
         # canonical defaults. After the
         # T16 refactor, ``pv_coordinator``
         # delegates to
-        # ``compute_site_coordinates`` from
-        # ``hems.options_helpers`` — which
-        # in turn references the canonical
-        # ``DEFAULT_SITE_LATITUDE`` /
-        # ``DEFAULT_SITE_LONGITUDE``.
+        # ``resolve_site_identity`` (and
+        # ``compute_site_coordinates``)
+        # from ``hems.options_helpers`` —
+        # which in turn references the
+        # canonical ``DEFAULT_SITE_LATITUDE``
+        # / ``DEFAULT_SITE_LONGITUDE``.
         # ``config_flow`` references the
         # canonical constants directly for
         # the UI defaults. Both paths must
         # reach the same source of truth.
         self.assertIn(
-            "compute_site_coordinates",
+            "resolve_site_identity",
             pv_coordinator_src,
             msg=(
                 "pv_coordinator must call "
-                "compute_site_coordinates to read "
-                "site_latitude/site_longitude"
+                "resolve_site_identity (from "
+                "hems.options_helpers) to read "
+                "site_latitude/site_longitude "
+                "with the correct resolution order "
+                "(entry → HA → default)"
             ),
         )
         # The config flow references the
