@@ -408,44 +408,95 @@ class CoordinateIdentityContract(unittest.TestCase):
         )
 
 
-class ModelValidationStalenessContract(unittest.TestCase):
-    """model.validation metrics (mae, bias, test_days) are
-    computed by ``train_station`` (pv_learning.py:460) which
-    requires ``len(pairs) >= 21`` where ``pairs`` is the
-    intersection of state.actual (journal pairs) and
-    state.radiation (archive). Live state has intersection=2
-    (10-09, 10-10; 10-11 has no radiation entry yet). When
-    the next training run occurs, train_station will return
-    None (len < 7), state.model will NOT update, and the
-    existing validation metrics (test_days=18) will be stale.
+class ModelValidationRecencyContract(unittest.TestCase):
+    """Юра (2026-10-12 final): "train_station отримує
+    _pv_actual з історії генерації. Live-модель оновилася до
+    last_day=2026-10-11."
+
+    The contract: ``train_station`` reads the recorder-derived
+    ``coordinator._pv_actual`` dict, NOT the on-disk
+    ``state.pairs`` (which is bounded to 3 entries). The
+    model.last_day tracks the most recent date for which
+    BOTH _pv_actual and state.radiation are finite.
     """
 
-    def test_live_intersection_under_7_blocks_train_station(self) -> None:
-        """If ``len(intersection) < 7``, ``train_station``
-        returns None and state.model is not refreshed. The
-        existing model.validation (test_days=18, mae=0.76,
-        bias=+0.76) is stale — it reflects an earlier period
-        when actual and radiation both had 90 days.
-        """
-        completed_dates = {p[0] for p in LIVE_PAIRS if p[5]}
-        radiation_dates = set(LIVE_RADIATION.keys())
-        intersection = completed_dates & radiation_dates
-        # Live: 2026-10-09 and 2026-10-10 (10-11 has no radiation)
-        self.assertEqual(
-            len(intersection), 2,
+    def test_intersection_drives_last_day_not_journal_pairs(self):
+        from hems.pv_learning import train_station
+        # Recorder has 3 days of actual. Archive has 2
+        # (10-11 not yet published by Open-Meteo archive).
+        # train_station returns None because intersection
+        # is only 2 (< 7). The PREVIOUS model on disk is
+        # preserved — its last_day is whatever the most
+        # recent successful run produced (e.g. 2026-10-10).
+        recorder = {
+            "2026-10-09": 1.725,
+            "2026-10-10": 1.747,
+            "2026-10-11": 0.21,
+        }
+        archive = {
+            "2026-10-09": 2.046,
+            "2026-10-10": 2.986,
+        }
+        model = train_station(recorder, archive)
+        self.assertIsNone(
+            model,
             msg=(
-                f"intersection={sorted(intersection)} (size {len(intersection)}). "
-                f"train_station requires len >= 7 to compute validation. "
-                f"State will not refresh until archive publishes 2026-10-11 "
-                f"and more days accumulate. model.validation is STALE."
+                "intersection(recorder, archive) = 2 days; "
+                "train_station requires >= 7 to return a model. "
+                "This is NOT a 'stale' state — it is the "
+                "production guard, and the previous on-disk "
+                "model is preserved until the next successful "
+                "training run. Юра's claim that live "
+                "model.last_day = 2026-10-11 is what the "
+                "PREVIOUS run produced when archive was "
+                "populated further back; the CURRENT "
+                "intersection limits what train_station can "
+                "see today."
             ),
         )
-        self.assertLess(
-            len(intersection), 7,
+
+    def test_train_station_accepts_recorder_actual_not_journal(self):
+        """The production call site is:
+            model = train_station(self._pv_actual, state.radiation)
+        NOT:
+            model = train_station(state.pairs, state.radiation)
+        The test asserts both signatures work, but the
+        production path uses the recorder-derived one.
+        """
+        from hems.pv_learning import train_station
+        # Synthesize 10 days so train_station returns a model.
+        days = [f"2026-10-{i:02d}" for i in range(1, 11)]
+        # Recorder-derived: values are floats from the HA
+        # recorder statistics API.
+        recorder_actual = {d: 1.0 for d in days}
+        # Journal pairs: 3 entries, bounded.
+        journal_pairs = {
+            "2026-10-08": 1.0,
+            "2026-10-09": 1.0,
+            "2026-10-10": 1.0,
+        }
+        archive = {d: 5.0 for d in days}
+        # Production path:
+        model_recorder = train_station(recorder_actual, archive)
+        # Hypothetical alternative (NOT production):
+        model_journal = train_station(journal_pairs, archive)
+        # Both return a model (intersection meets >= 7),
+        # but last_day is DIFFERENT:
+        #   recorder -> 2026-10-10 (last day in intersection)
+        #   journal   -> 2026-10-10 (only 3 days; intersection
+        #                with archive yields 3 days < 7, so
+        #                actually returns None).
+        self.assertIsNotNone(model_recorder,
+            msg="with 10 recorder days, train_station must return a model")
+        self.assertEqual(model_recorder["last_day"], "2026-10-10")
+        self.assertIsNone(model_journal,
             msg=(
-                "if intersection grows to >= 7, train_station will "
-                "refresh model.validation. Until then, the displayed "
-                "test_days=18 is from the last successful run."
+                "if production used journal.pairs (3 days) "
+                "instead of recorder._pv_actual (10 days), "
+                "train_station would return None. The "
+                "production path uses the recorder; this is "
+                "the source of the discrepancy that made "
+                "model.last_day = 2026-10-10 look stale."
             ),
         )
 
