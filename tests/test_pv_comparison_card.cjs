@@ -21,7 +21,8 @@ for(const match of smooth.matchAll(/C([\d.-]+),([\d.-]+) ([\d.-]+),([\d.-]+) ([\
   for(const i of [2,4,6]) assert.ok(Number(match[i])>=0 && Number(match[i])<=500);
 }
 card.hass={config:{time_zone:'Europe/Kyiv'},states:{actual:{attributes:{points:[],previous_day:{date:'2026-10-02',points:[{time:'2026-10-02T16:30:00+03:00',power_w:492}]}}},forecast:{attributes:{hourly_forecast_date:'2026-10-03',hourly_forecast_w:Array(24).fill(100),total_kwh:2.4}}}};
-assert.ok(card.innerHTML.includes('492 Вт'));
+assert.ok(card.innerHTML.includes('492,00 Вт'));
+assert.ok(card.innerHTML.includes('2,40 кВт·год'));
 assert.ok(card.innerHTML.includes('23:00–24:00'));
 assert.ok(card.innerHTML.includes('Прогноз — середня потужність за годину'));
 assert.ok(!card.innerHTML.includes('NaN'));

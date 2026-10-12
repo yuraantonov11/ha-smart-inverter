@@ -35,9 +35,14 @@ class ExistingCardReadability(unittest.TestCase):
           card.setConfig({entity:'sensor.actual',forecast_entity:'sensor.forecast'});
           card.hass = {config:{time_zone:'UTC'},states:{'sensor.actual':{attributes:actual},'sensor.forecast':{attributes:forecast}}};
           document.body.append(card);
-          return {text:card.innerText,forecast:forecast.total_kwh,actualPoints:actual.points.length};
+          const text = card.innerText;
+          const sourceForecast = forecast.total_kwh;
+          forecast.total_kwh = 12;
+          card._render();
+          return {text,integerText:card.innerText,forecast:sourceForecast,actualPoints:actual.points.length};
         }""")
         self.assertIn("12,35 кВт·год", view["text"])
+        self.assertIn("12,00 кВт·год", view["integerText"])
         self.assertIn("Дані недоступні", view["text"])
         self.assertNotIn("0 Вт", view["text"])
         self.assertEqual(view["forecast"], 12.3456)
@@ -82,16 +87,48 @@ class ExistingCardReadability(unittest.TestCase):
           document.body.append(card);
           const root = card.shadowRoot || card;
           const text = id => root.querySelector(`#${id}`)?.textContent;
-          return {grid:text('gridImportVal'),export:text('gridExportVal'),temperature:text('invTempFlow'),
+          const absent = {grid:text('gridImportVal'),export:text('gridExportVal'),temperature:text('invTempFlow'),
             todayPv:text('invTodayPv'),savings:text('invDailySavings'),soc:text('fcBattVal')};
+          card.hass = {states:{
+            'sensor.goodwe_today_energy_import':{state:'unknown',attributes:{}},
+            'sensor.goodwe_today_energy_export':{state:'unavailable',attributes:{}},
+            'sensor.goodwe_inverter_temperature_module':{state:'unknown',attributes:{}},
+            'sensor.goodwe_today_s_pv_generation':{state:'unavailable',attributes:{}},
+            'sensor.powmr_inverter_daily_savings':{state:'unknown',attributes:{}},
+            'sensor.jk_soc':{state:'unavailable',attributes:{}}
+          }};
+          const unavailable = {grid:text('gridImportVal'),export:text('gridExportVal'),temperature:text('invTempFlow'),
+            todayPv:text('invTodayPv'),savings:text('invDailySavings'),soc:text('fcBattVal')};
+          return {absent,unavailable};
         }""")
-        self.assertEqual(values["grid"], "Дані недоступні")
-        self.assertEqual(values["export"], "Дані недоступні")
-        self.assertEqual(values["temperature"], "Дані недоступні")
-        self.assertEqual(values["todayPv"], "Дані недоступні")
-        self.assertEqual(values["savings"], "Дані недоступні")
-        self.assertEqual(values["soc"], "Дані недоступні")
-        self.assertTrue(all(value != "0" for value in values.values()))
+        self.assertEqual(set(values["absent"].values()), {"Дані недоступні"})
+        self.assertEqual(set(values["unavailable"].values()), {"Дані недоступні"})
+        self.assertEqual(errors, [])
+
+    def test_k_flow_reported_zero_energy_remains_zero_with_two_places(self) -> None:
+        page, errors = self._page()
+        values = page.evaluate("""() => {
+          const ids = {
+            grid_import_energy:'sensor.grid_import',grid_export_energy:'sensor.grid_export',
+            today_pv:'sensor.today_pv',daily_savings:'sensor.savings'
+          };
+          const states = {};
+          for (const entity of Object.values(ids))
+            states[entity] = {state:'0',attributes:{unit_of_measurement:'kWh'}};
+          states['sensor.savings'].attributes.unit_of_measurement = 'UAH';
+          const card = document.createElement('k-flow-card');
+          card.setConfig(ids);
+          card.hass = {states};
+          document.body.append(card);
+          const root = card.shadowRoot || card;
+          const text = id => root.querySelector(`#${id}`)?.textContent;
+          return {grid:text('gridImportVal'),export:text('gridExportVal'),todayPv:text('invTodayPv'),
+            savings:text('invDailySavings')};
+        }""")
+        self.assertEqual(values, {
+            "grid": "▼ 0.00 kWh", "export": "▲ 0.00 kWh", "todayPv": "0.00 kWh",
+            "savings": "0.00 ₴",
+        })
         self.assertEqual(errors, [])
 
 

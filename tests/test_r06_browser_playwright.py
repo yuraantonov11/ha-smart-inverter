@@ -1314,7 +1314,7 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
         self.assertEqual((initial["activeDelegated"], initial["activeNative"], initial["total"], initial["observeCount"]), (1, 1, 1, 1), initial)
         self.assertTrue(initial["targetMatch"], f"initial observer target was not this card: {initial}")
         self.assertEqual(initial["button"], "true", initial)
-        self.assertIn("700 Вт", initial["actual"], initial)
+        self.assertIn("700,00 Вт", initial["actual"], initial)
         show_previous = True
 
         for cycle in range(1, 6):
@@ -1371,7 +1371,7 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
             self.assertTrue(state["targetMatch"], f"cycle {cycle}: observer callback target mismatch: {state}")
             self.assertEqual(state["button"], str(show_previous).lower(), f"cycle {cycle}: toggle state changed on reconnect: {state}")
             self.assertEqual(state["previousVisible"], show_previous, f"cycle {cycle}: previous-day render state changed on reconnect: {state}")
-            self.assertIn(f"{700 + cycle} Вт", state["actual"], f"cycle {cycle}: hass update not rendered: {state}")
+            self.assertIn(f"{700 + cycle},00 Вт", state["actual"], f"cycle {cycle}: hass update not rendered: {state}")
 
             # Exercise the point's direct onclick property through an actual
             # browser click; its tooltip must reflect this cycle's fixture.

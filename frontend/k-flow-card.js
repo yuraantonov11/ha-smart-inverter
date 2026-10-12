@@ -1343,10 +1343,10 @@ class KFlowCard extends HTMLElement {
       if (totalPvGenState && totalPvGenState.state !== 'unavailable' && totalPvGenState.state !== 'unknown') {
         const val = parseFloat(totalPvGenState.state);
         const unit = totalPvGenState.attributes?.unit_of_measurement || 'kWh';
-        _totalPvGenEl.textContent = isNaN(val) ? '--' : val.toFixed(2) + ' ' + unit;
-        _totalPvGenEl.style.color = '#f4d03f';
+        _totalPvGenEl.textContent = Number.isFinite(val) ? val.toFixed(2) + ' ' + unit : 'Дані недоступні';
+        _totalPvGenEl.style.color = Number.isFinite(val) ? '#f4d03f' : '#8b949e';
       } else {
-        _totalPvGenEl.textContent = '-- kWh';
+        _totalPvGenEl.textContent = 'Дані недоступні';
         _totalPvGenEl.style.color = '#8b949e';
       }
     }
@@ -1380,9 +1380,8 @@ class KFlowCard extends HTMLElement {
     setText('fcGridVal', gridDir + (absGrid2 >= 1000 ? (absGrid2 / 1000).toFixed(2) + ' kW' : absGrid2.toFixed(0) + ' W'));
     setAttr('fcGridVal', 'fill', gridActive > 10 ? '#FF2929' : gridActive < -10 ? '#2ecc71' : '#8b949e');
     setText('gridImportVal', gridImportRaw !== null ? '▼ ' + gridImport.toFixed(2) + ' kWh' : 'Дані недоступні');
-    setDisplay('gridExportVal', gridExportRaw === null || gridExport > 0);
-    if (gridExportRaw !== null && gridExport > 0) setText('gridExportVal', '▲ ' + gridExport.toFixed(2) + ' kWh');
-    else if (gridExportRaw === null) setText('gridExportVal', 'Дані недоступні');
+    setDisplay('gridExportVal', true);
+    setText('gridExportVal', gridExportRaw !== null ? '▲ ' + gridExport.toFixed(2) + ' kWh' : 'Дані недоступні');
 
     setText('fcLoadVal', load >= 1000 ? (load / 1000).toFixed(2) + ' kW' : load.toFixed(0) + ' W');
     setAttr('fcLoadVal', 'fill', load > 10 ? loadFlowColor : '#8b949e');
@@ -1398,9 +1397,9 @@ class KFlowCard extends HTMLElement {
 
     // Fix #9: use toFixed(2) to prevent floating-point artefacts; show '--' when sensor unavailable
     setText('invTodayPv',      _todayPvRaw      !== null ? todayPv.toFixed(2)      + ' kWh' : 'Дані недоступні');
-    setText('invTodayBattChg', _todayBattChgRaw !== null ? todayBattChg.toFixed(2) + ' kWh' : '-- kWh');
-    setText('invTodayBattDis', battDis1Raw      !== null ? battDis1.toFixed(2)     + ' kWh' : '-- kWh');
-    setText('invTodayLoad',    _todayLoadRaw    !== null ? todayLoad.toFixed(2)    + ' kWh' : '-- kWh');
+    setText('invTodayBattChg', _todayBattChgRaw !== null ? todayBattChg.toFixed(2) + ' kWh' : 'Дані недоступні');
+    setText('invTodayBattDis', battDis1Raw      !== null ? battDis1.toFixed(2)     + ' kWh' : 'Дані недоступні');
+    setText('invTodayLoad',    _todayLoadRaw    !== null ? todayLoad.toFixed(2)    + ' kWh' : 'Дані недоступні');
     // Daily savings
     const savingsRaw = this._val(this.config.daily_savings);
     const savingsVal = savingsRaw !== null && !isNaN(savingsRaw) ? parseFloat(savingsRaw) : null;
@@ -1603,7 +1602,7 @@ class KFlowCard extends HTMLElement {
         else if (_battDisRaw.isText) { _bDiso.textContent = _battDisRaw.text; _bDiso.style.color = '#c9d1d9'; }
         else { const fmt = _fmtCustom(_battDisRaw.val, battDisUnit); _bDiso.textContent = fmt.text; _bDiso.style.color = fmt.color; }
       } else {
-        _bDiso.textContent = battDis1Raw !== null ? battDis1.toFixed(2) + ' kWh' : '-- kWh';
+        _bDiso.textContent = battDis1Raw !== null ? battDis1.toFixed(2) + ' kWh' : 'Дані недоступні';
         _bDiso.style.color = '';
       }
     }

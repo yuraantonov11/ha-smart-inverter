@@ -76,7 +76,7 @@ class PvComparisonCard extends HTMLElement {
     for(let h=0;h<=24;h+=tickStep) {
       grid+=`<text x="${x(h)}" y="${H-7}" text-anchor="middle" textLength="32" lengthAdjust="spacingAndGlyphs">${String(h).padStart(2,'0')}:00</text>`;
     }
-    const numbers=new Intl.NumberFormat('uk-UA',{maximumFractionDigits:2});
+    const numbers=new Intl.NumberFormat('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2});
     const tip=(name,p)=>`${name} · ${p.date} ${p.label} · ${numbers.format(p.value)} Вт`;
     const dots=(points,color,name)=>points.map(p=>`<circle class="point" cx="${x(p.hour)}" cy="${y(p.value)}" r="3" fill="${color}" tabindex="0" data-tip="${esc(tip(name,p))}"><title>${esc(tip(name,p))}</title></circle>`).join('');
     const forecastPath=this._smoothPath(forecast,x,y,1.01);

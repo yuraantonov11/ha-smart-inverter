@@ -287,7 +287,7 @@ class R06BrowserAddedCoverage(unittest.TestCase):
                           points:__visualCard.querySelectorAll('circle.point').length,
                           hourTicks:Array.from(__visualCard.querySelectorAll('svg text')).filter(e=>/^\\d{2}:00$/.test(e.textContent.trim())).map(e=>e.textContent.trim()),
                           yTicks:Array.from(__visualCard.querySelectorAll('svg text')).map(e=>e.textContent.trim()).filter(t=>/^\\d+$/.test(t))})""")
-                        self.assertEqual(dom["title"],LONG_TITLE);self.assertIn("777 Вт",dom["values"]);self.assertIn("7,2 кВт·год",dom["values"]);self.assertEqual(dom["points"],26)
+                        self.assertEqual(dom["title"],LONG_TITLE);self.assertIn("777,00 Вт",dom["values"]);self.assertIn("7,20 кВт·год",dom["values"]);self.assertEqual(dom["points"],26)
                         self.assertEqual(dom["hourTicks"],[f"{h:02}:00" for h in range(0,25,3)] if width==360 else [f"{h:02}:00" for h in range(25)],dom)
                         self.assertEqual(dom["yTicks"],["0","160","320","480","640","800"],dom)
                         self._assert_svg_text_layout(page,"pv-comparison-card svg")
