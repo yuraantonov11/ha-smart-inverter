@@ -220,12 +220,19 @@ views:
             title: AI · навчання і точність
             content: |
               {% set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'forecast_calibration') or {} %}
-              **Модель:** {{ {'hourly_response_v1': 'Погодинна модель станції', 'station_gain_v1': 'Добова модель станції'}.get(c.get('forecast_model'), 'ще не визначена') }}
+              **Модель:** {{ {'hourly_response_v1': 'Погодинна модель станції (v1)', 'station_gain_v1': 'Добова модель станції (v1)', 'hourly_response_v2': 'Погодинна модель станції (v2)', 'station_gain_v2': 'Добова модель станції (v2)'}.get(c.get('forecast_model'), 'ще не визначена') }}
+
+              {% if has_value('sensor.smart_solar_inverter_predictive_decision_state') %}
+              {% set pause_until = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'override_pending_until') %}
+              **Пауза:** {{ ('Пауза активна до ' ~ pause_until) if pause_until else 'Пауза не активна' }}
+              {% else %}
+              **Пауза:** Дані недоступні
+              {% endif %}
 
               **Реальні пари поточної моделі:** {{ c.get('samples', 0) }} · **Очікують факту:** {{ c.get('pending_count', 0) }}
 
               {% if c.get('samples', 0) %}
-              **MAE:** {{ c.get('mae_kwh', 0) }} кВт·год · **Зсув (факт − прогноз):** {{ c.get('bias_kwh', 0) }} кВт·год
+              **MAE:** {{ ('%.2f'|format(c.mae_kwh)) if c.mae_kwh is not none else 'Дані недоступні' }} кВт·год · **Зсув (факт − прогноз):** {{ ('%.2f'|format(c.bias_kwh)) if c.bias_kwh is not none else 'Дані недоступні' }} кВт·год
               {% else %}
               **Точність ще не виміряна:** очікуємо завершених пар цієї моделі.
               {% endif %}
@@ -235,10 +242,10 @@ views:
               | Дата | Виданий прогноз, кВт·год | Факт, кВт·год | Калібрує поточну модель |
               | --- | ---: | ---: | --- |
               {% for p in c.get('recent_pairs', []) %}
-              | {{ p.date }} | {{ p.forecast_kwh }} | {{ p.actual_kwh }} | {{ 'так' if p.used_for_current_model else 'ні' }} |
+              | {{ p.date }} | {{ ('%.2f'|format(p.forecast_kwh)) if p.forecast_kwh is not none else 'Дані недоступні' }} | {{ ('%.2f'|format(p.actual_kwh)) if p.actual_kwh is not none else 'Дані недоступні' }} | {{ 'так' if p.used_for_current_model else 'ні' }} |
               {% endfor %}
               {% for p in c.get('pending', []) %}
-              | {{ p.date }} | {{ p.forecast_kwh }} | {{ 'очікуємо завершення доби' if p.awaiting == 'completed_day' else 'очікуємо дані API/recorder' }} | очікує |
+              | {{ p.date }} | {{ ('%.2f'|format(p.forecast_kwh)) if p.forecast_kwh is not none else 'Дані недоступні' }} | {{ 'Дані недоступні' }} | очікує · {{ 'очікуємо завершення доби' if p.awaiting == 'completed_day' else 'очікуємо дані API/recorder' }} |
               {% endfor %}
           - type: horizontal-stack
             cards:

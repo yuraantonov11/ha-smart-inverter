@@ -95,7 +95,7 @@ class PvComparisonCard extends HTMLElement {
       </style>
       <h2>${esc(c.title || 'Генерація та прогноз PV')}</h2>
       <div class="sub">${esc(today)} · ${esc(this._hass.config?.time_zone || 'UTC')} · потужність PV</div>
-      <div class="stats"><div><div class="value">${latest ? numbers.format(latest.value)+' Вт' : 'Немає даних'}</div><div class="caption">Факт API${latest?' · '+esc(latest.label):''}</div></div>
+      <div class="stats"><div><div class="value">${latest ? numbers.format(latest.value)+' Вт' : 'Дані недоступні'}</div><div class="caption">Факт API${latest?' · '+esc(latest.label):''}</div></div>
       <div><div class="value">${forecast.length && Number.isFinite(fc.total_kwh) ? numbers.format(fc.total_kwh)+' кВт·год' : 'Немає прогнозу'}</div><div class="caption">Прогноз за всю сьогоднішню добу</div></div></div>
       <div class="legend"><span style="--line:#2ecc71">Факт сьогодні</span><span style="--line:#36a9ff">Прогноз сьогодні</span>${prior.length?`<span style="--line:#a3aab5">Учора · ${esc(previous.date)} · ${previous.basis==='cloud_half_hour_samples'?'факт API':'погодинне середнє'}</span>`:''}</div>
       <svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Фактична генерація та погодинний прогноз у ватах"><text x="${L}" y="15">Вт</text>${grid}

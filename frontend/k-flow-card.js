@@ -1130,8 +1130,10 @@ class KFlowCard extends HTMLElement {
     const _gridPrimary = this._val(this.config.grid_active_power, true);
     let gridActive = _gridPrimary !== null ? _gridPrimary : _nullOr0(this._val(this.config.grid_power_alt, true));
     if (this.config.invert_grid_power) gridActive = -gridActive;
-    const gridImport = _n(this._val(this.config.grid_import_energy));
-    const gridExport = _n(this._val(this.config.grid_export_energy));
+    const gridImportRaw = this._val(this.config.grid_import_energy);
+    const gridExportRaw = this._val(this.config.grid_export_energy);
+    const gridImport = _n(gridImportRaw);
+    const gridExport = _n(gridExportRaw);
     const load = _n(this._val(this.config.consump, true));
     // Fix #9: store raw null so we can show '--' and use toFixed(2) to avoid float artefacts
     const _todayPvRaw = this._val(this.config.today_pv);
@@ -1140,7 +1142,8 @@ class KFlowCard extends HTMLElement {
     const todayPv = _n(_todayPvRaw);
     const todayBattChg = _n(_todayBattChgRaw);
     const todayLoad = _n(_todayLoadRaw);
-    const battSoc1 = _n(this._val(this.config.battery_soc) ?? this._val(this.config.goodwe_battery_soc));
+    const battSocRaw = this._val(this.config.battery_soc) ?? this._val(this.config.goodwe_battery_soc);
+    const battSoc1 = _n(battSocRaw);
     let battPwr1 = _nullOr0(this._val(this.config.battery_power, true));
     if (this.config.invert_battery_power) battPwr1 = -battPwr1;
     let battCurr1 = _nullOr0(this._val(this.config.battery_current) ?? this._val(this.config.goodwe_battery_curr));
@@ -1153,7 +1156,8 @@ class KFlowCard extends HTMLElement {
     const maxCell1 = _n(this._val(this.config.battery_max_cell));
     const battDis1Raw = this._val(this.config.batt_dis);
     const battDis1 = _n(battDis1Raw);
-    const invTemp = _n(this._val(this.config.inv_temp));
+    const invTempRaw = this._val(this.config.inv_temp);
+    const invTemp = _n(invTempRaw);
 
     // System limits – direct numbers
     // battery_cap_unit: 'ah' uses battery_full_ah; 'kwh' uses battery_full_wh (stored as kWh, converted to Wh internally)
@@ -1287,7 +1291,7 @@ class KFlowCard extends HTMLElement {
       const fill = this._battFill(battSoc1);
       const bf = getEl('battFillBar'); if (bf) { bf.setAttribute('y', fill.y); bf.setAttribute('height', fill.height); bf.setAttribute('fill', fill.color); bf.setAttribute('filter', fill.filter); }
       const bh = getEl('battFillHL'); if (bh) { bh.setAttribute('y', fill.y); bh.setAttribute('height', fill.height); }
-      setText('fcBattVal', battSoc1 + '%'); setAttr('fcBattVal', 'fill', fill.textColor);
+      setText('fcBattVal', battSocRaw !== null ? battSoc1 + '%' : 'Дані недоступні'); setAttr('fcBattVal', 'fill', fill.textColor);
       setText('battVoltageFlow', battVolt1.toFixed(1) + ' V');
       setText('battPwrFlow', absPwr1.toFixed(0) + ' W');
       setText('battCurrFlow', battCurr1.toFixed(1) + ' A');
@@ -1355,7 +1359,7 @@ class KFlowCard extends HTMLElement {
     const badge = getEl('battStatusBadge');
     if (badge) { badge.textContent = absPwr1 < 50 ? 'IDLE' : isCharging1 ? 'CHG' : 'DISCHG'; badge.style.color = absPwr1 < 50 ? '#8b949e' : isCharging1 ? '#00d7ff' : '#3ce878'; }
 
-    setText('invTempFlow', invTemp.toFixed(1) + ' °C');
+    setText('invTempFlow', invTempRaw !== null ? invTemp.toFixed(1) + ' °C' : 'Дані недоступні');
     const inverterName = String(this.config.inverter_name || 'INV');
     const inverterNameLabel = getEl('invNameLabel');
     if (inverterNameLabel) {
@@ -1365,7 +1369,7 @@ class KFlowCard extends HTMLElement {
       inverterNameLabel.setAttribute('aria-label', inverterName);
       inverterNameLabel.setAttribute('title', inverterName);
     }
-    setAttr('invTempFlow', 'fill', invTemp <= 45 ? '#58a6ff' : invTemp <= 55 ? '#f39c4b' : '#f85149');
+    setAttr('invTempFlow', 'fill', invTempRaw === null ? '#8b949e' : invTemp <= 45 ? '#58a6ff' : invTemp <= 55 ? '#f39c4b' : '#f85149');
     const invLoadPct = Math.min(load / invMax * 100, 100).toFixed(0);
     // Fix #8: toFixed() returns a string; use Number() for the colour comparison
     setText('invLoadPctFlow', invLoadPct + '%'); setAttr('invLoadPctFlow', 'fill', Number(invLoadPct) <= 50 ? '#3fb950' : '#f39c4b');
@@ -1375,9 +1379,10 @@ class KFlowCard extends HTMLElement {
     const absGrid2 = Math.abs(gridActive);
     setText('fcGridVal', gridDir + (absGrid2 >= 1000 ? (absGrid2 / 1000).toFixed(2) + ' kW' : absGrid2.toFixed(0) + ' W'));
     setAttr('fcGridVal', 'fill', gridActive > 10 ? '#FF2929' : gridActive < -10 ? '#2ecc71' : '#8b949e');
-    setText('gridImportVal', '▼ ' + gridImport.toFixed(2) + ' kWh');
-    setDisplay('gridExportVal', gridExport > 0);
-    if (gridExport > 0) setText('gridExportVal', '▲ ' + gridExport.toFixed(2) + ' kWh');
+    setText('gridImportVal', gridImportRaw !== null ? '▼ ' + gridImport.toFixed(2) + ' kWh' : 'Дані недоступні');
+    setDisplay('gridExportVal', gridExportRaw === null || gridExport > 0);
+    if (gridExportRaw !== null && gridExport > 0) setText('gridExportVal', '▲ ' + gridExport.toFixed(2) + ' kWh');
+    else if (gridExportRaw === null) setText('gridExportVal', 'Дані недоступні');
 
     setText('fcLoadVal', load >= 1000 ? (load / 1000).toFixed(2) + ' kW' : load.toFixed(0) + ' W');
     setAttr('fcLoadVal', 'fill', load > 10 ? loadFlowColor : '#8b949e');
@@ -1392,7 +1397,7 @@ class KFlowCard extends HTMLElement {
     if (this.config._show_pv_extra) setText('pv4FlowVal', pv4 >= 1000 ? (pv4 / 1000).toFixed(2) + ' kW' : pv4.toFixed(0) + ' W');
 
     // Fix #9: use toFixed(2) to prevent floating-point artefacts; show '--' when sensor unavailable
-    setText('invTodayPv',      _todayPvRaw      !== null ? todayPv.toFixed(2)      + ' kWh' : '-- kWh');
+    setText('invTodayPv',      _todayPvRaw      !== null ? todayPv.toFixed(2)      + ' kWh' : 'Дані недоступні');
     setText('invTodayBattChg', _todayBattChgRaw !== null ? todayBattChg.toFixed(2) + ' kWh' : '-- kWh');
     setText('invTodayBattDis', battDis1Raw      !== null ? battDis1.toFixed(2)     + ' kWh' : '-- kWh');
     setText('invTodayLoad',    _todayLoadRaw    !== null ? todayLoad.toFixed(2)    + ' kWh' : '-- kWh');
@@ -1405,7 +1410,7 @@ class KFlowCard extends HTMLElement {
         savingsEl.textContent = savingsVal.toFixed(2) + ' ₴';
         savingsEl.style.color = savingsVal > 0 ? '#4ade80' : '#8b949e';
       } else {
-        savingsEl.textContent = '-- ₴';
+        savingsEl.textContent = 'Дані недоступні';
         savingsEl.style.color = '#8b949e';
       }
     }

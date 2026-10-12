@@ -25,7 +25,7 @@ assert.ok(card.innerHTML.includes('492 Вт'));
 assert.ok(card.innerHTML.includes('23:00–24:00'));
 assert.ok(card.innerHTML.includes('Прогноз — середня потужність за годину'));
 assert.ok(!card.innerHTML.includes('NaN'));
-assert.ok(card.innerHTML.includes('Немає даних'));
+assert.ok(card.innerHTML.includes('Дані недоступні'));
 card._hass.states.forecast.attributes.hourly_forecast_date='2026-10-02';
 card._render();
 assert.ok(card.innerHTML.includes('Немає прогнозу'));
