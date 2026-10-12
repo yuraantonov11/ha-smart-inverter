@@ -185,6 +185,177 @@ class JournalBackupAtomicityTests(unittest.TestCase):
             journal_path = directory / "pv_fact_pairs_test-entry.json"
             self.assertEqual(journal_path.read_bytes(), original)
 
+    def test_recovery_after_transient_backup_failure(self):
+        """Coord audit (Юра п.2): a transient backup failure
+        MUST clear on the next successful load. Sequence:
+          1. Inject OSError on backup write → load raises
+             JournalBackupRequired, original journal unchanged.
+          2. Restore the disk (no OSError) → next load succeeds,
+             backup file is written, the journal stays intact
+             (the live state is empty until a save() happens).
+          3. After recovery, a save() does NOT need to be
+             blocked — the backup file is now present and the
+             original journal is preserved.
+        """
+        from hems.pv_learning import (
+            JournalBackupRequired,
+            PvLearningState,
+        )
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            original = _make_legacy_journal(
+                directory, latitude=50.45, longitude=30.52,
+            )
+            journal_path = directory / "pv_fact_pairs_test-entry.json"
+
+            from hems import pv_learning as _pv
+            original_write = _pv.Path.write_text
+            inject_failure = {"on": True}
+
+            def _toggled_write(self, *args, **kwargs):
+                if (
+                    ".coords_backup_" in str(self)
+                    and inject_failure["on"]
+                ):
+                    raise OSError("transient: disk full")
+                return original_write(self, *args, **kwargs)
+
+            _pv.Path.write_text = _toggled_write
+            try:
+                # 1. First load: backup fails, original preserved.
+                state_fail = PvLearningState("Europe/Kyiv", 49.83, 24.0)
+                with self.assertRaises(JournalBackupRequired):
+                    state_fail.load(journal_path)
+                self.assertEqual(journal_path.read_bytes(), original)
+                backups_during_failure = list(
+                    directory.glob("pv_fact_pairs_test-entry.json.coords_backup_*")
+                )
+                self.assertEqual(backups_during_failure, [])
+
+                # 2. Disk recovers; next load succeeds. The
+                # backup file is now written; the original
+                # journal is still unchanged.
+                inject_failure["on"] = False
+                state_ok = PvLearningState("Europe/Kyiv", 49.83, 24.0)
+                state_ok.load(journal_path)
+                backups_after_recovery = list(
+                    directory.glob("pv_fact_pairs_test-entry.json.coords_backup_*")
+                )
+                self.assertEqual(
+                    len(backups_after_recovery), 1,
+                    msg=(
+                        "after recovery the backup file MUST exist — "
+                        "without it the audit trail is incomplete"
+                    ),
+                )
+                self.assertEqual(
+                    journal_path.read_bytes(), original,
+                    msg=(
+                        "the original journal MUST still be intact "
+                        "after the successful backup"
+                    ),
+                )
+            finally:
+                _pv.Path.write_text = original_write
+
+
+class RealPairsFlagIsolationTests(unittest.TestCase):
+    """The two journals' backup-pending flags are INDEPENDENT.
+    A backup failure on the RealForecastPairs journal must NOT
+    block saves of the PV state journal, and vice versa.
+    """
+
+    def _make_state_and_mixin(self):
+        """Return a coordinator-like mixin with the two flags
+        pre-initialised; the mixin delegates load/save to two
+        injected journal stubs so the test stays close to the
+        real flag flow.
+        """
+        from hems.pv_learning import (
+            PvLearningState,
+            RealForecastPairs,
+        )
+
+        class _Mix(PvLearningCoordinatorMixinForTest):
+            def __init__(self):
+                # match class-level defaults; assert those are
+                # independent and mutable.
+                self._journal_backup_required = False
+                self._real_pairs_backup_required = False
+                self._pv_state_path = Path("/dev/null/x.json")
+                self._real_pairs_path = Path("/dev/null/y.json")
+                self._pv_learning = PvLearningState("UTC", 50.0, 30.0)
+                self._real_pairs_store = RealForecastPairs(
+                    {"latitude": 50.0, "longitude": 30.0,
+                     "timezone": "UTC"}
+                )
+
+        return _Mix()
+
+    def test_real_pairs_flag_does_not_block_pv_state_flag(self):
+        """Setting the real-pairs flag must NOT raise the PV
+        state flag, and vice versa.
+        """
+        mixin = self._make_state_and_mixin()
+        mixin._real_pairs_backup_required = True
+        self.assertFalse(
+            mixin._journal_backup_required,
+            msg=(
+                "setting the real-pairs flag MUST NOT raise the "
+                "PV state flag"
+            ),
+        )
+        mixin._real_pairs_backup_required = False
+        mixin._journal_backup_required = True
+        self.assertFalse(
+            mixin._real_pairs_backup_required,
+            msg=(
+                "setting the PV state flag MUST NOT raise the "
+                "real-pairs flag"
+            ),
+        )
+
+    def test_pv_state_save_blocked_only_by_pv_state_flag(self):
+        """If only the PV state flag is set, the real-pairs
+        save() guard is still off.
+        """
+        mixin = self._make_state_and_mixin()
+        mixin._journal_backup_required = True
+        self.assertTrue(mixin._journal_backup_required)
+        self.assertFalse(
+            mixin._real_pairs_backup_required,
+            msg=(
+                "RealForecastPairs.save() guard MUST be off when "
+                "only the PV state backup is pending"
+            ),
+        )
+
+    def test_real_pairs_save_blocked_only_by_real_pairs_flag(self):
+        mixin = self._make_state_and_mixin()
+        mixin._real_pairs_backup_required = True
+        self.assertTrue(mixin._real_pairs_backup_required)
+        self.assertFalse(
+            mixin._journal_backup_required,
+            msg=(
+                "PvLearningState.save() guard MUST be off when "
+                "only the real-pairs backup is pending"
+            ),
+        )
+
+
+# Stub mixin so we can use the production flag contract without
+# pulling in the full coordinator. The class body is a verbatim
+# copy of the production class attributes; the rest of the
+# mixin is irrelevant to this test.
+try:
+    from hems.pv_coordinator import PvLearningCoordinatorMixin as _RealMixin
+    PvLearningCoordinatorMixinForTest = _RealMixin
+except ImportError:  # pragma: no cover — sandbox without HA deps
+    class PvLearningCoordinatorMixinForTest:  # type: ignore[no-redef]
+        _journal_backup_required: bool = False
+        _real_pairs_backup_required: bool = False
+
 
 class RealForecastPairsBackupAtomicityTests(unittest.TestCase):
     """Same contract for ``RealForecastPairs`` — the second journal

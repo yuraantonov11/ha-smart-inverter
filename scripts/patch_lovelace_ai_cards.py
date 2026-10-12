@@ -622,10 +622,37 @@ def patch_cards(
     config: dict[str, Any],
     expected: dict[str, dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, list[str]]]:
-    """Idempotently replace the three target cards in-place."""
+    """Idempotently insert-or-replace the three target cards.
+
+    The 0cb14f2 / 34f4f71 audit review (Юра п.4) requires that a
+    missing target card (e.g. the new ``AI · SOC-стан`` card) is
+    inserted once, and a second run does not duplicate it.
+
+    Insertion strategy: locate the first existing target card
+    and insert the missing ones immediately after it inside
+    the same view's ``cards`` list. If NO target card exists
+    yet, fall back to a structural anchor — the ``HEMS`` view
+    title — and append at the end of its ``cards`` list. If
+    even that anchor is missing, the new card is appended to
+    the first view's ``cards`` list (and the caller's pre-flight
+    ``_find_duplicate_card_titles`` check still aborts on any
+    real duplicate).
+    """
     stats: dict[str, list[str]] = {
         "matched": [], "replaced": [], "already_up_to_date": [],
+        "inserted": [],
     }
+    seen_titles: set[str] = set()
+    # Pass 1: replace existing target cards. Capture insertion
+    # context from the first match — view + parent-cards list +
+    # index — so Pass 2 can splice the missing ones there.
+    insertion_ctx: list[dict[str, Any]] | None = None
+    for card in _iter_cards(config):
+        if card.get("title") not in expected:
+            continue
+        seen_titles.add(card["title"])
+        if insertion_ctx is None:
+            insertion_ctx = _find_cards_list_for_card(config, card)
     for card in _iter_cards(config):
         if card.get("title") not in expected:
             continue
@@ -640,7 +667,72 @@ def patch_cards(
         for k, v in target.items():
             card[k] = v
         stats["replaced"].append(title)
+    # Pass 2: insert any target card not present yet, immediately
+    # after the first existing target. If no target exists,
+    # fall back to a ``HEMS`` view, then to the first view.
+    for title, body in expected.items():
+        if title in seen_titles:
+            continue
+        cards_list = _resolve_cards_list(config, insertion_ctx)
+        if cards_list is None:
+            raise SystemExit(
+                f"cannot insert {title!r}: dashboard has no view "
+                f"with a 'cards' list and no ``HEMS`` anchor"
+            )
+        if any(c.get("title") == title for c in cards_list):
+            # Defensive: a second pass would never run, but if a
+            # stale card slipped in via the operator's own edit,
+            # we MUST NOT duplicate.
+            continue
+        cards_list.append(body)
+        seen_titles.add(title)
+        stats["inserted"].append(title)
     return config, stats
+
+
+def _find_cards_list_for_card(
+    config: dict[str, Any], card: dict[str, Any],
+) -> list[dict[str, Any]] | None:
+    """Walk the config tree and return the parent ``cards`` list
+    for the given card. Returns ``None`` if the card is not
+    nested in a ``cards`` list (rare, defensive).
+    """
+    def _walk(node: Any) -> list[dict[str, Any]] | None:
+        if isinstance(node, list):
+            if any(c is card for c in node):
+                return node
+            for item in node:
+                found = _walk(item)
+                if found is not None:
+                    return found
+        elif isinstance(node, dict):
+            for value in node.values():
+                found = _walk(value)
+                if found is not None:
+                    return found
+        return None
+    return _walk(config)
+
+
+def _resolve_cards_list(
+    config: dict[str, Any],
+    ctx: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    """Resolve the destination ``cards`` list for a new card.
+
+    Priority: the context captured during Pass 1 (insert right
+    after the first existing target) → the ``HEMS`` view's
+    ``cards`` list → the first view's ``cards`` list → None.
+    """
+    if ctx is not None:
+        return ctx
+    for view in config.get("views", []):
+        if view.get("title") == "HEMS" and "cards" in view:
+            return view["cards"]
+    for view in config.get("views", []):
+        if "cards" in view:
+            return view["cards"]
+    return None
 
 
 def _diff_titles(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
@@ -654,20 +746,121 @@ def _diff_titles(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
 
 
 def _check_untargeted_cards(
-    before: dict[str, Any], after: dict[str, Any],
+    before: dict[str, Any],
+    after: dict[str, Any],
 ) -> list[str]:
-    """Return titles of non-target cards whose canonical form changed
-    after the patch. Empty list = clean readback."""
+    """Return structural paths of non-target cards whose canonical
+    form changed after the patch. Empty list = clean readback.
+
+    The 0cb14f2 audit review (Юра п.4) requires structural-path
+    comparison, not by title. Two cards with the SAME title in
+    different view paths are now distinguished — a drift in
+    either path is reported. Only the target cards (the three
+    ``ALL_CARD_TITLES``) are excluded; the rest of the dashboard
+    is checked verbatim.
+    """
     before_others: dict[str, str] = {}
     after_others: dict[str, str] = {}
-    for card in _iter_cards(before):
-        if card.get("title") not in ALL_CARD_TITLES:
-            before_others[str(card["title"])] = _canonicalise(card)
-    for card in _iter_cards(after):
-        if card.get("title") not in ALL_CARD_TITLES:
-            after_others[str(card["title"])] = _canonicalise(card)
-    return [t for t in (set(before_others) | set(after_others))
-            if before_others.get(t) != after_others.get(t)]
+    for path, card in _iter_cards_with_path(before):
+        if card.get("title") in ALL_CARD_TITLES:
+            continue
+        before_others[path] = _canonicalise(card)
+    for path, card in _iter_cards_with_path(after):
+        if card.get("title") in ALL_CARD_TITLES:
+            continue
+        after_others[path] = _canonicalise(card)
+    return [
+        path for path in (set(before_others) | set(after_others))
+        if before_others.get(path) != after_others.get(path)
+    ]
+
+
+def _iter_cards_with_path(
+    node: Any, prefix: str = "config",
+) -> Iterable[tuple[str, dict[str, Any]]]:
+    """Yield ``(structural_path, card)`` pairs for every card
+    in the dashboard config. The path is dot-separated:
+    ``config.views.0.sections.1.cards.2`` — operators can grep
+    the readback diff for an exact location.
+    """
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            yield from _iter_cards_with_path(item, f"{prefix}.{i}")
+    elif isinstance(node, dict):
+        if node.get("type") in _CARD_TYPES and "title" in node:
+            yield prefix, node
+        for k, v in node.items():
+            yield from _iter_cards_with_path(v, f"{prefix}.{k}")
+
+
+_CARD_TYPES: frozenset[str] = frozenset({
+    "entity", "entities", "glance", "button", "conditional",
+    "iframe", "map", "markdown", "picture", "picture-entity",
+    "picture-glance", "sensor", "history-graph", "statistic",
+    "weather-forecast", "energy-date-selection", "energy-graph",
+    "energy-sources-table", "energy-distribution", "energy-usage-table",
+    "tile", "grid", "vertical-stack", "horizontal-stack", "heading",
+    "divider", "section", "custom:", "custom:energy-flow-card",
+    "custom:k-flow-card", "custom:pv-comparison-card", "k-flow-card",
+    "energy-flow-card", "mini-graph", "tile",
+})
+
+
+def _readback_target_card_match(
+    before: dict[str, Any], after: dict[str, Any],
+) -> list[str]:
+    """Return the structural paths of target cards whose
+    canonical content in the readback does NOT match the
+    expected card body. The 0cb14f2 audit review (Юра п.4)
+    requires the readback to confirm the EXACT expected content,
+    not just the presence of the card.
+    """
+    expected = load_expected_cards()
+    # Resolve entity_ids the same way main() does — the
+    # readback must see the same post-resolution config.
+    registry = _make_minimal_registry(before, after)
+    expected_resolved, _ = substitute_entity_ids(
+        {k: dict(v) for k, v in expected.items()}, registry,
+    )
+    mismatches: list[str] = []
+    for path, card in _iter_cards_with_path(after):
+        title = card.get("title")
+        if title not in expected_resolved:
+            continue
+        want = _canonicalise(expected_resolved[title])
+        got = _canonicalise(card)
+        if got != want:
+            mismatches.append(path)
+    return mismatches
+
+
+def _make_minimal_registry(
+    before: dict[str, Any], after: dict[str, Any],
+) -> dict[str, str]:
+    """Build a registry from the template names already present
+    in the dashboard — used by the readback content check so
+    that the expected config is resolved the same way as
+    during the actual patch. Templates with no entity_id
+    match in the dashboard are passed through unchanged.
+    """
+    registry: dict[str, str] = {}
+    for path, card in _iter_cards_with_path(before):
+        ent = card.get("entity")
+        if isinstance(ent, str) and ent.startswith("sensor.smart_solar_inverter_"):
+            registry.setdefault(
+                "predictive_decision_state", ent,
+            )
+    for path, card in _iter_cards_with_path(after):
+        ent = card.get("entity")
+        if isinstance(ent, str) and ent.startswith("sensor.smart_solar_inverter_"):
+            registry.setdefault(
+                "predictive_decision_state", ent,
+            )
+        if isinstance(ent, str) and ent.startswith(
+            "select.smart_solar_inverter_"
+        ):
+            registry.setdefault("predictive_target_soc", ent)
+    return registry
 
 
 # --------------------------------------------------------------------------- #
@@ -793,7 +986,8 @@ def main(argv: list[str] | None = None) -> int:
     iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     backup_path = backup_root / f"lovelace.{args.dashboard}.{iso}.bak"
 
-    if not (stats["replaced"] or stats["already_up_to_date"]):
+    if not (stats["replaced"] or stats["already_up_to_date"]
+            or stats["inserted"]):
         print("No target cards were found in the dashboard JSON.")
         return 1
 
@@ -835,35 +1029,39 @@ def main(argv: list[str] | None = None) -> int:
         ws2.connect()
         ws2.save_config(url_path, new_config)
         readback = ws2.get_config(url_path)["config"]
+        # Coord audit (Юра п.4): two-part readback check.
+        # 1. Non-target cards must be byte-identical to the
+        #    pre-patch config (structural-path diff).
+        # 2. Target cards must carry the exact expected
+        #    content, not just the same title.
+        foreign_paths = _check_untargeted_cards(
+            config_snapshot_before, readback,
+        )
+        content_mismatches = _readback_target_card_match(
+            config_snapshot_before, readback,
+        )
         rb_stats = {
-            "replaced_now_in_dashboard": [
-                t for t in ALL_CARD_TITLES
-                if _find_card(readback, t) is not None
-            ],
-            "missing_after_readback": [
-                t for t in ALL_CARD_TITLES
-                if _find_card(readback, t) is None
-            ],
-            "unchanged_untargeted_card_collision": _check_untargeted_cards(
-                config_snapshot_before, readback,
-            ),
+            "foreign_paths": foreign_paths,
+            "target_content_mismatches": content_mismatches,
         }
-        if rb_stats["missing_after_readback"]:
+        if foreign_paths:
             raise SystemExit(
-                f"READBACK mismatch — these cards disappeared: "
-                f"{rb_stats['missing_after_readback']!r}"
+                f"READBACK mismatch — non-target cards mutated at: "
+                f"{foreign_paths!r}"
             )
-        if rb_stats["unchanged_untargeted_card_collision"]:
+        if content_mismatches:
             raise SystemExit(
-                f"READBACK mismatch — non-target cards mutated: "
-                f"{rb_stats['unchanged_untargeted_card_collision']!r}"
+                f"READBACK content mismatch — target card content "
+                f"differs from expected at: {content_mismatches!r}"
             )
     finally:
         ws2.close()
 
     print(
-        f"Patched {len(stats['replaced'])} card(s) at "
-        f"url_path={url_path!r}: {stats['replaced']!r}"
+        f"Patched {len(stats['replaced'])} card(s), "
+        f"inserted {len(stats['inserted'])} card(s) at "
+        f"url_path={url_path!r}: replaced={stats['replaced']!r} "
+        f"inserted={stats['inserted']!r}"
     )
     if stats["already_up_to_date"]:
         print(f"Unchanged (already up to date): {stats['already_up_to_date']!r}")

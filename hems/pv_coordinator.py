@@ -26,12 +26,20 @@ _LOGGER = logging.getLogger("custom_components.powmr_inverter.coordinator")
 class PvLearningCoordinatorMixin:
     _load_matrix_days: int = 30
     _pv_matrix_days: int = 30
+    # Coord audit (Юра п.2): two INDEPENDENT backup-pending
+    # flags, one per on-disk journal. The PV state and the
+    # real-forecast pairs journal each have their own backup
+    # contract; a failure in one MUST NOT release the other.
+    # A journal's save() refuses to run while its own flag
+    # is set, and the flag clears only on a SUCCESSFUL backup
+    # in the next load() attempt of that same journal.
     # Default for tests / direct mixin instantiation that
     # bypasses ``_init_pv_learning`` (e.g. the r03 / real_pair
     # suites build a bare ``PvLearningCoordinatorMixin()`` and
     # only then poke at individual methods). Real coordinator
     # construction re-sets this in ``_init_pv_learning``.
     _journal_backup_required: bool = False
+    _real_pairs_backup_required: bool = False
 
     def _init_pv_learning(self):
         self._site_timezone = ZoneInfo(self.hass.config.time_zone)
@@ -431,25 +439,31 @@ class PvLearningCoordinatorMixin:
             entry = getattr(self, "_entry", None)
             entry_id = entry.entry_id if entry else self._pv_state_path.stem
             self._real_pairs_path = self._pv_state_path.parent / entry_id / "real_forecast_pairs.json"
+            # Coord audit (Юра п.2): optimistic reset. The
+            # real-forecast journal has its own flag
+            # (``_real_pairs_backup_required``) and is
+            # independent of the PV state flag. Clearing it
+            # BEFORE the load lets a transient disk failure
+            # recover on the next attempt, the same way the
+            # PV state flag does.
+            self._real_pairs_backup_required = False
             try:
                 loaded = await self.hass.async_add_executor_job(store.load, self._real_pairs_path)
                 if not loaded:
                     store.migrate(state)
                 store.prune(local_now.date())
             except JournalBackupRequired as exc:
-                # Coord audit (Юра п.2): same contract as
-                # ``_ensure_pv_state_loaded`` — a backup-write
-                # failure during ``_backup_journal_on_identity_mismatch``
-                # raises; the coordinator records it via the
-                # shared ``_journal_backup_required`` flag so the
-                # save path refuses to overwrite the original
-                # on-disk journal until the backup succeeds.
-                # We deliberately use the SAME flag as the PV
-                # state because (1) both journals live in the
-                # operator's audit scope and (2) either failure
-                # is fatal to the same goal: preserve the old
-                # snapshots/pairs the operator wanted to keep.
-                self._journal_backup_required = True
+                # Coord audit (Юра п.2): the
+                # RealForecastPairs journal has its OWN
+                # ``_real_pairs_backup_required`` flag. A
+                # failure here MUST NOT clear the PV state
+                # flag (``_journal_backup_required``) and
+                # vice versa — each journal's save() is gated
+                # by its own flag, so a healthy PV state
+                # backup does not give the operator a green
+                # light to overwrite the real-forecast journal
+                # (or the other way around).
+                self._real_pairs_backup_required = True
                 _LOGGER.error(
                     "Real-forecast journal backup on identity mismatch "
                     "FAILED (%s); save() is BLOCKED. The original journal "
@@ -515,13 +529,13 @@ class PvLearningCoordinatorMixin:
         store.prune(local_now.date())
         changed = store.pairs != previous or self._real_pairs_dirty
         if changed:
-            # Coord audit (Юра п.2): a failed backup during
-            # the ``RealForecastPairs.load`` step sets the
-            # same ``_journal_backup_required`` flag.
-            # Blocking the save here prevents the live
-            # state from overwriting the original journal
-            # the operator wanted preserved for audit.
-            if self._journal_backup_required:
+            # Coord audit (Юра п.2): the RealForecastPairs
+            # save path is gated by ITS OWN flag
+            # (``_real_pairs_backup_required``), independent of
+            # the PV state flag. A failed backup on this
+            # journal blocks its save, but a failed backup
+            # on the OTHER journal does NOT block this one.
+            if self._real_pairs_backup_required:
                 _LOGGER.error(
                     "Real forecast journal save REFUSED: "
                     "identity-mismatch backup is still pending. "
