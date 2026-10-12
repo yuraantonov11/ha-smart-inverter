@@ -412,7 +412,11 @@ def complete_hourly_days(rows, tz, today, *, field="mean", ceiling=20000):
         start, end = day_bounds(day, tz)
         expected = {start + timedelta(hours=h) for h in range(int((end-start).total_seconds()/3600))}
         if set(hours) == expected:
-            result[day] = sum(hours.values()) / 1000.0
+            # Recorder values are binary floats. A full day's sum can retain
+            # a visible tail (for example 0.21000000000000085 kWh) even
+            # though the source precision is far coarser. Keep sub-Wh
+            # precision while removing arithmetic noise before persistence.
+            result[day] = round(math.fsum(hours.values()) / 1000.0, 6)
     return result
 
 
@@ -448,7 +452,10 @@ def daily_energy_deltas(rows, unit, tz, today):
             continue
         total = points[-1] - points[0]
         if finite(total, high=500) is not None:
-            result[day] = total
+            # Match complete_hourly_days: cumulative endpoint subtraction can
+            # also expose binary-float tails that are below the source
+            # measurement resolution.
+            result[day] = round(total, 6)
     return result
 
 

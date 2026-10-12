@@ -92,6 +92,7 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertIn("-0.01 кВт·год", rendered)
         self.assertIn("3.46", rendered)
         self.assertIn("0.00", rendered)
+        self.assertIn("0.00 / -3.46", rendered)
         self.assertIn("Дані недоступні", rendered)
         self.assertIn("| 2026-10-11 | 2.50 | Дані недоступні |", rendered)
         # Original data is untouched by display formatting.
@@ -257,6 +258,19 @@ class UiReadabilityContracts(unittest.TestCase):
                           msg=f"SOC card did not render Автоматично for select_state={empty!r}")
             self.assertNotIn("Ручна ціль", rendered,
                              msg=f"SOC card wrongly showed manual target for empty={empty!r}")
+
+    def test_select_label_explains_unknown_means_automatic(self) -> None:
+        dashboard = yaml.safe_load((REPO / "dashboard.yaml").read_text(encoding="utf-8"))
+        recommendation = next(
+            card for view in dashboard["views"] for section in view.get("sections", [])
+            for card in section.get("cards", [])
+            if card.get("title") == "AI · рекомендація та виконання"
+        )
+        select_row = next(
+            row for row in recommendation["entities"]
+            if isinstance(row, dict) and row.get("entity") == SELECT_ENTITY
+        )
+        self.assertIn("unknown означає автоматично", select_row["name"])
 
     def test_soc_status_card_shows_manual_target_when_set(self) -> None:
         rendered = _render_soc_card("80")

@@ -37,4 +37,12 @@ for day,count in [('2026-03-29',23),('2026-10-25',25),('2026-10-02',24)]:
 start,_ = day_bounds('2026-10-02',tz)
 zeros = [{'start':(start+timedelta(hours=h)).timestamp()*1000,'mean':0} for h in range(24)]
 _check(complete_hourly_days(zeros,tz,datetime(2026,10,3).date())['2026-10-02'] == 0,"complete zero day and millisecond timestamps")
+# Regression: recorder floats can produce a visible binary tail although the
+# measured total is exactly 0.21 kWh at the source's sub-Wh precision.
+noisy = [{'start':(start+timedelta(hours=h)).timestamp(),'mean':8.750000000000035} for h in range(24)]
+_check(complete_hourly_days(noisy,tz,datetime(2026,10,3).date())['2026-10-02'] == 0.21,
+       "hourly float accumulation is quantized to sub-Wh precision")
+noisy_sums = [{'start':(start+timedelta(hours=h-1)).timestamp(),'sum':10000+h*1000.000000000004} for h in range(25)]
+_check(daily_energy_deltas(noisy_sums,'Wh',tz,datetime(2026,10,3).date()).get('2026-10-02') == 24.0,
+       "cumulative endpoint subtraction removes sub-Wh float noise")
 _check.finish()

@@ -195,7 +195,7 @@ views:
               - entity: sensor.smart_solar_inverter_predictive_decision_state
                 name: Поточне рішення AI
               - entity: select.smart_solar_inverter_predictive_target_soc
-                name: Скоригувати SOC · пауза на 30 хв
+                name: Ручна ціль SOC · unknown означає автоматично
               - type: attribute
                 entity: sensor.smart_solar_inverter_predictive_decision_state
                 attribute: reason
@@ -322,10 +322,10 @@ views:
 
               Пари інших моделей збережено окремо: {{ c.get('excluded_model_pairs', 0) }}. Архівна перевірка не підвищує live confidence.
 
-              | Дата | Виданий прогноз, кВт·год | Факт, кВт·год | Калібрує поточну модель |
+              | Дата | Прогноз, кВт·год | Факт / Δ факт−прогноз, кВт·год | Калібрує поточну модель |
               | --- | ---: | ---: | --- |
               {%- for p in c.get('recent_pairs', []) %}
-              | {{ p.date }} | {{ ('%.2f'|format(p.forecast_kwh)) if p.forecast_kwh is not none else 'Дані недоступні' }} | {{ ('%.2f'|format(p.actual_kwh)) if p.actual_kwh is not none else 'Дані недоступні' }} | {{ 'так' if p.used_for_current_model else 'ні' }} |
+              | {{ p.date }} | {{ ('%.2f'|format(p.forecast_kwh)) if p.forecast_kwh is not none else 'Дані недоступні' }} | {{ ('%.2f'|format(p.actual_kwh)) if p.actual_kwh is not none else 'Дані недоступні' }}{% if p.actual_kwh is not none and p.forecast_kwh is not none %} / {{ '%.2f'|format(p.actual_kwh - p.forecast_kwh) }}{% endif %} | {{ 'так' if p.used_for_current_model else 'ні' }} |
               {%- endfor %}
               {%- for p in c.get('pending', []) %}
               | {{ p.date }} | {{ ('%.2f'|format(p.forecast_kwh)) if p.forecast_kwh is not none else 'Дані недоступні' }} | Дані недоступні | очікує · {{ 'очікуємо завершення доби' if p.awaiting == 'completed_day' else 'очікуємо дані API/recorder' }} |
