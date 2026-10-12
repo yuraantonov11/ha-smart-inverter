@@ -196,6 +196,30 @@ def day_bounds(day, tz):
 # stored as ``start``); a pair tagged with ``hourly_response_v2``
 # was issued under contract 2 (interval START stored as
 # ``start``). They MUST NOT be mixed.
+class JournalBackupRequired(Exception):
+    """Raised when ``_backup_journal_on_identity_mismatch`` cannot
+    persist the backup file before the live state is rebuilt on
+    new coordinates.
+
+    The previous version of this module caught the write exception,
+    logged a warning, and returned ``None``; the calling ``load()``
+    then continued, left the live state at its defaults, and the
+    downstream ``save()`` immediately overwrote the original
+    journal — *the very file the operator wanted preserved for
+    audit was destroyed*. Юра flagged this chain end-to-end: a
+    backup failure MUST block every subsequent save until the
+    backup has actually been written.
+
+    Raising here is the only way to propagate the failure across
+    the coroutine boundary the ``PvLearningCoordinatorMixin``
+    ``async_add_executor_job`` wraps the synchronous ``load()``
+    call in. ``_ensure_pv_state_loaded`` catches it into the
+    coordinator's ``_journal_backup_required`` flag, and the next
+    ``_save_pv_state`` short-circuits while the flag is set so
+    the original on-disk journal is left byte-for-byte unchanged.
+    """
+
+
 def _backup_journal_on_identity_mismatch(path, raw, new_identity, logger_name):
     """Write a side-by-side backup of an
     identity-mismatched journal so the
@@ -226,13 +250,23 @@ def _backup_journal_on_identity_mismatch(path, raw, new_identity, logger_name):
         the previous identity recorded on the
         payload).
 
-    The backup file is best-effort: any
-    exception while writing it is logged
-    via the module logger and swallowed
-    so the load() path can still complete
-    (with an empty live state) instead
-    of failing the whole coordinator
-    startup.
+    FAILURE HANDLING (Юра п.2): the backup
+    write is NOT best-effort. If the backup
+    cannot be written for any reason (disk
+    full, permission denied, missing parent
+    directory, …) the function re-raises
+    as :class:`JournalBackupRequired`. The
+    previous behaviour swallowed the error
+    and returned ``None``, which left the
+    live state at its defaults and let the
+    very next ``save()`` overwrite the
+    original journal — the audit trail the
+    backup was meant to preserve was
+    destroyed by the save it was supposed
+    to enable. Raising here makes the load
+    fail visibly so the coordinator can
+    refuse to save until the operator has
+    resolved the disk issue.
     """
     import logging as _logging
     from datetime import datetime as _dt, timezone as _tz
@@ -274,12 +308,26 @@ def _backup_journal_on_identity_mismatch(path, raw, new_identity, logger_name):
         backup_path.write_text(
             json.dumps(payload, allow_nan=False), encoding="utf-8"
         )
-    except Exception as exc:  # pragma: no cover — defensive
-        _logging.getLogger(logger_name).warning(
-            "PV-learning backup write failed for %s: %s",
+    except Exception as exc:
+        # Raise as JournalBackupRequired so the load() caller
+        # can catch it explicitly and propagate to the
+        # coordinator (which sets _journal_backup_required=True,
+        # which blocks every _save_pv_state until the backup
+        # succeeds on a retry). Never swallow — if the backup
+        # cannot be written, the live state MUST NOT be
+        # allowed to reach save() because save() would
+        # overwrite the very file the operator wants
+        # preserved.
+        _logging.getLogger(logger_name).error(
+            "PV-learning backup write failed for %s: %s — "
+            "refusing to load the mismatched journal: save() "
+            "would destroy the original snapshot / pairs / "
+            "tags the operator wanted to keep.",
             backup_path, exc,
         )
-        return None
+        raise JournalBackupRequired(
+            f"could not write backup {backup_path}: {exc}"
+        ) from exc
     _logging.getLogger(logger_name).info(
         "PV-learning rebuilt for new coordinates: "
         "from (%s, %s) to (%s, %s); backup at %s",
@@ -546,10 +594,10 @@ class PvLearningState:
         if raw.get("unit") != "kWh":
             raise ValueError("Unsupported PV state unit")
         if any(raw.get(key) != value for key, value in self.identity.items()):
-            # Coord audit: the previous journal
-            # belongs to a different station
-            # (or a different timezone). The
-            # previous behaviour raised a
+            # Coord audit (Юра п.2): the previous
+            # journal belongs to a different
+            # station (or a different timezone).
+            # The previous behaviour raised a
             # ``ValueError`` which left the
             # coordinator with no PV-learning
             # state at all — the on-disk
@@ -579,6 +627,17 @@ class PvLearningState:
             # inside the backup file verbatim
             # — they are NEVER overwritten on
             # the live state.
+            #
+            # If the backup write FAILS, this
+            # call raises ``JournalBackupRequired``
+            # which propagates up through the
+            # coordinator's ``_ensure_pv_state_loaded``
+            # wrapper into ``_journal_backup_required``.
+            # The next ``_save_pv_state`` will then
+            # refuse to write the live state
+            # until the backup succeeds, so the
+            # original on-disk journal is left
+            # byte-for-byte unchanged.
             _backup_journal_on_identity_mismatch(
                 path, raw, self.identity,
                 logger_name="custom_components.powmr_inverter.coordinator",
@@ -720,7 +779,7 @@ class RealForecastPairs:
                 f"(max supported: {self.VERSION})"
             )
         if raw.get("identity") != self.identity:
-            # Coord audit: side-by-side backup
+            # Coord audit (Юра п.2): side-by-side backup
             # for the real-forecast journal
             # (the same shape as the
             # ``PvLearningState`` backup above).
@@ -729,6 +788,14 @@ class RealForecastPairs:
             # the backup file; the live state
             # stays at its defaults (empty
             # ``pairs`` dict).
+            #
+            # If the backup write FAILS, this
+            # call raises ``JournalBackupRequired``
+            # which propagates up; the
+            # coordinator's ``_save_pv_state``
+            # then refuses to overwrite the
+            # original journal until the backup
+            # succeeds on a later retry.
             _backup_journal_on_identity_mismatch(
                 path, raw, self.identity,
                 logger_name="custom_components.powmr_inverter.coordinator",

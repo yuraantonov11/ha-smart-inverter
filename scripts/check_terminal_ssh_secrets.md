@@ -3,177 +3,166 @@
 **Мета:** визначити, яке саме поле в options спричиняє попередження
 "Insecure secrets detected" — **не виводячи значення секрету**.
 
-> Sandbox без `HASS_URL` / `HASS_TOKEN` — тому цей документ готує Юру до
-> offline-діагностики на його власній Home Assistant-системі.
-> Жоден скрипт не зчитує значення секретів; все, що ви бачите в цій
-> інструкції, обмежене іменами полів та їх типами.
+> Документ готує оператора до offline-діагностики на його власній
+> Home Assistant-системі. Жоден скрипт не зчитує значення секретів;
+> все, що ви бачите в цій інструкції, обмежене іменами полів та їх
+> типами.
 
-## Передумови
+## Що таке «Insecure secrets detected» насправді
 
-- SSH-доступ до host-системи Home Assistant (cli add-on або host shell).
-- На host: `curl`, `jq`.
-- Якщо налаштовано Supervisor API token — бережіть його так само, як
-  описано нижче для `Authorization: Bearer …`.
+Supervisor перевіряє `options.json` плагіна **проти його схеми в
+`config.yaml`**. Поле вважається секретом, якщо:
 
-> 🚫 **Заборонено** передавати токени або паролі в чат, Git чи лог.
-> Скрипти нижче друкують тільки `<SET:length>` / `<REDACTED>` замість
-> значення.
+1. Його ім'я збігається з відомим секретним полем схеми
+   (`password`, `authorized_keys`, `ssh_keys`, `password_hash` для
+   core_ssh), **або**
+2. Його тип в схемі — `password` / `match` з regex, або
+   воно оголошене з `format: password` / `format: ssh_known_hosts`.
+
+Попередження з'являється, коли **значення поля невалідне для
+схеми** (наприклад, `password` коротший за 4 символи, або
+`authorized_keys` не починається з `ssh-rsa`/`ssh-ed25519`/…).
+Supervisor НЕ класифікує поля за словниковим збігом
+`password|token|key` — це поширена помилка, якої не існує в
+жодній версії Supervisor.
+
+> 🚫 **Заборонено** передавати токени або паролі в чат, Git чи
+> лог. Скрипти нижче друкують тільки імена полів та їх типи.
+
+## Реальний slug і схема core_ssh
+
+Офіційна документація:
+- https://github.com/home-assistant/addons/blob/master/ssh/DOCS.md
+- https://github.com/home-assistant/addons/blob/master/ssh/config.yaml
+
+Slug додатка на HAOS — `core_ssh` (або `a0d7b954_ssh` в
+деяких інсталяціях). Спільнотний slug `a0d7b954-terminal` —
+це **community** додаток, не те, що йде з HAOS.
+
+```bash
+SLUG=core_ssh
+# Перевірити, що add-on встановлений:
+ha addons info $SLUG
+```
+
+Схема `config.yaml` (джерело: GitHub home-assistant/addons):
+
+```yaml
+options:
+  password: password
+  authorized_keys:
+    - "ssh-rsa ABC... user@host"
+    - "ssh-ed25519 ABC... user@host"
+  ssh_keys:
+    - "ssh-rsa ..."
+  username: root
+  host_network: false
+  init_commands: []
+  debug: false
+  log_level: info
+  password_hash: "$y$j9T$..."   # bcrypt, optional
+```
+
+Тільки ці поля схеми класифікуються Supervisor як secret:
+`password`, `authorized_keys`, `ssh_keys`, `password_hash`.
 
 ---
 
 ## Шлях A — через Supervisor API (рекомендовано)
 
-Supervisor API доступний всередині мережі HA на порту `80`
-(`http://supervisor/...`) і на host-системі через `unix:///var/run/docker.sock`
-або `http://supervisor:80`.
-
-### 1. Отримати slug додатка
+Supervisor API доступний з host-системи HA через unix-сокет або
+через `http://supervisor:80` зсередини мережі HA.
 
 ```bash
-# slug = a0d7b954-terminal  (стабільний ідентифікатор Terminal & SSH)
-SLUG=a0d7b954-terminal
+# Потрібен Supervisor token. Він зберігається на host-системі HA у
+# /usr/share/hassio/supervisor/socket і НЕ доступний напряму.
+# Найпростіше — використати Home Assistant CLI:
+ha addons info $SLUG --raw-json | jq '.data.options | to_entries | map({key, type, secure: true})'
 ```
 
-Якщо ви не впевнені в slug — знайдіть його в
-`/usr/share/hassio/addons/.storage/registered` або
-через `GET /addons`.
-
-### 2. Витягти options без значень секретів
+або якщо у вас є Supervisor token з оточення:
 
 ```bash
-AUTH='Authorization: Bearer ${SUPERVISOR_TOKEN}'   # NEVER log the value
-BASE='http://supervisor/addons'                    # or http://homeassistant.local:80/api/hassio/addons
-curl -sS -H "$AUTH" "$BASE/$SLUG/info" \
-  | jq '
-      .data.options
-      | to_entries
-      | map(
-          select(
-            (.value | type == "string")
-            and (.key | test("(?i)(password|token|key|pass|secret|auth)"))
-          )
-          | {
-              key: .key,
-              type: (.value | type),
-              length: (.value | length),
-              sample: "<REDACTED>"
-            }
-        )
-    '
+AUTH="Authorization: Bearer $SUPERVISOR_TOKEN"
+curl -sS -H "$AUTH" "http://supervisor/addons/$SLUG/info" \
+  | jq '.data.options
+        | to_entries
+        | map({
+            key: .key,
+            type: (.value | type),
+            secure: (.key | test("^(password|ssh_keys|authorized_keys|password_hash)$"))
+          })
+        | map(select(.secure == true))'
 ```
 
 Очікуваний вивід — масив обʼєктів виду:
 
 ```json
 [
-  { "key": "password", "type": "string", "length": 12, "sample": "<REDACTED>" },
-  { "key": "ssh_keys", "type": "array",  "length": 0, "sample": "<REDACTED>" }
+  { "key": "password", "type": "string", "secure": true },
+  { "key": "authorized_keys", "type": "array", "secure": true }
 ]
 ```
 
-Якщо масив порожній — у options немає секретів, яких Supervisor класифікує
-як «insecure». Переходьте до кроку 3.
-
-### 3. Перевірити, що поле справді вважається insecure
-
-Supervisor позначає поле як insecure, якщо:
-
-* його імʼя відповідає регекспу `(password|token|key|pass|secret|...)`
-  **або** воно знаходиться в secrets-розділі schema add-on.
-* його значення невалідне: це plaintext-пароль, відсутній публічний ключ
-  SSH, або файл дозволів містить `0o600` / `0o644` без
-  `encrypted_at_rest`.
-
-```bash
-curl -sS -H "$AUTH" "$BASE/$SLUG/info" \
-  | jq '.data.schema | to_entries
-        | map(select(
-            (.value.format? // "") | test("(?i)password|secret|token|key")
-          ))
-        | map({key: .key, format: .value.format, description: .value.description})
-        '
-```
-
-Це показує, які поля **схеми** Supervisor вважає секретними. Якщо ваш
-options має ключ із цього списку — це джерело попередження.
-
-### 4. (Опціонально) показати permissions / owners без значення
-
-```bash
-ls -l /usr/share/hassio/addons/data/$SLUG/options.json
-stat  /usr/share/hassio/addons/data/$SLUG/options.json | head -10
-# confirm: file mode ≤ 0o600, owned by root:root
-```
-
----
+Якщо масив порожній — у options немає секретних полів, які
+Supervisor класифікує як «insecure». Переходьте до кроку 3.
 
 ## Шлях B — на host-системі напряму
 
 Якщо Supervisor API недоступний (наприклад, ви не маєте токена),
 виконайте ті ж самі перевірки безпосередньо на host HA:
 
-### B1. Зчитати файл options як root
-
-```bash
-sudo cat /usr/share/hassio/addons/data/a0d7b954-terminal/options.json \
-  | jq 'to_entries
-        | map(
-            select(
-              (.key | test("(?i)(password|token|key|pass|secret|auth)"))
-            )
-            | {key: .key, length: ((.value | tostring) | length), sample: "<REDACTED>"}
-          )'
-```
-
-### B2. Зчитати `config.yaml` (schema)
-
 ```bash
 sudo jq '
   .options
   | to_entries
-  | map(select((.value.format? // "") | test("(?i)password|secret|token|key")))
-' /usr/share/hassio/addons/a0d7b954-terminal/config.yaml
+  | map({
+      key: .key,
+      type: (.value | type),
+      secure: (.key | test("^(password|ssh_keys|authorized_keys|password_hash)$"))
+    })
+  | map(select(.secure == true))
+' /usr/share/hassio/addons/data/$SLUG/options.json
 ```
 
-### B3. Перевірити supervisor_log на «Insecure secret»
+## Крок 3 — Перевірити валідність полів
+
+Supervisor позначає поле як insecure, якщо його значення **не
+відповідає схемі** — наприклад:
+
+| Поле             | Невалідне значення, що тригерить warning                  |
+| ---------------- | --------------------------------------------------------- |
+| `password`       | довжина `< 4` (занадто короткий)                          |
+| `password_hash`  | невалідний bcrypt-формат                                  |
+| `authorized_keys` | рядок не починається з `ssh-rsa`/`ssh-ed25519`/`ecdsa-` |
+| `ssh_keys`       | масив без жодного валідного публічного ключа              |
+| `username`       | некоректний shell-username (порожній, root з обмеженнями) |
 
 ```bash
-journalctl -u hassio-supervisor.service --since "1 hour ago" \
-  | grep -i "insecure secret" \
-  | sed -E 's/(password|token|secret|key)[^"]*"[^"]+"/\1 "<REDACTED>"/g'
+# Перевірити authorized_keys (виводимо тільки перші 5 символів ключа)
+jq -r '.authorized_keys[]? | .[0:5] + "..."' \
+   /usr/share/hassio/addons/data/$SLUG/options.json
+
+# Перевірити, чи password довший за 4 символи (НЕ виводить значення)
+jq -r '.password | if length >= 4 then "OK (length=" + (.|tostring|length|tostring) + ")"
+        else "INVALID: password too short" end' \
+   /usr/share/hassio/addons/data/$SLUG/options.json
 ```
 
-> `sed` замінює будь-яке значення, яке слідує за словом secret, на
-> `<REDACTED>`. Якщо ваш sed знає коротші форми — замініть вираз.
+> `jq` тут НЕ виводить саме значення `password` — тільки довжину.
 
----
+## Крок 4 — Підтвердження, що попередження зникло
 
-## Чек-ліст «де саме insecure»
+Після **видалення невалідного секрету** або **переходу на SSH-ключі**
+(див. `rotate_terminal_ssh_password.md`):
 
-| Категорія               | Імʼя ключа (типово)        | Що вважається insecure                 |
-| ----------------------- | -------------------------- | -------------------------------------- |
-| `password`              | plaintext-пароль           | будь-який, довший за 4 символи         |
-| `authorized_keys`       | рядок, перекладений як ключ | невалідний SSH public key              |
-| `ssh_keys`              | масив ключів               | жоден не починається з `ssh-rsa/ssh-ed25519` |
-| `username`              | користувач                 | некоректний shell-username             |
-| `webui_password`        | пароль для UI              | plaintext, немає `password_hash`       |
-| `ssl`                   | SSL ключі                  | файл не `0o600` або відсутній `cert`   |
-
-> Перегляньте ваш `options.json` і поставте мітки проти кожного з цих
-> полів. Те, що несекретне (наприклад, `host_network: true`), не
-> тригерить попередження.
-
----
-
-## Підтвердження, що попередження пішло
-
-Після **видалення plaintext-секрету** або **переходу на SSH-ключі** (див.
-`rotate_terminal_ssh_password.md`):
-
-1. Перейдіть у **Settings → System → Supervisor → ⋮ → Check configuration**.
+1. Перейдіть у **Settings → System → Supervisor → ⋮ → Check
+   configuration**.
 2. Якщо все чисто — попередження зникає зі списку.
-3. Якщо ні — поверніться до кроку A3 і перегляньте, чи не залишилось
-   поле, яке schema Supervisor класифікує як secret.
+3. Якщо ні — поверніться до кроку 3 і перегляньте, чи не
+   залишилось поле, яке schema Supervisor класифікує як
+   secret з невалідним значенням.
 
-> ⚠ **Не робіть ротацію**, доки не буде підтвердженого альтернативного
-> доступу SSH-ключем — інакше ви ризикуєте втратити доступ до host HA.
+> ⚠ **Не робіть ротацію**, доки не буде підтвердженого
+> альтернативного доступу SSH-ключем — інакше ви ризикуєте
+> втратити доступ до host HA.

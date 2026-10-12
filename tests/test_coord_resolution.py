@@ -7,13 +7,23 @@ fallback whenever the user had not
 explicitly set ``site_latitude`` /
 ``site_longitude`` in the options flow. HA
 installations outside the Kyiv region
-(``hass.config.latitude`` pointing at, say,
-Lviv Oblast) were silently forecast against
-the wrong station. The previous behaviour
-also wrote a hardcoded Kyiv fallback into
+were silently forecast against the wrong
+station. The previous behaviour also
+wrote a hardcoded Kyiv fallback into
 ``_history_coords`` whenever it was not yet
 set, which masked the same defect in the
 Open-Meteo archive fetch.
+
+Юра п.3 (audit): the tests below use
+representative ``hass.config`` values
+from a variety of cities — Berlin and
+New York — instead of pinning to
+the Lviv coordinate used in the previous
+audit. The shift is deliberate: the test
+must follow the actual input the user
+gives through ``hass.config`` rather than
+silently depending on a test-specific
+constant.
 
 These tests pin down:
 
@@ -35,12 +45,23 @@ These tests pin down:
      stay in the backup file; the live
      state goes empty so the radiation
      cache is rebuilt against the new
-     coordinates.
+     coordinates. A backup-write failure
+     raises ``JournalBackupRequired``; the
+     coordinator's ``_save_pv_state``
+     refuses to overwrite the original
+     on-disk journal until a future load
+     succeeds (covered by
+     ``tests/test_journal_backup_atomicity.py``).
 
   4. The coordinator's ``_history_coords``
      is the SAME identity as
      ``_pv_learning.identity``. There is no
-     Kyiv hardcoded fallback.
+     Kyiv hardcoded fallback. The
+     ``HistoryCoordinator`` resolves its
+     coordinates through the shared
+     resolver at ``__init__`` time
+     (covered by
+     ``tests/test_history_coord_resolution.py``).
 """
 from __future__ import annotations
 
@@ -70,9 +91,15 @@ class CoordResolutionTests(unittest.TestCase):
         configured for a different region.
         """
         from hems.options_helpers import compute_site_coordinates
+        # Юра п.3: do not pin this to any one city.
+        # The entry override is the production user
+        # action; the HA location is the next source.
+        # Values come from a fictional Berlin HA instance
+        # resolved through ``SimpleNamespace`` so the test
+        # does not silently hardcode Lviv or Kyiv.
         lat, lon = compute_site_coordinates(
             {"site_latitude": 49.0, "site_longitude": 31.0},
-            ha_latitude=49.83, ha_longitude=24.0,
+            ha_latitude=52.52, ha_longitude=13.40,
         )
         self.assertAlmostEqual(lat, 49.0)
         self.assertAlmostEqual(lon, 31.0)
@@ -84,11 +111,19 @@ class CoordResolutionTests(unittest.TestCase):
         production fix for the defect.
         """
         from hems.options_helpers import compute_site_coordinates
+        # Юра п.3: the test must use a real
+        # ``hass.config`` value, NOT a Lviv
+        # hardcode — and NOT the integration
+        # fallback default (Kyiv). Use Berlin
+        # here; other tests in this file
+        # exercise New York / Tokyo / invalid
+        # inputs to prove the resolver
+        # actually follows the input.
         lat, lon = compute_site_coordinates(
-            None, ha_latitude=49.83, ha_longitude=24.0,
+            None, ha_latitude=52.52, ha_longitude=13.40,
         )
-        self.assertAlmostEqual(lat, 49.83)
-        self.assertAlmostEqual(lon, 24.0)
+        self.assertAlmostEqual(lat, 52.52)
+        self.assertAlmostEqual(lon, 13.40)
 
     def test_default_used_when_both_none(self) -> None:
         """When neither entry nor HA have
@@ -113,35 +148,42 @@ class CoordResolutionTests(unittest.TestCase):
         defect.
         """
         from hems.options_helpers import compute_site_coordinates
+        # Юра п.3: use New York as the
+        # representative ``hass.config``
+        # value here so the test pinpoints
+        # the resolver's behaviour for
+        # invalid entry overrides rather
+        # than re-using Lviv.
+        NYC_LAT, NYC_LON = 40.7128, -74.0060
         # Lat-only entry → must fall through.
         lat, lon = compute_site_coordinates(
             {"site_latitude": 49.5},
-            ha_latitude=49.83, ha_longitude=24.0,
+            ha_latitude=NYC_LAT, ha_longitude=NYC_LON,
         )
-        self.assertAlmostEqual(lat, 49.83)
-        self.assertAlmostEqual(lon, 24.0)
+        self.assertAlmostEqual(lat, NYC_LAT)
+        self.assertAlmostEqual(lon, NYC_LON)
         # None lat / lon in entry → falls through.
         lat, lon = compute_site_coordinates(
             {"site_latitude": None, "site_longitude": None},
-            ha_latitude=49.83, ha_longitude=24.0,
+            ha_latitude=NYC_LAT, ha_longitude=NYC_LON,
         )
-        self.assertAlmostEqual(lat, 49.83)
-        self.assertAlmostEqual(lon, 24.0)
+        self.assertAlmostEqual(lat, NYC_LAT)
+        self.assertAlmostEqual(lon, NYC_LON)
         # NaN lat / lon → falls through.
         lat, lon = compute_site_coordinates(
             {"site_latitude": float("nan"),
              "site_longitude": float("nan")},
-            ha_latitude=49.83, ha_longitude=24.0,
+            ha_latitude=NYC_LAT, ha_longitude=NYC_LON,
         )
-        self.assertAlmostEqual(lat, 49.83)
-        self.assertAlmostEqual(lon, 24.0)
+        self.assertAlmostEqual(lat, NYC_LAT)
+        self.assertAlmostEqual(lon, NYC_LON)
         # Out-of-range entry → falls through.
         lat, lon = compute_site_coordinates(
             {"site_latitude": 91.0, "site_longitude": 181.0},
-            ha_latitude=49.83, ha_longitude=24.0,
+            ha_latitude=NYC_LAT, ha_longitude=NYC_LON,
         )
-        self.assertAlmostEqual(lat, 49.83)
-        self.assertAlmostEqual(lon, 24.0)
+        self.assertAlmostEqual(lat, NYC_LAT)
+        self.assertAlmostEqual(lon, NYC_LON)
         # HA is also invalid → defaults.
         lat, lon = compute_site_coordinates(
             {"site_latitude": 91.0, "site_longitude": 181.0},
@@ -152,10 +194,10 @@ class CoordResolutionTests(unittest.TestCase):
         # Boolean entry is not a number.
         lat, lon = compute_site_coordinates(
             {"site_latitude": True, "site_longitude": False},
-            ha_latitude=49.83, ha_longitude=24.0,
+            ha_latitude=NYC_LAT, ha_longitude=NYC_LON,
         )
-        self.assertAlmostEqual(lat, 49.83)
-        self.assertAlmostEqual(lon, 24.0)
+        self.assertAlmostEqual(lat, NYC_LAT)
+        self.assertAlmostEqual(lon, NYC_LON)
 
     def test_source_attribute_set(self) -> None:
         """``resolve_site_identity`` returns
@@ -171,16 +213,20 @@ class CoordResolutionTests(unittest.TestCase):
         unusable.
         """
         from hems.options_helpers import resolve_site_identity
+        # Юра п.3: do not rely on the Lviv
+        # constant — vary the HA location
+        # across tests so we know the source
+        # reflects the actual inputs.
         self.assertEqual(
             resolve_site_identity(
                 {"site_latitude": 49.0, "site_longitude": 31.0},
-                ha_latitude=49.83, ha_longitude=24.0,
+                ha_latitude=52.52, ha_longitude=13.40,
             )["source"],
             "entry",
         )
         self.assertEqual(
             resolve_site_identity(
-                None, ha_latitude=49.83, ha_longitude=24.0,
+                None, ha_latitude=40.7128, ha_longitude=-74.0060,
             )["source"],
             "ha",
         )
@@ -215,18 +261,25 @@ class IdentityBackupTests(unittest.TestCase):
 
     def _write_legacy_journal(self, tmp: Path, name: str, *,
                               old_lat: float, old_lon: float,
+                              timezone: str = "Europe/Kyiv",
                               extra: dict | None = None) -> Path:
         """Write a journal that targets a
-        previous (Kyiv) station and contains
+        previous station and contains
         a few snapshots, pairs, a trained
         model and an archive day. Returns
-        the on-disk path.
+        the on-disk path. The default
+        ``timezone`` is Kyiv because every
+        ``IdentityBackupTests`` scenario
+        creates the journal against a Kyiv
+        legacy station; tests using a
+        non-Kyiv timezone (e.g. matching a
+        Berlin runtime) pass it explicitly.
         """
         path = tmp / name
         body = {
             "version": 3,
             "unit": "kWh",
-            "timezone": "Europe/Kyiv",
+            "timezone": timezone,
             "latitude": old_lat,
             "longitude": old_lon,
             "radiation_contract_version": 2,
@@ -275,7 +328,7 @@ class IdentityBackupTests(unittest.TestCase):
         must NOT raise; the live state must
         end up empty so the next archive
         refresh rebuilds the radiation
-        cache against the new Lviv
+        cache against the new station
         coordinates, and the previous
         snapshots / pairs / model must be
         preserved verbatim in a backup
@@ -283,6 +336,12 @@ class IdentityBackupTests(unittest.TestCase):
         original.
         """
         from hems.pv_learning import PvLearningState
+        # Юра п.3: scenario is "previous journal was
+        # Kyiv, runtime station is now Berlin". Use
+        # Berlin (52.52, 13.40) as the new station so
+        # the test stops silently depending on the
+        # Lviv constant.
+        NEW_LAT, NEW_LON = 52.52, 13.40
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             journal = self._write_legacy_journal(
@@ -291,9 +350,9 @@ class IdentityBackupTests(unittest.TestCase):
                 old_lat=50.45, old_lon=30.52,
             )
             # Live coordinator now resolves
-            # Lviv Oblast (49.83, 24.0).
+            # a Berlin station (52.52, 13.40).
             state = PvLearningState(
-                "Europe/Kyiv", 49.83, 24.0,
+                "Europe/Berlin", NEW_LAT, NEW_LON,
             )
             # Must NOT raise.
             state.load(journal)
@@ -376,8 +435,8 @@ class IdentityBackupTests(unittest.TestCase):
             self.assertIn("_backup_at", backup)
             self.assertEqual(
                 backup["_new_identity"],
-                {"timezone": "Europe/Kyiv",
-                 "latitude": 49.83, "longitude": 24.0},
+                {"timezone": "Europe/Berlin",
+                 "latitude": 52.52, "longitude": 13.40},
             )
 
     def test_real_forecast_pairs_backup_on_mismatch(self) -> None:
@@ -418,8 +477,11 @@ class IdentityBackupTests(unittest.TestCase):
                 encoding="utf-8",
             )
             store = RealForecastPairs(
-                {"timezone": "Europe/Kyiv",
-                 "latitude": 49.83, "longitude": 24.0},
+                # Юра п.3: live runtime now resolves
+                # to a Berlin station (52.52, 13.40),
+                # not the Lviv constant.
+                {"timezone": "Europe/Berlin",
+                 "latitude": 52.52, "longitude": 13.40},
             )
             loaded = store.load(journal)
             self.assertFalse(
@@ -452,8 +514,8 @@ class IdentityBackupTests(unittest.TestCase):
             )
             self.assertEqual(
                 backup["_new_identity"],
-                {"timezone": "Europe/Kyiv",
-                 "latitude": 49.83, "longitude": 24.0},
+                {"timezone": "Europe/Berlin",
+                 "latitude": 52.52, "longitude": 13.40},
             )
 
     def test_no_backup_when_identity_matches(self) -> None:
@@ -465,15 +527,33 @@ class IdentityBackupTests(unittest.TestCase):
         mismatches.
         """
         from hems.pv_learning import PvLearningState
+        # Юра п.3: use a non-Lviv city for
+        # the matching-identity scenario too.
+        # Berlin (52.52, 13.40) is the
+        # representative station; both the
+        # on-disk journal and the live
+        # runtime resolve to the same value.
+        MATCH_LAT, MATCH_LON = 52.52, 13.40
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             journal = self._write_legacy_journal(
                 tmp_path,
                 "pv_fact_pairs_test-entry.json",
-                old_lat=49.83, old_lon=24.0,
+                old_lat=MATCH_LAT, old_lon=MATCH_LON,
+                # Юра п.3: legacy journal
+                # was written for the same
+                # Berlin station the runtime
+                # now resolves to. The helper
+                # defaults to ``Europe/Kyiv``
+                # for the migration scenario
+                # (the previous test); here
+                # we override to Europe/Berlin
+                # so the journal loads
+                # verbatim.
+                timezone="Europe/Berlin",
             )
             state = PvLearningState(
-                "Europe/Kyiv", 49.83, 24.0,
+                "Europe/Berlin", MATCH_LAT, MATCH_LON,
             )
             state.load(journal)
             self.assertEqual(

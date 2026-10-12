@@ -38,7 +38,11 @@ from .hems.engine import (
 )
 from .hems import debug_logging
 from .hems import evidence_journal
-from .hems.options_helpers import compute_reserve_soc
+from .hems.options_helpers import (
+    compute_reserve_soc,
+    compute_site_coordinates,
+    resolve_site_identity,
+)
 from .hems.tuning import HemsTunables, HemsTuningService, PredictiveTuning
 from .hems.storm_risk import evaluate_storm_risk
 from .hems.schedule_rules import ScheduleRulesService
@@ -3053,6 +3057,33 @@ class HistoryCoordinator(DataUpdateCoordinator):
         self.api = api
         self._entry = entry
 
+        # Coord audit (Юра п.1): resolve the site identity
+        # through the SHARED resolver (entry options →
+        # hass.config → DEFAULT) and pin ``_history_coords``
+        # to that result. The previous version of this file
+        # left ``_history_coords`` unset at construction time
+        # and relied on the runtime fallback inside
+        # ``_fetch_historical_weather`` to pick the
+        # coordinates — that fallback was already removed
+        # because it was the silent Kyiv constant. The
+        # resolver IS the single source of truth; we call it
+        # here so a freshly-built ``HistoryCoordinator``
+        # always has coordinates matching
+        # ``_pv_learning.identity``.
+        ha_lat = getattr(self.hass.config, "latitude", None)
+        ha_lon = getattr(self.hass.config, "longitude", None)
+        lat, lon = compute_site_coordinates(
+            self._entry.options,
+            ha_latitude=ha_lat,
+            ha_longitude=ha_lon,
+        )
+        self._history_coords = (lat, lon)
+        self._identity_source = resolve_site_identity(
+            self._entry.options,
+            ha_latitude=ha_lat,
+            ha_longitude=ha_lon,
+        )["source"]
+
         # Cached history data
         self.today_hourly_power: list[dict] = []
         self.monthly_daily_energy: list[dict] = []
@@ -3360,21 +3391,20 @@ class HistoryCoordinator(DataUpdateCoordinator):
         import aiohttp
 
         if not hasattr(self, "_history_coords") or not self._history_coords:
-            # Coord audit: ``_history_coords`` is
-            # ALWAYS initialised by
-            # ``_init_pv_learning`` from the
-            # resolved site identity (entry →
-            # HA → default). Reaching this branch
-            # means the coordinator was asked
-            # for the archive before the
-            # identity was resolved; the only
-            # safe response is to log and return
-            # an empty result. The previous
-            # behaviour silently fell back to a
-            # Kyiv constant; that masked a real
-            # production defect for any HA
-            # instance running outside the Kyiv
-            # region and is now removed.
+            # Coord audit (Юра п.1): ``_history_coords``
+            # is ALWAYS initialised by ``__init__`` from
+            # ``compute_site_coordinates`` (entry options →
+            # hass.config → DEFAULT). Reaching this branch
+            # would mean the coordinator was asked for the
+            # archive before ``__init__`` ran — a programming
+            # error, not a state-resolvable situation. The
+            # safe response is to log and return an empty
+            # result; the operator can diagnose the init
+            # order from the log. The previous behaviour
+            # silently fell back to a Kyiv constant; that
+            # masked a real production defect for any HA
+            # instance running outside the Kyiv region and
+            # is now removed.
             _LOGGER.warning(
                 "Open-Meteo archive skipped: "
                 "site coordinates are not yet "

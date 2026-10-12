@@ -148,14 +148,16 @@ sudo docker restart $(sudo docker ps -f name=a0d7b954-terminal -q)
 ## Відкат (якщо щось пішло не так)
 
 ```bash
-# На host HA, від імені root:
+# На host HA, від імені root. Підставте реальний slug
+# (``core_ssh`` на HAOS) — НЕ використовуйте community-slug
+# ``a0d7b954-terminal``.
 sudo jq '.password = "TEMP_PASSWORD_VALUE"' \
-  /usr/share/hassio/addons/data/a0d7b954-terminal/options.json \
+  /usr/share/hassio/addons/data/core_ssh/options.json \
   > /tmp/options.rollback.json
 sudo mv /tmp/options.rollback.json \
-  /usr/share/hassio/addons/data/a0d7b954-terminal/options.json
-sudo chmod 0600 /usr/share/hassio/addons/data/a0d7b954-terminal/options.json
-sudo docker restart $(sudo docker ps -f name=a0d7b954-terminal -q)
+  /usr/share/hassio/addons/data/core_ssh/options.json
+sudo chmod 0600 /usr/share/hassio/addons/data/core_ssh/options.json
+sudo docker restart $(sudo docker ps -f name=core_ssh -q)
 ```
 
 > 🚫 **Не** зберігайте `TEMP_PASSWORD_VALUE` в історії bash чи в
@@ -166,8 +168,10 @@ sudo docker restart $(sudo docker ps -f name=a0d7b954-terminal -q)
 
 ## Контрольний список (для commit/PR-опису)
 
-- [ ] Поле `password` або видалено, або має довжину `< 4` (HA
-      вважає короткі тестові рядки «warn-only»).
+- [ ] Поле `password` або видалено повністю, або валідне
+      (див. `check_terminal_ssh_secrets.md` — крок 3). Короткі
+      паролі **не** вважаються «warn-only» — Supervisor показує
+      їх як невалідні.
 - [ ] `authorized_keys` містить **тільки публічні** ключі з
       правильним форматом (`ssh-ed25519 AAAA…`).
 - [ ] `~/.ssh/authorized_keys` на host HA має `chmod 0600`.

@@ -17,7 +17,8 @@ from .predictive import PredictiveHemsController, normalize_night_window
 from .options_helpers import resolve_site_identity
 from .pv_learning import (PvLearningState, RealForecastPairs, finite, complete_hourly_days, daily_energy_deltas,
                           day_bounds, timestamp, train_station,
-                          current_forecast_model_identity, legacy_forecast_model_identity)
+                          current_forecast_model_identity, legacy_forecast_model_identity,
+                          JournalBackupRequired)
 
 _LOGGER = logging.getLogger("custom_components.powmr_inverter.coordinator")
 
@@ -25,6 +26,12 @@ _LOGGER = logging.getLogger("custom_components.powmr_inverter.coordinator")
 class PvLearningCoordinatorMixin:
     _load_matrix_days: int = 30
     _pv_matrix_days: int = 30
+    # Default for tests / direct mixin instantiation that
+    # bypasses ``_init_pv_learning`` (e.g. the r03 / real_pair
+    # suites build a bare ``PvLearningCoordinatorMixin()`` and
+    # only then poke at individual methods). Real coordinator
+    # construction re-sets this in ``_init_pv_learning``.
+    _journal_backup_required: bool = False
 
     def _init_pv_learning(self):
         self._site_timezone = ZoneInfo(self.hass.config.time_zone)
@@ -93,6 +100,22 @@ class PvLearningCoordinatorMixin:
         self._forecast_model_tags = {}
         self._pv_state_loaded = False
         self._pv_state_dirty = False
+        # Coord audit (Юра п.2): the previous code path
+        # caught the exception in ``_ensure_pv_state_loaded``,
+        # logged it as a warning, and let the next ``save()``
+        # overwrite the original on-disk journal — the very
+        # file the operator wanted preserved for audit was
+        # destroyed. ``_journal_backup_required`` is the
+        # long-lived flag the save path checks; it is set
+        # to ``True`` when ``_backup_journal_on_identity_mismatch``
+        # raised ``JournalBackupRequired`` during the last
+        # load, and stays ``True`` until the next load attempt
+        # clears it (every load re-tries the backup, so a later
+        # transient failure — disk freed, permission fixed —
+        # clears the flag and the next save goes through).
+        # The original journal stays byte-for-byte unchanged
+        # for the entire window the flag is set.
+        self._journal_backup_required = False
         self._night_window_last_persist_at = None
         directory = Path(__file__).resolve().parent
         self._pv_state_path = directory / f"pv_fact_pairs_{self._entry.entry_id}.json"
@@ -110,16 +133,65 @@ class PvLearningCoordinatorMixin:
         if self._pv_state_loaded:
             return
         self._pv_state_loaded = True
+        # The flag is OPTIMISTIC: assume the backup will
+        # succeed this attempt and clear it BEFORE the call.
+        # If ``_backup_journal_on_identity_mismatch`` raises
+        # ``JournalBackupRequired`` it gets re-set below so
+        # the save path blocks. Clearing it up-front also lets
+        # a previously-failed load recover on a transient
+        # transient disk failure (permission fixed, …) without
+        # us having to invent a separate "clear" hook.
+        self._journal_backup_required = False
         try:
             await self.hass.async_add_executor_job(
                 self._pv_learning.load, self._pv_state_path, self._pv_legacy_path)
             if self._pv_learning.model:
                 self.forecast_learned_ratio = self._pv_learning.model["gain"]
+        except JournalBackupRequired as exc:
+            # Coord audit (Юра п.2): a backup-write failure
+            # during ``_backup_journal_on_identity_mismatch``
+            # MUST NOT be swallowed. Setting the flag forces
+            # every subsequent ``_save_pv_state`` to skip
+            # the journal write until a future load attempt
+            # succeeds — leaving the original on-disk journal
+            # byte-for-byte unchanged. We deliberately log
+            # at ERROR (not WARNING) because this blocks an
+            # otherwise normal save path; a passive WARNING
+            # would let operators ignore the audit loss.
+            self._journal_backup_required = True
+            _LOGGER.error(
+                "PV learning backup on identity mismatch FAILED (%s); "
+                "save() is BLOCKED until the next load can write the "
+                "side-by-side backup. The original journal at %s stays "
+                "untouched in the meantime.",
+                exc, self._pv_state_path,
+            )
+            return
         except Exception as exc:
             _LOGGER.warning("PV learning restore skipped: %s", exc)
 
     async def _save_pv_state(self):
         if not self._pv_state_dirty:
+            return
+        # Coord audit (Юра п.2): a failed backup during
+        # ``_ensure_pv_state_loaded`` set the flag. Until
+        # the next successful load clears it, ``save()`` is
+        # BLOCKED — the original on-disk journal is preserved
+        # verbatim so the operator can recover the previous
+        # snapshots / pairs / calibration model / archive day
+        # / forecast_model tags by inspecting the file as-is.
+        # The ``_pv_state_dirty`` flag is NOT cleared here:
+        # the live state is still dirty, so a later retry
+        # (when the backup finally succeeds) can persist it
+        # without losing the work.
+        if self._journal_backup_required:
+            _LOGGER.error(
+                "PV learning save REFUSED: identity-mismatch backup is "
+                "still pending. The on-disk journal at %s is left "
+                "unchanged; run after the operator has resolved the "
+                "backup failure (free disk, fix permissions, …).",
+                self._pv_state_path,
+            )
             return
         try:
             await self.hass.async_add_executor_job(self._pv_learning.save, self._pv_state_path)
@@ -364,6 +436,27 @@ class PvLearningCoordinatorMixin:
                 if not loaded:
                     store.migrate(state)
                 store.prune(local_now.date())
+            except JournalBackupRequired as exc:
+                # Coord audit (Юра п.2): same contract as
+                # ``_ensure_pv_state_loaded`` — a backup-write
+                # failure during ``_backup_journal_on_identity_mismatch``
+                # raises; the coordinator records it via the
+                # shared ``_journal_backup_required`` flag so the
+                # save path refuses to overwrite the original
+                # on-disk journal until the backup succeeds.
+                # We deliberately use the SAME flag as the PV
+                # state because (1) both journals live in the
+                # operator's audit scope and (2) either failure
+                # is fatal to the same goal: preserve the old
+                # snapshots/pairs the operator wanted to keep.
+                self._journal_backup_required = True
+                _LOGGER.error(
+                    "Real-forecast journal backup on identity mismatch "
+                    "FAILED (%s); save() is BLOCKED. The original journal "
+                    "at %s stays untouched.",
+                    exc, self._real_pairs_path,
+                )
+                return
             except Exception as exc:
                 _LOGGER.warning("Real forecast journal restore failed: %s", exc)
                 return  # do not overwrite a corrupt/unrelated journal
@@ -422,6 +515,20 @@ class PvLearningCoordinatorMixin:
         store.prune(local_now.date())
         changed = store.pairs != previous or self._real_pairs_dirty
         if changed:
+            # Coord audit (Юра п.2): a failed backup during
+            # the ``RealForecastPairs.load`` step sets the
+            # same ``_journal_backup_required`` flag.
+            # Blocking the save here prevents the live
+            # state from overwriting the original journal
+            # the operator wanted preserved for audit.
+            if self._journal_backup_required:
+                _LOGGER.error(
+                    "Real forecast journal save REFUSED: "
+                    "identity-mismatch backup is still pending. "
+                    "The on-disk journal at %s is left unchanged.",
+                    self._real_pairs_path,
+                )
+                return
             try:
                 await self.hass.async_add_executor_job(store.save, self._real_pairs_path)
             except Exception as exc:

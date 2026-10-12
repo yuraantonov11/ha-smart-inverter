@@ -114,7 +114,6 @@ CARD_SOC = "AI · SOC-стан"
 ALL_CARD_TITLES: tuple[str, ...] = (CARD_RECOMMENDATION, CARD_LEARNING, CARD_SOC)
 
 DEFAULT_DASHBOARD_URL_PATH = "powmr-energy"
-REST_DEFAULT_DASHBOARD_ENDPOINT = "/api/lovelace/config"
 
 HELP_TEXT = (
     "Set HASS_URL=http://homeassistant.local:8123 and "
@@ -451,16 +450,40 @@ class LovelaceWSClient:
             ) from exc
 
         ws_url = self._build_ws_url()
+        # Standard TLS verification by default: the operator's
+        # ``certifi`` / system trust store decides which CA bundle
+        # is consulted. ``--insecure-transport`` downgrades to
+        # plain ``ws://`` and never affects the ``wss://`` case.
+        # The previous version set ``cert_reqs=ssl.CERT_NONE``
+        # unconditionally for ``wss://`` — that is a real
+        # man-in-the-middle vulnerability: any attacker on the
+        # network path between the operator's machine and HA
+        # could terminate the TLS connection with a forged
+        # certificate and inject their own Lovelace config. The
+        # 0cb14f2 audit review (Юра п.4) explicitly forbids
+        # that workaround.
         sslopt: dict[str, Any] = {}
-        if ws_url.startswith("wss://"):
-            # HA typically uses self-signed certs; the operator controls
-            # trust on their own machine. CERT_REQUIRED for prod setups
-            # is the operator's responsibility (--insecure-transport flag
-            # controls the plain ws:// case).
-            sslopt["cert_reqs"] = ssl.CERT_NONE
         self._ws = websocket.create_connection(
             ws_url, timeout=self.timeout, sslopt=sslopt
         )
+        # Correct HA WebSocket handshake:
+        #   1. Server sends ``{"type": "auth_required"}``.
+        #   2. We send ``{"type": "auth", "access_token": <token>}``.
+        #   3. Server replies ``{"type": "auth_ok"}`` (or
+        #      ``{"type": "auth_invalid", "message": …}``).
+        # The previous version skipped step 1 and sent the
+        # ``auth`` frame immediately on connect — that works
+        # with some websocket-server libraries but HA expects
+        # the explicit ``auth_required`` sentinel first; without
+        # it the auth response is ambiguous and the script
+        # could not tell a valid ``auth_ok`` apart from a
+        # late-arriving ``auth_required``.
+        first = self._recv_json()
+        if first.get("type") != "auth_required":
+            raise LovelaceWSError(
+                f"unexpected first WebSocket message (expected "
+                f"auth_required, got {first.get('type')!r})"
+            )
         self._send_raw({"type": "auth", "access_token": self.token})
         msg = self._recv_json()
         if msg.get("type") != "auth_ok":
@@ -571,25 +594,19 @@ class LovelaceWSClient:
 
 
 # --------------------------------------------------------------------------- #
-# REST fallback (only useful for the *default* dashboard).
+# The 0cb14f2 audit review (Юра п.4) explicitly forbids a REST
+# fallback to ``/api/lovelace/config``. That endpoint returns only
+# dashboard metadata (id, url_path, mode), NOT the config dict —
+# a successful read would silently mask a failed write because
+# the next ``save_config`` step would then operate on whatever
+# was in the local cache, and the operator's "patched N cards"
+# message would lie. The WebSocket path is the ONLY supported
+# writer; if the connection fails the operator is told to
+# investigate the WebSocket failure rather than fall through to
+# a half-supported REST read.
 # --------------------------------------------------------------------------- #
 
 
-def fetch_default_dashboard_via_rest(
-    base_url: str, token: str, timeout: int,
-) -> dict[str, Any]:
-    """Fetch the default dashboard's config via ``/api/lovelace/config``.
-    Storage dashboards CANNOT be served from this endpoint — it returns
-    metadata only. Use the WebSocket client for those."""
-    import urllib.request as urlreq
-
-    url = f"{base_url.rstrip('/')}{REST_DEFAULT_DASHBOARD_ENDPOINT}"
-    req = urlreq.Request(url, method="GET")
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Accept", "application/json")
-    with urlreq.urlopen(req, timeout=timeout) as resp:
-        body = resp.read().decode("utf-8")
-    return {"config": json.loads(body), "mode": "default"}
 
 
 # --------------------------------------------------------------------------- #
@@ -701,24 +718,15 @@ def main(argv: list[str] | None = None) -> int:
         try:
             ws.connect()
         except LovelaceWSError as exc:
-            print(
-                f"WS connect failed ({exc}); "
-                "falling back to REST /api/lovelace/config (only the "
-                "DEFAULT dashboard works that way).",
-                file=sys.stderr,
-            )
-            fetched = fetch_default_dashboard_via_rest(
-                args.ha_url, args.ha_token, args.timeout,
-            )
-            mode = fetched["mode"]
-            config = fetched["config"]
-            url_path: str | None = None
-            if mode == "storage":
-                raise SystemExit(
-                    "REST /api/lovelace/config cannot serve STORAGE-mode "
-                    "dashboards; the WebSocket connection failed and we "
-                    "have no other path."
-                )
+            raise SystemExit(
+                f"WebSocket connect failed: {exc}. The previous REST "
+                f"fallback to /api/lovelace/config was removed in the "
+                f"0cb14f2 audit review (Юра п.4): that endpoint returns "
+                f"only dashboard metadata, NOT the config dict, so it "
+                f"could mask a real write with a stale cache and the "
+                f"user-visible 'patches three cards' message would lie. "
+                f"Investigate the WebSocket failure before retrying."
+            ) from exc
         else:
             listing = ws.list_dashboards()
             known = [d.get("url_path") for d in listing]
