@@ -51,6 +51,7 @@ import json
 import sys
 import threading
 import time
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -95,7 +96,10 @@ def _make_initial_config() -> dict:
              ]}]},
             {"title": "HEMS", "path": "powmr-ai", "cards": [
                 {"type": "entities", "title": "AI · рекомендація та виконання",
-                 "entities": ["sensor.smart_solar_inverter_predictive_decision_state"]},
+                 "entities": [
+                     "sensor.garazh_smart_solar_inverter_predictive_decision_state",
+                     "select.garazh_smart_solar_inverter_predictive_target_soc",
+                 ]},
                 {"type": "markdown", "title": "AI · навчання і точність",
                  "content": "old"},
                 {"type": "markdown", "title": "Other · data",
@@ -160,18 +164,32 @@ class _FakeHA:
         # Registry entries keyed by entity_id. Missing an
         # entry simulates an integration whose entity was not
         # registered yet — the patcher must refuse save.
+        self.config_entry_id = "01M3XWJ8DRYDQC8A0NCPRVB53N"
+        self.registry_calls = 0
+        self.command_log: list[tuple[str, int]] = []
         self.registry = {
-            "sensor.smart_solar_inverter_predictive_decision_state": {
-                "entity_id": "sensor.smart_solar_inverter_predictive_decision_state",
-                "unique_id": "fakeentry_predictive_decision_state",
+            "sensor.garazh_smart_solar_inverter_predictive_decision_state": {
+                "entity_id": "sensor.garazh_smart_solar_inverter_predictive_decision_state",
+                "unique_id": f"{self.config_entry_id}_predictive_decision_state",
                 "translation_key": None,
-                "config_entry_id": "fakeentry",
+                "config_entry_id": self.config_entry_id,
+                "platform": "powmr_inverter",
             },
-            "select.smart_solar_inverter_predictive_target_soc": {
-                "entity_id": "select.smart_solar_inverter_predictive_target_soc",
-                "unique_id": "fakeentry_predictive_target_soc",
+            "select.garazh_smart_solar_inverter_predictive_target_soc": {
+                "entity_id": "select.garazh_smart_solar_inverter_predictive_target_soc",
+                "unique_id": f"{self.config_entry_id}_predictive_target_soc",
                 "translation_key": None,
-                "config_entry_id": "fakeentry",
+                "config_entry_id": self.config_entry_id,
+                "platform": "powmr_inverter",
+            },
+            # An unrelated integration uses the same suffix. It must not
+            # win by registry iteration order or contaminate the resolver.
+            "sensor.foreign_predictive_decision_state": {
+                "entity_id": "sensor.foreign_predictive_decision_state",
+                "unique_id": "foreign-entry_predictive_decision_state",
+                "translation_key": None,
+                "config_entry_id": "foreign-entry",
+                "platform": "other_integration",
             },
         }
         if missing_entity is not None:
@@ -207,6 +225,8 @@ class _FakeHA:
                 await ws.send(json.dumps({"type": "auth_ok"}))
                 continue
             mid = msg.get("id")
+            if mtype != "auth":
+                self.command_log.append((mtype, id(ws)))
             if msg.get("type") == "lovelace/dashboards/list":
                 await ws.send(json.dumps(
                     {"id": mid, "type": "result", "success": True,
@@ -234,6 +254,7 @@ class _FakeHA:
                 ))
                 continue
             if msg.get("type") == "config/entity_registry/list":
+                self.registry_calls += 1
                 await ws.send(json.dumps(
                     {"id": mid, "type": "result", "success": True,
                      "result": list(self.registry.values())},
@@ -310,11 +331,17 @@ class _PatcherE2EBase(unittest.TestCase):
         saved_argv = sys.argv
         sys.argv = ["patch_lovelace_ai_cards.py"]
         try:
-            with redirect_stdout(out), redirect_stderr(err):
-                try:
-                    rc = self.patcher.main(self.argv)
-                except SystemExit as exc:
-                    rc = exc.code if isinstance(exc.code, int) else 1
+            with tempfile.TemporaryDirectory() as temp_dir:
+                self.patcher.REPO = Path(temp_dir)
+                with redirect_stdout(out), redirect_stderr(err):
+                    try:
+                        rc = self.patcher.main(self.argv)
+                    except SystemExit as exc:
+                        if isinstance(exc.code, int):
+                            rc = exc.code
+                        else:
+                            err.write(str(exc.code) + "\n")
+                            rc = 1
         finally:
             sys.argv = saved_argv
         return rc, out.getvalue(), err.getvalue()
@@ -388,6 +415,24 @@ class FullPatcherCycleE2E(_PatcherE2EBase):
                 f"{sorted(targets)!r}"
             ),
         )
+        # Registry was requested on the live patch connection, and the
+        # entry-scoped unique_id resolver selected the garazh_* entities.
+        self.assertEqual(self.fake.registry_calls, 1)
+        relevant = [(kind, connection) for kind, connection in self.fake.command_log
+                    if kind in {"config/entity_registry/list", "lovelace/config/save"}]
+        self.assertEqual([kind for kind, _ in relevant],
+                         ["config/entity_registry/list", "lovelace/config/save"])
+        self.assertEqual(len({connection for _, connection in relevant}), 1,
+                         "registry and save must share the same open WebSocket")
+        saved_text = json.dumps(saved, ensure_ascii=False)
+        self.assertNotIn("sensor.smart_solar_inverter_predictive_", saved_text)
+        self.assertNotIn("select.smart_solar_inverter_predictive_", saved_text)
+        recommendation = targets["AI · рекомендація та виконання"]
+        self.assertIn(
+            "sensor.garazh_smart_solar_inverter_predictive_decision_state",
+            json.dumps(recommendation, ensure_ascii=False),
+        )
+        self.assertNotIn("sensor.foreign_predictive_decision_state", saved_text)
         # Readback (the saved config is the in-memory readback).
         self.assertIn(
             "Patched 2 card(s), inserted 1 card(s)", out,
@@ -422,76 +467,53 @@ class FullPatcherCycleE2E(_PatcherE2EBase):
             ),
         )
 
-    def test_unresolved_required_entity_blocks_save(self) -> None:
-        """If a required entity is missing from the registry, the
-        patcher must REFUSE to save — leaving the live dashboard
-        unchanged. We simulate the failure by removing the
-        ``predictive_target_soc`` entry from the registry before
-        starting a fresh fake server.
-        """
-        # Tear down the previous fake (set up in super().setUp())
-        # and start a new one with the registry entry missing.
+    def test_unresolved_required_entity_blocks_save_after_registry_request(self) -> None:
+        """Missing SOC mapping must fail specifically after registry/list."""
         self.fake.stop()
         self.fake = _FakeHA(
             config=_make_initial_config(),
-            missing_entity="select.smart_solar_inverter_predictive_target_soc",
+            missing_entity="select.garazh_smart_solar_inverter_predictive_target_soc",
         )
         self.fake.start()
-        # Refresh argv — the URL was bound to the OLD fake's port
-        # by super().setUp(); a new fake has a fresh random port.
         self.argv = [
-            arg for arg in self.argv
-            if arg not in (self.argv[1],)  # skip the old --ha-url
+            "--ha-url", self.fake.url,
+            "--ha-token", "test-token-1234",
+            "--dashboard", "powmr-energy",
+            "--timeout", "5",
+            "--insecure-transport",
         ]
-        # Rebuild argv cleanly: replace the second token (the
-        # old URL) with the new one.
-        new_argv: list[str] = []
-        replaced_url = False
-        i = 0
-        while i < len(self.argv):
-            if (
-                i + 1 < len(self.argv)
-                and self.argv[i] == "--ha-url"
-                and not replaced_url
-            ):
-                new_argv.append(self.argv[i])
-                new_argv.append(self.fake.url)
-                replaced_url = True
-                i += 2
-                continue
-            new_argv.append(self.argv[i])
-            i += 1
-        if not replaced_url:
-            new_argv.extend(["--ha-url", self.fake.url])
-        self.argv = new_argv
-        # First run must abort before save_config; the saved
-        # config must still be byte-equal to the initial.
-        pre_save_view = json.dumps(
-            self.fake.config["views"][1], sort_keys=True,
-        )
+        before = json.dumps(self.fake.config, sort_keys=True)
         rc, out, err = self._run_main()
-        self.assertNotEqual(
-            rc, 0,
-            msg=(
-                f"main() must abort when a required entity is "
-                f"missing; got rc={rc}\nstdout:\n{out}\nstderr:\n{err}"
-            ),
+        self.assertNotEqual(rc, 0, msg=f"expected entity-resolution failure:\n{out}\n{err}")
+        self.assertEqual(self.fake.registry_calls, 1, "registry request did not happen")
+        self.assertIn("did not resolve against the entity registry", err)
+        self.assertIn("select.smart_solar_inverter_predictive_target_soc", err)
+        self.assertEqual(self.fake.save_calls, [], "save happened with an unresolved required entity")
+        self.assertEqual(json.dumps(self.fake.config, sort_keys=True), before)
+
+    def test_inserts_missing_soc_when_other_two_cards_are_current(self) -> None:
+        registry = list(self.fake.registry.values())
+        expected = self.patcher.load_expected_cards()
+        mapping = self.patcher.build_entity_registry(
+            registry, config_entry_id=self.fake.config_entry_id,
         )
-        self.assertEqual(
-            len(self.fake.save_calls), 0,
-            msg=(
-                "save_config was called even though a required "
-                "entity was missing from the registry"
-            ),
-        )
-        # The live config is unchanged.
-        post_save_view = json.dumps(
-            self.fake.config["views"][1], sort_keys=True,
-        )
-        self.assertEqual(
-            pre_save_view, post_save_view,
-            msg="dashboard view was mutated despite the abort",
-        )
+        expected, _ = self.patcher.substitute_entity_ids(expected, mapping)
+        self.fake.config = {
+            "title": "Smart Solar Енергопанель",
+            "views": [{"title": "HEMS", "path": "powmr-ai",
+                       "cards": [
+                           expected["AI · рекомендація та виконання"],
+                           expected["AI · навчання і точність"],
+                       ]}],
+        }
+        rc, out, err = self._run_main()
+        self.assertEqual(rc, 0, msg=f"insertion-only patch failed:\n{out}\n{err}")
+        self.assertEqual(self.fake.registry_calls, 1)
+        self.assertEqual(len(self.fake.save_calls), 1,
+                         "missing SOC card must cause a save even when the other two are current")
+        self.assertIn("Patched 0 card(s), inserted 1 card(s)", out)
+        titles = [card.get("title") for card in self.fake.save_calls[0]["views"][0]["cards"]]
+        self.assertEqual(titles.count("AI · SOC-стан"), 1)
 
 
 if __name__ == "__main__":

@@ -415,7 +415,14 @@ class TestBackupAndDryRun(unittest.TestCase):
 
         def fake_list_entity_registry():
             captured["_entity_registry_called"] = True
-            return []
+            return [
+                {"entity_id": "sensor.garazh_smart_solar_inverter_predictive_decision_state",
+                 "unique_id": "testentry_predictive_decision_state",
+                 "config_entry_id": "testentry", "platform": "powmr_inverter"},
+                {"entity_id": "select.garazh_smart_solar_inverter_predictive_target_soc",
+                 "unique_id": "testentry_predictive_target_soc",
+                 "config_entry_id": "testentry", "platform": "powmr_inverter"},
+            ]
 
         ws_inst = MagicMock()
         ws_inst.connect = MagicMock()

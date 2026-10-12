@@ -23,6 +23,8 @@ This test pins the new contract:
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import sys
 import unittest
@@ -418,6 +420,81 @@ class RealForecastPairsBackupAtomicityTests(unittest.TestCase):
                     "modify the original on-disk journal"
                 ),
             )
+
+
+class SameCoordinatorBackupRecoveryTests(unittest.TestCase):
+    """A transient backup error must recover on the same coordinator."""
+
+    def test_retry_backup_then_allow_save_on_same_coordinator(self):
+        import tempfile
+        from hems.pv_learning import PvLearningState
+        from hems.pv_coordinator import PvLearningCoordinatorMixin
+
+        class _Hass:
+            async def async_add_executor_job(self, func, *args):
+                return func(*args)
+
+        class _Coordinator(PvLearningCoordinatorMixin):
+            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            journal = directory / "pv_fact_pairs_test-entry.json"
+            original = _make_legacy_journal(
+                directory, latitude=50.45, longitude=30.52,
+            )
+            state = PvLearningState("Europe/Kyiv", 49.83, 24.0)
+            coordinator = _Coordinator()
+            coordinator.hass = _Hass()
+            coordinator._pv_learning = state
+            coordinator._pv_state_path = journal
+            coordinator._pv_legacy_path = directory / "absent-legacy.json"
+            coordinator._pv_state_loaded = False
+            coordinator._pv_state_dirty = True
+            coordinator._journal_backup_required = False
+            coordinator.forecast_learned_ratio = .12
+
+            from hems import pv_learning as pv_module
+            original_write = pv_module.Path.write_text
+            attempts = 0
+
+            def fail_first_backup(path_obj, *args, **kwargs):
+                nonlocal attempts
+                if ".coords_backup_" in str(path_obj) and attempts == 0:
+                    attempts += 1
+                    raise OSError("injected transient disk failure")
+                return original_write(path_obj, *args, **kwargs)
+
+            pv_module.Path.write_text = fail_first_backup
+            try:
+                asyncio.run(coordinator._ensure_pv_state_loaded())
+            finally:
+                pv_module.Path.write_text = original_write
+
+            self.assertEqual(attempts, 1, "first backup fault was not injected")
+            self.assertFalse(coordinator._pv_state_loaded,
+                             "failed load must remain retryable on the same instance")
+            self.assertTrue(coordinator._journal_backup_required)
+            self.assertEqual(journal.read_bytes(), original,
+                             "failed backup must preserve the old journal")
+
+            asyncio.run(coordinator._ensure_pv_state_loaded())
+            self.assertTrue(coordinator._pv_state_loaded)
+            self.assertFalse(coordinator._journal_backup_required)
+            backups = list(directory.glob("pv_fact_pairs_test-entry.json.coords_backup_*"))
+            self.assertEqual(len(backups), 1, "retry must create the identity-mismatch backup")
+            backup_payload = json.loads(backups[0].read_text(encoding="utf-8"))
+            self.assertEqual(backup_payload["latitude"], 50.45)
+            self.assertEqual(backup_payload["snapshots"]["2026-09-28"]["forecast_kwh"], 4.32)
+            self.assertEqual(journal.read_bytes(), original,
+                             "successful backup must leave source journal untouched until save")
+
+            asyncio.run(coordinator._save_pv_state())
+            saved = json.loads(journal.read_text(encoding="utf-8"))
+            self.assertEqual(saved["latitude"], 49.83)
+            self.assertEqual(saved["longitude"], 24.0)
+            self.assertFalse(coordinator._pv_state_dirty)
+            self.assertTrue(backups[0].exists(), "backup must survive the new-state save")
 
 
 if __name__ == "__main__":

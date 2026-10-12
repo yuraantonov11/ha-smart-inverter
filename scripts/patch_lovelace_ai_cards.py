@@ -316,38 +316,118 @@ def load_expected_cards() -> dict[str, dict[str, Any]]:
 # --------------------------------------------------------------------------- #
 
 
+_INTEGRATION_DOMAIN = "powmr_inverter"
+
+
+def _predictive_suffix(
+    entry: dict[str, Any], config_entry_id: str | None = None,
+) -> str | None:
+    config_entry_id = entry.get("config_entry_id") or config_entry_id
+    unique_id = entry.get("unique_id") or ""
+    if not config_entry_id:
+        return None
+    marker = f"{config_entry_id}_predictive_"
+    if not unique_id.startswith(marker):
+        return None
+    return unique_id[len(marker):]
+
+
+def _iter_target_entity_ids(config: dict[str, Any]) -> Iterable[str]:
+    for _, card in _iter_cards_with_path(config):
+        if card.get("title") not in ALL_CARD_TITLES:
+            continue
+        yield from _iter_entity_values(card)
+
+
+def _iter_entity_values(node: Any) -> Iterable[str]:
+    if isinstance(node, list):
+        for item in node:
+            yield from _iter_entity_values(item)
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            if key == "entity" and isinstance(value, str):
+                yield value
+            else:
+                yield from _iter_entity_values(value)
+
+
+def _select_predictive_config_entry(
+    entries: list[dict[str, Any]], config: dict[str, Any],
+    required_templates: set[str],
+) -> str:
+    """Choose the one PowMr entry owning the AI entities, failing closed on ambiguity."""
+    required_suffixes = {
+        template[len(prefix):]
+        for template in required_templates
+        for prefix in _TEMPLATE_ENTITY_PREFIXES
+        if template.startswith(prefix)
+    }
+    candidates: dict[str, set[str]] = {}
+    entity_owner: dict[str, str] = {}
+    for entry in entries:
+        if entry.get("platform") != _INTEGRATION_DOMAIN:
+            continue
+        entry_id = entry.get("config_entry_id")
+        suffix = _predictive_suffix(entry)
+        if not entry_id or suffix is None:
+            continue
+        if entry.get("entity_id"):
+            entity_owner[entry["entity_id"]] = entry_id
+        if suffix in required_suffixes:
+            candidates.setdefault(entry_id, set()).add(suffix)
+
+    referenced_owners = {
+        entity_owner[entity]
+        for entity in _iter_target_entity_ids(config)
+        if entity in entity_owner
+    }
+    if referenced_owners:
+        candidates = {entry_id: suffixes for entry_id, suffixes in candidates.items()
+                     if entry_id in referenced_owners}
+    candidate_ids = sorted(candidates)
+    if len(candidate_ids) == 1:
+        return candidate_ids[0]
+    if not candidate_ids:
+        missing = ", ".join(sorted(required_suffixes)) or "required AI entities"
+        raise SystemExit(
+            "entity_registry/list returned no PowMr config entry owning "
+            f"the required AI entities ({missing}); refusing to save"
+        )
+    raise SystemExit(
+        "entity registry is ambiguous: multiple PowMr config entries could "
+        f"own these AI cards ({', '.join(candidate_ids)}); refusing to save"
+    )
+
+
 def build_entity_registry(
     entries: list[dict[str, Any]],
     *,
-    config_entry_id: str = "",
+    config_entry_id: str,
 ) -> dict[str, str]:
-    """Build a flat ``{lookup_key: entity_id}`` mapping.
-
-    Predictive_* entities (which are the ones our dashboard cards use
-    without ``translation_key``) are indexed by the suffix of their
-    ``unique_id`` after stripping the ``<config_entry_id>_predictive_``
-    prefix. Other entities contribute their ``translation_key`` as the
-    index. Collisions prefer ``translation_key`` because it is the
-    user-facing string HA renders in the UI."""
+    """Build a predictive unique-ID suffix map for exactly one entry."""
     by_translation_key: dict[str, str] = {}
     by_predictive_suffix: dict[str, str] = {}
     for entry in entries:
+        entry_config_id = entry.get("config_entry_id")
+        if entry_config_id and entry_config_id != config_entry_id:
+            continue
+        if entry.get("platform") not in (None, _INTEGRATION_DOMAIN):
+            continue
         entity_id = entry.get("entity_id")
         if not entity_id:
             continue
-        tk = entry.get("translation_key")
-        if tk:
-            by_translation_key[tk] = entity_id
-        unique_id = entry.get("unique_id") or ""
-        if unique_id.startswith(f"{config_entry_id}_predictive_"):
-            suffix = unique_id[len(f"{config_entry_id}_predictive_"):]
+        translation_key = entry.get("translation_key")
+        if translation_key:
+            by_translation_key[translation_key] = entity_id
+        suffix = _predictive_suffix(entry, config_entry_id)
+        if suffix:
             by_predictive_suffix[suffix] = entity_id
-        elif unique_id.startswith("predictive_"):
-            suffix = unique_id[len("predictive_"):]
-            by_predictive_suffix[suffix] = entity_id
-    merged: dict[str, str] = {}
-    merged.update(by_predictive_suffix)
-    merged.update(by_translation_key)  # translation_key wins on collision
+        else:
+            unique_id = entry.get("unique_id") or ""
+            if unique_id.startswith("predictive_"):
+                by_predictive_suffix[unique_id[len("predictive_"):]] = entity_id
+    merged = dict(by_predictive_suffix)
+    merged.update(by_translation_key)
     return merged
 
 
@@ -863,6 +943,24 @@ def _make_minimal_registry(
     return registry
 
 
+def _target_card_mismatches(
+    config: dict[str, Any], expected: dict[str, dict[str, Any]],
+) -> list[str]:
+    actual: dict[str, list[dict[str, Any]]] = {}
+    for _, card in _iter_cards_with_path(config):
+        title = card.get("title")
+        if title in expected:
+            actual.setdefault(title, []).append(card)
+    mismatches = []
+    for title, wanted in expected.items():
+        cards = actual.get(title, [])
+        if len(cards) != 1:
+            mismatches.append(f"{title!r} (found {len(cards)})")
+        elif _canonicalise(cards[0]) != _canonicalise(wanted):
+            mismatches.append(title)
+    return mismatches
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -894,6 +992,67 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
+def _collect_required_templates(
+    expected: dict[str, dict[str, Any]],
+) -> set[str]:
+    """Return the set of entity_id template strings that MUST
+    resolve against the registry before the patcher saves
+    anything. Anything else (chinese card entity_ids, foreign
+    card sensors, ...) is left untouched.
+
+    Templates that are referenced by the three target cards
+    (Recommendation / Learning / SOC-стан) MUST be resolved —
+    a missing entry would silently leave the live dashboard
+    with ``sensor.smart_solar_inverter_…`` references that do
+    not exist in the operator's HA, breaking the AI view at
+    runtime.
+    """
+    templates: set[str] = set()
+    for body in expected.values():
+        for tmpl in _iter_entity_id_templates(body):
+            templates.add(tmpl)
+    return templates
+
+
+def _iter_entity_id_templates(node: Any) -> Iterable[str]:
+    """Yield every ``smart_solar_inverter_…`` template entity_id
+    referenced anywhere in the node tree (entity keys and
+    markdown content). These are the tokens the registry MUST
+    resolve before the patcher can save.
+    """
+    if isinstance(node, list):
+        for item in node:
+            yield from _iter_entity_id_templates(item)
+    elif isinstance(node, dict):
+        for k, v in node.items():
+            if k == "entity" and isinstance(v, str):
+                if any(v.startswith(prefix) for prefix in _TEMPLATE_ENTITY_PREFIXES):
+                    yield v
+            yield from _iter_entity_id_templates(v)
+    elif isinstance(node, str):
+        for prefix in _TEMPLATE_ENTITY_PREFIXES:
+            idx = 0
+            while True:
+                idx = node.find(prefix, idx)
+                if idx < 0:
+                    break
+                # A real entity such as sensor.garazh_smart_solar_... contains
+                # the template prefix as a substring. Only recognize a token
+                # at a non-identifier boundary, never inside an entity ID.
+                if idx > 0 and (node[idx - 1].isalnum() or node[idx - 1] == "_"):
+                    idx += len(prefix)
+                    continue
+                # Find the end of the suffix: non-alphanumeric
+                # / non-underscore after the prefix.
+                end = idx + len(prefix)
+                while end < len(node) and (
+                    node[end].isalnum() or node[end] == "_"
+                ):
+                    end += 1
+                yield node[idx:end]
+                idx = end
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv if argv is not None else sys.argv[1:])
 
@@ -902,12 +1061,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     expected = load_expected_cards()
+    required_templates = _collect_required_templates(expected)
 
-    ws: LovelaceWSClient | None = None
+    # Coord audit (Юра п.4): the WebSocket is opened ONCE
+    # and held open through registry, substitution, save,
+    # and readback. Closing before any of these steps leaves
+    # ``_ws = None`` and the next verb raises
+    # ``LovelaceWSError("WebSocket not connected")`` — which
+    # the previous version silently swallowed and saved
+    # template-style entity_ids (``sensor.smart_solar_inverter_…``)
+    # to the live dashboard. That is the bug 6bbbd25
+    # reproduced.
+    ws = LovelaceWSClient(
+        args.ha_url, args.ha_token, args.timeout, args.insecure_transport,
+    )
     try:
-        ws = LovelaceWSClient(
-            args.ha_url, args.ha_token, args.timeout, args.insecure_transport,
-        )
         try:
             ws.connect()
         except LovelaceWSError as exc:
@@ -920,130 +1088,183 @@ def main(argv: list[str] | None = None) -> int:
                 f"user-visible 'patches three cards' message would lie. "
                 f"Investigate the WebSocket failure before retrying."
             ) from exc
-        else:
-            listing = ws.list_dashboards()
-            known = [d.get("url_path") for d in listing]
-            if args.dashboard not in known:
-                raise SystemExit(
-                    f"No dashboard with url_path={args.dashboard!r}; "
-                    f"known: {known!r}"
-                )
-            # First fetch — used for the dry-run / backup.
-            first = ws.get_config(args.dashboard)
-            config = first["config"]
-            url_path = args.dashboard
-            # Race-check: second fetch must match the first.
-            second = ws.get_config(args.dashboard)
-            if _canonicalise(second["config"]) != _canonicalise(first["config"]):
-                raise SystemExit(
-                    "ABORT: dashboard config changed between two "
-                    "consecutive fetches. Another operator (or HA itself) "
-                    "is mutating it. Re-run after the dashboard is idle."
-                )
-    finally:
-        if ws is not None:
-            ws.close()
 
-    pre_counts = _find_duplicate_card_titles(config, ALL_CARD_TITLES)
-    for title, count in pre_counts.items():
-        if count > 1:
+        # ---- discover the storage dashboard --------------------
+        listing = ws.list_dashboards()
+        known = [d.get("url_path") for d in listing]
+        if args.dashboard not in known:
             raise SystemExit(
-                f"Duplicate card title {title!r} (count={count}). "
-                "The script refuses to patch a dashboard with multiple "
-                "copies of the target card."
+                f"No dashboard with url_path={args.dashboard!r}; "
+                f"known: {known!r}"
+            )
+        # First fetch — used for the dry-run / backup.
+        first = ws.get_config(args.dashboard)
+        config = first["config"]
+        url_path = args.dashboard
+        # Race-check: second fetch must match the first.
+        second = ws.get_config(args.dashboard)
+        if _canonicalise(second["config"]) != _canonicalise(first["config"]):
+            raise SystemExit(
+                "ABORT: dashboard config changed between two "
+                "consecutive fetches. Another operator (or HA itself) "
+                "is mutating it. Re-run after the dashboard is idle."
             )
 
-    if ws is not None:
+        pre_counts = _find_duplicate_card_titles(config, ALL_CARD_TITLES)
+        for title, count in pre_counts.items():
+            if count > 1:
+                raise SystemExit(
+                    f"Duplicate card title {title!r} (count={count}). "
+                    "The script refuses to patch a dashboard with multiple "
+                    "copies of the target card."
+                )
+
+        # ---- entity registry (must succeed before substitution) ----
+        # The previous version caught ``LovelaceWSError`` here and
+        # used an empty registry, which silently left template
+        # entity_ids in the saved config. The 6bbbd25 review
+        # (Юра п.4) requires a hard stop: if the registry query
+        # fails OR if any required template cannot be resolved,
+        # we MUST NOT save. The WebSocket stays open through
+        # this check, so the readback we are about to do
+        # against ``ws`` sees the same connection state.
         try:
             registry_entries = ws.list_entity_registry()
         except LovelaceWSError as exc:
-            print(
-                f"WARN: entity_registry/list failed ({exc}); "
-                "falling back to template names.",
-                file=sys.stderr,
-            )
-            registry = {}
-        else:
-            registry = build_entity_registry(registry_entries)
-    else:
-        registry = {}
-    if registry:
-        config, _entity_report = substitute_entity_ids(config, registry)
-        expected, _ = substitute_entity_ids(expected, registry)
-
-    config_snapshot_before = json.loads(json.dumps(config))
-    new_config, stats = patch_cards(config, expected)
-
-    post_counts = _find_duplicate_card_titles(new_config, ALL_CARD_TITLES)
-    for title, count in post_counts.items():
-        if count > 1:
             raise SystemExit(
-                f"Duplicate target card {title!r} AFTER patch (count={count})."
+                f"entity_registry/list failed: {exc}. The patcher "
+                f"refuses to save without a registry because the live "
+                f"dashboard would keep template-style entity_ids "
+                f"that the operator's HA cannot resolve. Re-run "
+                f"after the registry query is healthy."
+            ) from exc
+        config_entry_id = _select_predictive_config_entry(
+            registry_entries, config, required_templates,
+        )
+        registry = build_entity_registry(
+            registry_entries, config_entry_id=config_entry_id,
+        )
+
+        # ---- substitution: every required template MUST resolve ----
+        unresolved = sorted(
+            tmpl for tmpl in required_templates
+            if _resolve_entity(tmpl, registry) == tmpl
+        )
+        if unresolved:
+            # Coord audit (Юра п.4): a single unresolved entity
+            # is a HARD STOP. We do NOT save anything; we do
+            # NOT close the connection until the error message
+            # has been printed (the caller will close via the
+            # ``finally`` below).
+            raise SystemExit(
+                "refusing to save — these required entity_id templates "
+                "did not resolve against the entity registry:\n  "
+                + "\n  ".join(unresolved)
+                + "\nThe patcher does NOT save a dashboard that contains "
+                "template entity_ids the operator's HA cannot resolve "
+                "(they would render as 'unavailable' on every AI view)."
+            )
+        # Apply the substitution to BOTH the live config AND the
+        # expected card bodies — the post-substitution
+        # ``expected`` is what the readback will compare against.
+        # Resolve only canonical target cards. Unrelated dashboard content
+        # stays byte-for-byte as read from HA.
+        expected, _entity_report = substitute_entity_ids(expected, registry)
+
+        # ---- patch, then sanity-check, then backup, then save ----
+        config_snapshot_before = json.loads(json.dumps(config))
+        new_config, stats = patch_cards(config, expected)
+
+        post_counts = _find_duplicate_card_titles(new_config, ALL_CARD_TITLES)
+        for title, count in post_counts.items():
+            if count > 1:
+                raise SystemExit(
+                    f"Duplicate target card {title!r} AFTER patch "
+                    f"(count={count})."
+                )
+
+        # Coord audit (Юра п.4): the "replaced + inserted +
+        # already_up_to_date" branches each separately short-
+        # circuit the save path. The pre-patch snapshot is
+        # always written as the operator's recovery artifact,
+        # even when nothing changed, so they have a byte-exact
+        # fallback to ``patch_lovelace_ai_cards.py --backup-only``.
+        if not (stats["replaced"] or stats["already_up_to_date"]
+                or stats["inserted"]):
+            print("No target cards were found in the dashboard JSON.")
+            return 1
+
+        # ---- pre-write foreign-content check (before any disk write)
+        # After substitution, the new_config must still contain
+        # NO template entity_ids (defence-in-depth: catches a
+        # future ``_resolve_entity`` regression). The
+        # ``_substitute_in_string`` walker also handles nested
+        # ``content`` strings, so this check covers everything.
+        target_cards = {
+            title: card for _, card in _iter_cards_with_path(new_config)
+            if (title := card.get("title")) in ALL_CARD_TITLES
+        }
+        leftover = sorted(_iter_entity_id_templates(target_cards))
+        if leftover:
+            raise SystemExit(
+                "refusing to save — template entity_ids survived "
+                f"substitution: {leftover!r}. The patcher is broken."
             )
 
-    backup_root = REPO / "scripts" / ".lovelace_backups"
-    backup_root.mkdir(parents=True, exist_ok=True)
-    iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = backup_root / f"lovelace.{args.dashboard}.{iso}.bak"
+        # ---- backup
+        backup_root = REPO / "scripts" / ".lovelace_backups"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        iso = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = backup_root / f"lovelace.{args.dashboard}.{iso}.bak"
+        if not args.no_backup:
+            try:
+                backup_path.write_text(
+                    json.dumps(config_snapshot_before, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                print(f"Backup write failed: {exc}", file=sys.stderr)
+                return 2
+            print(f"Backup written: {backup_path}")
 
-    if not (stats["replaced"] or stats["already_up_to_date"]
-            or stats["inserted"]):
-        print("No target cards were found in the dashboard JSON.")
-        return 1
-
-    if not args.no_backup:
-        try:
-            backup_path.write_text(
-                json.dumps(config_snapshot_before, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+        if args.backup_only:
+            print(f"Backup-only mode: skipped PUT. {stats}")
+            return 0
+        if not (stats["replaced"] or stats["inserted"]):
+            print("Already up to date. Nothing to PUT.")
+            return 0
+        if args.dry_run:
+            print(
+                f"Dry run — would PUT {len(stats['replaced'])} replaced, "
+                f"{len(stats['inserted'])} inserted: "
+                f"replaced={stats['replaced']!r} "
+                f"inserted={stats['inserted']!r}"
             )
-        except OSError as exc:
-            print(f"Backup write failed: {exc}", file=sys.stderr)
-            return 2
-        print(f"Backup written: {backup_path}")
+            return 0
 
-    if args.backup_only:
-        print(f"Backup-only mode: skipped PUT. {stats}")
-        return 0
+        if url_path is None:
+            raise SystemExit(
+                "Cannot PUT a non-storage-mode default dashboard from this "
+                "CLI; the WebSocket fallback is the only supported writer."
+            )
 
-    if not stats["replaced"]:
-        print("Already up to date. Nothing to PUT.")
-        return 0
+        # Recheck freshness immediately before the write. The WS stays open
+        # through registry resolution, backup, save, and readback.
+        latest = ws.get_config(url_path)["config"]
+        if _canonicalise(latest) != _canonicalise(config_snapshot_before):
+            raise SystemExit(
+                "ABORT: dashboard config changed while preparing the patch; "
+                "nothing was saved. Re-run against the current dashboard."
+            )
 
-    if args.dry_run:
-        print(
-            f"Dry run — would PUT {len(stats['replaced'])} card(s): "
-            f"{stats['replaced']!r}"
-        )
-        return 0
-
-    if url_path is None:
-        raise SystemExit(
-            "Cannot PUT a non-storage-mode default dashboard from this "
-            "CLI; the WebSocket fallback is the only supported writer."
-        )
-    ws2 = LovelaceWSClient(
-        args.ha_url, args.ha_token, args.timeout, args.insecure_transport,
-    )
-    try:
-        ws2.connect()
-        ws2.save_config(url_path, new_config)
-        readback = ws2.get_config(url_path)["config"]
+        # ---- save + readback on the SAME ws (no close/reopen).
+        ws.save_config(url_path, new_config)
+        readback = ws.get_config(url_path)["config"]
         # Coord audit (Юра п.4): two-part readback check.
-        # 1. Non-target cards must be byte-identical to the
-        #    pre-patch config (structural-path diff).
-        # 2. Target cards must carry the exact expected
-        #    content, not just the same title.
         foreign_paths = _check_untargeted_cards(
             config_snapshot_before, readback,
         )
-        content_mismatches = _readback_target_card_match(
-            config_snapshot_before, readback,
-        )
-        rb_stats = {
-            "foreign_paths": foreign_paths,
-            "target_content_mismatches": content_mismatches,
-        }
+        content_mismatches = _target_card_mismatches(readback, expected)
         if foreign_paths:
             raise SystemExit(
                 f"READBACK mismatch — non-target cards mutated at: "
@@ -1055,7 +1276,7 @@ def main(argv: list[str] | None = None) -> int:
                 f"differs from expected at: {content_mismatches!r}"
             )
     finally:
-        ws2.close()
+        ws.close()
 
     print(
         f"Patched {len(stats['replaced'])} card(s), "

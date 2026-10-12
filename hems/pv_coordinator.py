@@ -167,6 +167,10 @@ class PvLearningCoordinatorMixin:
             # otherwise normal save path; a passive WARNING
             # would let operators ignore the audit loss.
             self._journal_backup_required = True
+            # A failed first load must be retried on this same coordinator;
+            # otherwise _pv_state_loaded would latch True and recovery of
+            # disk space/permissions could never complete the required backup.
+            self._pv_state_loaded = False
             _LOGGER.error(
                 "PV learning backup on identity mismatch FAILED (%s); "
                 "save() is BLOCKED until the next load can write the "
