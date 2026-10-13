@@ -303,13 +303,27 @@ def _build_unblocked_plan(needs_grid_kwh: float = 2.0) -> planner.PlannerPlan:
 class FakeHems:
     """Bare-minimum stand-in for the HEMS engine.
 
-    The runtime reads ``_manual_override_until`` from
-    ``coordinator._hems``, and the calibrator (optional). We
-    default to no manual pause and no calibrator.
+    The runtime reads ``_manual_override_until`` /
+    ``_blocked_until`` (safety guards) / ``_consumption_history``
+    / ``_predictive_controller`` (calibrator) from
+    ``coordinator._hems``. Each surface is independent so a
+    test can set only the gates it cares about.
     """
 
-    def __init__(self, *, manual_until: datetime | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        manual_until: datetime | None = None,
+        blocked_until: datetime | None = None,
+        last_cmd_output_at: datetime | None = None,
+        last_cmd_charger_at: datetime | None = None,
+        hems_auto_mode: bool = True,
+    ) -> None:
         self._manual_override_until = manual_until
+        self._blocked_until = blocked_until
+        self._last_cmd_output_at = last_cmd_output_at
+        self._last_cmd_charger_at = last_cmd_charger_at
+        self.hems_auto_mode = hems_auto_mode
         self._consumption_history_with_dates: dict[str, float] = {}
         self._predictive_controller = SimpleNamespace(
             calibrator=SimpleNamespace(
@@ -320,18 +334,36 @@ class FakeHems:
         )
 
 
+class FakeApi:
+    """Tiny ``InverterApi`` stand-in carrying the canonical
+    ``last_realtime_success_received_at`` timestamp that the
+    fresh-data gate at ``_read_freshness_seconds`` reads.
+    """
+
+    def __init__(
+        self, *, last_success_at: datetime | None = None,
+    ) -> None:
+        self.last_realtime_success_received_at = last_success_at
+        # Other surfaces the runtime might read; all ``None`` by
+        # default so freshness can fail closed.
+        self.last_realtime_response_received_at = None
+        self.last_realtime_source = "unavailable"
+
+
 class FakeCoordinator:
     """Stand-in for ``InverterCoordinator``.
 
     The runtime reads the following attributes:
       * ``data`` -- the live telemetry dict
       * ``_battery_capacity_kwh``, ``_battery_capacity_ah``,
-        ``_nominal_voltage_v``, ``_battery_capacity_ok_for_planning``
+        ``_nominal_voltage_v``
       * ``_hems`` -- a ``FakeHems`` (or similar)
       * ``forecast_tomorrow_kwh``
-      * ``last_update_ts``
+      * ``last_update_success`` (bool), ``last_update_time`` (dt)
+      * ``api.last_realtime_success_received_at`` (dt)
       * ``_execute_hems_command`` -- the protected dispatcher
       * ``options`` or ``_entry.options`` -- operator config
+      * ``hems_auto_mode`` (bool)
     """
 
     def __init__(
@@ -343,25 +375,42 @@ class FakeCoordinator:
         capacity_kwh: float | None = 11.0,
         capacity_ah: float | None = 215.0,
         voltage_v: float | None = 51.2,
-        capacity_ok: bool = True,
         forecast_tomorrow_kwh: float | None = 12.0,
-        last_update_ts: datetime | None = None,
+        last_update_success: bool = True,
+        last_update_time: datetime | None = None,
+        api: FakeApi | None = None,
         execute_hems_command=None,
+        hems_auto_mode: bool = True,
     ) -> None:
         self.data = data
         self._battery_capacity_kwh = capacity_kwh
         self._battery_capacity_ah = capacity_ah
         self._nominal_voltage_v = voltage_v
-        self._battery_capacity_ok_for_planning = capacity_ok
-        self._hems = hems if hems is not None else FakeHems()
+        # NOTE: there is intentionally NO
+        # ``_battery_capacity_ok_for_planning`` attribute on the
+        # production coordinator -- the runtime must compute it
+        # from the range check. See ``DEFECT 4``.
+        if hems is None:
+            hems = FakeHems(hems_auto_mode=hems_auto_mode)
+        self._hems = hems
         self.forecast_tomorrow_kwh = forecast_tomorrow_kwh
-        self.last_update_ts = (
-            last_update_ts if last_update_ts is not None
-            else datetime.now(timezone.utc) - timedelta(seconds=10)
-        )
+        # Canonical HA attributes. ``last_update_success`` is a
+        # BOOL; ``last_update_time`` is a ``datetime``.
+        self.last_update_success = last_update_success
+        if last_update_time is None:
+            last_update_time = datetime.now(timezone.utc) - timedelta(seconds=10)
+        self.last_update_time = last_update_time
+        # ``api.last_realtime_success_received_at`` is the production
+        # source of truth for the freshness gate. Default to the same
+        # value as ``last_update_time`` so a healthy coordinator
+        # yields ~10s freshness.
+        if api is None:
+            api = FakeApi(last_success_at=last_update_time)
+        self.api = api
         self.options = options or {}
         self._entry = SimpleNamespace(options=options or {})
         self._execute_hems_command = execute_hems_command
+        self.hems_auto_mode = hems_auto_mode
 
     def set_execute_hems_command(self, fn) -> None:
         self._execute_hems_command = fn
@@ -379,6 +428,12 @@ class FakeStore:
 
     def __init__(self, events: list | None = None) -> None:
         self._events = list(events or [])
+
+    def get(self, event_id: str):
+        for ev in self._events:
+            if getattr(ev, "id", None) == event_id:
+                return ev
+        return None
 
     def iter_active(self):
         for ev in self._events:
@@ -502,8 +557,9 @@ class PlanForEventTests(unittest.TestCase):
         # Planner is pure; the result is stable given the same
         # snapshot + event. Calling plan_for_event twice yields
         # the same plan dict (modulo any timestamp inside the
-        # snapshot -- which we fix via a frozen last_update_ts).
-        coord.last_update_ts = datetime.now(timezone.utc) - timedelta(seconds=10)
+        # snapshot -- which we fix via a frozen last_update_time).
+        coord.last_update_time = datetime.now(timezone.utc) - timedelta(seconds=10)
+        coord.api.last_realtime_success_received_at = coord.last_update_time
         plan2 = runtime.plan_for_event(coord, hass=None, event=ev)
         # event_id + blocked + plan dict are stable.
         self.assertEqual(plan.event_id, plan2.event_id)
@@ -568,11 +624,14 @@ class ExecutePlanTests(unittest.TestCase):
         # evidence is recorded (the dispatcher decides what to do
         # with it; the runtime just passes the flag through).
         self.assertTrue(evidence_recorded)
-        # The decision carries the prep reason + skip/buzzer flags.
+        # The decision carries the prep reason + skip flag. The
+        # outage runtime MUST NOT touch the buzzer (the protected
+        # dispatcher leaves the acoustic state untouched when
+        # ``buzzer_off is None`` -- coordinator.py:1688-1695).
         self.assertIn("planned_outage", decision.reason)
         self.assertIn(EVENT_ID, decision.reason)
         self.assertFalse(decision.skip)
-        self.assertFalse(decision.buzzer_off)
+        self.assertIsNone(decision.buzzer_off)
 
     def test_execute_plan_refuses_when_manual_pause_active(self):
         """Future manual pause -> execute_plan refuses."""
@@ -593,12 +652,20 @@ class ExecutePlanTests(unittest.TestCase):
         self.assertEqual(calls, [], msg="dispatcher must not be called")
 
     def test_execute_plan_refuses_when_telemetry_stale(self):
-        """Stale telemetry -> execute_plan refuses."""
+        """Stale telemetry -> execute_plan refuses.
+
+        The runtime reads ``coordinator.api.last_realtime_success_received_at``
+        (api.py:201) for the freshness timestamp. We push it
+        10 minutes into the past so the freshness gate exceeds
+        ``TELEMETRY_STALENESS_LIMIT_SECONDS`` (5 min).
+        """
         calls, fn = self._capture_dispatcher()
+        stale_ts = datetime.now(timezone.utc) - timedelta(seconds=600)
         coord = FakeCoordinator(
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
-            last_update_ts=datetime.now(timezone.utc) - timedelta(seconds=600),
+            last_update_time=stale_ts,
+            api=FakeApi(last_success_at=stale_ts),
             execute_hems_command=fn,
         )
         plan = _build_unblocked_plan(needs_grid_kwh=3.5)
@@ -608,7 +675,12 @@ class ExecutePlanTests(unittest.TestCase):
         self.assertEqual(calls, [], msg="dispatcher must not be called")
 
     def test_execute_plan_never_sets_solar_priority_during_outage(self):
-        """The decision's output_priority is USB or SBU; never SOLAR or UTI."""
+        """The decision's output_priority is the canonical USB/SBU string.
+        USB maps to OutputPriority.USB="0" (engine.py:119).
+        SBU maps to OutputPriority.SBU="2" (engine.py:120).
+        The runtime only emits USB ("0") for prep, but the assertion
+        is the wider invariant: never SOLAR or UTI.
+        """
         calls, fn = self._capture_dispatcher()
         coord = FakeCoordinator(
             data={"batterySoc": 40, "gridAvailable": True,
@@ -619,16 +691,19 @@ class ExecutePlanTests(unittest.TestCase):
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertTrue(result["executed"], msg=result)
         decision = calls[0][0]
+        # Canonical numeric strings (hems/engine.py:118-125).
         self.assertIn(
-            decision.output_priority, ("USB", "SBU"),
-            msg=f"output_priority must be USB or SBU, got {decision.output_priority!r}",
+            decision.output_priority, ("0", "2"),
+            msg=f"output_priority must be USB('0') or SBU('2'), got "
+                f"{decision.output_priority!r}",
         )
-        self.assertNotIn(decision.output_priority, ("SOLAR", "UTI"))
-        # Charger priority is the prep-time value (solar+utility).
+        self.assertNotIn(decision.output_priority, ("USB", "SBU", "SOLAR", "UTI"))
+        # Charger priority is the prep-time value SNU("1") / OSO("2").
         self.assertIn(
-            decision.charger_priority, ("SNU", "OSO", "CSO"),
+            decision.charger_priority, ("1", "2"),
             msg=f"charger_priority unexpected: {decision.charger_priority!r}",
         )
+        self.assertNotIn(decision.charger_priority, ("SNU", "OSO", "CSO"))
 
     def test_dispatcher_call_signature_uses_existing_protected_path(self):
         """The runtime calls the coordinator's protected dispatcher exactly once
@@ -777,8 +852,14 @@ class Phase3ModeTests(unittest.TestCase):
             def __init__(self):
                 self.calls: list = []
 
-            def async_register(self, domain, name, handler):
-                self.calls.append((domain, name, handler))
+            # Real HA ``async_register`` signature is
+            # ``(domain, name, handler, schema=..., supports_response=...)``
+            # (and several more kwargs in newer HA builds). Capture
+            # them all so the test asserts on the new DEFECT-7
+            # contract: ``supports_response=True`` + a ``vol.Schema``
+            # are passed through to the registry.
+            def async_register(self, domain, name, handler, **kwargs):
+                self.calls.append((domain, name, handler, kwargs))
 
         services = _Services()
         return SimpleNamespace(
@@ -1013,8 +1094,10 @@ class WireOutageRuntimeTests(unittest.TestCase):
             def __init__(self):
                 self.calls: list = []
 
-            def async_register(self, domain, name, handler):
-                self.calls.append((domain, name, handler))
+            # Real HA ``async_register`` signature accepts
+            # ``schema=..., supports_response=...`` kwargs.
+            def async_register(self, domain, name, handler, **kwargs):
+                self.calls.append((domain, name, handler, kwargs))
 
         services = _Services()
         return SimpleNamespace(data=data, services=services)
@@ -1040,7 +1123,9 @@ class WireOutageRuntimeTests(unittest.TestCase):
         )
         runtime.wire_outage_runtime(hass, entry, coord)
         # Service registered.
-        service_names = [name for _d, name, _h in hass.services.calls]
+        service_names = [
+            name for _d, name, _h, _kwargs in hass.services.calls
+        ]
         self.assertTrue(
             any(name == f"{entry.entry_id}_compute_outage_plan" for name in service_names),
             msg=f"service not registered: calls={hass.services.calls}",
@@ -1061,7 +1146,9 @@ class WireOutageRuntimeTests(unittest.TestCase):
         )
         runtime.wire_outage_runtime(hass, entry, coord)
         # Service registered.
-        service_names = [name for _d, name, _h in hass.services.calls]
+        service_names = [
+            name for _d, name, _h, _kwargs in hass.services.calls
+        ]
         self.assertTrue(
             any(name == f"{entry.entry_id}_compute_outage_plan" for name in service_names),
         )
@@ -1077,7 +1164,9 @@ class WireOutageRuntimeTests(unittest.TestCase):
         )
         runtime.wire_outage_runtime(hass, entry, coord)
         # Service registered.
-        service_names = [name for _d, name, _h in hass.services.calls]
+        service_names = [
+            name for _d, name, _h, _kwargs in hass.services.calls
+        ]
         self.assertTrue(
             any(name == f"{entry.entry_id}_compute_outage_plan" for name in service_names),
         )
@@ -1096,6 +1185,678 @@ class WireOutageRuntimeTests(unittest.TestCase):
         )
         # Must not raise.
         runtime.wire_outage_runtime(hass, entry, coord)
+
+
+# ===========================================================================
+# Regression tests for the 9 Codex defects (Phase 2C+3 hotfix).
+#
+# Every test in this class binds to the CANONICAL production contract:
+# a real coordinator / EventStore / dispatcher / HA timer surface --
+# not the simplified stubs the older tests use. These are the contract
+# tests Codex reproduced against the original (rejected) runtime.
+# ===========================================================================
+
+
+class _StabHemsForTrackProbe:
+    """Minimal stand-in for the parts of HemsEngine used by the
+    timer-cancellation regression test. We replace
+    ``homeassistant.helpers.event.async_track_time_interval`` with
+    a stub that records (hass, handler, interval) tuples and
+    returns a cancellation handle that mutates a state flag.
+    """
+
+    def __init__(self):
+        self.calls: list[tuple] = []
+        self.cancelled = 0
+        self._fake_listener_registered = True
+        self._interval_received: object = None
+
+    def stub(self, hass, handler, *, interval):
+        self.calls.append((hass, handler, interval))
+
+        def _unsub():
+            self.cancelled += 1
+            self._fake_listener_registered = False
+
+        return _unsub
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class TimerRegressionDefect1Tests(unittest.TestCase):
+    """DEFECT 1: ``async_track_time_interval`` was called with
+    ``seconds=...``; the real HA API expects
+    ``interval=timedelta(...)``. Verify the canonical kwarg + that
+    the cancellation handle actually unregisters.
+    """
+
+    def setUp(self):
+        # Install a stub for ``async_track_time_interval`` via
+        # ``sys.modules`` so the runtime's lazy import resolves to
+        # our probe without needing the real ``homeassistant``
+        # package. We synthesise ``homeassistant``,
+        # ``homeassistant.helpers`` and ``homeassistant.helpers.event``
+        # as namespace trees holding our probe.
+        import types as _types
+        self._stab = _StabHemsForTrackProbe()
+        ha_pkg = sys.modules.get("homeassistant")
+        if ha_pkg is None:
+            ha_pkg = _types.ModuleType("homeassistant")
+            sys.modules["homeassistant"] = ha_pkg
+        helpers_pkg = sys.modules.get("homeassistant.helpers")
+        if helpers_pkg is None:
+            helpers_pkg = _types.ModuleType("homeassistant.helpers")
+            sys.modules["homeassistant.helpers"] = helpers_pkg
+        event_mod = _types.ModuleType("homeassistant.helpers.event")
+        event_mod.async_track_time_interval = self._stab.stub  # type: ignore[attr-defined]
+        sys.modules["homeassistant.helpers.event"] = event_mod
+
+    def test_register_scheduled_tick_uses_interval_timedelta_not_seconds(self):
+        """The call passes ``interval=timedelta(seconds=...)``.
+        ``seconds=`` is the bug; HA's signature requires a
+        ``timedelta`` instance via the ``interval`` kwarg.
+        """
+        hass = SimpleNamespace()
+        # Run the registration. The runtime's
+        # ``async_track_time_interval(hass, _handle, interval=...)``
+        # call goes to our stub.
+        unsub = runtime._register_scheduled_tick(
+            hass, "entry-canon",
+            interval_seconds=runtime.DEFAULT_TICK_INTERVAL_SECONDS,
+        )
+        self.assertEqual(len(self._stab.calls), 1)
+        # The runtime MUST have passed ``interval=`` kwarg.
+        hass_arg, handler, kwargs_or_pos = self._stab.calls[0]
+        self.assertIs(hass_arg, hass)
+        self.assertTrue(
+            callable(handler),
+            msg="handler passed to async_track_time_interval is not callable",
+        )
+        # The third positional in our stub is what comes in
+        # via the ``interval=`` kwarg (the stub accepts only
+        # ``interval``).
+        self.assertIsInstance(kwargs_or_pos, timedelta)
+        self.assertEqual(
+            kwargs_or_pos.total_seconds(),
+            runtime.DEFAULT_TICK_INTERVAL_SECONDS,
+            msg=f"interval not equal to expected seconds: got "
+                f"{kwargs_or_pos!r}",
+        )
+
+    def test_register_scheduled_tick_cancellation_handle_unsubscribes(self):
+        """The handle returned by the registration is callable; when
+        invoked it removes the underlying listener.
+        """
+        hass = SimpleNamespace()
+        unsub = runtime._register_scheduled_tick(
+            hass, "entry-cancel",
+            interval_seconds=10,
+        )
+        self.assertTrue(callable(unsub), msg="unsub must be callable")
+        # Pre-cancel: listener registered.
+        self.assertEqual(self._stab.cancelled, 0)
+        # Call the handle.
+        unsub()
+        # The stub bumped the cancel counter; the underlying
+        # listener is now unsubscribed.
+        self.assertEqual(self._stab.cancelled, 1)
+        # A second call is also safe (idempotent).
+        unsub()
+        self.assertEqual(self._stab.cancelled, 2)
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class FindActiveEventDefect2Tests(unittest.TestCase):
+    """DEFECT 2: ``_find_active_event`` must surface a future confirmed
+    event whose prep window is already open AND must exclude
+    pending / cancelled events.
+    """
+
+    def _hass_with_store(self, events: list) -> SimpleNamespace:
+        data: dict = {}
+        # The store object the bundle resolution uses
+        # (``bundle['outage_store']``).
+        store = FakeStore(events)
+        entry_id = "entry-find"
+        data["powmr_inverter"] = {entry_id: {"outage_store": store}}
+        hass = SimpleNamespace(data=data)
+        return hass, entry_id
+
+    def test_find_active_event_includes_future_confirmed_in_prep_window(self):
+        """Confirmed event starting in 2h, prep window (4h backstop)
+        already open -- the event MUST be picked.
+        """
+        # ``now = DYNAMIC_NOW`` ensures the test never dates.
+        start = DYNAMIC_NOW + timedelta(hours=2)
+        end = start + timedelta(hours=3)
+        ev_confirmed = SimpleNamespace(
+            id="evt-c", start_iso=start.astimezone(KYIV).isoformat(),
+            end_iso=end.astimezone(KYIV).isoformat(),
+            status="confirmed",
+        )
+        hass, entry_id = self._hass_with_store([ev_confirmed])
+        result = runtime._find_active_event(hass, entry_id, DYNAMIC_NOW)
+        self.assertIs(result, ev_confirmed)
+
+    def test_find_active_event_excludes_pending(self):
+        """Pending event starting in 2h, prep window open -- must
+        NOT be picked even though the calendar window is open.
+        """
+        start = DYNAMIC_NOW + timedelta(hours=2)
+        end = start + timedelta(hours=3)
+        ev_pending = SimpleNamespace(
+            id="evt-p", start_iso=start.astimezone(KYIV).isoformat(),
+            end_iso=end.astimezone(KYIV).isoformat(),
+            status="pending",
+        )
+        hass, entry_id = self._hass_with_store([ev_pending])
+        result = runtime._find_active_event(hass, entry_id, DYNAMIC_NOW)
+        self.assertIsNone(result)
+
+    def test_find_active_event_excludes_cancelled(self):
+        """Cancelled event whose prep window is open -- NOT picked.
+        """
+        start = DYNAMIC_NOW + timedelta(hours=2)
+        end = start + timedelta(hours=3)
+        ev_cancelled = SimpleNamespace(
+            id="evt-x", start_iso=start.astimezone(KYIV).isoformat(),
+            end_iso=end.astimezone(KYIV).isoformat(),
+            status="cancelled",
+        )
+        hass, entry_id = self._hass_with_store([ev_cancelled])
+        result = runtime._find_active_event(hass, entry_id, DYNAMIC_NOW)
+        self.assertIsNone(result)
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class FreshnessDefect3Tests(unittest.TestCase):
+    """DEFECT 3: telemetry freshness must refuse when the last
+    poll failed OR when the canonical timestamp is missing.
+    A missing ``gridAvailable`` reading must also refuse.
+    """
+
+    def test_is_automatic_allowed_refuses_failed_poll(self):
+        """``last_update_success=False`` -> gate refuses with a
+        freshness reason; never silently passes.
+        """
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True,
+                  "pvPower": 100, "loadPower": 200},
+            options={"outage_mode": "automatic"},
+            last_update_success=False,
+            last_update_time=None,
+            api=FakeApi(last_success_at=None),
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=2.0)
+        allowed, reason = runtime.is_automatic_allowed(coord, plan)
+        self.assertFalse(allowed)
+        # Failure modes cover both telemetry stale + missing
+        # timestamp; either substring triggers the rejection.
+        self.assertTrue(
+            "stale" in reason.lower() or "unknown" in reason.lower(),
+            msg=f"reason did not mention freshness: {reason!r}",
+        )
+
+    def test_is_automatic_allowed_refuses_missing_grid(self):
+        """``data['gridAvailable']`` missing -> gate refuses."""
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "pvPower": 100, "loadPower": 200},
+            # NOTE: gridAvailable absent on purpose.
+            options={"outage_mode": "automatic"},
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=2.0)
+        allowed, reason = runtime.is_automatic_allowed(coord, plan)
+        self.assertFalse(allowed)
+        self.assertIn("grid", reason.lower())
+
+    def test_read_freshness_seconds_refuses_when_api_timestamp_missing(self):
+        """Canonical source-of-truth: ``api.last_realtime_success_received_at``.
+        When absent the gate returns the refusal sentinel (>limit).
+        """
+        coord = FakeCoordinator(
+            data={"gridAvailable": True},
+            options={"outage_mode": "automatic"},
+            last_update_success=True,
+            # No api.last_realtime_success_received_at at all.
+            api=FakeApi(last_success_at=None),
+        )
+        fresh = runtime._read_freshness_seconds(
+            coord, datetime.now(timezone.utc)
+        )
+        self.assertGreater(
+            fresh, planner.TELEMETRY_STALENESS_LIMIT_SECONDS,
+            msg="missing timestamp must refuse, not default to 0",
+        )
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class CapacityDefect4Tests(unittest.TestCase):
+    """DEFECT 4: ``battery_capacity_ok_for_planning`` must be computed
+    in-range, not read from a non-existent attribute.
+    """
+
+    def test_snapshot_telemetry_capacity_ok_with_valid_values(self):
+        """230 Ah * 51.2 V / 1000 = 11.776 kWh -> ok_for_planning=True."""
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={"battery_capacity_ah": 230, "nominal_voltage_v": 51.2},
+            # No _battery_capacity_kwh / _battery_capacity_ah on the
+            # coordinator; the snapshot must build everything from
+            # options alone.
+            capacity_kwh=None,
+            capacity_ah=None,
+            voltage_v=None,
+        )
+        tel = runtime.snapshot_telemetry(coord, hass=None)
+        self.assertAlmostEqual(tel.battery_capacity_kwh, 11.776, places=3)
+        self.assertEqual(tel.battery_capacity_ah, 230.0)
+        self.assertEqual(tel.nominal_voltage_v, 51.2)
+        self.assertTrue(tel.battery_capacity_ok_for_planning)
+
+    def test_snapshot_telemetry_capacity_ok_false_for_missing_inputs(self):
+        """No Ah/V -> ok_for_planning=False (not None, not True)."""
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={},
+            capacity_kwh=None,
+            capacity_ah=None,
+            voltage_v=None,
+        )
+        tel = runtime.snapshot_telemetry(coord, hass=None)
+        self.assertFalse(tel.battery_capacity_ok_for_planning)
+
+    def test_snapshot_telemetry_capacity_ok_false_for_out_of_range(self):
+        """10000 Ah is outside ``[10, 2000]`` -> ok_for_planning=False."""
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={"battery_capacity_ah": 10000, "nominal_voltage_v": 51.2},
+            capacity_kwh=None, capacity_ah=None, voltage_v=None,
+        )
+        tel = runtime.snapshot_telemetry(coord, hass=None)
+        self.assertFalse(tel.battery_capacity_ok_for_planning)
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class SafetyGuardsDefect5Tests(unittest.TestCase):
+    """DEFECT 5: ``_safety_guards_ok`` must read production HEMS
+    fields, not return ``True`` unconditionally.
+    """
+
+    def test_safety_guards_ok_refuses_circuit_breaker_tripped(self):
+        """``_hems._blocked_until`` in the future -> guard refuses."""
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={"outage_mode": "automatic"},
+            hems=FakeHems(
+                blocked_until=datetime.now(timezone.utc)
+                + timedelta(seconds=120)
+            ),
+        )
+        self.assertFalse(runtime._safety_guards_ok(coord))
+
+    def test_safety_guards_ok_refuses_anti_flapping_dedup(self):
+        """``_hems._last_cmd_output_at`` inside the dedup window ->
+        guard refuses (anti-flapping suppresses the duplicate, so
+        the runtime must not pretend to dispatch).
+        """
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={"outage_mode": "automatic"},
+            hems=FakeHems(
+                last_cmd_output_at=datetime.now(timezone.utc)
+                - timedelta(seconds=2),
+            ),
+        )
+        self.assertFalse(runtime._safety_guards_ok(coord))
+
+    def test_safety_guards_ok_refuses_manual_override_in_future(self):
+        """``_hems._manual_override_until`` in the future -> refuses."""
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={"outage_mode": "automatic"},
+            hems=FakeHems(
+                manual_until=datetime.now(timezone.utc)
+                + timedelta(hours=1)
+            ),
+        )
+        self.assertFalse(runtime._safety_guards_ok(coord))
+
+    def test_safety_guards_ok_passes_when_clean(self):
+        """No tripped guards -> True."""
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={"outage_mode": "automatic"},
+        )
+        self.assertTrue(runtime._safety_guards_ok(coord))
+
+    def test_is_automatic_allowed_returns_false_when_circuit_breaker_tripped(self):
+        """End-to-end: tripped guard -> the gate returns False with
+        a 'safety' reason so the audit log distinguishes the cause.
+        """
+        coord = FakeCoordinator(
+            data={"batterySoc": 50, "gridAvailable": True},
+            options={"outage_mode": "automatic"},
+            hems=FakeHems(
+                blocked_until=datetime.now(timezone.utc)
+                + timedelta(seconds=120)
+            ),
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=2.0)
+        allowed, reason = runtime.is_automatic_allowed(coord, plan)
+        self.assertFalse(allowed)
+        self.assertIn("safety", reason.lower())
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class ExecutePlanDefect6Tests(unittest.TestCase):
+    """DEFECT 6: dispatch decision uses canonical numeric strings
+    (``output_priority="0"`` / ``charger_priority="1"`` -- engine.py:118-125),
+    touches the buzzer (``buzzer_off=None``), and propagates
+    dispatcher failure / raises cleanly.
+    """
+
+    def _capture_dispatcher(self):
+        calls: list = []
+
+        async def _fn(decision, command_id=None, *, evidence_recorded=False):
+            calls.append((decision, command_id, evidence_recorded))
+
+        return calls, _fn
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_execute_plan_dispatches_with_canonical_priority_strings(self):
+        """Decision values are the EXACT numeric strings
+        ``OutputPriority.USB="0"`` and ``ChargerPriority.SNU="1"``
+        (engine.py:119, 124). ``buzzer_off`` is None (the runtime
+        must NEVER flip the buzzer).
+        """
+        calls, fn = self._capture_dispatcher()
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True,
+                  "pvPower": 100, "loadPower": 200},
+            execute_hems_command=fn,
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=3.0)
+        result = self._run(runtime.execute_plan(coord, _evt(), plan))
+        self.assertTrue(result["executed"], msg=result)
+        decision, command_id, evidence_recorded = calls[0]
+        # Canonical numeric strings (hems/engine.py:118-125).
+        self.assertEqual(decision.output_priority, "0")
+        self.assertEqual(decision.charger_priority, "1")
+        # NEVER a buzzer flip.
+        self.assertIsNone(decision.buzzer_off)
+
+    def test_execute_plan_refuses_when_dispatcher_returns_false(self):
+        """Fake dispatcher returns ``False`` -> runtime reports
+        ``executed=False`` with a refusal reason. Never claims
+        success on a falsy return.
+        """
+        calls: list = []
+
+        async def _false_fn(decision, command_id=None, *,
+                             evidence_recorded=False):
+            calls.append((decision, command_id, evidence_recorded))
+            return False
+
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True},
+            execute_hems_command=_false_fn,
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=3.0)
+        result = self._run(runtime.execute_plan(coord, _evt(), plan))
+        self.assertFalse(result["executed"])
+        # Production code returns None on success; the test fake
+        # returns False. The runtime refuses WITHOUT re-raising.
+        self.assertTrue(len(calls) >= 1)
+
+    def test_execute_plan_refuses_when_dispatcher_raises(self):
+        """Fake dispatcher raises ``ValueError`` -> runtime catches,
+        returns ``{'executed': False, 'reason': '...dispatcher...'}``
+        WITHOUT re-raising.
+        """
+        calls: list = []
+
+        async def _raise_fn(decision, command_id=None, *,
+                             evidence_recorded=False):
+            calls.append((decision, command_id, evidence_recorded))
+            raise ValueError("dispatcher rejected write")
+
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True},
+            execute_hems_command=_raise_fn,
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=3.0)
+        # Must not raise.
+        result = self._run(runtime.execute_plan(coord, _evt(), plan))
+        self.assertFalse(result["executed"])
+        self.assertIn("dispatcher", result["reason"].lower())
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class ComputeOutagePlanServiceDefect7Tests(unittest.TestCase):
+    """DEFECT 7: ``compute_outage_plan`` service is registered with
+    ``supports_response=True`` + a ``vol.Schema``; the handler
+    returns a real dict for confirmed events and refuses for
+    pending events.
+    """
+
+    def _hass_stub(self) -> SimpleNamespace:
+        data: dict = {}
+        stores_map: dict = {}
+
+        class _Services:
+            def __init__(self):
+                self.calls: list = []
+                self.registered: dict = {}
+
+            def async_register(self, domain, name, handler, **kwargs):
+                self.calls.append((domain, name, handler, kwargs))
+                self.registered[name] = (handler, kwargs)
+
+        return SimpleNamespace(
+            data=data,
+            services=_Services(),
+            _outage_stores=stores_map,
+        )
+
+    def _seed_store(self, hass, *, entry_id, store):
+        # Make the per-entry store discoverable both via
+        # ``hass.data['powmr_inverter'][entry_id]['outage_store']``
+        # (the bundle path) and via
+        # ``hass.data['powmr_inverter_outage_stores'][entry_id]``
+        # (the EventStore path).
+        hass.data.setdefault("powmr_inverter", {}).setdefault(
+            entry_id, {}
+        )["outage_store"] = store
+        # The production EventStore path uses a ``DOMAIN``-
+        # suffixed key; mirror it here.
+        hass.data.setdefault("powmr_inverter_outage_stores", {})[
+            entry_id
+        ] = store
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_compute_outage_plan_service_registered_with_response_support(self):
+        """The service is registered with ``supports_response=True``
+        AND a non-None ``schema`` (a ``vol.Schema`` instance).
+        """
+        hass = self._hass_stub()
+        entry_id = "entry-svc"
+        store = FakeStore([])  # empty: we only verify registration
+        self._seed_store(hass, entry_id=entry_id, store=store)
+        entry = SimpleNamespace(
+            entry_id=entry_id,
+            options={"outage_mode": "observation"},
+        )
+        coord = FakeCoordinator(
+            data={"gridAvailable": True, "batterySoc": 40},
+            options={"outage_mode": "observation"},
+        )
+        runtime.wire_outage_runtime(hass, entry, coord)
+        # Find the registration entry for the per-entry
+        # ``compute_outage_plan`` service.
+        candidates = [
+            c for c in hass.services.calls if c[1] == f"{entry_id}_compute_outage_plan"
+        ]
+        self.assertEqual(
+            len(candidates), 1,
+            msg=f"expected exactly one compute_outage_plan registration; "
+                f"got: {candidates!r}",
+        )
+        _d, _name, _handler, kwargs = candidates[0]
+        # Schema is present and is a ``vol.Schema`` instance.
+        self.assertIsNotNone(
+            kwargs.get("schema"),
+            msg="schema kwarg must be passed to async_register",
+        )
+        import voluptuous as _vol
+        self.assertIsInstance(kwargs["schema"], _vol.Schema)
+        # supports_response is True.
+        self.assertTrue(kwargs.get("supports_response"))
+
+    def test_compute_outage_plan_returns_plan_for_confirmed_event(self):
+        """Calling the registered handler with a confirmed event
+        returns a dict carrying the planner output + ``planned``.
+        """
+        hass = self._hass_stub()
+        entry_id = "entry-svc-conf"
+        # Build a confirmed event that starts 6h in the future so
+        # the planner has a valid window.
+        start = DYNAMIC_NOW + timedelta(hours=6)
+        end = start + timedelta(hours=2)
+        ev = SimpleNamespace(
+            id="evt-svc-conf",
+            start_iso=start.astimezone(KYIV).isoformat(),
+            end_iso=end.astimezone(KYIV).isoformat(),
+            status="confirmed",
+        )
+        store = FakeStore([ev])
+        self._seed_store(hass, entry_id=entry_id, store=store)
+        entry = SimpleNamespace(
+            entry_id=entry_id, options={"outage_mode": "observation"},
+        )
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True},
+            options={"battery_capacity_ah": 230, "nominal_voltage_v": 51.2},
+        )
+        runtime.wire_outage_runtime(hass, entry, coord)
+        # Resolve the handler.
+        handler, _kwargs = hass.services.registered[
+            f"{entry_id}_compute_outage_plan"
+        ]
+        # Drive the handler. ``call.data`` is a dict-like -- the
+        # handler does ``call.data.get('event_id')`` so a plain
+        # dict for ``data`` is the canonical contract.
+        class _Call:
+            def __init__(self, payload):
+                self.data = dict(payload)
+
+        result = self._run(handler(_Call({"event_id": "evt-svc-conf"})))
+        self.assertIsInstance(result, dict)
+        self.assertIn("planned", result)
+        # When the plan is unblocked the planner returns the
+        # baseline dict with the gap math.
+        self.assertIn("plan", result)
+
+    def test_compute_outage_plan_returns_refusal_for_pending_event(self):
+        """Handler called with ``status='pending'`` (no force)
+        returns ``{'planned': False, 'reason': 'event not confirmed'}``.
+        """
+        hass = self._hass_stub()
+        entry_id = "entry-svc-pend"
+        start = DYNAMIC_NOW + timedelta(hours=6)
+        end = start + timedelta(hours=2)
+        ev = SimpleNamespace(
+            id="evt-svc-pend",
+            start_iso=start.astimezone(KYIV).isoformat(),
+            end_iso=end.astimezone(KYIV).isoformat(),
+            status="pending",
+        )
+        store = FakeStore([ev])
+        self._seed_store(hass, entry_id=entry_id, store=store)
+        entry = SimpleNamespace(
+            entry_id=entry_id, options={"outage_mode": "observation"},
+        )
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True},
+            options={},
+        )
+        runtime.wire_outage_runtime(hass, entry, coord)
+        handler, _kwargs = hass.services.registered[
+            f"{entry_id}_compute_outage_plan"
+        ]
+        class _Call:
+            def __init__(self, payload):
+                self.data = dict(payload)
+
+        result = self._run(handler(_Call({"event_id": "evt-svc-pend"})))
+        self.assertFalse(result["planned"])
+        self.assertIn("not confirmed", result["reason"])
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class SmartModeArbitrationDefect5AddonTests(unittest.TestCase):
+    """Outage runtime must respect the live ``smart_mode`` /
+    ``predictive_mode`` / ``hems_auto_mode`` knobs. The runtime
+    does not flip output_priority to anything that contradicts
+    the smart_mode: every smart_mode value (0=Adaptive,
+    1=Arbitrage, 2=Storm) accepts USB='0' (OutputPriority.USB) as
+    the prep value -- the engine picks USB for reserve protection
+    under ADAPTIVE/ARBITRAGE (engine.py:405-408) and STORM (engine.py:1336-1347).
+    """
+
+    def _capture_dispatcher(self):
+        calls: list = []
+
+        async def _fn(decision, command_id=None, *, evidence_recorded=False):
+            calls.append((decision, command_id, evidence_recorded))
+
+        return calls, _fn
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_outage_respects_live_smart_mode_zero_adaptive(self):
+        """With live smart_mode=0 (Adaptive), the runtime emits
+        output_priority='0' (USB) and does NOT touch the buzzer.
+        Adaptive-mode engine picks USB for prep; the runtime's
+        emission matches.
+        """
+        calls, fn = self._capture_dispatcher()
+        live_options = {
+            "outage_mode": "automatic",
+            "smart_mode": 0,
+            "predictive_mode": "shadow",
+        }
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True,
+                  "pvPower": 100, "loadPower": 200},
+            options=live_options,
+            execute_hems_command=fn,
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=2.0)
+        result = self._run(runtime.execute_plan(coord, _evt(), plan))
+        self.assertTrue(result["executed"], msg=result)
+        decision = calls[0][0]
+        self.assertEqual(decision.output_priority, "0")
+        self.assertEqual(decision.charger_priority, "1")
+        # Runtime must never have mutated the operator's modes.
+        self.assertEqual(coord.options.get("smart_mode"), 0)
+        self.assertEqual(coord.options.get("predictive_mode"), "shadow")
 
 
 if __name__ == "__main__":

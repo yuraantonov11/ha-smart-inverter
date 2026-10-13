@@ -1292,6 +1292,24 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
             }
         ),
     )
+    # Phase 2C addition (DEFECT 7 follow-up): a per-entry
+    # ``compute_outage_plan`` service so the dashboard / scripts
+    # can call it via ``return_response=True``. Registered
+    # here -- additively, no changes to the existing
+    # registrations above -- so the canonical contract lives
+    # with the rest of the outage service layer (services/outage.py
+    # is the public service-registration surface). The actual
+    # handler body lives in
+    # ``services/outage_runtime._register_compute_outage_plan_service``
+    # to keep the planner / dispatcher wiring in one module;
+    # this block only ensures the service is reachable from the
+    # global HA service registry with the response-support flag.
+    try:
+        from .outage_runtime import _register_compute_outage_plan_service
+        for entry_id in list(hass.data.get(f"{DOMAIN}_outage_stores", {}).keys()):
+            _register_compute_outage_plan_service(hass, entry_id)
+    except Exception:  # noqa: BLE001 -- additive; never raise
+        pass
 
 
 def _resolve_single_entry_id(hass: HomeAssistant) -> str:

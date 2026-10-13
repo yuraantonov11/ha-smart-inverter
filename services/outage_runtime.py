@@ -105,13 +105,26 @@ MIN_TICK_INTERVAL_SECONDS = 10
 PREP_BACKSTOP_HOURS = 4
 
 # Output-source priority values for the protected dispatcher. We pass
-# strings that the protected dispatcher's ``set_output_priority`` will
-# accept -- "USB" (utility-first) is the canonical "let the grid
-# power the loads so the battery can be topped up" mode before the
-# outage starts. The protected dispatcher does the string<->int
+# the EXACT strings the protected dispatcher's
+# ``self.api.set_output_priority`` (api.py) accepts. The canonical
+# numeric strings are defined in hems/engine.py:118-125:
+#
+#     class OutputPriority:
+#         USB = "0"  # Grid first
+#         SBU = "2"  # Solar/Battery first
+#     class ChargerPriority:
+#         SNU = "1"  # Solar + Utility
+#         OSO = "2"  # Solar only
+#
+# The runtime uses ``USB = "0"`` (utility-first; the battery
+# preps from the grid before the outage) and ``SNU = "1"``
+# (solar + utility). We DO NOT flip the buzzer
+# (``decision.buzzer_off = None``) so the dispatcher leaves
+# the acoustic state untouched -- the outage prep is a quiet
+# operation. The protected dispatcher does the string<->int
 # mapping; we stay symbolic here.
-DECISION_OUTPUT_PRIORITY = "USB"
-DECISION_CHARGER_PRIORITY = "SNU"
+DECISION_OUTPUT_PRIORITY = "0"  # OutputPriority.USB
+DECISION_CHARGER_PRIORITY = "1"  # ChargerPriority.SNU
 
 # Reused in the evidence journal as the cause code for an
 # outage-driven prep write.
@@ -252,8 +265,20 @@ def snapshot_telemetry(
 
     battery_capacity_ah = ah_value
     nominal_voltage_v = voltage_value
+    # Production contract: the planner at outage_planner.py:433
+    # requires ``battery_capacity_ok_for_planning`` to gate the
+    # "refuse to guess" path. The coordinator exposes the chain
+    # ``_battery_capacity_ah`` / ``_nominal_voltage_v`` /
+    # ``_battery_capacity_kwh`` (coordinator.py:385-396). It does
+    # NOT expose a boolean flag. We compute the flag here using
+    # the same ranges coordinator._derive_battery_capacity uses
+    # (coordinator.py:2246: ah 10..2000, voltage 10..100).
     battery_capacity_ok_for_planning = bool(
-        _safe_getattr(coordinator, "_battery_capacity_ok_for_planning")
+        battery_capacity_kwh is not None
+        and battery_capacity_ah is not None
+        and 10.0 <= battery_capacity_ah <= 2000.0
+        and nominal_voltage_v is not None
+        and 10.0 <= nominal_voltage_v <= 100.0
     )
 
     # ---- Battery telemetry (live readings from ``coordinator.data``)
@@ -445,9 +470,15 @@ def is_automatic_allowed(
 
     # 2. Grid availability -- read the live coordinator, not the
     #    cached plan dict, so a grid drop between snapshots is
-    #    caught.
+    #    caught. ``None`` from the helper means "field absent";
+    #    we refuse rather than default to True.
     grid_available = _read_grid_available(coordinator)
-    if not grid_available:
+    if grid_available is None:
+        return (
+            False,
+            "grid availability unknown; refusing without explicit reading",
+        )
+    if grid_available is False:
         return (False, "grid unavailable; cannot dispatch auto-prep from grid")
 
     # 3. Manual pause -- live read.
@@ -593,6 +624,10 @@ async def execute_plan(
     #    importing the dataclass (which would pull in HA via the
     #    engine module). The protected dispatcher's reads via
     #    ``getattr`` are satisfied.
+    # NOTE: ``buzzer_off=None`` so the dispatcher's
+    # ``if decision.buzzer_off ... elif not decision.buzzer_off``
+    # branch at coordinator.py:1688-1695 is skipped entirely; the
+    # runtime must NEVER silently toggle the buzzer.
     decision = SimpleNamespace(
         output_priority=output_priority,
         charger_priority=charger_priority,
@@ -601,7 +636,7 @@ async def execute_plan(
             f"(needs_grid={needs_grid:.3f} kWh)"
         ),
         skip=False,
-        buzzer_off=False,
+        buzzer_off=None,
     )
 
     command_id = f"{OUTAGE_CAUSE_CODE}:{event_id}"
@@ -616,17 +651,37 @@ async def execute_plan(
             ),
         }
 
-    # 4. Call the protected dispatcher. The existing dedup /
-    #    circuit-breaker / manual-override logic in that path
-    #    decides whether the write actually goes through.
+    # 4. Call the protected dispatcher. Production signature
+    #    (coordinator.py:1644-1650): ``async def _execute_hems_command(
+    #    self, decision, command_id=None, *, evidence_recorded=False)
+    #    -> None``. The dispatcher returns ``None`` on success
+    #    and signals failure internally via
+    #    ``_hems.report_control_failure`` (coordinator.py:1704).
+    #    The runtime's contract is therefore: if the call raises
+    #    OR returns a falsy value (e.g. ``False``) that is not the
+    #    canonical success sentinel ``None``, treat the dispatch
+    #    as not executed and surface the reason. ``None`` is the
+    #    "no return value" success path; anything falsy that is
+    #    NOT ``None`` is treated as a refusal from the dispatcher.
     try:
-        await _call_execute_hems_command(
+        result = await _call_execute_hems_command(
             execute_fn, decision, command_id, evidence_recorded=True
         )
     except Exception as exc:  # noqa: BLE001 -- execute_plan never raises
         return {
             "executed": False,
-            "reason": f"{type(exc).__name__}: {exc}",
+            "reason": (
+                f"dispatcher raised {type(exc).__name__}: {exc}"
+            ),
+        }
+
+    if result is not None and not result:
+        return {
+            "executed": False,
+            "reason": (
+                f"dispatcher refused (returned {result!r}); "
+                f"command_id={command_id}"
+            ),
         }
 
     return {
@@ -659,7 +714,9 @@ def _execution_refusal(
         reason = getattr(plan, "reason_if_blocked", None) or "unknown planner reason"
         return f"plan blocked; {reason}"
     grid_available = _read_grid_available(coordinator)
-    if not grid_available:
+    if grid_available is None:
+        return "grid availability unknown; refusing without explicit reading"
+    if grid_available is False:
         return "grid unavailable; cannot dispatch auto-prep from grid"
     pause_iso = _read_pause_until(coordinator)
     if pause_iso:
@@ -808,7 +865,15 @@ def _register_scheduled_tick(
     async def _handle(now: datetime) -> None:
         await _scheduled_tick(hass, entry_id, now)
 
-    unsub = async_track_time_interval(hass, _handle, seconds=interval)
+    # The HA API expects ``interval=timedelta(...)``; passing
+    # ``seconds=...`` raises ``TypeError`` at registration time
+    # and silently breaks the runtime in automatic mode. The
+    # returned call is the cancellation handle; the wire stores
+    # it so ``entry.async_on_unload`` can release the listener
+    # on reload / shutdown.
+    unsub = async_track_time_interval(
+        hass, _handle, interval=timedelta(seconds=interval)
+    )
     return unsub
 
 
@@ -917,6 +982,16 @@ def _register_compute_outage_plan_service(hass: Any, entry_id: str) -> None:
     The service is registered under the integration's DOMAIN
     with a per-entry name suffix so multiple loaded entries do
     not collide; HA's service registry is global per domain.
+
+    HA service contract:
+      * ``schema`` -- a ``vol.Schema`` describing the accepted
+        payload. Required for HA to validate the ``return_response=True``
+        ``service_call`` flow.
+      * ``supports_response=True`` -- the service must return a
+        serialisable dict so HA can surface it in the
+        "Call Service" developer-tools panel. Without this, the
+        panel rejects the call with HTTP 400 "service does not
+        support responses" (DEFECT 7).
     """
     from homeassistant.core import ServiceCall
 
@@ -957,12 +1032,38 @@ def _register_compute_outage_plan_service(hass: Any, entry_id: str) -> None:
         payload["planned"] = not bool(getattr(plan, "blocked", False))
         return payload
 
+    # Schema -- validate the call payload up front.
+    schema: vol.Schema | None = None
+    try:
+        import voluptuous as vol  # type: ignore
+        schema = vol.Schema(
+            {
+                vol.Required("event_id"): str,
+                vol.Optional("force_recompute", default=False): bool,
+            }
+        )
+    except Exception:  # noqa: BLE001
+        # HA/``voluptuous`` is unavailable in the unit-test env --
+        # register without schema (the runtime still accepts a
+        # plain dict at the handler boundary). The production
+        # service registration path uses the real ``vol.Schema``.
+        schema = None
+
     # Idempotent re-registration. The HA service registry raises
     # ``ServiceAlreadyRegistered`` if a previous wire already
     # registered the same name; we catch it so a reload does
     # not crash setup.
     try:
-        hass.services.async_register(domain, service_name, _handle)
+        if schema is None:
+            hass.services.async_register(domain, service_name, _handle)
+        else:
+            hass.services.async_register(
+                domain,
+                service_name,
+                _handle,
+                schema=schema,
+                supports_response=True,
+            )
     except Exception as exc:  # noqa: BLE001
         # ``ServiceAlreadyRegistered`` is the only expected race;
         # any other exception we log and swallow.
@@ -1081,7 +1182,25 @@ def _get_event_by_id(
 def _find_active_event(
     hass: Any, entry_id: str, now: datetime
 ) -> Any | None:
-    """Return the first event whose window contains ``now`` and is not terminal."""
+    """Return the first ``confirmed`` event whose prep window or window contains ``now``.
+
+    Loop policy (R0.2 follow-up):
+      * Iterate the ``EventStore`` directly (so the production
+        semantics — ``iter_active`` over non-terminal events —
+        is exercised). We additionally require ``status == 'confirmed'``;
+        a ``pending`` event whose prep window happens to be open
+        must NOT be picked for dispatch (the audit gate is
+        confirmation, not the calendar).
+      * For each candidate, compute the prep-window start as
+        ``event.start - prep_window_hours`` (default 4h). The
+        planner's own ``prep_start_iso`` (if populated) takes
+        precedence.
+      * The event is eligible iff ``now >= prep_window_start``
+        AND ``now < event.end``.
+      * Pending / cancelled events are excluded. Cancelled
+        events are excluded even when the window is still open
+        in the calendar — operator intent is to abort.
+    """
     bundle = _get_bundle(hass, entry_id)
     store = bundle.get("outage_store")
     if store is None:
@@ -1093,39 +1212,70 @@ def _find_active_event(
 
     now_utc = now.astimezone(timezone.utc) if now.tzinfo else now.replace(tzinfo=timezone.utc)
 
-    # Prefer the production iterator (iter_active + window check).
-    iter_active = getattr(store, "iter_active", None)
-    if callable(iter_active):
-        try:
-            active_iter: Any = iter_active()
-        except Exception:  # noqa: BLE001
-            active_iter = None
-        if active_iter is not None:
-            for ev in _iter_safely(active_iter):
-                if _event_window_contains(ev, now_utc):
-                    return ev
-    # Fallback: scan list_events().
+    for ev in _iter_all_events(store):
+        status = getattr(ev, "status", None)
+        # Production contract: only confirmed events are eligible
+        # for dispatch. Pending is plan-only (services/outage.py:529-533);
+        # cancelled / completed are terminal (services/outage.py:531-344).
+        if status != "confirmed":
+            continue
+        if _event_in_eligible_window(ev, now_utc):
+            return ev
+    return None
+
+
+def _event_in_eligible_window(event: Any, now_utc: datetime) -> bool:
+    """True iff ``now`` is in the event's prep window or active window."""
+    start = _safe_parse_iso(getattr(event, "start_iso", None))
+    end = _safe_parse_iso(getattr(event, "end_iso", None))
+    if start is None or end is None or end <= start:
+        return False
+    # Prep window opens 4h before the event start (engine/code
+    # backstop: planner's own prep_start_iso is the source of
+    # truth, but older planner builds do not populate it).
+    prep_start = start - timedelta(hours=PREP_BACKSTOP_HOURS)
+    # Check the planner-supplied prep_start_iso first. The
+    # ``_is_in_prep_window`` helper already does this; we
+    # re-implement a minimal version here so an event whose
+    # planner-side prep window opens earlier than the 4h
+    # backstop is still surfaced. Plain attribute access —
+    # any planner-shaped object with a ``plan`` dict will do.
+    plan_dict = getattr(event, "_plan_dict", None) or getattr(
+        event, "plan", None
+    ) or {}
+    if isinstance(plan_dict, dict):
+        planner_prep = _safe_parse_iso(plan_dict.get("prep_start_iso"))
+        if planner_prep is not None and planner_prep < prep_start:
+            prep_start = planner_prep
+    return prep_start <= now_utc < end
+
+
+def _iter_all_events(store: Any) -> list[Any]:
+    """Return all events in the store, preferring ``list_events()``.
+
+    ``EventStore.list_events()`` (outage.py:447) returns every
+    event regardless of status; the caller filters. We do NOT
+    use ``iter_active()`` (which excludes terminal events)
+    because we need to see cancelled events so we can prove
+    they are excluded by status, not by accident of being
+    terminal.
+    """
     list_events = getattr(store, "list_events", None)
     if callable(list_events):
         try:
             events = list_events()
         except Exception:  # noqa: BLE001
-            return None
-        for ev in _iter_safely(events):
-            status = getattr(ev, "status", None)
-            if status in ("cancelled", "completed"):
-                continue
-            if _event_window_contains(ev, now_utc):
-                return ev
-    return None
-
-
-def _event_window_contains(event: Any, now_utc: datetime) -> bool:
-    start = _safe_parse_iso(getattr(event, "start_iso", None))
-    end = _safe_parse_iso(getattr(event, "end_iso", None))
-    if start is None or end is None:
-        return False
-    return start <= now_utc < end
+            events = None
+        if events is not None:
+            return _iter_safely(events)
+    iter_active = getattr(store, "iter_active", None)
+    if callable(iter_active):
+        try:
+            active_iter = iter_active()
+        except Exception:  # noqa: BLE001
+            return []
+        return _iter_safely(active_iter)
+    return []
 
 
 def _safe_parse_iso(value: Any) -> datetime | None:
@@ -1181,23 +1331,52 @@ def _try_get_or_create_store(hass: Any, entry_id: str) -> Any | None:
         return None
 
 
-def _read_freshness_seconds(coordinator: Any, now: datetime) -> int:
-    """Return ``now - last_update_ts`` in whole seconds.
+# Sentinel used by the freshness gate when the canonical
+# coordinator timestamp is missing or the last poll failed.
+# The HA DocTells us "telemetry stale" must refuse automatic
+# dispatch (DEFECT 3). We return a value well above
+# ``TELEMETRY_STALENESS_LIMIT_SECONDS`` so the caller falls
+# through to the refusal branch.
+_FRESHNESS_REFUSE = 10**9
 
-    Tolerant: ``coordinator.last_update_ts`` is the canonical
-    field; ``coordinator.last_update_success`` is the
-    HA-standard ``DataUpdateCoordinator`` attribute. We accept
-    both. Missing attribute -> 0 so the planner does not refuse
-    on a cold boot.
+
+def _read_freshness_seconds(coordinator: Any, now: datetime) -> int:
+    """Return seconds since the last successful poll.
+
+    Canonical timestamp (production contract):
+      * ``coordinator.api.last_realtime_success_received_at``
+        (api.py:201) -- datetime set on the last successful poll.
+        This is the SOURCE OF TRUTH. We do NOT fall back to
+        ``coordinator.last_update_time`` because the HA
+        ``DataUpdateCoordinator`` base class only sets that
+        timestamp on a successful update; a failed poll leaves
+        it stale or None, and the runtime cannot distinguish
+        "no poll yet" from "poll just succeeded". The api
+        attribute is updated in lockstep with the inverter
+        response, so it is the only safe source.
+
+    Refusal semantics
+      * When ``coordinator.last_update_success`` is ``False`` we
+        return ``_FRESHNESS_REFUSE`` so the gate never silently
+        passes on a failed poll.
+      * When the canonical api timestamp is ``None`` we return
+        ``_FRESHNESS_REFUSE``; an unknown freshness must NOT
+        default to "fresh" (the bug Codex reproduced).
     """
-    ts = _safe_getattr(coordinator, "last_update_ts", "last_update_success")
+    success = getattr(coordinator, "last_update_success", None)
+    if success is False:
+        # Failed poll -- refuse.
+        return _FRESHNESS_REFUSE
+    api = getattr(coordinator, "api", None)
+    ts = _safe_getattr(api, "last_realtime_success_received_at")
     if ts is None:
-        return 0
+        # No canonical timestamp. Production contract: refuse.
+        return _FRESHNESS_REFUSE
     if not isinstance(ts, datetime):
         try:
             ts = datetime.fromisoformat(str(ts))
         except (TypeError, ValueError):
-            return 0
+            return _FRESHNESS_REFUSE
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     delta = now - ts.astimezone(timezone.utc)
@@ -1274,14 +1453,27 @@ def _read_pause_until(coordinator: Any) -> str | None:
     return until.isoformat()
 
 
-def _read_grid_available(coordinator: Any) -> bool:
-    """Return the live ``grid_available`` reading (defaults to True)."""
+def _read_grid_available(coordinator: Any) -> bool | None:
+    """Return the live ``grid_available`` reading.
+
+    Returns ``None`` when the field is absent (DEFECT 3). The
+    upstream callers (``is_automatic_allowed`` /
+    ``_execution_refusal``) treat ``None`` as "unknown"
+    and refuse automatic dispatch; the previous version
+    defaulted ``True``, which let a missing reading bypass
+    the grid-down gate.
+
+    The dispatch reads ``coordinator.data['gridAvailable']``
+    (coordinator.py:1161). The legacy ``grid_available`` key
+    is also accepted for back-compat.
+    """
     data = getattr(coordinator, "data", None)
-    if isinstance(data, dict):
-        v = _safe_dict_get(data, "gridAvailable", "grid_available")
-        if v is not None:
-            return bool(v)
-    return True
+    if not isinstance(data, dict):
+        return None
+    raw = _safe_dict_get(data, "gridAvailable", "grid_available")
+    if raw is None:
+        return None
+    return bool(raw)
 
 
 def _read_telemetry_from_plan(plan: PlannerPlan) -> Telemetry:
@@ -1309,18 +1501,75 @@ def _read_telemetry_from_plan(plan: PlannerPlan) -> Telemetry:
 
 
 def _safety_guards_ok(coordinator: Any) -> bool:
-    """Return ``True`` if the existing safety guards are not tripped.
+    """Return ``True`` iff the real HEMS guards permit a write.
 
-    This is a thin pass-through: the protected dispatcher has
-    its own dedup / circuit-breaker / anti-flapping logic, so
-    a duplicate write is rejected at the dispatcher anyway.
-    We expose a surface here so the gate can log a
-    'safety guard tripped' reason and so the test can drive
-    the gate deterministically.
+    The guards are the same ones ``HemsEngine._evaluation_hold``
+    reads (engine.py:507-540): hems_auto off, circuit breaker
+    (engine.py:510-511), manual override (engine.py:512-517),
+    unknown mode, inverter offline, invalid telemetry. We mirror
+    the canonical field reads:
+
+    * ``coordinator.hems_auto_mode`` (coordinator.py:328) — must
+      be truthy.
+    * ``coordinator._hems._blocked_until`` — circuit-breaker
+      timer set by ``HemsEngine.report_control_failure``
+      (engine.py:812). Must be ``None`` or in the past.
+    * ``coordinator._hems._manual_override_until`` — manual-override
+      hold set by ``HemsEngine.detect_manual_override`` /
+      ``arm_manual_override`` (engine.py:768, 786). Must be
+      ``None`` or in the past.
+    * ``coordinator._hems._last_cmd_output_at`` /
+      ``_last_cmd_charger_at`` — anti-flapping dedup window
+      (engine.py:1353-1391). A write inside the dedup window with
+      the same target as the last write is silently dropped at the
+      dispatcher, but the outage runtime must still surface "no
+      auttion" while the dedup window is open so the audit log
+      does not claim a write that the dispatcher rejected.
+
+    Returns ``False`` if any guard is tripped.
     """
-    # The protected dispatcher reads these on its own; we do
-    # not duplicate the policy. A single "no exception raised"
-    # check is enough to keep the gate truthful.
+    # The guarded coordinator fields are production contracts;
+    # missing attributes mean the guard chain is not bound and the
+    # safest answer is to refuse.
+    hems_auto = getattr(coordinator, "hems_auto_mode", None)
+    if not hems_auto:
+        return False
+    hems = _safe_getattr(coordinator, "_hems")
+    if hems is None:
+        return False
+    now = datetime.now(timezone.utc)
+
+    # Circuit breaker (engine.py:510-511 / 788-818).
+    blocked_until = getattr(hems, "_blocked_until", None)
+    if isinstance(blocked_until, datetime):
+        if blocked_until.tzinfo is None:
+            blocked_until = blocked_until.replace(tzinfo=timezone.utc)
+        if blocked_until > now:
+            return False
+
+    # Manual override (engine.py:512-517 / 720-786).
+    manual_until = getattr(hems, "_manual_override_until", None)
+    if isinstance(manual_until, datetime):
+        if manual_until.tzinfo is None:
+            manual_until = manual_until.replace(tzinfo=timezone.utc)
+        if manual_until > now:
+            return False
+
+    # Anti-flapping dedup window: a recent same-target write is
+    # silently dropped at the dispatcher (engine.py:1359-1373).
+    # Surface this as a guard trip so the runtime refuses to claim
+    # a dispatch that the dispatcher would absorb.
+    dedup_window = getattr(hems, "_command_dedup_window", None)
+    if not isinstance(dedup_window, timedelta):
+        dedup_window = timedelta(seconds=30)
+    last_output_at = getattr(hems, "_last_cmd_output_at", None)
+    last_charger_at = getattr(hems, "_last_cmd_charger_at", None)
+    for last_at in (last_output_at, last_charger_at):
+        if isinstance(last_at, datetime):
+            if last_at.tzinfo is None:
+                last_at = last_at.replace(tzinfo=timezone.utc)
+            if (now - last_at) < dedup_window:
+                return False
     return True
 
 
@@ -1352,13 +1601,16 @@ def _is_in_prep_window(
 
 
 async def _call_execute_hems_command(
-    execute_fn: Callable[..., Awaitable[None]],
+    execute_fn: Callable[..., Awaitable[Any]],
     decision: Any,
     command_id: str,
     *,
     evidence_recorded: bool,
-) -> None:
+) -> Any:
     """Call the protected dispatcher with positional/keyword-tolerant signature.
+
+    Returns the dispatcher's return value (production: ``None`` on
+    success; tests may return ``False`` to model a refusal).
 
     Production signature (coordinator.py:1644-1707)::
 
@@ -1374,11 +1626,11 @@ async def _call_execute_hems_command(
     scheduler / tests can drive the call with either style.
     """
     try:
-        await execute_fn(
+        result = await execute_fn(
             decision, command_id, evidence_recorded=evidence_recorded
         )
-        return
+        return result
     except TypeError:
         # Older signature -- try without the keyword.
-        await execute_fn(decision, command_id)
-        return
+        result = await execute_fn(decision, command_id)
+        return result

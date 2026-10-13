@@ -207,7 +207,7 @@ class _FakeCoordinator:
         self._last_cmd_charger = None
         self._last_cmd_charger_at = None
 
-    async def async_predictive_feedback(self, action, duration_min, new_target_soc):
+    def async_predictive_feedback(self, action, duration_min, new_target_soc):
         self.predictive_feedback_calls.append(
             (action, duration_min, new_target_soc)
         )
