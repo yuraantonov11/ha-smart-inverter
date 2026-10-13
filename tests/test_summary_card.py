@@ -74,6 +74,30 @@ class SummaryCardTests(unittest.TestCase):
         self.assertIn("1800.25", rendered)
         # Diagnostic note for the operator.
         self.assertIn("API ще не повернув значення", rendered)
+        # Юра fixed: the diagnostic note under the yearly
+        # total must NOT be glued to the previous row — there
+        # has to be a blank line separator.
+        lines = rendered.splitlines()
+        # Find the year row and the diagnostic note.
+        year_idx = next(
+            i for i, line in enumerate(lines)
+            if "За поточний рік" in line
+        )
+        note_idx = next(
+            i for i, line in enumerate(lines)
+            if "API ще не повернув значення" in line
+        )
+        self.assertGreater(
+            note_idx, year_idx,
+            msg="diagnostic note must follow the yearly total row",
+        )
+        # The very first non-blank line after the year row
+        # must be either blank (separator) or the note.
+        between = lines[year_idx + 1: note_idx]
+        self.assertTrue(
+            all(line.strip() == "" for line in between),
+            msg=f"non-blank lines between year and note: {between!r}",
+        )
 
     def test_total_unavailable_shows_no_data(self) -> None:
         rendered = _render(total="unavailable", month="50.0", year="100.0")

@@ -340,9 +340,9 @@ _SUMMARY_CARD_TEMPLATE: str = (
     "\n"
     "**За поточний рік (кВт·год):** {{ state_or_missing(ENT_YEAR) }}\n"
     "\n"
-    "{%- if states(ENT_TOTAL) in ['unknown', 'unavailable', '', 'None', 'none'] -%}\n"
+    "{%- if states(ENT_TOTAL) in ['unknown', 'unavailable', '', 'None', 'none'] %}\n"
     "_Загальна енергія: API ще не повернув значення (total endpoint повернув порожні keys, координатор утримав попередній кеш)._\n"
-    "{%- endif -%}\n"
+    "{%- endif %}\n"
 )
 
 
@@ -369,24 +369,34 @@ def _replace_summary_entities_card(views: list) -> bool:
     the coordinator's cache preservation is a deliberate
     fallback for a flaky endpoint.
 
-    Returns True if a card was replaced."""
+    If the card is already a markdown card with the same
+    title, refresh the content from the current
+    ``_SUMMARY_CARD_TEMPLATE`` so template fixes (e.g. a
+    blank line that was missing between the yearly total
+    row and the diagnostic note) propagate to live without
+    requiring the operator to delete the card manually.
+
+    Returns True if a card was replaced or refreshed."""
+    from scripts.deploy_dashboard_no_token import _SUMMARY_CARD_TEMPLATE  # noqa: F401, PLC0415
     replaced = False
     for v in views:
         if v.get("title") != "Історія":
             continue
         for s in v.get("sections", []):
             for i, c in enumerate(list(s.get("cards", []))):
-                if (
-                    c.get("type") == "entities"
-                    and c.get("title") == "📊 Підсумки"
-                ):
-                    new_card = {
+                if c.get("title") != "📊 Підсумки":
+                    continue
+                if c.get("type") == "entities":
+                    s["cards"][i] = {
                         "type": "markdown",
                         "title": "📊 Підсумки",
                         "content": _SUMMARY_CARD_TEMPLATE,
                     }
-                    s["cards"][i] = new_card
                     replaced = True
+                elif c.get("type") == "markdown":
+                    if c.get("content") != _SUMMARY_CARD_TEMPLATE:
+                        c["content"] = _SUMMARY_CARD_TEMPLATE
+                        replaced = True
     return replaced
 
 
