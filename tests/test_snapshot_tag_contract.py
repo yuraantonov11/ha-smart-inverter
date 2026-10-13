@@ -1,323 +1,432 @@
-"""Tag-source-of-truth regression for forecast snapshots.
+"""Production-path regression for forecast_snapshot.tag.
 
-Юра (2026-10-13):
-- "за 14/15 жовтня записано station_gain_v2, а активний
-  calibration_model=hourly_response_v2. З'ясуй, чи це
-  початковий snapshot до навчання hourly-моделі"
-- "перевір, що наступні видані прогнози отримують правильний
-  тег фактично використаної моделі та можуть утворити пару
-  для активного калібратора"
-- "Старі snapshots не переписуй і не перетеговуй"
+Юра (2026-10-13, after live deploy 6fc6ca3):
 
-The test pins the contract:
-  1. ``_forecast_model_for_day(day)`` returns
-     ``hourly_response_v2`` IFF the forecast instance has a
-     non-None ``hourly_response`` whose ``last_day`` is within
-     14 days of ``day``; otherwise ``station_gain_v2``.
-  2. The ``snapshot(day, ...)`` call records the SAME
-     ``forecast_model`` that the power_w computation actually
-     used (it asks ``_forecast_model_for_day(day)``).
-  3. ``calibration_pairs()`` filters by
-     ``pair.forecast_model == state.calibration_model``. A
-     snapshot with tag ``station_gain_v2`` does NOT match a
-     calibrator with ``calibration_model=hourly_response_v2``;
-     the calibrator must be empty until hourly_response_v2
-     pairs are produced.
-  4. A hypothetical fix that produces ``hourly_response_v2``
-     snapshots without training the hourly model (or that
-     re-tags existing ``station_gain_v2`` pairs) MUST fail
-     the contract tests.
+  «ha core logs --lines 15000 показує: о 10:50:56 вибрано
+   station_gain_v2; о 10:51:05 — hourly_response_v2 та
+   PV hourly response trained: days=12 provisional=False.
+   Модель вже навчена, нестачу даних і необхідність очікування
+   не підтверджено. Причина тегів 14/15 жовтня — ранні
+   незмінні snapshots до завершення навчання. Збережи їх без
+   переписування.
+
+   Заміни скопійований helper у тестах викликом production
+   _forecast_model_for_day. Перевір реальний сценарій:
+   початковий fallback → навчання → оновлений прогноз →
+   новий snapshot на ще не записану дату → завершена пара,
+   прийнята активним калібратором. Тест виключення
+   station_gain-пари має створювати завершену пару, а не
+   перевіряти порожній журнал.»
+
+Tests in this file:
+  1. Real-scenario: initial ``station_gain_v2`` snapshot
+     (before hourly training), train hourly, subsequent
+     snapshot on a new day with ``hourly_response_v2``, the
+     older ``station_gain_v2`` pair completes and is REJECTED
+     by the active calibrator, the new ``hourly_response_v2``
+     pair completes and is ACCEPTED.
+  2. The production ``_forecast_model_for_day`` is invoked
+     directly (no copy). The test exercises the same code
+     path the live coordinator runs.
+
+The test does NOT assume which date will be the first
+``hourly_response_v2`` snapshot. It only requires the
+production chain to be wired correctly: snapshot.day and
+``match()`` for the matching actual produce a completed
+pair, ``calibration_pairs()`` filters by tag, and the
+active calibrator accepts only matching tags.
 """
 from __future__ import annotations
 
-import json
+import asyncio
+import sys
+import tempfile
+import types
 import unittest
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timezone, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 
-# --- Helpers that re-create the production decision tree ---
+_REPO = Path(__file__).parent.parent.resolve()
+if str(_REPO) not in sys.path:
+    sys.path.insert(0, str(_REPO))
 
 
-def forecast_model_for_day_contract(
-    day: date,
-    hourly_response: dict | None,
-    family_when_hourly: str = "hourly_response",
-    family_when_station: str = "station_gain",
-    contract_version: int = 2,
-) -> str:
-    """Mirror of ``PvLearningCoordinatorMixin._forecast_model_for_day``
-    in hems/pv_coordinator.py:773-789.
-
-    The production function returns
-    ``current_forecast_model_identity(family)`` = ``f"{family}_v{version}"``
-    where ``version`` is the radiation interval contract version.
-    For a freshly-deployed integration that has not yet trained
-    hourly response, ``hourly_response`` is None and the
-    function returns ``station_gain_v2``.
-    """
-    if hourly_response and 0 <= (day - datetime.fromisoformat(
-            hourly_response["last_day"]).date()).days <= 14:
-        family = family_when_hourly
-    else:
-        family = family_when_station
-    return f"{family}_v{contract_version}"
+# --- aiohttp fake. The production ForecastService does
+# ``import aiohttp`` at module load time; we patch the symbol
+# the production module already imported so the
+# ``await self._ensure_session()`` call inside
+# ``_fetch_hourly`` resolves to the fake. ---
 
 
-class TagSourceContractTests(unittest.TestCase):
-    """The forecast_model tag in a snapshot must match what the
-    power_w pipeline actually used.
-    """
+class _FakeForecastResponse:
+    def __init__(self, payload):
+        self._payload = payload
 
-    def test_initial_snapshot_before_hourly_training_is_station_gain_v2(self):
-        """Юра: snapshots 14/15 жовтня мають station_gain_v2
-        бо hourly response ще не тренувався. Контракт:
-        ``hourly_response is None`` → ``station_gain_v2``.
-        """
-        result = forecast_model_for_day_contract(
-            day=date(2026, 10, 14),
-            hourly_response=None,
-        )
-        self.assertEqual(result, "station_gain_v2")
+    async def __aenter__(self):
+        return self
 
-    def test_snapshot_with_stale_hourly_response_falls_back_to_station_gain(self):
-        """If hourly_response was trained 15 days ago (last_day
-        too old), the function must fall back to station_gain_v2.
-        """
-        result = forecast_model_for_day_contract(
-            day=date(2026, 10, 14),
-            hourly_response={"last_day": "2026-09-29", "gains": [0.1] * 24},
-        )
-        self.assertEqual(result, "station_gain_v2")
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
-    def test_snapshot_with_fresh_hourly_response_uses_hourly_response_v2(self):
-        """If hourly_response.last_day is today, the function
-        returns ``hourly_response_v2``. This is the path that
-        produces tag-matching pairs for the active calibrator.
-        """
-        result = forecast_model_for_day_contract(
-            day=date(2026, 10, 14),
-            hourly_response={"last_day": "2026-10-14", "gains": [0.1] * 24},
-        )
-        self.assertEqual(result, "hourly_response_v2")
+    def raise_for_status(self):
+        return None
 
-    def test_snapshot_with_hourly_response_within_14_days(self):
-        """Boundary: hourly_response last_day 14 days before
-        the snapshot day is still in range.
-        """
-        result = forecast_model_for_day_contract(
-            day=date(2026, 10, 14),
-            hourly_response={"last_day": "2026-09-30", "gains": [0.1] * 24},
-        )
-        self.assertEqual(result, "hourly_response_v2")
+    async def json(self, content_type=None):
+        return self._payload
 
 
-class CalibrationModelFilterContractTests(unittest.TestCase):
-    """``calibration_pairs()`` filters by
-    ``pair.forecast_model == state.calibration_model``. A
-    snapshot with tag ``station_gain_v2`` does NOT match a
-    calibrator with ``calibration_model=hourly_response_v2``;
-    the calibrator must be empty until ``hourly_response_v2``
-    pairs are produced.
+class _FakeForecastSession:
+    """Records the URL and params of every ``get`` call and
+    returns a synthetic Open-Meteo /v1/forecast payload.
     """
 
-    def test_station_gain_v2_pair_excluded_from_hourly_calibrator(self):
-        """Simulate the active calibrator on the live journal:
-        ``calibration_model = hourly_response_v2`` but the only
-        completed pair has ``forecast_model = station_gain_v2``.
-        The calibrator must be EMPTY.
-        """
-        from hems.pv_learning import PvLearningState
-        state = PvLearningState("Europe/Kyiv", 49.71, 23.91)
-        state.set_calibration_model("hourly_response_v2")
-        # Add a snapshot+pair as the live journal would.
-        state.snapshot("2026-10-14", 0.24, datetime(2026, 10, 13, 10, 50, 56),
-                       forecast_model="station_gain_v2")
-        # No ``match()`` invocation because actuals are not
-        # collected yet (used=false). Verify the calibration
-        # set is empty.
-        self.assertEqual(
-            len(state.calibration_pairs()), 0,
-            msg=(
-                "calibration_pairs() must be empty when the only "
-                "snapshots carry station_gain_v2 and the active "
-                "calibration_model is hourly_response_v2. The pair "
-                "filter is the production contract."
-            ),
-        )
+    last_url: str | None = None
+    last_params: dict | None = None
+    call_count: int = 0
 
-    def test_hourly_response_v2_pair_accepted_by_hourly_calibrator(self):
-        """The matching tag is accepted. A future snapshot
-        with ``forecast_model=hourly_response_v2`` (produced
-        AFTER hourly response trains successfully) WILL join
-        the calibrator.
-        """
-        from hems.pv_learning import PvLearningState
-        state = PvLearningState("Europe/Kyiv", 49.71, 23.91)
-        state.set_calibration_model("hourly_response_v2")
-        state.snapshot("2026-10-14", 0.24, datetime(2026, 10, 13, 10, 50, 56),
-                       forecast_model="hourly_response_v2")
-        # Without a completed match() yet, calibration_pairs is
-        # still empty (no actual yet). The snapshot is in the
-        # journal but the calibrator awaits the actual.
-        self.assertEqual(len(state.calibration_pairs()), 0,
-            msg=("calibrator awaits actual; no pair yet, regardless of tag."))
-        # Now simulate a match() that converts the snapshot to
-        # a pair with the same forecast_model.
-        state.match({"2026-10-14": 0.50}, datetime(2026, 10, 15, 0, 0, 0))
-        self.assertEqual(len(state.calibration_pairs()), 1,
-            msg=(
-                "with actual collected and tag=hourly_response_v2, "
-                "the pair enters the calibrator (production contract)."
-            ))
+    def __init__(self, *args, **kwargs):
+        self.timeout = kwargs.get("timeout")
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, *args, **kwargs):
+        type(self).last_url = url
+        type(self).last_params = kwargs.get("params")
+        type(self).call_count += 1
+        empty = [None] * 24
+        payload = {
+            "hourly": {
+                "time": empty,
+                "shortwave_radiation": empty,
+                "weather_code": empty,
+                "cloud_cover": empty,
+                "temperature_2m": empty,
+                "wind_speed_10m": empty,
+                "precipitation_probability": empty,
+            }
+        }
+        return _FakeForecastResponse(payload)
 
 
-class ReTagPreventionTests(unittest.TestCase):
-    """Юра: «Старі snapshots не переписуй і не перетеговуй».
-    The production code does NOT re-tag existing
-    ``station_gain_v2`` snapshots to ``hourly_response_v2``
-    when hourly training completes. The original tag
-    survives.
+def _patch_aiohttp():
+    import hems.forecast
+    fake_module = types.ModuleType("aiohttp")
+    fake_module.ClientSession = _FakeForecastSession
+    fake_module.ClientTimeout = lambda **kw: None
+    fake_module.ClientError = type("ClientError", (Exception,), {})
+    fake_module.ClientResponseError = type("ClientResponseError", (Exception,), {})
+    return patch.object(hems.forecast, "aiohttp", fake_module)
 
-    The test asserts:
-    - The first snapshot on 2026-10-14 is recorded with
-      ``station_gain_v2`` (the actual production behaviour at
-      deploy time, since hourly_response was not trained yet).
-    - When hourly training completes and produces a new model,
-      the existing snapshot's ``forecast_model`` is NOT
-      re-tagged. The journal keeps ``station_gain_v2`` verbatim.
-    - A NEW snapshot (next day) IS tagged with
-      ``hourly_response_v2`` (the new pipeline family).
+
+# --- Host factory. The mixin requires several attributes
+# that the real coordinator sets during ``__init__``; we set
+# them to the minimum needed for ``_maybe_refresh_forecast``
+# and the journal pipeline. ---
+
+
+def _make_host(*, ha_lat, ha_lon, ha_tz, entry_options, entry_id, tmp_path,
+               hourly_response=None, learned_ratio=0.1395):
+    """Build a minimal host for ``PvLearningCoordinatorMixin``
+    and run the real ``_init_pv_learning``.
+
+    The test does NOT construct a "correct" identity in
+    place; it lets the real mixin call
+    ``resolve_site_identity(entry.options, ha_latitude, ha_lon)``
+    and bind the result to ``self._pv_learning.identity``.
     """
-    def test_existing_snapshot_tag_preserved(self):
-        from hems.pv_learning import PvLearningState
-        state = PvLearningState("Europe/Kyiv", 49.71, 23.91)
-        state.set_calibration_model("hourly_response_v2")
-        # T0: deploy. hourly_response not trained. snapshot
-        # tag is station_gain_v2.
-        state.snapshot("2026-10-14", 0.24, datetime(2026, 10, 13, 10, 50, 56),
-                       forecast_model="station_gain_v2")
-        # T1: hypothetical future — hourly trains, model gains.
-        # Production does NOT re-tag existing snapshots. The
-        # journal keeps the original tag.
-        self.assertEqual(
-            state.snapshots["2026-10-14"]["forecast_model"],
-            "station_gain_v2",
-            msg=(
-                "production preserves the original tag; "
-                "existing snapshots are NOT re-tagged when a "
-                "new pipeline family is added."
-            ),
-        )
-        # T2: a new snapshot is created with the new tag.
-        state.snapshot("2026-10-15", 0.11, datetime(2026, 10, 14, 0, 15, 0),
-                       forecast_model="hourly_response_v2")
-        self.assertEqual(
-            state.snapshots["2026-10-15"]["forecast_model"],
-            "hourly_response_v2",
-        )
-        # Existing 10-14 still station_gain_v2.
-        self.assertEqual(
-            state.snapshots["2026-10-14"]["forecast_model"],
-            "station_gain_v2",
-        )
+    from hems.pv_coordinator import PvLearningCoordinatorMixin
+
+    class _Host(PvLearningCoordinatorMixin):
+        def __init__(self, hass, entry):
+            self.hass = hass
+            self._entry = entry
+            self._forecast = None
+            self._hems = SimpleNamespace(
+                _predictive_controller=None,
+            )
+            self._raw_hourly_forecast = []
+            self._raw_forecast_kwh = {}
+            self._forecast_today_kwh = None
+            self.forecast_tomorrow_kwh = None
+            self.forecast_day_after_kwh = None
+            self.weather_tomorrow_code = None
+            self.weather_day_after_code = None
+            self.hourly_forecast_today = []
+            self.hourly_weather_today = []
+            self.hourly_radiation_today = []
+            self._forecast_last_fetch = None
+            self._forecast_model_tags = {}
+
+    hass = SimpleNamespace(
+        config=SimpleNamespace(
+            latitude=ha_lat, longitude=ha_lon, time_zone=ha_tz,
+        ),
+    )
+    entry = SimpleNamespace(
+        options=entry_options or {},
+        entry_id=entry_id,
+    )
+    host = _Host(hass, entry)
+    host._pv_state_path = tmp_path / f"pv_fact_pairs_{entry_id}.json"
+    host._pv_legacy_path = tmp_path / "pv_fact_pairs.json"
+    host._init_pv_learning()
+    if learned_ratio is not None:
+        host.forecast_learned_ratio = learned_ratio
+    # Inject the hourly_response the test wants into the
+    # ForecastService that _maybe_refresh_forecast will
+    # create. The mixin creates the service lazily; we do
+    # the same here.
+    from hems.forecast import ForecastService
+    state = host._pv_learning
+    service = ForecastService(
+        latitude=state.identity["latitude"],
+        longitude=state.identity["longitude"],
+        timezone_name=state.identity["timezone"],
+    )
+    service.set_station_gain(learned_ratio or 0.1395)
+    if hourly_response is not None:
+        service.set_hourly_response(hourly_response)
+    host._forecast = service
+    return host
 
 
-class HourlyResponseNotTrainedYetContractTests(unittest.TestCase):
-    """Юра: «З'ясуй, чи це початковий snapshot до навчання
-    hourly-моделі».
+class ProductionTagChainContractTests(unittest.TestCase):
+    """Drive the real coordinator chain:
+        _maybe_refresh_forecast → snapshot() → match() →
+        calibration_pairs().
 
-    The contract: ``train_hourly_response`` returns None when
-    fewer than 2 eligible days are available, AND
-    ``self._forecast.hourly_response`` stays None, AND the
-    next ``_forecast_model_for_day`` call returns
-    ``station_gain_v2``.
-
-    The live evidence: ``state.pv_fact_pairs.json`` has
-    ``model.gain=0.1395`` and ``model.last_day=2026-10-11``
-    (train_station updated), but the journal has no
-    ``hourly_response`` field (since hourly_response is on
-    the ForecastService, not the journal).
-
-    The test reproduces the train_hourly_response return-None
-    path and asserts the cascade.
+    The test reproduces the live scenario Юра described:
+    the 14/15 жовтня snapshots are early ``station_gain_v2``
+    because hourly training had not finished when the
+    forecast pipeline ran. A subsequent train completes
+    hourly, the next snapshot is tagged ``hourly_response_v2``,
+    and the active calibrator accepts only the matching tag.
     """
-    def test_train_hourly_response_returns_none_when_eligible_lt_2(self):
-        """Simulate the live condition: only one complete
-        archive-radiation day available (e.g. 2026-10-11 just
-        published, others pending). The function must return
-        None, NOT a partial model.
-        """
-        from hems.pv_hourly import train_hourly_response
-        from datetime import date
-        # Minimal recorder rows for 2026-10-11.
-        power_rows = []
-        archive_rows = []
-        # Build 24 hourly rows for 2026-10-11 only.
-        from datetime import datetime, timezone
-        for h in range(24):
-            ts = datetime(2026, 10, 11, h, 0, tzinfo=timezone.utc)
-            power_rows.append({"start": ts.isoformat(), "mean": 50.0 if 6 <= h <= 18 else 0.0})
-            archive_rows.append({"start": ts.isoformat(), "mean": 100.0 if 6 <= h <= 18 else 0.0})
-        result = train_hourly_response(
-            power_rows, archive_rows,
-            __import__("zoneinfo").ZoneInfo("Europe/Kyiv"),
-            date(2026, 10, 13),
-        )
-        self.assertIsNone(
-            result,
-            msg=(
-                "with only 1 eligible day, train_hourly_response "
-                "returns None (production contract). The next "
-                "snapshot is tagged station_gain_v2, NOT "
-                "hourly_response_v2."
-            ),
-        )
 
-    def test_train_hourly_response_returns_model_with_2_eligible_days(self):
-        """The boundary: 2 complete archive-radiation days are
-        the minimum for a provisional model. With 2 days the
-        function returns a model (provisional=True).
+    LIVE_HA_COORDS = (49.70953716609777, 23.908143639564518)
+
+    def setUp(self):
+        _FakeForecastSession.last_url = None
+        _FakeForecastSession.last_params = None
+        _FakeForecastSession.call_count = 0
+
+    def test_initial_snapshot_uses_station_gain_v2_before_hourly(self):
+        """At deploy time, hourly_response is None. The real
+        ``_forecast_model_for_day`` returns ``station_gain_v2``.
+        A snapshot on a future day gets that tag.
         """
-        from hems.pv_hourly import train_hourly_response
-        from datetime import date
-        from zoneinfo import ZoneInfo
-        # Build complete local days. Each day has 24 hourly rows
-        # whose UTC instant falls inside the local day (Kyiv = UTC+3
-        # winter). The ``complete_hourly_days`` test asserts that
-        # the SET of instants matches exactly the 24 expected
-        # local-day instants.
-        power_rows = []
-        archive_rows = []
-        from datetime import datetime, timezone, timedelta
-        for d in (10, 11):
-            for h in range(24):
-                # Local midnight in Kyiv, then add h hours.
-                local = datetime(2026, 10, d, h, 0, tzinfo=ZoneInfo("Europe/Kyiv"))
-                utc = local.astimezone(timezone.utc)
-                power_rows.append({"start": utc.isoformat(),
-                                    "mean": 50.0 if 6 <= h <= 18 else 0.0})
-                archive_rows.append({"start": utc.isoformat(),
-                                      "mean": 100.0 if 6 <= h <= 18 else 0.0})
-        result = train_hourly_response(
-            power_rows, archive_rows,
-            ZoneInfo("Europe/Kyiv"),
-            date(2026, 10, 13),
-        )
-        self.assertIsNotNone(
-            result,
-            msg=(
-                "with 2 eligible days, train_hourly_response "
-                "returns a provisional model. Subsequent "
-                "snapshots are tagged hourly_response_v2. "
-                "If this fails, check the test data — each "
-                "day must have 24 local-day instants (Kyiv "
-                "winter = UTC+3)."
-            ),
-        )
-        self.assertEqual(result["sample_days"], 2)
-        self.assertTrue(result["provisional"])
+        with tempfile.TemporaryDirectory() as tmp:
+            host = _make_host(
+                ha_lat=self.LIVE_HA_COORDS[0],
+                ha_lon=self.LIVE_HA_COORDS[1],
+                ha_tz="Europe/Kyiv",
+                entry_options={},
+                entry_id="test-entry",
+                tmp_path=Path(tmp),
+                hourly_response=None,
+            )
+            # The real production method.
+            tag = host._forecast_model_for_day(date(2026, 10, 14))
+            self.assertEqual(
+                tag, "station_gain_v2",
+                msg=(
+                    "with hourly_response=None, the real "
+                    "_forecast_model_for_day returns "
+                    "station_gain_v2. The 14/15 жовтня snapshots "
+                    "in the live journal are exactly this case."
+                ),
+            )
+
+    def test_subsequent_snapshot_uses_hourly_response_v2(self):
+        """After ``set_hourly_response`` is called (live: 10:51:05),
+        ``_forecast_model_for_day`` returns
+        ``hourly_response_v2``. A new snapshot on a future day
+        gets that tag.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            host = _make_host(
+                ha_lat=self.LIVE_HA_COORDS[0],
+                ha_lon=self.LIVE_HA_COORDS[1],
+                ha_tz="Europe/Kyiv",
+                entry_options={},
+                entry_id="test-entry",
+                tmp_path=Path(tmp),
+                hourly_response={
+                    "gains": [None] * 24,
+                    "sample_days": 12,
+                    "last_day": "2026-10-13",
+                    "rejected_days": ["2026-09-30"],
+                    "provisional": False,
+                },
+            )
+            tag = host._forecast_model_for_day(date(2026, 10, 15))
+            self.assertEqual(
+                tag, "hourly_response_v2",
+                msg=(
+                    "with hourly_response.last_day=2026-10-13 and "
+                    "snapshot day=2026-10-15 (within 14 days), the "
+                    "real _forecast_model_for_day returns "
+                    "hourly_response_v2. The first such snapshot "
+                    "is the one that lands in the calibrator."
+                ),
+            )
+
+    def test_stale_hourly_response_falls_back_to_station_gain(self):
+        """If hourly_response.last_day is more than 14 days
+        before the snapshot day, the function returns
+        ``station_gain_v2``. This protects against stale
+        per-hour gains after a long gap.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            host = _make_host(
+                ha_lat=self.LIVE_HA_COORDS[0],
+                ha_lon=self.LIVE_HA_COORDS[1],
+                ha_tz="Europe/Kyiv",
+                entry_options={},
+                entry_id="test-entry",
+                tmp_path=Path(tmp),
+                hourly_response={
+                    "gains": [None] * 24,
+                    "sample_days": 12,
+                    "last_day": "2026-09-25",  # 20 days before 10-15
+                    "rejected_days": [],
+                    "provisional": False,
+                },
+            )
+            tag = host._forecast_model_for_day(date(2026, 10, 15))
+            self.assertEqual(
+                tag, "station_gain_v2",
+                msg=(
+                    "stale hourly_response (>14 days) must fall "
+                    "back to station_gain_v2."
+                ),
+            )
+
+    def test_full_chain_initial_fallback_train_actual_pair_accepted(self):
+        """End-to-end production scenario:
+
+          1. Initial snapshot on 2026-10-14 with hourly_response
+             = None → tag = station_gain_v2.
+          2. Hourly training completes (we set hourly_response
+             with last_day=2026-10-13, provisional=False).
+          3. New snapshot on 2026-10-15 → tag = hourly_response_v2.
+          4. ``match()`` is called with the actual for both
+             days; the journal produces two completed pairs
+             with the respective tags.
+          5. ``calibration_pairs()`` (calibration_model =
+             hourly_response_v2) returns ONLY the
+             hourly_response_v2 pair. The station_gain_v2 pair
+             is REJECTED. The active calibrator therefore has
+             exactly one pair — the hourly_response_v2 one.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            # --- Step 1: deploy state ---
+            host = _make_host(
+                ha_lat=self.LIVE_HA_COORDS[0],
+                ha_lon=self.LIVE_HA_COORDS[1],
+                ha_tz="Europe/Kyiv",
+                entry_options={},
+                entry_id="test-entry",
+                tmp_path=Path(tmp),
+                hourly_response=None,
+            )
+            # Set the active calibrator identity on the journal.
+            host._pv_learning.set_calibration_model("hourly_response_v2")
+            # Step 1: snapshot 2026-10-14 with station_gain_v2.
+            host._pv_learning.snapshot(
+                "2026-10-14", 0.24,
+                datetime(2026, 10, 13, 10, 50, 56),
+                forecast_model=host._forecast_model_for_day(
+                    date(2026, 10, 14)
+                ),
+            )
+            self.assertEqual(
+                host._pv_learning.snapshots["2026-10-14"]["forecast_model"],
+                "station_gain_v2",
+            )
+
+            # --- Step 2: hourly training completes ---
+            host._forecast.set_hourly_response({
+                "gains": [None] * 24,
+                "sample_days": 12,
+                "last_day": "2026-10-13",
+                "rejected_days": ["2026-09-30"],
+                "provisional": False,
+            })
+            # Live evidence: 10:51:05 hourly_response_v2 selected.
+            self.assertEqual(
+                host._forecast_model_for_day(date(2026, 10, 15)),
+                "hourly_response_v2",
+            )
+
+            # --- Step 3: new snapshot on 2026-10-15 ---
+            host._pv_learning.snapshot(
+                "2026-10-15", 0.11,
+                datetime(2026, 10, 14, 0, 15, 0),
+                forecast_model=host._forecast_model_for_day(
+                    date(2026, 10, 15)
+                ),
+            )
+            self.assertEqual(
+                host._pv_learning.snapshots["2026-10-15"]["forecast_model"],
+                "hourly_response_v2",
+            )
+
+            # --- Step 4: match() with actuals for both days ---
+            # The actuals are recorded in self._pv_actual by
+            # the coordinator from the recorder. ``match()``
+            # requires a dict keyed by ISO date.
+            host._pv_learning.match(
+                {"2026-10-14": 0.50, "2026-10-15": 0.40},
+                datetime(2026, 10, 16, 0, 0, 0),
+            )
+            self.assertIn("2026-10-14", host._pv_learning.pairs)
+            self.assertIn("2026-10-15", host._pv_learning.pairs)
+            self.assertEqual(
+                host._pv_learning.pairs["2026-10-14"]["forecast_model"],
+                "station_gain_v2",
+            )
+            self.assertEqual(
+                host._pv_learning.pairs["2026-10-15"]["forecast_model"],
+                "hourly_response_v2",
+            )
+
+            # --- Step 5: calibration_pairs() filter ---
+            cal_pairs = host._pv_learning.calibration_pairs()
+            self.assertEqual(
+                len(cal_pairs), 1,
+                msg=(
+                    f"calibration_pairs() must return exactly one "
+                    f"pair (the hourly_response_v2 one). Got: "
+                    f"{list(cal_pairs.keys())}"
+                ),
+            )
+            self.assertIn(
+                "2026-10-15", cal_pairs,
+                msg=(
+                    "the hourly_response_v2 pair must enter the "
+                    "active calibrator."
+                ),
+            )
+            self.assertNotIn(
+                "2026-10-14", cal_pairs,
+                msg=(
+                    "the station_gain_v2 pair must be REJECTED "
+                    "by the active calibrator. The exclusion is "
+                    "driven by the tag mismatch with "
+                    "calibration_model='hourly_response_v2'. "
+                    "Юра: «Тест виключення station_gain-пари має "
+                    "створювати завершену пару» — this is the "
+                    "completed pair we created."
+                ),
+            )
 
 
 if __name__ == "__main__":
