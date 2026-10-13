@@ -228,6 +228,7 @@ views:
                 'forecast_good_use_battery': 'Прогноз сприятливий — використати батарею',
                 'circuit_breaker': 'Захисне блокування HEMS',
                 'reserve_floor': 'SOC на резервній межі',
+                'dwell_lock': 'Утримання поточного режиму — мінімальний інтервал між змінами не минув',
               } -%}
               {%- macro fmt_pct(value) -%}
                 {%- if value is none -%}Немає даних
@@ -237,8 +238,11 @@ views:
               {%- macro short_reason(value) -%}
                 {%- if value is none -%}Немає даних
                 {%- elif value in REASON_LABELS -%}{{ REASON_LABELS[value] }}
-                {%- elif ':' in (value | string) -%}{{ REASON_LABELS.get((value | string).split(':', 1)[0].strip(), 'Невідомий reason') }}
-                {%- else -%}Невідомий reason
+                {%- else -%}
+                  {%- set raw = (value | string) -%}
+                  {%- set stripped = raw | regex_replace('^\\[ML\\]\\s*', '') -%}
+                  {%- set head = stripped.split(':', 1)[0].strip() if ':' in stripped else stripped.strip() -%}
+                  {{ REASON_LABELS.get(head, 'Невідомий reason') }}
                 {%- endif -%}
               {%- endmacro -%}
 
@@ -256,19 +260,9 @@ views:
 
               **Ручна пауза:** {{ ('Активна до ' ~ pause_until) if pause_until else 'Пауза не активна' }}
 
-              {%- if has_value(SELECT) %}
-              {%- set raw_target = states(SELECT) -%}
-              {%- set target_str = (raw_target | string | trim) -%}
-              {%- if target_str in ['unknown', 'unavailable', ''] %}
-              **Ручна ціль SOC:** очікуємо першого циклу. Контрол ще не завантажився — зачекай першого циклу.
-              {%- elif target_str in ['None', 'none'] %}
-              **Ручна ціль SOC:** Автоматично — ручну ціль не задано. Натисни кнопку «Задати ручну ціль SOC», щоб тимчасово скоригувати рекомендацію.
-              {%- else %}
-              **Ручна ціль SOC:** {{ target_str }} % · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
-              {%- endif %}
-              {%- else %}
-              **Ручна ціль SOC:** очікуємо першого циклу. Контрол ще не завантажився — зачекай першого циклу.
-              {%- endif %}
+              {%- set target_soc_attr_rec = state_attr(SELECT, 'target_soc') -%}
+              {%- set has_manual_rec = state_attr(SELECT, 'has_manual_target') -%}
+              **Ручна ціль SOC:** {% if has_manual_rec is true and target_soc_attr_rec is number %}{{ target_soc_attr_rec | int }} % · ручну ціль задано · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.{% elif has_manual_rec is sameas false %}Автоматично — ручну ціль не задано. Натисни кнопку «Задати ручну ціль SOC», щоб тимчасово скоригувати рекомендацію.{% elif has_manual_rec is none %}Контрол ще не завантажився — зачекай першого циклу.{% else %}Ручна ціль: {{ states(SELECT) }} % · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.{% endif %}
 
               **Діагностика машинного коду:**
               {%- if mode is not none %}`mode = "{{ mode }}"`{% endif %}
@@ -339,17 +333,18 @@ views:
                 'forecast_good_use_battery': 'Прогноз сприятливий — використати батарею',
                 'circuit_breaker': 'Захисне блокування HEMS',
                 'reserve_floor': 'SOC на резервній межі',
+                'dwell_lock': 'Утримання поточного режиму — мінімальний інтервал між змінами не минув',
               } -%}
               {%- macro short_reason(value) -%}
                 {%- if value is none -%}
                   Немає даних
                 {%- elif value in REASON_LABELS -%}
                   {{ REASON_LABELS[value] }}
-                {%- elif ':' in (value | string) -%}
-                  {%- set head = (value | string).split(':', 1)[0].strip() -%}
-                  {{ REASON_LABELS.get(head, 'Невідомий reason') }}
                 {%- else -%}
-                  Невідомий reason
+                  {%- set raw = (value | string) -%}
+                  {%- set stripped = raw | regex_replace('^\\[ML\\]\\s*', '') -%}
+                  {%- set head = stripped.split(':', 1)[0].strip() if ':' in stripped else stripped.strip() -%}
+                  {{ REASON_LABELS.get(head, 'Невідомий reason') }}
                 {%- endif -%}
               {%- endmacro -%}
               {%- macro fmt2(value) -%}

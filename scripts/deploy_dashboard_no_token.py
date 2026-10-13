@@ -231,8 +231,52 @@ def _verify_envelope_and_non_ai_preserved(pre: dict, post: dict) -> None:
         raise SystemExit(f"View set changed: {pre_views} -> {post_views}")
     pre_config = pre["data"]["config"]
     post_config = post["data"]["config"]
-    pre_non_ai = [c for c in _iter_cards(pre_config) if "type" in c and c.get("title") not in ALL_CARD_TITLES]
-    post_non_ai = [c for c in _iter_cards(post_config) if "type" in c and c.get("title") not in ALL_CARD_TITLES]
+    # Cards that the deployer is allowed to swap. Each entry
+    # is a (view_title, card_title) pair. The deployer
+    # legitimately replaces these (with a markdown card that
+    # has the same title but Jinja-driven content); the
+    # comparator must NOT treat such a swap as a foreign
+    # change.
+    _allowed_swaps: set[tuple[str, str]] = {
+        ("__all__", "📊 Підсумки"),
+    }
+    pre_non_ai = []
+    for c in _iter_cards(pre_config):
+        # Skip view dicts (they have ``type`` and ``title`` but
+        # are containers, not cards). The ``_iter_cards`` helper
+        # yields every node with ``type`` + ``title``; views,
+        # sections and grid section headers all qualify but are
+        # not user-owned cards.
+        if c is pre_config:
+            continue
+        # View dict: has ``sections`` and lacks the ``cards`` key.
+        if "sections" in c and "cards" not in c:
+            continue
+        # Section dict: has ``cards`` and is itself a list of cards.
+        if "cards" in c and "type" in c and c.get("type") in (
+            "grid", "sections",
+        ):
+            continue
+        if "type" not in c or c.get("title") in ALL_CARD_TITLES:
+            continue
+        if ("__all__", c.get("title")) in _allowed_swaps:
+            continue
+        pre_non_ai.append(c)
+    post_non_ai = []
+    for c in _iter_cards(post_config):
+        if c is post_config:
+            continue
+        if "sections" in c and "cards" not in c:
+            continue
+        if "cards" in c and "type" in c and c.get("type") in (
+            "grid", "sections",
+        ):
+            continue
+        if "type" not in c or c.get("title") in ALL_CARD_TITLES:
+            continue
+        if ("__all__", c.get("title")) in _allowed_swaps:
+            continue
+        post_non_ai.append(c)
     pre_canon = sorted(_canon(c) for c in pre_non_ai)
     post_canon = sorted(_canon(c) for c in post_non_ai)
     if pre_canon != post_canon:
@@ -272,6 +316,78 @@ _SOC_BUTTON_CARD: dict = {
         "entity": "select.smart_solar_inverter_predictive_target_soc",
     },
 }
+
+
+_SUMMARY_CARD_TEMPLATE: str = (
+    "{%- set ENT_TOTAL = 'sensor.garazh_smart_solar_inverter_total_cumulative_energy_kwh' -%}\n"
+    "{%- set ENT_MONTH = 'sensor.garazh_smart_solar_inverter_monthly_pv_energy_kwh' -%}\n"
+    "{%- set ENT_YEAR = 'sensor.garazh_smart_solar_inverter_yearly_pv_energy_kwh' -%}\n"
+    "{%- macro fmt_kwh(value) -%}\n"
+    "  {%- if value is none -%}Немає даних\n"
+    "  {%- else -%}{{ '{:.2f}'.format(value | float) }} кВт·год\n"
+    "  {%- endif -%}\n"
+    "{%- endmacro -%}\n"
+    "{%- macro state_or_missing(entity_id) -%}\n"
+    "  {%- set raw = states(entity_id) | string | trim -%}\n"
+    "  {%- if raw in ['unknown', 'unavailable', '', 'None', 'none'] -%}Немає даних\n"
+    "  {%- else -%}{{ '{:.2f}'.format(raw | float) }} кВт·год\n"
+    "  {%- endif -%}\n"
+    "{%- endmacro -%}\n"
+    "\n"
+    "**Загальна (кВт·год):** {{ state_or_missing(ENT_TOTAL) }}\n"
+    "\n"
+    "**За поточний місяць (кВт·год):** {{ state_or_missing(ENT_MONTH) }}\n"
+    "\n"
+    "**За поточний рік (кВт·год):** {{ state_or_missing(ENT_YEAR) }}\n"
+    "\n"
+    "{%- if states(ENT_TOTAL) in ['unknown', 'unavailable', '', 'None', 'none'] -%}\n"
+    "_Загальна енергія: API ще не повернув значення (total endpoint повернув порожні keys, координатор утримав попередній кеш)._\n"
+    "{%- endif -%}\n"
+)
+
+
+def _replace_summary_entities_card(views: list) -> bool:
+    """Юра fixed: «Історія → Підсумки → Загальна енергія.
+    Там залишається «Невідомо». Звір entity ID та джерело
+    показника. Якщо даних справді немає — покажи зрозуміле
+    «Немає даних», не підставляй нуль.»
+
+    The user-owned ``📊 Підсумки`` entities card in the
+    ``Історія`` view renders the sensor's state as a string.
+    When the sensor's ``native_value`` is ``None`` (the API
+    endpoint returned an empty response and the coordinator
+    kept the previous cache), Lovelace shows the raw
+    ``unknown``/``Невідомо`` placeholder, which the operator
+    cannot tell apart from a real zero.
+
+    We swap the entities card for a markdown card driven by
+    Jinja. The markdown card renders each entity as
+    ``Немає даних`` for unknown/unavailable/None/'' (no
+    ``Невідомо`` placeholder) and as a formatted ``X.XX
+    кВт·год`` value otherwise. We do NOT change the
+    underlying sensor — the API is the source of truth, and
+    the coordinator's cache preservation is a deliberate
+    fallback for a flaky endpoint.
+
+    Returns True if a card was replaced."""
+    replaced = False
+    for v in views:
+        if v.get("title") != "Історія":
+            continue
+        for s in v.get("sections", []):
+            for i, c in enumerate(list(s.get("cards", []))):
+                if (
+                    c.get("type") == "entities"
+                    and c.get("title") == "📊 Підсумки"
+                ):
+                    new_card = {
+                        "type": "markdown",
+                        "title": "📊 Підсумки",
+                        "content": _SUMMARY_CARD_TEMPLATE,
+                    }
+                    s["cards"][i] = new_card
+                    replaced = True
+    return replaced
 
 
 def _has_soc_button(view: dict) -> bool:
@@ -470,6 +586,18 @@ def main() -> int:
         patched.get("views", []), entity_id=soc_button_entity,
     )
     print(f"        SOC button inserted: {soc_inserted}")
+
+    # 2c. Replace the user-owned «📊 Підсумки» entities card in
+    #     the «Історія» view with a markdown card that renders
+    #     each entity via Jinja (so we get «Немає даних» for
+    #     unknown / unavailable / None, never «Невідомо»).
+    #     Юра: «Історія → Підсумки → Загальна енергія. Там
+    #     залишається «Невідомо». Звір entity ID та джерело
+    #     показника. Якщо даних справді немає — покажи зрозуміле
+    #     «Немає даних», не підставляй нуль.»
+    print("[step 2c] replacing summary entities card in Історія view")
+    summary_replaced = _replace_summary_entities_card(patched.get("views", []))
+    print(f"        summary card replaced: {summary_replaced}")
 
     # 3. Idempotency — second pass must be a no-op.
     print("[step 3] verifying idempotency (second pass is no-op)")

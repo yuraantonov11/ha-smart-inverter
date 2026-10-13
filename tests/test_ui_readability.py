@@ -4,12 +4,25 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
+import re
+
 import yaml
 from jinja2 import Environment
 
 REPO = Path(__file__).resolve().parents[1]
 ENTITY = "sensor.smart_solar_inverter_predictive_decision_state"
 SELECT_ENTITY = "select.smart_solar_inverter_predictive_target_soc"
+
+
+# Mirror the HA-only Jinja filter ``regex_replace`` so the
+# tests can exercise the same templates that the live
+# dashboard runs under Home Assistant. Production
+# Home Assistant adds this filter natively; here we install
+# it onto the vanilla Jinja2 environment the unit tests use.
+def _regex_replace(value: str, pattern: str, replacement: str = "") -> str:
+    if value is None:
+        return value
+    return re.sub(pattern, replacement, str(value))
 
 
 def _learning_card_template() -> str:
@@ -34,6 +47,7 @@ def _soc_card_template() -> str:
 
 def _render_learning_card(attrs: dict, *, available: bool = True) -> str:
     env = Environment(autoescape=False)
+    env.filters["regex_replace"] = _regex_replace
     # Default missing calibration keys so Jinja2 strict-undefined lookup of optional
     # attributes (mae_kwh, bias_kwh, recent_pairs, pending) yields None / [] instead
     # of raising. The dashboard sets |default filters explicitly; the test fixture
@@ -64,6 +78,7 @@ def _render_soc_card(select_state: str | None, *,
                     target_soc: int | None = None,
                     has_manual: bool | None = None) -> str:
     env = Environment(autoescape=False)
+    env.filters["regex_replace"] = _regex_replace
     env.globals["states"] = lambda entity: select_state if entity == SELECT_ENTITY else None
 
     def _state_attr(entity, key):
@@ -78,6 +93,54 @@ def _render_soc_card(select_state: str | None, *,
     env.globals["state_attr"] = _state_attr
     env.globals["has_value"] = lambda entity: entity == SELECT_ENTITY
     return env.from_string(_soc_card_template()).render()
+
+
+def _render_recommendation_card(
+    attrs: dict, *,
+    target_soc: int | None = None,
+    has_manual: bool | None = None,
+) -> str:
+    """Render the «AI · рекомендація» markdown card with the
+    given attrs and a fake ``has_manual_target`` /
+    ``target_soc`` triple.
+
+    The recommendation card uses the SAME ``has_manual`` /
+    ``target_soc`` attributes as the SOC card. We mirror the
+    three states: ``has_manual is True + target_soc int``,
+    ``has_manual is False + target_soc None`` (auto), and
+    ``has_manual is None`` (entity not loaded)."""
+    env = Environment(autoescape=False)
+    env.filters["regex_replace"] = _regex_replace
+    STATE = ENTITY
+    SELECT = SELECT_ENTITY
+    env.globals["state_attr"] = (
+        lambda entity, key: (
+            attrs.get(key) if entity == STATE else
+            (target_soc if key == "target_soc" and entity == SELECT else
+             has_manual if key == "has_manual_target" and entity == SELECT else
+             None)
+        )
+    )
+    env.globals["states"] = (
+        lambda entity: (
+            "80" if entity == SELECT and has_manual is True else
+            "None" if entity == SELECT and has_manual is False else
+            "unknown" if entity == SELECT and has_manual is None else
+            None
+        )
+    )
+    env.globals["has_value"] = lambda entity: entity == SELECT
+    return env.from_string(_recommendation_card_template()).render()
+
+
+def _recommendation_card_template() -> str:
+    dashboard = yaml.safe_load((REPO / "dashboard.yaml").read_text(encoding="utf-8"))
+    for view in dashboard["views"]:
+        for section in view.get("sections", []):
+            for card in section.get("cards", []):
+                if card.get("title") == "AI · рекомендація та виконання":
+                    return card["content"]
+    raise AssertionError("existing AI recommendation markdown card not found")
 
 
 class UiReadabilityContracts(unittest.TestCase):
@@ -166,6 +229,37 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertIn("Добова модель станції (v1)", rendered)
 
     def test_reason_codes_translate_to_ukrainian_with_machine_codes_preserved(self) -> None:
+        # Юра fixed: the live reason string is wrapped in
+        # ``[ML] day_pv_low: PV 131W < load 585W (conf=0.00)``.
+        # ``short_reason`` must strip the leading ``[ML] ``,
+        # split on the first colon, trim, and look up the
+        # resulting key in REASON_LABELS.
+        rendered = _render_learning_card(
+            {
+                "reason": "[ML] day_pv_low: PV 131W < load 585W (conf=0.00)",
+                "execution_reason": "[ML] storm_mode: тиждень дощів, очікувана PV 0.05 кВт·год",
+                "mode": "Shadow", "applied": True, "confidence": 0.0,
+                "forecast_calibration": {
+                    "forecast_model": "station_gain_v2",
+                    "samples": 1, "pending_count": 0,
+                    "recent_pairs": [], "pending": [],
+                },
+                "override_pending_until": None,
+            }
+        )
+        self.assertIn("PV нижче споживання — берегти заряд", rendered)
+        self.assertIn("Штормовий режим — берегти заряд", rendered)
+        # The original reason string must be preserved in the
+        # diagnostic block, verbatim.
+        self.assertIn(
+            "reason = \"[ML] day_pv_low: PV 131W < load 585W (conf=0.00)\"",
+            rendered,
+        )
+        self.assertIn(
+            "execution_reason = \"[ML] storm_mode: тиждень дощів",
+            rendered,
+        )
+        # Below: exhaustive list of reason codes.
         """Each known reason / execution_reason must surface a Ukrainian explanation
         while keeping the machine-readable code in parentheses for diagnostics."""
         calibration = {
@@ -209,6 +303,31 @@ class UiReadabilityContracts(unittest.TestCase):
             }
             rendered = _render_learning_card(attrs)
             self.assertIn(ua_prefix, rendered, msg=f"Ukrainian explanation missing for reason={code}")
+
+    def test_dwell_lock_translation_in_both_cards(self) -> None:
+        """Юра fixed: додай переклад ``dwell_lock``, звіривши
+        його значення з engine: утримання поточного режиму
+        через мінімальний інтервал між змінами.
+        The translation must be present in BOTH the
+        recommendation card and the learning card (both use
+        the same ``REASON_LABELS`` map)."""
+        attrs = {
+            "mode": "Shadow", "applied": True, "confidence": 0.5,
+            "reason": "dwell_lock",
+            "execution_reason": "dwell_lock",
+            "forecast_calibration": {
+                "forecast_model": "station_gain_v2",
+                "samples": 1, "pending_count": 0,
+                "recent_pairs": [], "pending": [],
+            },
+            "override_pending_until": None,
+        }
+        rendered = _render_learning_card(attrs)
+        # Must translate, not show "Невідомий reason".
+        self.assertIn("Утримання поточного режиму", rendered)
+        self.assertNotIn("Невідомий reason", rendered)
+        # The machine code is preserved in the diagnostic block.
+        self.assertIn('reason = "dwell_lock"', rendered)
 
     def test_mode_applied_and_confidence_have_ukrainian_translations(self) -> None:
         calibration = {
@@ -375,6 +494,45 @@ class UiReadabilityContracts(unittest.TestCase):
                         msg=f"card {card.get('title', '?')!r} still "
                         "references the non-existent 'select,'",
                     )
+
+    def test_recommendation_card_uses_same_soc_logic_as_soc_card(self) -> None:
+        """Юра fixed: «AI · рекомендація» досі показує
+        «очікуємо першого циклу», бо має власний ``has_value()``
+        блок. У рекомендації залишилася перевірка
+        ``has_value(SELECT)`` і state-string. Використай ті самі
+        ``has_manual_target`` / ``target_soc``, що в SOC-картці.
+
+        We render the recommendation card with a fake
+        ``_render_recommendation_card`` helper (defined below
+        in this test module) and assert that the three
+        states match what the SOC card already says."""
+        # Build a minimal attrs dict that drives both cards.
+        attrs = {
+            "mode": "Shadow", "applied": True, "confidence": 0.5,
+            "reason": "day_pv_low",
+            "execution_reason": "day_pv_low",
+            "override_pending_until": None,
+        }
+        # Auto state (no manual target). Both cards must say
+        # "Автоматично".
+        rendered = _render_recommendation_card(
+            attrs, target_soc=None, has_manual=False,
+        )
+        self.assertIn("Автоматично", rendered)
+        self.assertNotIn("очікуємо першого циклу", rendered)
+        # Manual state (target=80). Both cards must show 80.
+        rendered = _render_recommendation_card(
+            attrs, target_soc=80, has_manual=True,
+        )
+        self.assertIn("80 %", rendered)
+        self.assertIn("ручну ціль задано", rendered)
+        # Entity not yet loaded (has_manual=None).
+        rendered = _render_recommendation_card(
+            attrs, target_soc=None, has_manual=None,
+        )
+        self.assertIn("ще не завантажився", rendered)
+        self.assertNotIn("Автоматично", rendered)
+        self.assertNotIn("ручну ціль задано", rendered)
 
     def test_select_dropdown_removed_because_no_such_option_exists(self) -> None:
         """Юра fixed: the SOC control is the select entity, not a
