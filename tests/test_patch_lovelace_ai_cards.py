@@ -168,34 +168,38 @@ class TestNoDuplicateSocCard(unittest.TestCase):
 
 class TestReasonRenderingContract(unittest.TestCase):
     def test_unknown_reason_rendered_as_diagnostic_code(self) -> None:
-        """The dashboard.yaml must call the new ``render_reason`` macro
-        for both reason and execution_reason — NOT the old
-        ``REASON_LABELS.get(reason, 'Дані недоступні')`` fallback."""
+        """The dashboard.yaml must call the new ``short_reason`` macro
+        for both reason and execution_reason — the macro returns a
+        SHORT human label, not the raw machine code. The machine
+        code is surfaced in a separate diagnostic block lower in
+        the same card so an operator can copy it.
+        """
         text = (REPO / "dashboard.yaml").read_text(encoding="utf-8")
-        self.assertIn("render_reason(reason)", text)
-        self.assertIn("render_reason(execution_reason)", text)
+        self.assertIn("short_reason(reason)", text)
+        self.assertIn("short_reason(execution_reason)", text)
+        # The short human label must NOT include the raw code suffix
+        # for the *primary* display row.
         self.assertNotIn(
-            "REASON_LABELS.get(reason, 'Дані недоступні') if reason is not none",
+            "REASON_LABELS[value] ~ ' (' ~ head ~ ')'",
             text,
-            msg="Old fallback replaced with the diagnostic-aware macro",
+            msg="Primary display row must not append raw code in parens",
         )
-        self.assertNotIn(
-            "REASON_LABELS.get(execution_reason, 'Дані недоступні') "
-            "if execution_reason is not none",
-            text,
-        )
-        # And the macro must surface unknown codes clearly.
-        self.assertIn("Невідомий reason:", text)
+        # And the diagnostic block must still surface the raw code.
+        self.assertIn('decision.reason = "{{ reason }}"', text)
+        self.assertIn('decision.execution_reason = "{{ execution_reason }}"', text)
 
     def test_compound_reason_split_into_code_and_data(self) -> None:
-        """The render_reason macro must split ``code: details`` into
-        the translated head + a labelled ``деталі:`` suffix."""
+        """The short_reason macro must split ``code: details`` and
+        translate the head code via REASON_LABELS. The full string
+        (head + tail) is preserved verbatim in the diagnostic
+        block; only the human-facing label is shortened.
+        """
         text = (REPO / "dashboard.yaml").read_text(encoding="utf-8")
         # The split lives in the macro body.
         self.assertIn("split(':', 1)", text)
-        self.assertIn("деталі:", text)
-        # And the macro handles the unknown-but-compound branch.
-        self.assertIn("Невідомий reason: {{ head }}", text)
+        # The diagnostic block must carry the verbatim code for
+        # operator-side copy/paste.
+        self.assertIn('decision.reason = "{{ reason }}"', text)
 
 
 # --------------------------------------------------------------------------- #

@@ -93,8 +93,7 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertIn("3.46", rendered)
         self.assertIn("0.00", rendered)
         self.assertIn("0.00 / -3.46", rendered)
-        self.assertIn("Дані недоступні", rendered)
-        self.assertIn("| 2026-10-11 | 2.50 | Дані недоступні |", rendered)
+        self.assertIn("| 2026-10-11 | 2.50 | Очікуємо завершення доби |", rendered)
         # Original data is untouched by display formatting.
         self.assertEqual(calibration["mae_kwh"], 1.23456)
         self.assertEqual(calibration["bias_kwh"], -0.006)
@@ -120,8 +119,8 @@ class UiReadabilityContracts(unittest.TestCase):
 
         self.assertIn("Добова модель станції (v2)", rendered)
         self.assertIn("**Пауза:** Пауза не активна", rendered)
-        self.assertIn("**MAE:** Дані недоступні кВт·год", rendered)
-        self.assertIn("| 2026-10-12 | Дані недоступні | Дані недоступні |", rendered)
+        self.assertIn("**MAE:** Немає даних кВт·год", rendered)
+        self.assertIn("| 2026-10-12 | Немає даних | Немає даних |", rendered)
         # No fake-zero artefacts in this branch.
         self.assertNotIn("0.00 кВт·год", rendered)
 
@@ -131,7 +130,7 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertNotIn("Пауза не активна", active)
 
         unavailable = _render_learning_card(attrs, available=False)
-        self.assertIn("**Пауза:** Дані недоступні", unavailable)
+        self.assertIn("**Пауза:** Немає даних", unavailable)
         self.assertNotIn("Пауза не активна", unavailable)
 
     def test_v1_model_fallback_is_listed(self) -> None:
@@ -160,10 +159,10 @@ class UiReadabilityContracts(unittest.TestCase):
         }
         # Sweep every reason code documented in the engine and predictive modules.
         cases = {
-            "already_in_target": "Поточна конфігурація вже відповідає цілі",
+            "already_in_target": "Уже в цілі",
             "battery_drives_load": "Батарея живить навантаження",
-            "day_pv_low": "Прогнозована PV-потужність нижча за споживання",
-            "hysteresis_recovery": "Повернення до попереднього режиму",
+            "day_pv_low": "PV нижче споживання",
+            "hysteresis_recovery": "Відновлення після паузи",
             "night_window_usb": "Нічна USB-стратегія",
             "critical_recovery": "Критичний SOC",
             "surplus_enter_sbu": "Надлишок PV",
@@ -171,19 +170,19 @@ class UiReadabilityContracts(unittest.TestCase):
             "evening_reserve_protection": "Вечірній резерв",
             "emergency_low_soc_daytime": "Аварійно низький SOC удень",
             "storm_mode": "Штормовий режим",
-            "predictive_assist_evening": "Прогнозна підтримка",
+            "predictive_assist_evening": "Підготувати SOC до вечора",
             "no_hint": "Планувальник ще не сформував рекомендацію",
             "hems_auto_off": "HEMS авто-режим вимкнено",
             "unknown_mode": "Невідомий режим",
             "invalid_telemetry": "Невалідні дані телеметрії",
-            "soc_unknown": "SOC невідомий",
+            "soc_unknown": "SOC невідомий — планувальник утримується",
             "day_default": "Стандартна денна стратегія",
             "arbitrage_night": "Арбітраж вночі",
-            "arbitrage_day_sbu": "Арбітраж удень",
-            "arbitrage_day_usb": "Арбітраж удень",
+            "arbitrage_day_sbu": "Арбітраж удень (SBU)",
+            "arbitrage_day_usb": "Арбітраж удень (USB)",
             "forecast_good_use_battery": "Прогноз сприятливий",
             "circuit_breaker": "Захисне блокування HEMS",
-            "reserve_floor": "SOC досяг резервної межі",
+            "reserve_floor": "SOC на резервній межі",
         }
         for code, ua_prefix in cases.items():
             attrs = {
@@ -194,8 +193,6 @@ class UiReadabilityContracts(unittest.TestCase):
             }
             rendered = _render_learning_card(attrs)
             self.assertIn(ua_prefix, rendered, msg=f"Ukrainian explanation missing for reason={code}")
-            # machine-readable code is preserved in parens
-            self.assertIn(f"({code})", rendered, msg=f"machine-readable code missing for reason={code}")
 
     def test_mode_applied_and_confidence_have_ukrainian_translations(self) -> None:
         calibration = {
@@ -211,24 +208,24 @@ class UiReadabilityContracts(unittest.TestCase):
             "reason": "hems_auto_off", "execution_reason": "hems_auto_off",
         }
         rendered = _render_learning_card(attrs_false)
-        self.assertIn("Вимкнено (Off)", rendered)
+        self.assertIn("Вимкнено", rendered)
         self.assertIn("0 %", rendered)
-        self.assertIn("Ні (AI рекомендація не прийнята)", rendered)
+        self.assertIn("Рекомендацію AI не застосовано", rendered)
 
         # Shadow branch
         attrs_shadow = dict(attrs_false, mode="Shadow", applied=True, reason="day_default",
                             execution_reason="day_default", confidence=0.4123)
         rendered_shadow = _render_learning_card(attrs_shadow)
-        self.assertIn("Спостереження (Shadow)", rendered_shadow)
+        self.assertIn("Спостереження", rendered_shadow)
         self.assertIn("41 %", rendered_shadow)
 
         # Assist branch with applied=true
         attrs_assist = dict(attrs_false, mode="Assist", applied=True, reason="day_default",
                             execution_reason="day_default", confidence=0.999)
         rendered_assist = _render_learning_card(attrs_assist)
-        self.assertIn("Підтримка (Assist)", rendered_assist)
+        self.assertIn("Підтримка", rendered_assist)
         self.assertIn("100 %", rendered_assist)
-        self.assertIn("Так (AI рекомендація прийнята HEMS)", rendered_assist)
+        self.assertIn("AI рекомендація прийнята HEMS", rendered_assist)
 
     def test_learning_card_carries_honest_disclaimer_about_ai_vs_hems(self) -> None:
         """The card must not over-claim physical inverter action — only the
@@ -250,27 +247,50 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertIn("фізичну дію інвертора", rendered)
 
     def test_soc_status_card_states_when_target_is_unknown_or_empty(self) -> None:
-        """When the predictive_target_soc select has no manual target,
-        show the Ukrainian "Автоматично" status, not the raw unknown."""
-        for empty in (None, "", "None", "none", "unknown", "unavailable"):
-            rendered = _render_soc_card(empty)
-            self.assertIn("Автоматично — ручну ціль не задано", rendered,
-                          msg=f"SOC card did not render Автоматично for select_state={empty!r}")
-            self.assertNotIn("Ручна ціль", rendered,
-                             msg=f"SOC card wrongly showed manual target for empty={empty!r}")
+        """Юра fixed: the SOC card distinguishes entity unavailability
+        (unknown/unavailable — entity registry / load problem) from the
+        actual auto state (entity loaded, no manual target selected).
+        """
+        # Unavailable entity: must say "тимчасово недоступний", NOT "Автоматично".
+        # Note: Jinja renders Python None as the string "None", which is
+        # the entity-up / no-value state (the auto state). The truly
+        # unavailable states are "unknown" and "unavailable".
+        for unavailable in ("", "unknown", "unavailable"):
+            rendered = _render_soc_card(unavailable)
+            self.assertIn("тимчасово недоступний", rendered,
+                          msg=f"SOC card did not say тимчасово недоступний for select_state={unavailable!r}")
+            self.assertNotIn("Автоматично", rendered,
+                             msg=f"SOC card wrongly showed Автоматично for unavailable={unavailable!r}")
+        # Auto state: entity loaded, no manual target. Jinja renders Python
+        # None as the string "None" (or HA returns "none"); both are
+        # the auto state.
+        for auto in (None, "None", "none"):
+            rendered = _render_soc_card(auto)
+            self.assertIn("Автоматично", rendered,
+                          msg=f"SOC card did not say Автоматично for select_state={auto!r}")
+            self.assertNotIn("тимчасово недоступний", rendered,
+                             msg=f"SOC card wrongly said тимчасово недоступний for auto={auto!r}")
 
-    def test_select_label_explains_unknown_means_automatic(self) -> None:
-        dashboard = yaml.safe_load((REPO / "dashboard.yaml").read_text(encoding="utf-8"))
-        recommendation = next(
-            card for view in dashboard["views"] for section in view.get("sections", [])
-            for card in section.get("cards", [])
-            if card.get("title") == "AI · рекомендація та виконання"
-        )
-        select_row = next(
-            row for row in recommendation["entities"]
-            if isinstance(row, dict) and row.get("entity") == SELECT_ENTITY
-        )
-        self.assertIn("unknown означає автоматично", select_row["name"])
+    def test_select_dropdown_removed_because_no_such_option_exists(self) -> None:
+        """Юра fixed: the SOC control is the select entity, not a
+        dropdown explanation. There is no 'unknown means automatic' hint
+        in the entities card anymore; instead the markdown SOC card
+        distinguishes unknown/unavailable from the auto state.
+        """
+        dashboard = yaml.safe_load((REPO / 'dashboard.yaml').read_text(encoding='utf-8'))
+        for view in dashboard['views']:
+            for section in view.get('sections', []):
+                for card in section.get('cards', []):
+                    if card.get('title') == 'AI · рекомендація та виконання':
+                        for row in card.get('entities', []):
+                            if isinstance(row, dict) and row.get('entity') == SELECT_ENTITY:
+                                self.assertNotIn(
+                                    'unknown означає автоматично',
+                                    row.get('name', ''),
+                                    msg='Select row label no longer misleads about auto state',
+                                )
+                                return
+        self.fail('AI · рекомендація card not found')
 
     def test_soc_status_card_shows_manual_target_when_set(self) -> None:
         rendered = _render_soc_card("80")
@@ -307,13 +327,10 @@ class UiReadabilityContracts(unittest.TestCase):
         }
         rendered = _render_learning_card(attrs)
         # Translated head from REASON_LABELS.
-        self.assertIn("AI рекомендує берегти заряд", rendered)
-        # The diagnostic suffix is preserved as a separate token.
-        self.assertIn("деталі:", rendered)
-        self.assertIn("PV 100W < load 200W", rendered)
-        # And the separate execution_reason.
-        self.assertIn("night_charge", rendered)
-        self.assertIn("SOC 40% < target 60%", rendered)
+        self.assertIn("PV нижче споживання", rendered)
+        # The diagnostic block carries the verbatim code with details.
+        self.assertIn('decision.reason = "day_pv_low: PV 100W < load 200W"', rendered)
+        self.assertIn('decision.execution_reason = "night_charge: SOC 40% < target 60%"', rendered)
 
     def test_unknown_reason_is_shown_as_diagnostic_code_not_dany_nedostupni(self) -> None:
         """An unknown reason must render as ``Невідомий reason: <code>`` so
@@ -328,9 +345,9 @@ class UiReadabilityContracts(unittest.TestCase):
             "execution_reason": None,
         }
         rendered = _render_learning_card(attrs)
-        self.assertIn("Невідомий reason: no_such_code_2026", rendered)
+        self.assertIn("Невідомий reason", rendered)
         # execution_reason None branch must say Дані недоступні.
-        self.assertIn("**Причина виконання або блокування:** Дані недоступні", rendered)
+        self.assertIn("**Причина виконання:** Немає даних", rendered)
         # The recommendation reason line must NOT say Дані недоступні.
         rec_line = next(
             ln for ln in rendered.splitlines()
@@ -370,14 +387,11 @@ class UiReadabilityContracts(unittest.TestCase):
         # Sanity — at least 24 labels discovered.
         self.assertGreaterEqual(len(labels), 24,
                                 msg=f"Expected ≥24 REASON_LABELS, found {len(labels)}")
-        # Forbid physical-action verbs in any label.
+        # Forbid physical-action verbs in any short label.
         for code, ua in labels.items():
             for bad in forbidden:
                 self.assertNotIn(bad, ua,
                                  msg=f"reason_label[{code}]={ua!r} contains forbidden substring {bad!r}")
-            # Machine-readable code in parentheses must always remain for diagnostics.
-            self.assertIn(f"({code})", ua,
-                          msg=f"machine code {code} must remain in the label {ua!r}")
 
 
 if __name__ == "__main__":

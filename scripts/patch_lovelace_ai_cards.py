@@ -803,11 +803,17 @@ def _resolve_cards_list(
     Priority: the context captured during Pass 1 (insert right
     after the first existing target) → the ``HEMS`` view's
     ``cards`` list → the first view's ``cards`` list → None.
+
+    The live dashboard may name the view ``AI · HEMS`` (path
+    ``powmr-ai``) instead of just ``HEMS`` (path ``powmr-hems``).
+    We match by substring on the title so the same patcher works
+    against both the source-of-truth (``dashboard.yaml`` in
+    develop) and a previously-deployed live dashboard.
     """
     if ctx is not None:
         return ctx
     for view in config.get("views", []):
-        if view.get("title") == "HEMS" and "cards" in view:
+        if "HEMS" in view.get("title", "") and "cards" in view:
             return view["cards"]
     for view in config.get("views", []):
         if "cards" in view:
