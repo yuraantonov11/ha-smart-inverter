@@ -363,6 +363,29 @@ class InverterPredictiveTargetSelect(CoordinatorEntity, SelectEntity):
         target = self.coordinator._hems._predictive_user_target_soc
         return str(target) if target is not None else None
 
+    @property
+    def extra_state_attributes(self):
+        """Surface the raw ``_predictive_user_target_soc`` value
+        so a Jinja template can distinguish three states without
+        parsing the entity state string:
+
+          * ``target_soc is None`` + state "None"/"none" — the
+            entity is loaded and no manual target is set (the
+            auto state). The dashboard must show "Автоматично".
+          * ``target_soc`` is an int — the operator has set a
+            specific SOC. The dashboard must show that value.
+          * ``target_soc is None`` + state "unknown" /
+            "unavailable" — the entity is not yet registered
+            with the live state machine. The dashboard must
+            show a load-time notice, NOT "unavailable".
+        """
+        return {
+            "target_soc": self.coordinator._hems._predictive_user_target_soc,
+            "has_manual_target": (
+                self.coordinator._hems._predictive_user_target_soc is not None
+            ),
+        }
+
     async def async_select_option(self, option):
         if option not in self._attr_options:
             raise ValueError("SOC target must be 20..100")

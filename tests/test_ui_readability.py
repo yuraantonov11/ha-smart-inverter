@@ -60,9 +60,23 @@ def _render_learning_card(attrs: dict, *, available: bool = True) -> str:
     return env.from_string(_learning_card_template()).render()
 
 
-def _render_soc_card(select_state: str | None) -> str:
+def _render_soc_card(select_state: str | None, *,
+                    target_soc: int | None = None,
+                    has_manual: bool | None = None) -> str:
     env = Environment(autoescape=False)
     env.globals["states"] = lambda entity: select_state if entity == SELECT_ENTITY else None
+
+    def _state_attr(entity, key):
+        if entity != SELECT_ENTITY:
+            return None
+        if key == "target_soc":
+            return target_soc
+        if key == "has_manual_target":
+            return has_manual
+        return None
+
+    env.globals["state_attr"] = _state_attr
+    env.globals["has_value"] = lambda entity: entity == SELECT_ENTITY
     return env.from_string(_soc_card_template()).render()
 
 
@@ -92,7 +106,9 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertIn("-0.01 кВт·год", rendered)
         self.assertIn("3.46", rendered)
         self.assertIn("0.00", rendered)
-        self.assertIn("0.00 / -3.46", rendered)
+        # Five columns: date | forecast | actual | delta | used.
+        # Delta is its own cell now (no slash prefix on the actual cell).
+        self.assertIn("| 3.46 | 0.00 | -3.46 | так |", rendered)
         self.assertIn("| 2026-10-11 | 2.50 | Очікуємо завершення доби |", rendered)
         # Original data is untouched by display formatting.
         self.assertEqual(calibration["mae_kwh"], 1.23456)
@@ -247,54 +263,80 @@ class UiReadabilityContracts(unittest.TestCase):
         self.assertIn("фізичну дію інвертора", rendered)
 
     def test_soc_status_card_states_when_target_is_unknown_or_empty(self) -> None:
-        """Юра fixed: the SOC card distinguishes entity unavailability
-        (unknown/unavailable — entity registry / load problem) from the
-        actual auto state (entity loaded, no manual target selected).
-        """
-        # Unavailable entity: must say "тимчасово недоступний", NOT "Автоматично".
-        # Note: Jinja renders Python None as the string "None", which is
-        # the entity-up / no-value state (the auto state). The truly
-        # unavailable states are "unknown" and "unavailable".
-        for unavailable in ("", "unknown", "unavailable"):
-            rendered = _render_soc_card(unavailable)
-            self.assertIn("тимчасово недоступний", rendered,
-                          msg=f"SOC card did not say тимчасово недоступний for select_state={unavailable!r}")
+        """Юра fixed: the SOC card distinguishes three states via
+        the new ``has_manual_target`` attribute (added in select.py),
+        NOT by parsing the entity-state string.
+
+          * ``has_manual_target is True`` + integer target_soc
+            — operator has set a manual target.
+          * ``has_manual_target is False`` + target_soc None
+            — entity is loaded but no manual target is set.
+            The HA entity state is "unknown" because
+            ``current_option`` returns None, but that is the AUTO
+            state, NOT an unavailability.
+          * ``has_manual_target is None`` (attribute missing)
+            — entity is not yet registered with the state machine.
+            This is the only state where we say "ще не завантажився".
+
+        The card must NOT say "тимчасово недоступний" for the auto
+        state (Юра: "Не називай цей стан недоступністю")."""
+        # Unavailable: has_manual attribute is None (entity not yet loaded).
+        for unavailable in (None,):
+            rendered = _render_soc_card(
+                "unknown", target_soc=None, has_manual=unavailable,
+            )
+            self.assertIn("ще не завантажився", rendered,
+                          msg=f"SOC card must say 'ще не завантажився' for has_manual=None")
             self.assertNotIn("Автоматично", rendered,
-                             msg=f"SOC card wrongly showed Автоматично for unavailable={unavailable!r}")
-        # Auto state: entity loaded, no manual target. Jinja renders Python
-        # None as the string "None" (or HA returns "none"); both are
-        # the auto state.
-        for auto in (None, "None", "none"):
-            rendered = _render_soc_card(auto)
-            self.assertIn("Автоматично", rendered,
-                          msg=f"SOC card did not say Автоматично for select_state={auto!r}")
+                             msg=f"SOC card must NOT say Автоматично for has_manual=None")
             self.assertNotIn("тимчасово недоступний", rendered,
-                             msg=f"SOC card wrongly said тимчасово недоступний for auto={auto!r}")
+                             msg=f"SOC card must NOT say 'тимчасово недоступний' for has_manual=None")
+        # Auto: has_manual=False, target_soc=None, but state string may
+        # be "unknown"/"None"/"none" — that is the auto state, not
+        # unavailability.
+        for auto_state in (None, "None", "none", "unknown", "unavailable", ""):
+            rendered = _render_soc_card(
+                auto_state, target_soc=None, has_manual=False,
+            )
+            self.assertIn("Автоматично", rendered,
+                          msg=f"SOC card must say Автоматично for auto state={auto_state!r}")
+            self.assertNotIn("тимчасово недоступний", rendered,
+                             msg=f"SOC card must NOT say 'тимчасово недоступний' for auto state={auto_state!r}")
+            self.assertNotIn("ще не завантажився", rendered,
+                             msg=f"SOC card must NOT say 'ще не завантажився' for auto state={auto_state!r}")
 
     def test_select_dropdown_removed_because_no_such_option_exists(self) -> None:
         """Юра fixed: the SOC control is the select entity, not a
-        dropdown explanation. There is no 'unknown means automatic' hint
-        in the entities card anymore; instead the markdown SOC card
-        distinguishes unknown/unavailable from the auto state.
+        dropdown explanation. The 'AI · рекомендація' card is now
+        a markdown card driven by Jinja; the SOC markdown card
+        distinguishes unknown/unavailable from the auto state
+        via ``has_manual_target`` attribute, not by string match.
         """
         dashboard = yaml.safe_load((REPO / 'dashboard.yaml').read_text(encoding='utf-8'))
+        recommendation_found = False
         for view in dashboard['views']:
             for section in view.get('sections', []):
                 for card in section.get('cards', []):
                     if card.get('title') == 'AI · рекомендація та виконання':
-                        for row in card.get('entities', []):
-                            if isinstance(row, dict) and row.get('entity') == SELECT_ENTITY:
-                                self.assertNotIn(
-                                    'unknown означає автоматично',
-                                    row.get('name', ''),
-                                    msg='Select row label no longer misleads about auto state',
-                                )
-                                return
-        self.fail('AI · рекомендація card not found')
+                        recommendation_found = True
+                        # Markdown card has no entities list — the
+                        # whole point of the fix is that the raw
+                        # machine values never appear as attribute
+                        # rows. Confirm the structure.
+                        self.assertEqual(card.get('type'), 'markdown',
+                                         msg='AI · рекомендація must be markdown to render Ukrainian')
+                        self.assertIn('MODE_LABELS', card.get('content', ''),
+                                      msg='AI · рекомендація must translate mode labels')
+                        self.assertIn('short_reason', card.get('content', ''),
+                                      msg='AI · рекомендація must translate reason codes')
+                        self.assertIn('fmt_pct', card.get('content', ''),
+                                      msg='AI · рекомендація must format confidence as %')
+        self.assertTrue(recommendation_found, 'AI · рекомендація card not found')
 
     def test_soc_status_card_shows_manual_target_when_set(self) -> None:
-        rendered = _render_soc_card("80")
-        self.assertIn("Ручна ціль: 80 %", rendered)
+        rendered = _render_soc_card("80", target_soc=80, has_manual=True)
+        self.assertIn("80 %", rendered)
+        self.assertIn("ручну ціль задано", rendered)
         self.assertIn("HEMS на паузі 30 хв", rendered)
         # And the inverse: it must not claim Автоматично when user picked a value.
         self.assertNotIn("Автоматично", rendered)
@@ -305,7 +347,7 @@ class UiReadabilityContracts(unittest.TestCase):
         The card must NOT mislead the operator into thinking there is an
         auto option in the select; instead it must point at the AI / pause
         controls to clear the manual target."""
-        rendered = _render_soc_card("80")
+        rendered = _render_soc_card("80", target_soc=80, has_manual=True)
         self.assertNotIn("назад до автоматичного", rendered,
                          msg="Old misdirection to a non-existent auto select option")
         # Honest guidance: approve current AI recommendation or cancel pause.

@@ -188,54 +188,118 @@ views:
     sections:
       - type: grid
         cards:
-          - type: entities
+          - type: markdown
             title: AI · рекомендація та виконання
-            show_header_toggle: false
-            entities:
-              - entity: sensor.smart_solar_inverter_predictive_decision_state
-                name: Поточне рішення
-              - entity: select.smart_solar_inverter_predictive_target_soc
-                name: Ручна ціль SOC (20–100)
-              - type: attribute
-                entity: sensor.smart_solar_inverter_predictive_decision_state
-                attribute: mode
-                name: Режим AI
-              - type: attribute
-                entity: sensor.smart_solar_inverter_predictive_decision_state
-                attribute: confidence
-                name: Впевненість
-              - type: attribute
-                entity: sensor.smart_solar_inverter_predictive_decision_state
-                attribute: reason
-                name: Причина рекомендації
-              - type: attribute
-                entity: sensor.smart_solar_inverter_predictive_decision_state
-                attribute: execution_reason
-                name: Причина виконання
-              - type: attribute
-                entity: sensor.smart_solar_inverter_predictive_decision_state
-                attribute: applied
-                name: Застосовано
-              - type: attribute
-                entity: sensor.smart_solar_inverter_predictive_decision_state
-                attribute: samples
-                name: Пари факт ↔ прогноз
-              - type: attribute
-                entity: sensor.smart_solar_inverter_predictive_decision_state
-                attribute: override_pending_until
-                name: Ручна пауза
+            content: |
+              {%- set STATE = 'sensor.smart_solar_inverter_predictive_decision_state' -%}
+              {%- set SELECT = 'select.smart_solar_inverter_predictive_target_soc' -%}
+              {%- set mode = state_attr(STATE, 'mode') -%}
+              {%- set confidence = state_attr(STATE, 'confidence') -%}
+              {%- set applied = state_attr(STATE, 'applied') -%}
+              {%- set reason = state_attr(STATE, 'reason') -%}
+              {%- set execution_reason = state_attr(STATE, 'execution_reason') -%}
+              {%- set samples = state_attr(STATE, 'samples') -%}
+              {%- set pause_until = state_attr(STATE, 'override_pending_until') -%}
+              {%- set target_soc_attr = state_attr(SELECT, 'target_soc') -%}
+              {%- set MODE_LABELS = {'Off': 'Вимкнено', 'Shadow': 'Спостереження', 'Assist': 'Підтримка'} -%}
+              {%- set APPLIED_LABELS = {true: 'AI рекомендація прийнята HEMS', false: 'Рекомендацію AI не застосовано'} -%}
+              {%- set REASON_LABELS = {
+                'already_in_target': 'Уже в цілі — зміни не потрібні',
+                'battery_drives_load': 'Батарея живить навантаження — підзарядка не потрібна',
+                'day_pv_low': 'PV нижче споживання — берегти заряд',
+                'hysteresis_recovery': 'Відновлення після паузи',
+                'night_window_usb': 'Нічна USB-стратегія',
+                'critical_recovery': 'Критичний SOC — відновити заряд',
+                'surplus_enter_sbu': 'Надлишок PV — перейти в SBU',
+                'reserve_soc_protection': 'SOC нижче резерву — захист',
+                'evening_reserve_protection': 'Вечірній резерв',
+                'emergency_low_soc_daytime': 'Аварійно низький SOC удень',
+                'storm_mode': 'Штормовий режим — берегти заряд',
+                'predictive_assist_evening': 'Підготувати SOC до вечора',
+                'no_hint': 'Планувальник ще не сформував рекомендацію',
+                'hems_auto_off': 'HEMS авто-режим вимкнено',
+                'unknown_mode': 'Невідомий режим',
+                'invalid_telemetry': 'Невалідні дані телеметрії',
+                'soc_unknown': 'SOC невідомий — планувальник утримується',
+                'day_default': 'Стандартна денна стратегія',
+                'arbitrage_night': 'Арбітраж вночі',
+                'arbitrage_day_sbu': 'Арбітраж удень (SBU)',
+                'arbitrage_day_usb': 'Арбітраж удень (USB)',
+                'forecast_good_use_battery': 'Прогноз сприятливий — використати батарею',
+                'circuit_breaker': 'Захисне блокування HEMS',
+                'reserve_floor': 'SOC на резервній межі',
+              } -%}
+              {%- macro fmt_pct(value) -%}
+                {%- if value is none -%}Немає даних
+                {%- else -%}{{ '{:.0f}'.format((value | float) * 100) }} %
+                {%- endif -%}
+              {%- endmacro -%}
+              {%- macro short_reason(value) -%}
+                {%- if value is none -%}Немає даних
+                {%- elif value in REASON_LABELS -%}{{ REASON_LABELS[value] }}
+                {%- elif ':' in (value | string) -%}{{ REASON_LABELS.get((value | string).split(':', 1)[0].strip(), 'Невідомий reason') }}
+                {%- else -%}Невідомий reason
+                {%- endif -%}
+              {%- endmacro -%}
+
+              **Режим AI:** {{ MODE_LABELS.get(mode, 'Невідомо') }}
+
+              **Впевненість:** {{ fmt_pct(confidence) }}
+
+              **Застосування:** {{ APPLIED_LABELS.get(applied, 'Немає даних') }}
+
+              **Причина рекомендації:** {{ short_reason(reason) }}
+
+              **Причина виконання:** {{ short_reason(execution_reason) }}
+
+              **Пари факт ↔ прогноз:** {% if samples is none %}Немає даних{% else %}{{ samples }}{% endif %}
+
+              **Ручна пауза:** {{ ('Активна до ' ~ pause_until) if pause_until else 'Пауза не активна' }}
+
+              {%- if has_value(SELECT) %}
+              {%- set raw_target = states(SELECT) -%}
+              {%- set target_str = (raw_target | string | trim) -%}
+              {%- if target_str in ['unknown', 'unavailable', ''] %}
+              **Ручна ціль SOC:** очікуємо першого циклу. Контрол доступний у select вище.
+              {%- elif target_str in ['None', 'none'] %}
+              **Ручна ціль SOC:** Автоматично — ручну ціль не задано. Обери 20–100 у select вище, щоб тимчасово скоригувати рекомендацію.
+              {%- else %}
+              **Ручна ціль SOC:** {{ target_str }} % · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
+              {%- endif %}
+              {%- else %}
+              **Ручна ціль SOC:** очікуємо першого циклу. Контрол доступний у select вище.
+              {%- endif %}
+
+              **Діагностика машинного коду:**
+              {%- if mode is not none %}`mode = "{{ mode }}"`{% endif %}
+              {%- if confidence is not none %}`confidence = {{ confidence }}`{% endif %}
+              {%- if applied is not none %}`applied = {{ applied | string | lower }}`{% endif %}
+              {%- if reason is not none %}`reason = "{{ reason }}"`{% endif %}
+              {%- if execution_reason is not none %}`execution_reason = "{{ execution_reason }}"`{% endif %}
+              {%- if samples is not none %}`samples = {{ samples }}`{% endif %}
+              {%- if pause_until is not none %}`override_pending_until = "{{ pause_until }}"`{% endif %}
+              {%- if target_soc_attr is not none %}`select.target_soc = {{ target_soc_attr }}`{% else %}`select.target_soc = null`{% endif %}
+
+              _AI лише рекомендує; HEMS вирішує, чи застосувати. «Застосовано» означає прийняття AI-рекомендації HEMS, а не фізичну дію інвертора._
+
           - type: markdown
             title: AI · SOC-стан
             content: |
-              {%- set raw_target = states('select.smart_solar_inverter_predictive_target_soc') -%}
+              {%- set SELECT = 'select.smart_solar_inverter_predictive_target_soc' -%}
+              {%- set target_soc_attr = state_attr(SELECT, 'target_soc') -%}
+              {%- set has_manual = state_attr(SELECT, 'has_manual_target') -%}
+              {%- set raw_target = states(SELECT) -%}
               {%- set target_str = (raw_target | string | trim) -%}
-              {%- if target_str in ['unknown', 'unavailable', ''] -%}
-                **Стан SOC-контролу:** тимчасово недоступний. Перезапусти інтеграцію або зачекай завантаження сутності.
-              {%- elif target_str in ['None', 'none'] -%}
-                **Стан SOC-контролу:** Автоматично — ручну ціль не задано. Обери 20–100 у select вище, щоб тимчасово скоригувати рекомендацію (HEMS на паузі 30 хв).
-              {%- else -%}
-                **Стан SOC-контролу:** Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
-              {%- endif -%}
+
+              **Стан SOC-контролу:** {% if has_manual is true and target_soc_attr is number %}{{ target_soc_attr | int }} % · ручну ціль задано · HEMS на паузі 30 хв.{% elif has_manual is sameas false %}Автоматично — ручну ціль не задано. Планувальник сам обирає ціль. Обери 20–100 у select вище, щоб тимчасово скоригувати рекомендацію.{% elif has_manual is none %}Контрол ще не завантажився — зачекай першого циклу.{% else %}Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв.{% endif %}
+
+              Обери значення 20–100 у select вище, щоб тимчасово скоригувати рекомендацію (HEMS на паузі 30 хв). Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
+
+              {%- if has_manual is true or target_soc_attr is number %}
+              **Діагностика:** `target_soc = {{ target_soc_attr }}`, `has_manual_target = {{ (has_manual | default(false)) | string | lower }}`.
+              {%- else %}
+              **Діагностика:** `target_soc = null`, `has_manual_target = false`.
+              {%- endif %}
           - type: markdown
             title: AI · навчання і точність
             content: |
@@ -351,7 +415,7 @@ views:
               | Дата | Прогноз, кВт·год | Факт, кВт·год | Δ факт−прогноз, кВт·год | Калібрує модель |
               | --- | ---: | ---: | ---: | --- |
               {%- for p in c.get('recent_pairs', []) %}
-              | {{ p.date }} | {{ fmt2(p.forecast_kwh) }} | {{ fmt2(p.actual_kwh) }}{% if p.actual_kwh is not none and p.forecast_kwh is not none %} / {{ fmt2((p.actual_kwh | float) - (p.forecast_kwh | float)) }}{% endif %} | {{ 'так' if p.used_for_current_model else 'ні' }} |
+              | {{ p.date }} | {{ fmt2(p.forecast_kwh) }} | {{ fmt2(p.actual_kwh) }} | {% if p.actual_kwh is not none and p.forecast_kwh is not none %}{{ fmt2((p.actual_kwh | float) - (p.forecast_kwh | float)) }}{% else %}—{% endif %} | {{ 'так' if p.used_for_current_model else 'ні' }} |
               {%- endfor %}
               {%- for p in c.get('pending', []) %}
               | {{ p.date }} | {{ fmt2(p.forecast_kwh) }} | {% if p.awaiting == 'completed_day' %}Очікуємо завершення доби{% elif p.actual_kwh is none %}Немає даних{% else %}{{ fmt2(p.actual_kwh) }} / {{ fmt2((p.actual_kwh | float) - (p.forecast_kwh | float)) }}{% endif %} | — | ні |
