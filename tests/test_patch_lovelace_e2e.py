@@ -182,6 +182,18 @@ class _FakeHA:
                 "config_entry_id": self.config_entry_id,
                 "platform": "powmr_inverter",
             },
+            # Legacy forecast sensor — its unique_id is
+            # ``<old_entry>_forecast_tomorrow`` (the entry has
+            # been migrated, the unique_id was preserved), so
+            # ``_predictive_suffix``'s legacy fallback must
+            # pick it up via entity_id suffix.
+            "sensor.garazh_smart_solar_inverter_pv_forecast_tomorrow": {
+                "entity_id": "sensor.garazh_smart_solar_inverter_pv_forecast_tomorrow",
+                "unique_id": "legacy-old-entry_forecast_tomorrow",
+                "translation_key": None,
+                "config_entry_id": self.config_entry_id,
+                "platform": "powmr_inverter",
+            },
             # An unrelated integration uses the same suffix. It must not
             # win by registry iteration order or contaminate the resolver.
             "sensor.foreign_predictive_decision_state": {

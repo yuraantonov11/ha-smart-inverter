@@ -260,14 +260,14 @@ views:
               {%- set raw_target = states(SELECT) -%}
               {%- set target_str = (raw_target | string | trim) -%}
               {%- if target_str in ['unknown', 'unavailable', ''] %}
-              **Ручна ціль SOC:** очікуємо першого циклу. Контрол доступний у select вище.
+              **Ручна ціль SOC:** очікуємо першого циклу. Контрол ще не завантажився — зачекай першого циклу.
               {%- elif target_str in ['None', 'none'] %}
-              **Ручна ціль SOC:** Автоматично — ручну ціль не задано. Обери 20–100 у select вище, щоб тимчасово скоригувати рекомендацію.
+              **Ручна ціль SOC:** Автоматично — ручну ціль не задано. Натисни кнопку «Задати ручну ціль SOC», щоб тимчасово скоригувати рекомендацію.
               {%- else %}
               **Ручна ціль SOC:** {{ target_str }} % · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
               {%- endif %}
               {%- else %}
-              **Ручна ціль SOC:** очікуємо першого циклу. Контрол доступний у select вище.
+              **Ручна ціль SOC:** очікуємо першого циклу. Контрол ще не завантажився — зачекай першого циклу.
               {%- endif %}
 
               **Діагностика машинного коду:**
@@ -291,15 +291,23 @@ views:
               {%- set raw_target = states(SELECT) -%}
               {%- set target_str = (raw_target | string | trim) -%}
 
-              **Стан SOC-контролу:** {% if has_manual is true and target_soc_attr is number %}{{ target_soc_attr | int }} % · ручну ціль задано · HEMS на паузі 30 хв.{% elif has_manual is sameas false %}Автоматично — ручну ціль не задано. Планувальник сам обирає ціль. Обери 20–100 у select вище, щоб тимчасово скоригувати рекомендацію.{% elif has_manual is none %}Контрол ще не завантажився — зачекай першого циклу.{% else %}Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв.{% endif %}
+              **Стан SOC-контролу:** {% if has_manual is true and target_soc_attr is number %}{{ target_soc_attr | int }} % · ручну ціль задано · HEMS на паузі 30 хв.{% elif has_manual is sameas false %}Автоматично — ручну ціль не задано. Планувальник сам обирає ціль. Обери 20–100 у more-info, щоб тимчасово скоригувати рекомендацію.{% elif has_manual is none %}Контрол ще не завантажився — зачекай першого циклу.{% else %}Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв.{% endif %}
 
-              Обери значення 20–100 у select вище, щоб тимчасово скоригувати рекомендацію (HEMS на паузі 30 хв). Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
+              Обери значення 20–100 у more-info, щоб тимчасово скоригувати рекомендацію (HEMS на паузі 30 хв). Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
 
               {%- if has_manual is true or target_soc_attr is number %}
               **Діагностика:** `target_soc = {{ target_soc_attr }}`, `has_manual_target = {{ (has_manual | default(false)) | string | lower }}`.
               {%- else %}
               **Діагностика:** `target_soc = null`, `has_manual_target = false`.
               {%- endif %}
+          - type: button
+            name: Задати ручну ціль SOC
+            icon: mdi:battery-edit
+            show_name: true
+            show_icon: true
+            tap_action:
+              action: more-info
+              entity: select.smart_solar_inverter_predictive_target_soc
           - type: markdown
             title: AI · навчання і точність
             content: |

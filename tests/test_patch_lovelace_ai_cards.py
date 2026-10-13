@@ -417,7 +417,7 @@ class TestBackupAndDryRun(unittest.TestCase):
             captured["_saved_path"] = url_path
             return save_result
 
-        def fake_list_entity_registry():
+        def fake_list_entity_registry() -> list:
             captured["_entity_registry_called"] = True
             return [
                 {"entity_id": "sensor.garazh_smart_solar_inverter_predictive_decision_state",
@@ -425,6 +425,12 @@ class TestBackupAndDryRun(unittest.TestCase):
                  "config_entry_id": "testentry", "platform": "powmr_inverter"},
                 {"entity_id": "select.garazh_smart_solar_inverter_predictive_target_soc",
                  "unique_id": "testentry_predictive_target_soc",
+                 "config_entry_id": "testentry", "platform": "powmr_inverter"},
+                # Legacy forecast_tomorrow sensor with
+                # non-standard unique_id; the resolver must
+                # still pick it up via entity_id suffix.
+                {"entity_id": "sensor.garazh_smart_solar_inverter_pv_forecast_tomorrow",
+                 "unique_id": "legacy-old-entry_forecast_tomorrow",
                  "config_entry_id": "testentry", "platform": "powmr_inverter"},
             ]
 

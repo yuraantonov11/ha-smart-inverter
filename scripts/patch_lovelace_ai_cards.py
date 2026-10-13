@@ -324,10 +324,25 @@ def _predictive_suffix(
 ) -> str | None:
     config_entry_id = entry.get("config_entry_id") or config_entry_id
     unique_id = entry.get("unique_id") or ""
+    entity_id = entry.get("entity_id") or ""
     if not config_entry_id:
         return None
     marker = f"{config_entry_id}_predictive_"
     if not unique_id.startswith(marker):
+        # Legacy migration: a sensor whose ``unique_id`` is
+        # ``<old_id>_forecast_tomorrow`` (instead of
+        # ``<config_entry_id>_predictive_forecast_tomorrow``)
+        # still belongs to this config entry, because the
+        # ``config_entry_id`` is set correctly in the registry.
+        # We resolve the suffix from the live ``entity_id``:
+        # ``sensor.<prefix>_smart_solar_inverter_pv_forecast_tomorrow``
+        # → ``forecast_tomorrow``. This keeps the dashboard
+        # template (``sensor.smart_solar_inverter_forecast_tomorrow``)
+        # resolvable through the registry, without forcing
+        # the operator to re-import historical data.
+        for legacy_suffix in ("forecast_tomorrow", "forecast_day_after"):
+            if entity_id.endswith(f"_{legacy_suffix}"):
+                return legacy_suffix
         return None
     return unique_id[len(marker):]
 
@@ -437,6 +452,16 @@ _TEMPLATE_ENTITY_PREFIXES: tuple[str, ...] = (
     "switch.smart_solar_inverter_predictive_",
     "number.smart_solar_inverter_predictive_",
     "binary_sensor.smart_solar_inverter_predictive_",
+    # Legacy PV-forecast sensors whose live ``unique_id`` does
+    # not follow the ``<entry_id>_predictive_<suffix>`` shape
+    # (the unique_id was created under an older config entry
+    # and the sensor was migrated into the new entry without
+    # a unique_id rewrite). The dashboard templates still
+    # spell the suffix as ``forecast_tomorrow`` /
+    # ``forecast_day_after``; the registry resolver joins that
+    # suffix to the live entity_id by inspecting
+    # ``_predictive_suffix``'s legacy fallback.
+    "sensor.smart_solar_inverter_",
 )
 
 

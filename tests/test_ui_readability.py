@@ -305,6 +305,77 @@ class UiReadabilityContracts(unittest.TestCase):
             self.assertNotIn("ще не завантажився", rendered,
                              msg=f"SOC card must NOT say 'ще не завантажився' for auto state={auto_state!r}")
 
+    def test_soc_button_card_opens_more_info_on_select(self) -> None:
+        """Юра fixed: 'Поверни доступний SOC-контрол: наприклад,
+        кнопку «Задати ручну ціль SOC», яка відкриває more-info
+        на наявному select. Прибери посилання на неіснуючий
+        «select вище».'
+        The dashboard must contain a button card with
+        ``tap_action.action == 'more-info'`` pointing at the
+        predictive_target_soc select (whose entity_id is the
+        template; the deployer substitutes it via the registry
+        before saving).
+        """
+        dashboard = yaml.safe_load(
+            (REPO / "dashboard.yaml").read_text(encoding="utf-8")
+        )
+        found_button = False
+        for view in dashboard["views"]:
+            for section in view.get("sections", []):
+                for card in section.get("cards", []):
+                    if card.get("type") == "button" and card.get(
+                        "name", "",
+                    ).startswith("Задати ручну ціль SOC"):
+                        found_button = True
+                        tap = card.get("tap_action", {})
+                        self.assertEqual(
+                            tap.get("action"), "more-info",
+                            msg="SOC button must use more-info action",
+                        )
+                        # The entity key may be a template
+                        # (smart_solar_inverter_…); the deployer
+                        # substitutes it before save. We just
+                        # assert it points at the predictive
+                        # target soc.
+                        entity = tap.get("entity", "")
+                        self.assertIn(
+                            "predictive_target_soc", entity,
+                            msg=f"SOC button entity {entity!r} "
+                            "must reference predictive_target_soc",
+                        )
+        self.assertTrue(
+            found_button,
+            msg="expected a button card 'Задати ручну ціль SOC' "
+            "in dashboard.yaml",
+        )
+
+    def test_no_card_text_references_nonexistent_select_above(self) -> None:
+        """Юра fixed: the previous text said 'Обери 20–100 у
+        select вище' but there is no select card above the
+        AI cards anymore (it was a entities card, now a
+        markdown card). The dashboard must NOT point at a
+        non-existent control. We allow 'select' in the text
+        as long as it does not say 'select вище'."""
+        dashboard = yaml.safe_load(
+            (REPO / "dashboard.yaml").read_text(encoding="utf-8")
+        )
+        for view in dashboard["views"]:
+            for section in view.get("sections", []):
+                for card in section.get("cards", []):
+                    content = card.get("content", "")
+                    if not isinstance(content, str):
+                        continue
+                    self.assertNotIn(
+                        "select вище", content,
+                        msg=f"card {card.get('title', '?')!r} still "
+                        "references the non-existent 'select вище'",
+                    )
+                    self.assertNotIn(
+                        "у select,", content,
+                        msg=f"card {card.get('title', '?')!r} still "
+                        "references the non-existent 'select,'",
+                    )
+
     def test_select_dropdown_removed_because_no_such_option_exists(self) -> None:
         """Юра fixed: the SOC control is the select entity, not a
         dropdown explanation. The 'AI · рекомендація' card is now

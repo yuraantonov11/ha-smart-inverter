@@ -57,7 +57,15 @@ import yaml
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
 
-from scripts.patch_lovelace_ai_cards import patch_cards, ALL_CARD_TITLES  # noqa: E402
+from scripts.patch_lovelace_ai_cards import (
+    patch_cards,
+    ALL_CARD_TITLES,
+    build_entity_registry,
+    substitute_entity_ids,
+    _collect_required_templates,
+    _select_predictive_config_entry,
+    _resolve_entity,
+)  # noqa: E402
 
 HA_HOST = "ha"
 HA_USER = "root"
@@ -192,6 +200,15 @@ def _verify_idempotent(patched: dict, cards_target: dict) -> None:
         raise SystemExit(f"Idempotency FAIL: second pass produced changes {stats2}")
     if _canon(patched) != _canon(config_after_second):
         raise SystemExit("Idempotency FAIL: second pass canonical bytes differ")
+    # Also: every substituted template must still resolve; the
+    # second pass must not regress any entity_id back to a
+    # template form.
+    for tmpl in _collect_required_templates(cards_target):
+        # If ``cards_target`` still contains a template, the second
+        # pass would have left it untouched. We do not assert that
+        # here; the ``substitute_entity_ids`` step above already
+        # resolved them, so this is a defensive no-op check.
+        _ = tmpl
 
 
 def _verify_envelope_and_non_ai_preserved(pre: dict, post: dict) -> None:
@@ -244,6 +261,125 @@ def _is_ai_card_changed(pre_card, post_card, expected) -> bool:
     return _canon(post_card) == _canon(expected)
 
 
+_SOC_BUTTON_CARD: dict = {
+    "type": "button",
+    "name": "Задати ручну ціль SOC",
+    "icon": "mdi:battery-edit",
+    "show_name": True,
+    "show_icon": True,
+    "tap_action": {
+        "action": "more-info",
+        "entity": "select.smart_solar_inverter_predictive_target_soc",
+    },
+}
+
+
+def _has_soc_button(view: dict) -> bool:
+    """Return True if a 'Задати ручну ціль SOC' button card is
+    already present in the view (any section, or in the
+    flat ``cards`` list for legacy views)."""
+    for s in view.get("sections", []):
+        for c in s.get("cards", []):
+            if (
+                c.get("type") == "button"
+                and c.get("name", "").startswith("Задати ручну ціль SOC")
+            ):
+                return True
+    for c in view.get("cards", []):
+        if (
+            c.get("type") == "button"
+            and c.get("name", "").startswith("Задати ручну ціль SOC")
+        ):
+            return True
+    return False
+
+
+def _insert_soc_button(views: list, *, entity_id: str) -> bool:
+    """Insert the 'Задати ручну ціль SOC' button card into the
+    HEMS view if it is not already there. The button card is
+    NOT a target AI card (it has no title), so the regular
+    ``patch_cards`` does not insert it. We do it here.
+
+    The button's ``tap_action.entity`` is substituted to the
+    live ``entity_id`` (the registry already provides the
+    mapping).
+    Returns True if a button was inserted."""
+    # Build the substituted button card (template → live).
+    button = copy.deepcopy(_SOC_BUTTON_CARD)
+    button["tap_action"]["entity"] = entity_id
+    inserted = False
+    for v in views:
+        if "HEMS" not in v.get("title", ""):
+            continue
+        if _has_soc_button(v):
+            # Button already lives in some section; still, if
+            # the view also carries a legacy flat ``cards``
+            # list, fold it back into the section so the
+            # structure is consistent. Place the button AFTER
+            # all AI cards so the natural reading order is
+            # recommendation → SOC state → learning → button.
+            if v.get("cards"):
+                for s in v.get("sections", []):
+                    for c in s.get("cards", []):
+                        if (
+                            c.get("type") == "button"
+                            and c.get("name", "").startswith(
+                                "Задати ручну ціль SOC",
+                            )
+                        ):
+                            # Move the button to the end of the
+                            # section so it does not get
+                            # sandwiched between AI cards.
+                            s["cards"].remove(c)
+                            s.setdefault("cards", []).append(c)
+                            for flat_card in v["cards"]:
+                                # Insert each flat card in its
+                                # original position before the
+                                # button.
+                                s["cards"].insert(-1, flat_card)
+                            break
+                    else:
+                        continue
+                    break
+                v["cards"] = []
+            continue
+        # Find a list of cards we can append to. Prefer
+        # ``sections[].cards`` (modern layout), fall back to
+        # the legacy flat ``cards`` key, create a new section
+        # if neither is present.
+        target_section = None
+        if v.get("sections"):
+            for s in v["sections"]:
+                for c in s.get("cards", []):
+                    if c.get("title") in ALL_CARD_TITLES:
+                        target_section = s
+                        break
+                if target_section is not None:
+                    break
+        if target_section is None and v.get("cards"):
+            # Legacy flat layout — promote the flat cards
+            # into a new section so the layout is consistent
+            # with the develop source.
+            target_section = {"type": "grid", "cards": list(v["cards"])}
+            v["cards"] = []
+            v.setdefault("sections", []).append(target_section)
+        elif target_section is None:
+            target_section = {"type": "grid", "cards": []}
+            v.setdefault("sections", []).append(target_section)
+        # Insert the button AFTER the SOC-стан card so the
+        # natural reading order is recommendation → SOC state
+        # → button → learning.
+        cards = target_section.setdefault("cards", [])
+        insert_at = len(cards)
+        for i, c in enumerate(cards):
+            if c.get("title") == "AI · SOC-стан":
+                insert_at = i + 1
+                break
+        cards.insert(insert_at, button)
+        inserted = True
+    return inserted
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true",
@@ -263,16 +399,81 @@ def main() -> int:
     live_sha = _sha(live_local)
     print(f"        live SHA: {live_sha}")
 
+    # 1b. Pull the live entity_registry.
+    registry_local = LOCAL_SNAPSHOT_DIR / "core.entity_registry"
+    print(f"[step 1b] pulling entity registry over SSH → {registry_local}")
+    _scp_get(f"{LIVE_STORAGE_DIR}/core.entity_registry", registry_local)
+    registry_doc = json.loads(registry_local.read_text(encoding="utf-8"))
+    entries = registry_doc.get("data", {}).get("entities", [])
+    print(f"        registry has {len(entries)} entities")
+
+    # 1c. Determine the predictive config entry and build the registry
+    #     of (template_suffix -> actual entity_id) for substitution.
+    print("[step 1c] selecting predictive config entry via entity registry")
+    live_config = envelope["data"]["config"]
+    required_templates = _collect_required_templates(cards_target)
+    print(f"        required templates: {sorted(required_templates)}")
+    config_entry_id = _select_predictive_config_entry(
+        entries, live_config, required_templates,
+    )
+    print(f"        selected config_entry_id: {config_entry_id}")
+    registry = build_entity_registry(entries, config_entry_id=config_entry_id)
+    print(f"        built registry with {len(registry)} suffixes")
+    for k, v in sorted(registry.items()):
+        print(f"          {k!r} -> {v!r}")
+
+    # 1d. Resolve every required template — HARD STOP if any is
+    #     missing (Юра: 'unresolved template must be a hard stop,
+    #     not silent skip').
+    unresolved = sorted(
+        tmpl for tmpl in required_templates
+        if _resolve_entity(tmpl, registry) == tmpl
+    )
+    if unresolved:
+        raise SystemExit(
+            "refusing to deploy — these required entity_id templates "
+            "did not resolve against the live entity registry:\n  "
+            + "\n  ".join(unresolved)
+            + "\nThe deployer will NOT save a dashboard that contains "
+            "template entity_ids the operator's HA cannot resolve "
+            "(they would render as 'unavailable' on every AI view)."
+        )
+
+    # 1e. Substitute entity_ids in BOTH the live config (to detect
+    #     references to other entries) AND the target cards (so the
+    #     patched config uses the live entry_id-derived IDs).
+    print("[step 1e] substituting entity_ids in target cards via registry")
+    cards_substituted, _report = substitute_entity_ids(cards_target, registry)
+    print(f"        substitution report: {sorted(_report.items())}")
+    # Resolve the SOC button's tap_action entity separately
+    # (it is a templated string with a different prefix, not
+    # picked up by _collect_required_templates which only walks
+    # the target cards). Use the registry mapping.
+    soc_button_entity = registry.get(
+        "target_soc", "select.smart_solar_inverter_predictive_target_soc",
+    )
+    print(f"        SOC button entity: {soc_button_entity}")
+
     # 2. Apply patch on the LOCAL copy.
     print("[step 2] applying patch on local copy (no token needed)")
     config = copy.deepcopy(envelope["data"]["config"])
-    patched, stats = patch_cards(config, cards_target)
+    patched, stats = patch_cards(config, cards_substituted)
     print(f"        replaced={len(stats['replaced'])} inserted={len(stats['inserted'])} "
           f"already_up_to_date={len(stats['already_up_to_date'])}")
 
+    # 2b. Insert the SOC button card (the regular patcher does
+    #     not handle it because it has no title). Юра: «Поверни
+    #     доступний SOC-контрол: наприклад, кнопку «Задати ручну
+    #     ціль SOC», яка відкриває more-info на наявному select.»
+    print("[step 2b] inserting SOC button card into HEMS view")
+    soc_inserted = _insert_soc_button(
+        patched.get("views", []), entity_id=soc_button_entity,
+    )
+    print(f"        SOC button inserted: {soc_inserted}")
+
     # 3. Idempotency — second pass must be a no-op.
     print("[step 3] verifying idempotency (second pass is no-op)")
-    _verify_idempotent(patched, cards_target)
+    _verify_idempotent(patched, cards_substituted)
 
     # 4. Envelope / non-AI invariant.
     print("[step 4] verifying envelope and non-AI cards are preserved")
