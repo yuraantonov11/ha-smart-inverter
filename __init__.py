@@ -326,6 +326,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Register services
         from .services import async_register_services
         await async_register_services(hass)
+        from .services.outage import async_register_outage_services
+        await async_register_outage_services(hass)
+        from .services.outage_runtime import wire_outage_runtime
+        wire_outage_runtime(hass, entry, coordinator)
 
         # Register a single options update listener
         # that performs *selective* apply. The
