@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from hems.engine import HemsDecision, HemsEngine, SmartMode
+from hems.engine import HemsDecision, HemsEngine, SmartMode, DispatcherResult
 from hems.tuning import HemsTuningService
 
 NOW = datetime(2026, 10, 3, 12)
@@ -305,7 +305,9 @@ class TestEngineRefactor(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'InverterCoordinator')
         method = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef) and n.name == '_execute_hems_command')
         ns = {
+            '__name__': 'fake.coordinator',  # required for ``from .hems.engine`` relative import
             'HemsDecision': HemsDecision,
+            'DispatcherResult': DispatcherResult,
             'datetime': SimpleNamespace(now=lambda: NOW),
             'uuid': uuid,
             'evidence_journal': SimpleNamespace(
@@ -313,6 +315,26 @@ class TestEngineRefactor(unittest.TestCase):
             ),
             '_LOGGER': Mock(),
         }
+        # The wrapper does ``from .hems.engine import
+        # execute_hems_command`` lazily. We register the symbol
+        # under the package path the test will see at exec time
+        # (``fake.hems.engine``) so the relative import resolves.
+        from hems.engine import execute_hems_command as _exec_body
+        import types as _t
+        import sys as _sys
+        _fake_pkg = _t.ModuleType("fake")
+        _fake_pkg.__path__ = []
+        _fake_hems = _t.ModuleType("fake.hems")
+        _fake_hems.__path__ = []
+        _fake_hems_engine = _t.ModuleType("fake.hems.engine")
+        _fake_hems_engine.execute_hems_command = _exec_body
+        _fake_hems_engine.HemsDecision = HemsDecision
+        _fake_hems_engine.HemsEngine = HemsEngine
+        _fake_hems.engine = _fake_hems_engine
+        _fake_pkg.hems = _fake_hems
+        _sys.modules.setdefault("fake", _fake_pkg)
+        _sys.modules.setdefault("fake.hems", _fake_hems)
+        _sys.modules.setdefault("fake.hems.engine", _fake_hems_engine)
         exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), 'exec'), ns)
         for failed_channel in ('output', 'charger', 'exception', 'neither'):
             with self.subTest(failed_channel=failed_channel):
@@ -323,7 +345,18 @@ class TestEngineRefactor(unittest.TestCase):
                     set_config_item=AsyncMock(return_value=True))
                 if failed_channel == 'exception':
                     api.set_output_priority.side_effect = OSError('offline')
-                c = SimpleNamespace(_hems=e, api=api)
+                c = SimpleNamespace(
+                    _hems=e, api=api,
+                    # The wrapper's pre-flight gates need a healthy
+                    # coordinator state (hems_auto_mode on, last poll
+                    # success, known SOC). The test is exercising the
+                    # dispatcher's bookkeeping, not the wrapper's
+                    # gates; provide the minimum viable state.
+                    hems_auto_mode=True,
+                    last_update_success=True,
+                    data={"batterySoc": 50, "gridAvailable": True},
+                    _entry=SimpleNamespace(entry_id="test"),
+                )
                 asyncio.run(ns['_execute_hems_command'](
                     c, decision, evidence_recorded=True
                 ))

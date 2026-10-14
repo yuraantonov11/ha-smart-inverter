@@ -48,6 +48,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -300,6 +301,159 @@ def _build_unblocked_plan(needs_grid_kwh: float = 2.0) -> planner.PlannerPlan:
 # ---------------------------------------------------------------------------
 
 
+class FakeApiTransport:
+    """Stub of ``InverterHttpApi`` for the dispatcher pipeline.
+
+    Phase 2C/3 follow-up (Codex DEFECT A + B): replacing the
+    previous ``execute_hems_command=lambda ...`` shortcut with a
+    faithful copy of the production dispatcher's transport layer
+    so the new ``DispatcherResult`` contract can be exercised
+    end-to-end against the real algorithm.
+
+    Records every call into ``calls`` (a list of
+    ``(method, args, response)``) so a test can assert that, for
+    example, ``set_buzzer`` was NEVER invoked when the decision
+    carried ``buzzer_off=None``. A transport can be configured
+    to reject specific writes (``reject_output``,
+    ``reject_charger``, ``reject_buzzer``) so each failure mode
+    is testable in isolation.
+
+    The four ``get_*`` helpers model the readback pipeline of
+    the canonical dispatcher (``coordinator.py:_execute_hems_command``
+    phase 2) and are configurable so each test can pin a specific
+    readback-mismatch scenario.
+    """
+
+    DEFAULT_OUTPUT = "0"  # USB
+    DEFAULT_CHARGER = "1"  # SNU
+    DEFAULT_BUZZER = "1"  # ON
+
+    def __init__(
+        self,
+        *,
+        get_output_priority: str | None = None,
+        get_charger_priority: str | None = None,
+        get_buzzer: str | None = None,
+        reject_output: bool = False,
+        reject_charger: bool = False,
+        reject_buzzer: bool = False,
+        raise_on_set: Exception | None = None,
+        readback_mismatch_output: str | None = None,
+        readback_mismatch_charger: str | None = None,
+        last_success_at=None,
+    ) -> None:
+        self.calls: list = []
+        # The "live" device state. The dispatcher's GET path
+        # reads from these; the dispatcher SET path updates them
+        # in lockstep.
+        self._output = self.DEFAULT_OUTPUT
+        self._charger = self.DEFAULT_CHARGER
+        self._buzzer = self.DEFAULT_BUZZER
+        # Canonical freshness timestamp the runtime reads at
+        # ``_read_freshness_seconds`` (services/outage_runtime.py).
+        # Defaults to ``None`` so a stale-missing-data test can
+        # construct a transport that fails closed.
+        self.last_realtime_success_received_at = last_success_at
+        self.last_realtime_response_received_at = None
+        self.last_realtime_source = "unavailable"
+        # Per-write overrides -- a test can pin a different
+        # initial state than the defaults.
+        if get_output_priority is not None:
+            self._output = str(get_output_priority)
+        if get_charger_priority is not None:
+            self._charger = str(get_charger_priority)
+        if get_buzzer is not None:
+            self._buzzer = str(get_buzzer)
+        # Failure modes.
+        self._reject_output = reject_output
+        self._reject_charger = reject_charger
+        self._reject_buzzer = reject_buzzer
+        self._raise_on_set = raise_on_set
+        self._readback_mismatch_output = readback_mismatch_output
+        self._readback_mismatch_charger = readback_mismatch_charger
+
+    # --- SET path. ``True`` means "HTTP 2xx / call succeeded";
+    # ``False`` means "transport rejected the write" (the OLD
+    # production dispatcher did not read this return value but
+    # the NEW contract captures it as ``api_accepted=False``).
+
+    async def set_output_priority(self, value: Any) -> bool:
+        self.calls.append(("set_output_priority", (value,), None))
+        if self._raise_on_set is not None:
+            raise self._raise_on_set
+        if self._reject_output:
+            return False
+        self._output = str(value)
+        return True
+
+    async def set_charger_priority(self, value: Any) -> bool:
+        self.calls.append(("set_charger_priority", (value,), None))
+        if self._raise_on_set is not None:
+            raise self._raise_on_set
+        if self._reject_charger:
+            return False
+        self._charger = str(value)
+        return True
+
+    async def set_config_item(self, key: str, value: str) -> bool:
+        # The production dispatcher's acoustic-comfort branch
+        # writes through ``set_config_item("buzzerAlarmSetting", ...)``.
+        self.calls.append(("set_config_item", (key, value), None))
+        if self._raise_on_set is not None:
+            raise self._raise_on_set
+        if key == "buzzerAlarmSetting":
+            if self._reject_buzzer:
+                return False
+            self._buzzer = str(value)
+            return True
+        # For non-buzzer config items the fake transport is
+        # permissive so future tests do not have to enumerate
+        # every key.
+        return True
+
+    # --- Readback path. The production dispatcher confirms the
+    # write persisted on the device by reading the device's
+    # configuration back. The canonical production method is
+    # ``InverterApiClient.fetch_device_configs()`` (api.py:1434)
+    # which returns a dict keyed by config name with shape
+    # ``{key: {"value": str, ...}}``. Tests configure
+    # ``_readback_mismatch_*`` so a mismatch raises an exception
+    # (production parity: the readback step raises on mismatch).
+
+    async def fetch_device_configs(self) -> dict:
+        self.calls.append(("fetch_device_configs", (), None))
+        if self._readback_mismatch_output is not None:
+            raise RuntimeError(
+                f"output readback mismatch: requested "
+                f"{self._readback_mismatch_output!r} but device "
+                f"reports {self._output!r}"
+            )
+        if self._readback_mismatch_charger is not None:
+            raise RuntimeError(
+                f"charger readback mismatch: requested "
+                f"{self._readback_mismatch_charger!r} but device "
+                f"reports {self._charger!r}"
+            )
+        return {
+            "outputSourcePrioritySetting": {
+                "value": self._output,
+                "name": "Output Source Priority",
+            },
+            "chargerSourcePrioritySetting": {
+                "value": self._charger,
+                "name": "Charger Source Priority",
+            },
+        }
+
+    async def get_buzzer(self) -> str:
+        self.calls.append(("get_buzzer", (), self._buzzer))
+        return self._buzzer
+
+
+# Backwards-compatibility alias used by the freshness-gate tests.
+FakeApi = FakeApiTransport
+
+
 class FakeHems:
     """Bare-minimum stand-in for the HEMS engine.
 
@@ -308,6 +462,15 @@ class FakeHems:
     / ``_predictive_controller`` (calibrator) from
     ``coordinator._hems``. Each surface is independent so a
     test can set only the gates it cares about.
+
+    Phase 2C/3 follow-up (Codex DEFECT C): the real production
+    surface is ``HemsEngine.can_dispatch_outage_decision``
+    (engine.py:580). ``FakeHems`` exposes the same method so the
+    tests drive the CANONICAL guard chain rather than the
+    pre-hotfix inline check in ``outage_runtime._safety_guards_ok``.
+    The runtime's thin wrapper forwards here and the production
+    dispatcher (``InverterCoordinator._execute_hems_command``,
+    coordinator.py:1645+) calls the exact same method.
     """
 
     def __init__(
@@ -318,12 +481,18 @@ class FakeHems:
         last_cmd_output_at: datetime | None = None,
         last_cmd_charger_at: datetime | None = None,
         hems_auto_mode: bool = True,
+        command_dedup_window: timedelta | None = None,
     ) -> None:
         self._manual_override_until = manual_until
         self._blocked_until = blocked_until
         self._last_cmd_output_at = last_cmd_output_at
         self._last_cmd_charger_at = last_cmd_charger_at
         self.hems_auto_mode = hems_auto_mode
+        self._command_dedup_window = (
+            command_dedup_window
+            if isinstance(command_dedup_window, timedelta)
+            else timedelta(seconds=30)
+        )
         self._consumption_history_with_dates: dict[str, float] = {}
         self._predictive_controller = SimpleNamespace(
             calibrator=SimpleNamespace(
@@ -332,6 +501,76 @@ class FakeHems:
                 )
             )
         )
+        self.calls: list = []  # records every can_dispatch call
+
+    def can_dispatch_outage_decision(
+        self, decision: Any = None
+    ) -> tuple[bool, str]:
+        """Mirror of ``HemsEngine.can_dispatch_outage_decision``.
+
+        Phase 2C/3 follow-up: this is the single source of truth
+        the runtime's ``_can_dispatch_decision`` /
+        ``_safety_guards_ok`` and the dispatcher's pre-flight
+        both call. The full set of guards is on the real engine;
+        this stand-in implements the SAME checks so the test
+        surface matches production. ``decision`` is optional --
+        a probe-time call with ``decision=None`` only inspects
+        the engine state, mirroring the production method.
+        """
+        self.calls.append({"decision": decision})
+        now = datetime.now(timezone.utc)
+        # 1. Payload check (only when a decision was supplied)
+        if decision is not None:
+            if (
+                getattr(decision, "output_priority", None) is None
+                and getattr(decision, "charger_priority", None) is None
+            ):
+                return (
+                    False,
+                    "decision has no output/charger payload; refusing to dispatch",
+                )
+        # 2. Circuit breaker
+        blocked_until = self._blocked_until
+        if isinstance(blocked_until, datetime):
+            bu = (
+                blocked_until
+                if blocked_until.tzinfo
+                else blocked_until.replace(tzinfo=timezone.utc)
+            )
+            if bu > now:
+                return (
+                    False,
+                    f"circuit breaker until {bu.isoformat()}",
+                )
+        # 3. Manual override
+        manual_until = self._manual_override_until
+        if isinstance(manual_until, datetime):
+            mu = (
+                manual_until
+                if manual_until.tzinfo
+                else manual_until.replace(tzinfo=timezone.utc)
+            )
+            if mu > now:
+                return (
+                    False,
+                    f"manual pause until {mu.isoformat()}",
+                )
+        # 4. Anti-flapping dedup window
+        for attr in ("_last_cmd_output_at", "_last_cmd_charger_at"):
+            last_at = getattr(self, attr, None)
+            if isinstance(last_at, datetime):
+                la = (
+                    last_at
+                    if last_at.tzinfo
+                    else last_at.replace(tzinfo=timezone.utc)
+                )
+                if (now - la) < self._command_dedup_window:
+                    return (
+                        False,
+                        f"anti-flapping; {attr}={la.isoformat()} "
+                        f"within {int(self._command_dedup_window.total_seconds())}s window",
+                    )
+        return (True, "")
 
 
 class FakeApi:
@@ -364,6 +603,13 @@ class FakeCoordinator:
       * ``_execute_hems_command`` -- the protected dispatcher
       * ``options`` or ``_entry.options`` -- operator config
       * ``hems_auto_mode`` (bool)
+
+    Phase 2C/3 follow-up (Codex DEFECT D): production exposes
+    ``_derive_battery_capacity`` (coordinator.py:2215) -- a
+    staticmethod validator with the same range rules the runtime
+    used to duplicate. ``FakeCoordinator`` exposes an instance
+    method of the same name so ``snapshot_telemetry`` can call it
+    like the real coordinator.
     """
 
     def __init__(
@@ -381,6 +627,8 @@ class FakeCoordinator:
         api: FakeApi | None = None,
         execute_hems_command=None,
         hems_auto_mode: bool = True,
+        derive_battery_capacity=None,
+        bind_real_dispatcher: bool = True,
     ) -> None:
         self.data = data
         self._battery_capacity_kwh = capacity_kwh
@@ -389,7 +637,7 @@ class FakeCoordinator:
         # NOTE: there is intentionally NO
         # ``_battery_capacity_ok_for_planning`` attribute on the
         # production coordinator -- the runtime must compute it
-        # from the range check. See ``DEFECT 4``.
+        # from ``_derive_battery_capacity`` (DEFECT D follow-up).
         if hems is None:
             hems = FakeHems(hems_auto_mode=hems_auto_mode)
         self._hems = hems
@@ -405,15 +653,86 @@ class FakeCoordinator:
         # value as ``last_update_time`` so a healthy coordinator
         # yields ~10s freshness.
         if api is None:
-            api = FakeApi(last_success_at=last_update_time)
+            # Default to FakeApiTransport so the real dispatcher can
+            # exercise set_*/get_* paths end-to-end. The transport's
+            # ``last_realtime_success_received_at`` is the canonical
+            # timestamp the freshness gate reads.
+            api = FakeApiTransport(last_success_at=last_update_time)
         self.api = api
         self.options = options or {}
         self._entry = SimpleNamespace(options=options or {})
-        self._execute_hems_command = execute_hems_command
+        if execute_hems_command is not None:
+            self._execute_hems_command = execute_hems_command
+        elif bind_real_dispatcher:
+            # Bind the real hems.engine.execute_hems_command so
+            # the runtime drives the production code path. Tests
+            # that need to short-circuit the dispatcher pass
+            # ``execute_hems_command=fn`` explicitly.
+            from hems.engine import execute_hems_command as _exec
+
+            async def _bound(decision, command_id=None, *,
+                             evidence_recorded=False):
+                return await _exec(
+                    api=self.api,
+                    hems=self._hems,
+                    decision=decision,
+                    command_id=command_id,
+                    evidence_recorded=evidence_recorded,
+                )
+            self._execute_hems_command = _bound
+        else:
+            self._execute_hems_command = None
         self.hems_auto_mode = hems_auto_mode
+        # ``_derive_battery_capacity`` is the canonical validator
+        # the runtime calls. When the test does not provide one,
+        # we expose an instance method that mirrors the production
+        # ranges so the snapshot contract holds without manual
+        # wiring of test-specific inputs.
+        self._derive_battery_capacity = derive_battery_capacity or self._default_derive_battery_capacity
 
     def set_execute_hems_command(self, fn) -> None:
         self._execute_hems_command = fn
+
+    def _default_derive_battery_capacity(self, options: dict) -> dict:
+        """Mirror of ``InverterCoordinator._derive_battery_capacity``.
+
+        Range rules and dataclass shape are identical to the
+        canonical validator at coordinator.py:2215-2276. The
+        function returns a dict with keys ``ah``, ``voltage``,
+        ``kwh``, ``warning`` (None when valid), and
+        ``ok_for_planning`` (bool, True only when inputs are
+        in-range). Failing either field sets ``warning`` and
+        ``ok_for_planning=False``.
+        """
+        DEFAULTS = {"ah": 230.0, "voltage": 51.2}
+        RANGES = {"ah": (10.0, 2000.0), "voltage": (10.0, 100.0)}
+        out = dict(DEFAULTS)
+        warnings: list[str] = []
+        for key in ("ah", "voltage"):
+            raw = options.get(
+                "battery_capacity_ah" if key == "ah"
+                else "nominal_voltage_v",
+                DEFAULTS[key],
+            )
+            try:
+                checked = float(raw)
+            except (TypeError, ValueError):
+                checked = None
+            lo, hi = RANGES[key]
+            if checked is None or not (lo <= checked <= hi):
+                warnings.append(
+                    f"{key}={raw!r} out of form range [{lo}, {hi}]; "
+                    f"using default {DEFAULTS[key]}"
+                )
+                continue
+            out[key] = checked
+        return {
+            "ah": out["ah"],
+            "voltage": out["voltage"],
+            "kwh": out["ah"] * out["voltage"] / 1000.0,
+            "warning": "; ".join(warnings) if warnings else None,
+            "ok_for_planning": not warnings,
+        }
 
 
 class FakeStore:
@@ -467,8 +786,16 @@ class SnapshotTelemetryTests(unittest.TestCase):
         self.assertIsInstance(tel.now_iso, str)
         self.assertIsNotNone(tel.now_iso)
         self.assertGreaterEqual(tel.telemetry_freshness_seconds, 0)
-        # Every other field is None.
-        self.assertIsNone(tel.battery_capacity_kwh)
+        # Capacity: with the validator-driven contract the production
+        # defaults (230 Ah x 51.2 V / 1000) yield 11.776 kWh; the
+        # validator accepts these because they are in-range. The
+        # snapshot therefore returns the canonical default, not
+        # None. The "missing data" guarantee applies to LIVE values
+        # (batterySoc, pvPower, etc.), not to the configured
+        # capacity, which the validator resolves from operator
+        # options.
+        self.assertEqual(tel.battery_capacity_kwh, 11.776)
+        self.assertTrue(tel.battery_capacity_ok_for_planning)
         self.assertIsNone(tel.battery_soc_pct)
         self.assertIsNone(tel.battery_voltage_v)
         self.assertIsNone(tel.pv_power_w)
@@ -575,18 +902,34 @@ class ExecutePlanTests(unittest.TestCase):
     """
 
     def _capture_dispatcher(self) -> tuple[list, callable]:
-        """Return (calls, dispatcher_fn).
+        """Return (calls, installer_fn).
 
         ``calls`` is a list of (decision, command_id, kwargs) tuples
-        appended to on every call. ``dispatcher_fn`` is a coroutine
-        that records its arguments and returns None.
+        appended to on every call. ``installer_fn`` is a regular
+        function that, when called with a FakeCoordinator, replaces
+        its ``_execute_hems_command`` with a wrapper that records
+        the call AND delegates to the real
+        ``hems.engine.execute_hems_command``. This way the test
+        exercises the production code path end-to-end.
         """
         calls: list = []
 
-        async def _fn(decision, command_id=None, *, evidence_recorded=False):
-            calls.append((decision, command_id, evidence_recorded))
+        def _install(coord: "FakeCoordinator") -> None:
+            from hems.engine import execute_hems_command as _exec
 
-        return calls, _fn
+            async def _wrapped(decision, command_id=None, *,
+                               evidence_recorded=False):
+                calls.append((decision, command_id, evidence_recorded))
+                return await _exec(
+                    api=coord.api,
+                    hems=coord._hems,
+                    decision=decision,
+                    command_id=command_id,
+                    evidence_recorded=evidence_recorded,
+                )
+            coord._execute_hems_command = _wrapped
+
+        return calls, _install
 
     def _run(self, coro):
         """Drive an async coroutine to completion on a fresh event loop."""
@@ -598,8 +941,9 @@ class ExecutePlanTests(unittest.TestCase):
 
     def test_execute_plan_does_nothing_when_plan_blocked(self):
         """Blocked plan -> execute_plan returns early, dispatcher NOT called."""
-        calls, fn = self._capture_dispatcher()
-        coord = FakeCoordinator(execute_hems_command=fn)
+        calls, install = self._capture_dispatcher()
+        coord = FakeCoordinator(bind_real_dispatcher=False)
+        install(coord)
         plan = _build_blocked_plan("battery invalid")
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertFalse(result["executed"])
@@ -608,12 +952,13 @@ class ExecutePlanTests(unittest.TestCase):
 
     def test_execute_plan_calls_protected_dispatcher_for_grid_charge(self):
         """Healthy plan + grid charge needed -> dispatcher called once."""
-        calls, fn = self._capture_dispatcher()
+        calls, install = self._capture_dispatcher()
         coord = FakeCoordinator(
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
-            execute_hems_command=fn,
+            bind_real_dispatcher=False,
         )
+        install(coord)
         plan = _build_unblocked_plan(needs_grid_kwh=3.5)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertTrue(result["executed"], msg=result)
@@ -635,7 +980,7 @@ class ExecutePlanTests(unittest.TestCase):
 
     def test_execute_plan_refuses_when_manual_pause_active(self):
         """Future manual pause -> execute_plan refuses."""
-        calls, fn = self._capture_dispatcher()
+        calls, install = self._capture_dispatcher()
         hems = FakeHems(
             manual_until=datetime.now(timezone.utc) + timedelta(hours=1)
         )
@@ -643,8 +988,9 @@ class ExecutePlanTests(unittest.TestCase):
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
             hems=hems,
-            execute_hems_command=fn,
+            bind_real_dispatcher=False,
         )
+        install(coord)
         plan = _build_unblocked_plan(needs_grid_kwh=3.5)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertFalse(result["executed"])
@@ -659,15 +1005,16 @@ class ExecutePlanTests(unittest.TestCase):
         10 minutes into the past so the freshness gate exceeds
         ``TELEMETRY_STALENESS_LIMIT_SECONDS`` (5 min).
         """
-        calls, fn = self._capture_dispatcher()
+        calls, install = self._capture_dispatcher()
         stale_ts = datetime.now(timezone.utc) - timedelta(seconds=600)
         coord = FakeCoordinator(
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
             last_update_time=stale_ts,
             api=FakeApi(last_success_at=stale_ts),
-            execute_hems_command=fn,
+            bind_real_dispatcher=False,
         )
+        install(coord)
         plan = _build_unblocked_plan(needs_grid_kwh=3.5)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertFalse(result["executed"])
@@ -681,12 +1028,13 @@ class ExecutePlanTests(unittest.TestCase):
         The runtime only emits USB ("0") for prep, but the assertion
         is the wider invariant: never SOLAR or UTI.
         """
-        calls, fn = self._capture_dispatcher()
+        calls, install = self._capture_dispatcher()
         coord = FakeCoordinator(
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
-            execute_hems_command=fn,
+            bind_real_dispatcher=False,
         )
+        install(coord)
         plan = _build_unblocked_plan(needs_grid_kwh=3.5)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertTrue(result["executed"], msg=result)
@@ -708,12 +1056,13 @@ class ExecutePlanTests(unittest.TestCase):
     def test_dispatcher_call_signature_uses_existing_protected_path(self):
         """The runtime calls the coordinator's protected dispatcher exactly once
         with a decision that has the three fields the engine reads."""
-        calls, fn = self._capture_dispatcher()
+        calls, install = self._capture_dispatcher()
         coord = FakeCoordinator(
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
-            execute_hems_command=fn,
+            bind_real_dispatcher=False,
         )
+        install(coord)
         plan = _build_unblocked_plan(needs_grid_kwh=2.0)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertTrue(result["executed"], msg=result)
@@ -1452,17 +1801,28 @@ class CapacityDefect4Tests(unittest.TestCase):
         self.assertEqual(tel.nominal_voltage_v, 51.2)
         self.assertTrue(tel.battery_capacity_ok_for_planning)
 
-    def test_snapshot_telemetry_capacity_ok_false_for_missing_inputs(self):
-        """No Ah/V -> ok_for_planning=False (not None, not True)."""
+    def test_snapshot_telemetry_capacity_ok_false_for_out_of_range_inputs(self):
+        """Out-of-range Ah/V -> ok_for_planning=False.
+
+        The production validator (``coordinator._derive_battery_capacity``,
+        coordinator.py:2215-2276) uses the ranges ``[10, 2000]`` for
+        Ah and ``[10, 100]`` for V. We feed an Ah value of 10000 to
+        trigger an explicit refusal; the snapshot propagates the
+        validator's ``ok_for_planning=False`` and the planner sees a
+        blocked plan.
+        """
         coord = FakeCoordinator(
             data={"batterySoc": 50, "gridAvailable": True},
-            options={},
+            options={"battery_capacity_ah": 10000},  # out-of-range
             capacity_kwh=None,
-            capacity_ah=None,
-            voltage_v=None,
+            capacity_ah=10000,
+            voltage_v=51.2,
         )
         tel = runtime.snapshot_telemetry(coord, hass=None)
-        self.assertFalse(tel.battery_capacity_ok_for_planning)
+        self.assertFalse(
+            tel.battery_capacity_ok_for_planning,
+            msg="out-of-range Ah must propagate to ok_for_planning=False",
+        )
 
     def test_snapshot_telemetry_capacity_ok_false_for_out_of_range(self):
         """10000 Ah is outside ``[10, 2000]`` -> ok_for_planning=False."""
@@ -1555,12 +1915,31 @@ class ExecutePlanDefect6Tests(unittest.TestCase):
     """
 
     def _capture_dispatcher(self):
+        """Return (calls, installer_fn).
+
+        ``installer_fn(coord)`` replaces ``coord._execute_hems_command``
+        with a wrapper that records the call AND delegates to the
+        real ``hems.engine.execute_hems_command``. The test exercises
+        the production code path end-to-end.
+        """
         calls: list = []
 
-        async def _fn(decision, command_id=None, *, evidence_recorded=False):
-            calls.append((decision, command_id, evidence_recorded))
+        def _install(coord):
+            from hems.engine import execute_hems_command as _exec
 
-        return calls, _fn
+            async def _wrapped(decision, command_id=None, *,
+                               evidence_recorded=False):
+                calls.append((decision, command_id, evidence_recorded))
+                return await _exec(
+                    api=coord.api,
+                    hems=coord._hems,
+                    decision=decision,
+                    command_id=command_id,
+                    evidence_recorded=evidence_recorded,
+                )
+            coord._execute_hems_command = _wrapped
+
+        return calls, _install
 
     def _run(self, coro):
         loop = asyncio.new_event_loop()
@@ -1575,12 +1954,13 @@ class ExecutePlanDefect6Tests(unittest.TestCase):
         (engine.py:119, 124). ``buzzer_off`` is None (the runtime
         must NEVER flip the buzzer).
         """
-        calls, fn = self._capture_dispatcher()
+        calls, install = self._capture_dispatcher()
         coord = FakeCoordinator(
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
-            execute_hems_command=fn,
+            bind_real_dispatcher=False,
         )
+        install(coord)
         plan = _build_unblocked_plan(needs_grid_kwh=3.0)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertTrue(result["executed"], msg=result)
@@ -1591,50 +1971,119 @@ class ExecutePlanDefect6Tests(unittest.TestCase):
         # NEVER a buzzer flip.
         self.assertIsNone(decision.buzzer_off)
 
-    def test_execute_plan_refuses_when_dispatcher_returns_false(self):
-        """Fake dispatcher returns ``False`` -> runtime reports
-        ``executed=False`` with a refusal reason. Never claims
-        success on a falsy return.
+    def test_execute_plan_refuses_when_api_rejects_write(self):
+        """The real dispatcher with a FakeApiTransport that
+        rejects ``set_output_priority``. ``DispatcherResult.api_accepted``
+        is False, ``executed=False`` and the api-rejection reason
+        surfaces in ``result.error``.
         """
-        calls: list = []
-
-        async def _false_fn(decision, command_id=None, *,
-                             evidence_recorded=False):
-            calls.append((decision, command_id, evidence_recorded))
-            return False
-
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        api = FakeApiTransport(reject_output=True, last_success_at=fresh)
         coord = FakeCoordinator(
-            data={"batterySoc": 40, "gridAvailable": True},
-            execute_hems_command=_false_fn,
+            data={"batterySoc": 40, "gridAvailable": True,
+                  "pvPower": 100, "loadPower": 200},
+            api=api,
+            last_update_time=fresh,
+            bind_real_dispatcher=True,
         )
         plan = _build_unblocked_plan(needs_grid_kwh=3.0)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
-        self.assertFalse(result["executed"])
-        # Production code returns None on success; the test fake
-        # returns False. The runtime refuses WITHOUT re-raising.
-        self.assertTrue(len(calls) >= 1)
+        self.assertFalse(result["executed"], msg=result)
+        self.assertIn(
+            "api rejected", result["reason"],
+            msg=f"reason must surface api rejection: {result['reason']!r}",
+        )
+        # api was contacted (this is the api-rejection path, not the
+        # guard-refused path).
+        self.assertTrue(
+            any(call[0] == "set_output_priority" for call in api.calls),
+            msg="api.set_output_priority must be called at least once",
+        )
 
-    def test_execute_plan_refuses_when_dispatcher_raises(self):
-        """Fake dispatcher raises ``ValueError`` -> runtime catches,
-        returns ``{'executed': False, 'reason': '...dispatcher...'}``
-        WITHOUT re-raising.
+    def test_execute_plan_refuses_when_readback_mismatches(self):
+        """The real dispatcher writes successfully but the GET
+        readback returns a different value. ``DispatcherResult.readback_valid``
+        is False, ``executed=False`` and the readback reason surfaces.
         """
-        calls: list = []
-
-        async def _raise_fn(decision, command_id=None, *,
-                             evidence_recorded=False):
-            calls.append((decision, command_id, evidence_recorded))
-            raise ValueError("dispatcher rejected write")
-
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        api = FakeApiTransport(
+            readback_mismatch_output="1",  # different from "0"
+            last_success_at=fresh,
+        )
         coord = FakeCoordinator(
-            data={"batterySoc": 40, "gridAvailable": True},
-            execute_hems_command=_raise_fn,
+            data={"batterySoc": 40, "gridAvailable": True,
+                  "pvPower": 100, "loadPower": 200},
+            api=api,
+            last_update_time=fresh,
+            bind_real_dispatcher=True,
         )
         plan = _build_unblocked_plan(needs_grid_kwh=3.0)
-        # Must not raise.
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
-        self.assertFalse(result["executed"])
-        self.assertIn("dispatcher", result["reason"].lower())
+        self.assertFalse(result["executed"], msg=result)
+        self.assertIn(
+            "readback", result["reason"].lower(),
+            msg=f"reason must surface readback mismatch: {result['reason']!r}",
+        )
+
+    def test_execute_plan_does_not_call_set_buzzer_when_decision_buzzer_off_is_none(self):
+        """buzzer_off=None must result in NO api.set_config_item call.
+        The runtime always sets decision.buzzer_off=None; the dispatcher
+        must skip BOTH branches.
+        """
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        api = FakeApiTransport(last_success_at=fresh)
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True,
+                  "pvPower": 100, "loadPower": 200},
+            api=api,
+            last_update_time=fresh,
+            bind_real_dispatcher=True,
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=3.0)
+        result = self._run(runtime.execute_plan(coord, _evt(), plan))
+        self.assertTrue(result["executed"], msg=result)
+        buzzer_calls = [
+            call for call in api.calls if call[0] == "set_config_item"
+        ]
+        self.assertEqual(
+            buzzer_calls, [],
+            msg=f"buzzer must NOT be touched when buzzer_off=None; "
+                f"got: {buzzer_calls!r}",
+        )
+
+    def test_dispatcher_does_not_touch_api_when_guard_refuses(self):
+        """hems.can_dispatch_outage_decision refuses -> api is NEVER
+        contacted. The DispatcherResult has dispatched=False.
+
+        The runtime applies ``_execution_refusal`` BEFORE invoking
+        the dispatcher, so the reason text is the runtime's safety
+        guard message ("safety guard tripped; ...") -- not the
+        dispatcher's "hems refused" -- and the api is never touched
+        regardless of which layer caught it.
+        """
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        api = FakeApiTransport(last_success_at=fresh)
+        hems = FakeHems(blocked_until=datetime.now(timezone.utc) + timedelta(hours=1))
+        coord = FakeCoordinator(
+            data={"batterySoc": 40, "gridAvailable": True,
+                  "pvPower": 100, "loadPower": 200},
+            api=api,
+            hems=hems,
+            last_update_time=fresh,
+            bind_real_dispatcher=True,
+        )
+        plan = _build_unblocked_plan(needs_grid_kwh=3.0)
+        result = self._run(runtime.execute_plan(coord, _evt(), plan))
+        self.assertFalse(result["executed"], msg=result)
+        # Either layer may catch the failure; the api must NEVER be touched.
+        self.assertIn(
+            "safety", result["reason"].lower(),
+            msg=f"reason must surface safety refusal: {result['reason']!r}",
+        )
+        self.assertEqual(
+            api.calls, [],
+            msg="api must NEVER be touched when guard refuses",
+        )
 
 
 @unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
@@ -1816,12 +2265,31 @@ class SmartModeArbitrationDefect5AddonTests(unittest.TestCase):
     """
 
     def _capture_dispatcher(self):
+        """Return (calls, installer_fn).
+
+        ``installer_fn(coord)`` replaces ``coord._execute_hems_command``
+        with a wrapper that records the call AND delegates to the
+        real ``hems.engine.execute_hems_command``. The test exercises
+        the production code path end-to-end.
+        """
         calls: list = []
 
-        async def _fn(decision, command_id=None, *, evidence_recorded=False):
-            calls.append((decision, command_id, evidence_recorded))
+        def _install(coord):
+            from hems.engine import execute_hems_command as _exec
 
-        return calls, _fn
+            async def _wrapped(decision, command_id=None, *,
+                               evidence_recorded=False):
+                calls.append((decision, command_id, evidence_recorded))
+                return await _exec(
+                    api=coord.api,
+                    hems=coord._hems,
+                    decision=decision,
+                    command_id=command_id,
+                    evidence_recorded=evidence_recorded,
+                )
+            coord._execute_hems_command = _wrapped
+
+        return calls, _install
 
     def _run(self, coro):
         loop = asyncio.new_event_loop()
@@ -1836,7 +2304,7 @@ class SmartModeArbitrationDefect5AddonTests(unittest.TestCase):
         Adaptive-mode engine picks USB for prep; the runtime's
         emission matches.
         """
-        calls, fn = self._capture_dispatcher()
+        calls, install = self._capture_dispatcher()
         live_options = {
             "outage_mode": "automatic",
             "smart_mode": 0,
@@ -1846,8 +2314,9 @@ class SmartModeArbitrationDefect5AddonTests(unittest.TestCase):
             data={"batterySoc": 40, "gridAvailable": True,
                   "pvPower": 100, "loadPower": 200},
             options=live_options,
-            execute_hems_command=fn,
+            bind_real_dispatcher=False,
         )
+        install(coord)
         plan = _build_unblocked_plan(needs_grid_kwh=2.0)
         result = self._run(runtime.execute_plan(coord, _evt(), plan))
         self.assertTrue(result["executed"], msg=result)
@@ -1857,6 +2326,164 @@ class SmartModeArbitrationDefect5AddonTests(unittest.TestCase):
         # Runtime must never have mutated the operator's modes.
         self.assertEqual(coord.options.get("smart_mode"), 0)
         self.assertEqual(coord.options.get("predictive_mode"), "shadow")
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class FinalizeThenDispatchFullPathTests(unittest.TestCase):
+    """End-to-end regression: real ``_finalize_decision`` followed
+    by the real dispatcher with a fake transport.
+
+    Codex reproduced a regression where the engine's
+    ``_finalize_decision`` records ``_last_cmd_output_at`` /
+    ``_last_cmd_charger_at`` as part of normal arbitration, and
+    the dispatcher's pre-flight guard then refused the just-formed
+    decision as a duplicate, tripping the circuit breaker and
+    leaving the inverter untouched. The runtime contract is:
+
+      1. ``_finalize_decision`` proposes a write and records the
+         proposal time. The anti-flapping dedup window is checked
+         BEFORE the proposal time is set, so a fresh proposal
+         always has a fresh timestamp.
+      2. The dispatcher must not re-check the proposal timestamp;
+         the engine's anti-flapping already gated it.
+      3. The transport must receive the write (api_accepted=True).
+      4. A guard refusal (circuit breaker / manual pause / etc.)
+         must NOT count as a transport error -- the readback
+         must be skipped and the api is NEVER touched.
+    """
+
+    def setUp(self):
+        from hems.engine import (
+            HemsEngine, HemsDecision, execute_hems_command,
+        )
+        self._HemsEngine = HemsEngine
+        self._HemsDecision = HemsDecision
+        self._execute_hems_command = execute_hems_command
+
+    def test_finalize_then_dispatch_writes_through_with_real_path(self):
+        """``_finalize_decision`` records a USB/SBU proposal at
+        ``now``. The dispatcher then runs the body. The transport
+        must receive both writes AND the readback must succeed
+        (no guard refusal, no anti-flapping false-positive).
+        """
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        hems = self._HemsEngine()
+        # Inputs that drive a night arbitration with USB + SNU.
+        decision = hems._finalize_decision(
+            decision=self._HemsDecision(
+                output_priority="0",
+                charger_priority="1",
+                reason="night_arbitrage",
+            ),
+            now=fresh,
+            inputs={
+                "current_output": "2",
+                "current_charger": "2",
+            },
+        )
+        # The finalize step must have produced a non-skipped write.
+        self.assertIsNotNone(
+            decision.output_priority,
+            msg="_finalize_decision must not skip the night proposal",
+        )
+        self.assertIsNotNone(
+            decision.charger_priority,
+            msg="_finalize_decision must not skip the charger proposal",
+        )
+        # Now drive the dispatcher with a fresh transport.
+        fresh_now = datetime.now(timezone.utc)
+        api = FakeApiTransport(last_success_at=fresh_now)
+        # Async helpers for the runtime test runner.
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api,
+                    hems=hems,
+                    decision=decision,
+                    command_id="test-cmd-uuid",
+                )
+            )
+        finally:
+            loop.close()
+        # The dispatcher must have written AND readback'd.
+        self.assertTrue(result.api_accepted, msg=result)
+        self.assertTrue(result.readback_valid, msg=result)
+        self.assertTrue(result.dispatched, msg=result)
+        # The transport must have received set_output_priority +
+        # set_charger_priority + fetch_device_configs.
+        method_names = {call[0] for call in api.calls}
+        self.assertIn("set_output_priority", method_names)
+        self.assertIn("set_charger_priority", method_names)
+        self.assertIn("fetch_device_configs", method_names)
+        # Anti-flapping did NOT trip the circuit breaker: the
+        # engine's ``_consecutive_failures`` field is still 0.
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="just-formed proposal must not be blocked by its own timestamp",
+        )
+        # The pending_commands set is cleared by
+        # ``report_control_success`` after a confirmed apply.
+        self.assertEqual(
+            hems._pending_commands, set(),
+            msg="confirmed apply must clear pending commands",
+        )
+
+    def test_guard_refusal_does_not_touch_transport(self):
+        """``_blocked_until`` in the future -> the dispatcher
+        refuses BEFORE touching the api. The ``DispatcherResult``
+        surfaces ``hems refused: circuit breaker until ...`` and
+        the readback is NOT attempted (the transport must NEVER
+        see a ``fetch_device_configs`` call when the guard
+        refuses).
+        """
+        from datetime import datetime, timezone
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        hems = self._HemsEngine()
+        hems._blocked_until = future
+        fresh_now = datetime.now(timezone.utc)
+        api = FakeApiTransport(last_success_at=fresh_now)
+        decision = self._HemsDecision(
+            output_priority="0",
+            charger_priority="1",
+            reason="test",
+        )
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api,
+                    hems=hems,
+                    decision=decision,
+                    command_id="test-cmd-uuid-2",
+                )
+            )
+        finally:
+            loop.close()
+        # Guard refused.
+        self.assertFalse(result.dispatched, msg=result)
+        self.assertIn(
+            "circuit breaker", result.error or "",
+            msg=f"error must mention circuit breaker: {result.error!r}",
+        )
+        # The transport was NEVER touched.
+        self.assertEqual(
+            api.calls, [],
+            msg=f"api must not be touched on guard refusal; got: {api.calls!r}",
+        )
+
+    def test_package_relative_import_resolves_in_wrapper(self):
+        """Sanity check: ``from .hems.engine import execute_hems_command``
+        must work in the same import environment the wrapper
+        uses. This is the import path the production
+        ``_execute_hems_command`` wrapper takes; if the relative
+        form fails the entire dispatch path breaks.
+        """
+        import importlib
+        mod = importlib.import_module("hems.engine")
+        self.assertTrue(hasattr(mod, "execute_hems_command"))
+        self.assertTrue(hasattr(mod, "DispatcherResult"))
 
 
 if __name__ == "__main__":

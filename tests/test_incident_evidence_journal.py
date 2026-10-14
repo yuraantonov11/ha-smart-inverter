@@ -926,6 +926,10 @@ class CoordinatorCycleEvidenceTests(unittest.IsolatedAsyncioTestCase):
         coordinator._entry = SimpleNamespace(entry_id=self.entry_id)
         coordinator._hems = PredictiveControlEngine()
         coordinator.hems_auto_mode = True
+        # Phase 2C+3 final: the wrapper's pre-flight gates require a
+        # healthy live state. Provide the minimum the gates need.
+        coordinator.last_update_success = True
+        coordinator.data = {"batterySoc": 80, "gridAvailable": True}
         decision = HemsDecision(output_priority="2", reason="test_decision")
 
         await coordinator._execute_hems_command(decision)

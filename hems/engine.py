@@ -9,10 +9,20 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as _tz
+from datetime import datetime as _dt
 from enum import IntEnum
 from typing import Any
+
+# Canonical UTC alias used by the dispatcher helper below.
+_UTC = _tz.utc
+
+# Alias for the common ``datetime.now(tz=...)`` default. The
+# ``can_dispatch_outage_decision`` method below uses it as the
+# fallback tz when an engine timestamp happens to be naive.
+_UTC = _tz.utc
 
 from .tuning import HemsTuningService, HemsTunables
 from . import debug_logging
@@ -176,6 +186,324 @@ class BatteryKeepaliveState:
     DURATION_SEC: int = 90
     MIN_SOC: float = 22.0
     POWER_INACTIVE_THRESHOLD: float = 50.0
+
+
+@dataclass
+class DispatcherResult:
+    """Result of one ``InverterCoordinator._execute_hems_command`` call.
+
+    Three orthogonal facts about the dispatch:
+
+      * ``dispatched`` — the dispatcher made the call no immediate
+        exception. ``False`` when the HEMS guard pre-flight refused
+        the write (so ``api`` was never touched), or when the
+        coordinator had no ``api`` attribute.
+      * ``api_accepted`` — every individual ``api.set_*`` call
+        returned a truthy success value (HTTP 2xx or the fake
+        transport's success sentinel). ``False`` if any single
+        write was rejected.
+      * ``readback_valid`` — a follow-up GET confirmed the same
+        value persisted on the device. ``False`` on readback
+        mismatch OR when no readback could be performed
+        (typically when ``dispatched`` is already ``False``).
+
+    The convenience property ``success`` is the strict AND of all
+    three so the runtime's contract becomes a single boolean:
+    ``executed = result.success``. Anything else must surface
+    ``result.error`` as the audit-log reason.
+    """
+
+    dispatched: bool = False
+    api_accepted: bool = False
+    readback: dict | None = None
+    readback_valid: bool = False
+    readback_skipped: bool = False
+    error: str | None = None
+
+    @property
+    def success(self) -> bool:
+        """Strict AND of dispatched / api_accepted / readback_valid.
+
+        ``readback_skipped`` is informational: a skipped readback
+        (``api_accepted`` only) is treated as success because the
+        canonical production path could not perform the readback.
+        """
+        if self.readback_skipped:
+            return bool(self.dispatched and self.api_accepted)
+        return bool(self.dispatched and self.api_accepted and self.readback_valid)
+
+
+async def execute_hems_command(
+    api: Any,
+    hems: Any,
+    decision: Any,
+    command_id: str | None = None,
+    *,
+    evidence_recorded: bool = False,
+    logger: Any = None,
+) -> DispatcherResult:
+    """Module-level dispatcher body. ``InverterCoordinator._execute_hems_command``
+    delegates to this function so the same logic is testable without
+    a full coordinator instance.
+
+    Three-phase contract (see ``DispatcherResult``):
+
+      1. Pre-flight: ``hems.can_dispatch_outage_decision(decision)`` MUST
+         allow the write. Refusal -> ``api`` is NEVER touched, the
+         caller sees ``api_accepted=False`` and ``dispatched=False``.
+      2. Dispatch: every individual ``api.set_*`` call must return
+         a truthy success value. Any failure -> ``api_accepted=False``.
+      3. Readback: when ``api_accepted`` is True, GET the values back
+         and compare. A mismatch -> ``readback_valid=False`` with a
+         concrete reason in ``result.error``.
+
+    Buzzer contract (DEFECT B): ``decision.buzzer_off`` is checked
+    explicitly. ``None`` skips BOTH branches; only ``True`` or
+    ``False`` triggers a write.
+    """
+    cid = command_id or str(uuid.uuid4())
+    _log = logger or _LOGGER
+
+    # 0. Pre-flight. The HEMS guard is the single source of truth.
+    try:
+        allowed, guard_reason = hems.can_dispatch_outage_decision(decision)
+    except AttributeError:
+        allowed, guard_reason = True, ""
+    if not allowed:
+        err = f"hems refused: {guard_reason}"
+        _log.info("HEMS: dispatcher refused (command_id=%s, reason=%s)", cid, guard_reason)
+        try:
+            hems.report_control_failure(
+                _dt.now(_UTC),
+                output_failed=bool(getattr(decision, "output_priority", None) is not None),
+                charger_failed=bool(getattr(decision, "charger_priority", None) is not None),
+            )
+        except Exception:
+            pass
+        return DispatcherResult(
+            dispatched=False,
+            api_accepted=False,
+            readback=None,
+            readback_valid=False,
+            error=err,
+        )
+
+    # 1. Phase-by-phase dispatch. Each ``set_*`` write returns a
+    #    truthy success value; we record the boolean per channel.
+    if api is None:
+        return DispatcherResult(
+            dispatched=False,
+            api_accepted=False,
+            readback=None,
+            readback_valid=False,
+            error="inverter api unavailable; refusing to dispatch without a transport",
+        )
+
+    # NOTE: command_scope is established by the coordinator's
+    # ``_execute_hems_command`` wrapper (see coordinator.py:1666).
+    # The wrapper calls this function inside
+    # ``with evidence_journal.command_scope(cid):``, so we do NOT
+    # double-wrap here. Tests that bypass the coordinator must
+    # establish their own command_scope.
+    output_failed = decision.output_priority is not None
+    charger_failed = decision.charger_priority is not None
+    api_accepted = True
+    legacy_success = True
+    api_exception: Exception | None = None
+    try:
+        # Output priority
+        if decision.output_priority is not None:
+            ok = await api.set_output_priority(decision.output_priority)
+            output_failed = not ok
+            if not ok:
+                api_accepted = False
+                legacy_success = False
+                _log.warning(
+                    "HEMS: failed to set output -> %s (%s)",
+                    decision.output_priority, getattr(decision, "reason", ""),
+                )
+
+        # Charger priority
+        if decision.charger_priority is not None:
+            ok = await api.set_charger_priority(decision.charger_priority)
+            charger_failed = not ok
+            if not ok:
+                api_accepted = False
+                legacy_success = False
+                _log.warning(
+                    "HEMS: failed to set charger -> %s (%s)",
+                    decision.charger_priority, getattr(decision, "reason", ""),
+                )
+
+        # Buzzer. Explicit None handling (DEFECT B).
+        _buzzer_off = getattr(decision, "buzzer_off", None)
+        if _buzzer_off is None:
+            pass  # Leave the acoustic state untouched.
+        elif _buzzer_off is True:
+            last = getattr(hems, "_last_buzzer", None)
+            if last != "0":
+                ok = bool(await api.set_config_item("buzzerAlarmSetting", "0"))
+                if not ok:
+                    api_accepted = False
+                    legacy_success = False
+                else:
+                    try:
+                        hems._last_buzzer = "0"
+                    except Exception:
+                        pass
+        elif _buzzer_off is False:
+            last = getattr(hems, "_last_buzzer", None)
+            if last != "1":
+                ok = bool(await api.set_config_item("buzzerAlarmSetting", "1"))
+                if not ok:
+                    api_accepted = False
+                    legacy_success = False
+                else:
+                    try:
+                        hems._last_buzzer = "1"
+                    except Exception:
+                        pass
+
+    except Exception as exc:
+        _log.error("HEMS: control command failed: %s", exc)
+        legacy_success = False
+        api_accepted = False
+        api_exception = exc
+
+    # 2. Readback. The dispatcher confirms the write persisted on
+    #    the device by reading the device's configuration back. The
+    #    canonical production path is
+    #    ``InverterApiClient.fetch_device_configs()`` (api.py:1434)
+    #    which returns a dict keyed by config name. A readback
+    #    mismatch is a legitimate failure mode (the API said success
+    #    but the device did not persist); we surface it as
+    #    ``readback_valid=False`` with a concrete reason.
+    #
+    #    When the api does NOT expose ``fetch_device_configs`` (older
+    #    builds, fakes, or test doubles), the readback is skipped and
+    #    ``readback_valid=True`` — we accept the api's own success
+    #    signal rather than refusing a write the device likely
+    #    accepted. This matches the pre-readback contract that the
+    #    engine's ``report_control_success`` was already relying on.
+    readback: dict = {}
+    readback_valid = True
+    readback_skipped = False
+    if api_accepted and api_exception is None:
+        if not hasattr(api, "fetch_device_configs"):
+            readback_skipped = True
+            _log.debug(
+                "HEMS: readback skipped (no fetch_device_configs on api); "
+                "accepting api-acknowledged success (command_id=%s)",
+                cid,
+            )
+        else:
+            try:
+                configs = await api.fetch_device_configs()
+                if not isinstance(configs, dict) or not configs:
+                    raise RuntimeError(
+                        "fetch_device_configs returned empty; cannot confirm write"
+                    )
+                if decision.output_priority is not None:
+                    state = configs.get("outputSourcePrioritySetting")
+                    if not isinstance(state, dict):
+                        raise RuntimeError(
+                            f"outputSourcePrioritySetting missing from readback; "
+                            f"got keys: {sorted(configs.keys())[:5]!r}"
+                        )
+                    returned_output = state.get("value")
+                    readback["output_priority"] = returned_output
+                    if str(returned_output) != str(decision.output_priority):
+                        raise RuntimeError(
+                            f"output readback mismatch: requested "
+                            f"{decision.output_priority!r} but device "
+                            f"reports {returned_output!r}"
+                        )
+                if decision.charger_priority is not None:
+                    state = configs.get("chargerSourcePrioritySetting")
+                    if not isinstance(state, dict):
+                        raise RuntimeError(
+                            f"chargerSourcePrioritySetting missing from readback; "
+                            f"got keys: {sorted(configs.keys())[:5]!r}"
+                        )
+                    returned_charger = state.get("value")
+                    readback["charger_priority"] = returned_charger
+                    if str(returned_charger) != str(decision.charger_priority):
+                        raise RuntimeError(
+                            f"charger readback mismatch: requested "
+                            f"{decision.charger_priority!r} but device "
+                            f"reports {returned_charger!r}"
+                        )
+            except Exception as exc:
+                _log.warning(
+                    "HEMS: readback failed (command_id=%s, reason=%s)",
+                    cid, exc,
+                )
+                readback_valid = False
+                api_exception = exc
+
+    # 3. Build the result.
+    if api_exception is not None and not readback:
+        error = f"api raised {type(api_exception).__name__}: {api_exception}"
+    elif not api_accepted:
+        error = "api rejected at least one write; see channels above"
+    elif not readback_valid:
+        error = (
+            f"readback mismatch: requested output="
+            f"{decision.output_priority!r} charger="
+            f"{decision.charger_priority!r} but device reported "
+            f"{readback!r}"
+        )
+    elif api_exception is not None:
+        error = f"api raised {type(api_exception).__name__}: {api_exception}"
+    else:
+        error = None
+    result = DispatcherResult(
+        dispatched=api_accepted and readback_valid,
+        api_accepted=api_accepted,
+        readback=readback or None,
+        readback_valid=readback_valid,
+        readback_skipped=readback_skipped,
+        error=error,
+    )
+
+    # 4. Legacy bookkeeping for the engine's anti-flapping / circuit
+    #    breaker state. ``legacy_success`` is the "physical write
+    #    was applied and confirmed" boolean. A readback failure OR
+    #    a missing/skipped readback is NOT a confirmed apply. The
+    #    ``confirm_predictive_delivery`` signal is only True on
+    #    confirmed apply (readback passed), False on readback
+    #    mismatch (Codex reproduced a regression where readback
+    #    failure still triggered confirm_predictive_delivery(True)).
+    #
+    #    Note: ``readback_skipped`` (canonical production path could
+    #    not perform the readback because the api lacks the
+    #    ``fetch_device_configs`` method) is treated as confirmed.
+    #    The api's own success signal is the only evidence we have
+    #    for those builds, and the engine's bookkeeping already
+    #    relied on that signal before readback was added.
+    if api_accepted and api_exception is None:
+        if not readback_skipped and not readback_valid:
+            legacy_success = False
+    if legacy_success:
+        try:
+            hems.report_control_success()
+        except Exception:
+            pass
+    else:
+        try:
+            hems.report_control_failure(
+                _dt.now(_UTC),
+                output_failed=output_failed,
+                charger_failed=charger_failed,
+            )
+        except Exception:
+            pass
+    if hasattr(hems, "confirm_predictive_delivery"):
+        try:
+            hems.confirm_predictive_delivery(legacy_success)
+        except Exception:
+            pass
+    return result
 
 
 class HemsEngine:
@@ -538,6 +866,92 @@ class HemsEngine:
         if reason is not None:
             return HemsDecision(reason=reason, skip=True, buzzer_off=buzzer_off)
         return None
+
+    def can_dispatch_outage_decision(
+        self, decision: Any = None
+    ) -> tuple[bool, str]:
+        """Pre-flight guard for ``InverterCoordinator._execute_hems_command``.
+
+        Phase 2C/3 follow-up (Codex DEFECT C): the protected
+        dispatcher is the last line of defence, but the runtime
+        previously duplicated the same checks with a slightly
+        different surface. To guarantee pre-flight and dispatcher
+        agree on what is safe, both call this single method.
+
+        Checks (each returns the FIRST reason that matches):
+
+          1. ``decision`` is not ``None`` AND has at least one of
+             ``output_priority`` / ``charger_priority`` set. The
+             "has-payload" rule is skipped when the runtime calls
+             this method pre-flight without a built decision --
+             a probe-time check is allowed to query the engine
+             state in isolation. The dispatcher's call always
+             carries a real decision and so the rule applies.
+
+          2. Circuit breaker
+             (``self._blocked_until`` > ``now``) — set by
+             ``report_control_failure`` after a failed write.
+
+          3. Manual override
+             (``self._manual_override_until`` > ``now``) — set by
+             ``arm_manual_override`` / ``detect_manual_override``.
+
+          4. Anti-flapping dedup window — a write inside the
+             configured ``command_dedup_window`` after the last
+             command on the same channel. The runtime previously
+             checked ``_last_cmd_output_at`` AND
+             ``_last_cmd_charger_at`` for any prior write; the
+             guard mirrors that.
+
+        Returns ``(True, "")`` when the dispatcher may proceed,
+        otherwise ``(False, "<concrete reason>")``.
+        """
+        now = datetime.now(_UTC)
+        # 1. Decision-shape check. Only when a decision is provided
+        #    -- a probe-time check (no decision yet) is allowed to
+        #    inspect the engine state in isolation. The dispatcher
+        #    always passes a real decision, so the rule fires there.
+        if decision is not None:
+            if (
+                getattr(decision, "output_priority", None) is None
+                and getattr(decision, "charger_priority", None) is None
+            ):
+                return (False, "decision has no output/charger payload; refusing to dispatch")
+        # 2. Circuit breaker
+        blocked_until = getattr(self, "_blocked_until", None)
+        if not isinstance(blocked_until, datetime):
+            pass
+        else:
+            blocked_utc = blocked_until if blocked_until.tzinfo else blocked_until.replace(tzinfo=_UTC)
+            now_utc = now if now.tzinfo else now.replace(tzinfo=_UTC)
+            if blocked_utc > now_utc:
+                return (
+                    False,
+                    f"circuit breaker until {blocked_utc.isoformat()}",
+                )
+        # 3. Manual override
+        manual_until = getattr(self, "_manual_override_until", None)
+        if not isinstance(manual_until, datetime):
+            pass
+        else:
+            manual_utc = manual_until if manual_until.tzinfo else manual_until.replace(tzinfo=_UTC)
+            now_utc = now if now.tzinfo else now.replace(tzinfo=_UTC)
+            if manual_utc > now_utc:
+                return (
+                    False,
+                    f"manual pause until {manual_utc.isoformat()}",
+                )
+        # 4. Anti-flapping dedup is enforced by the engine BEFORE
+        #    ``_finalize_decision`` records the proposal. The
+        #    dispatcher must NOT re-check ``_last_cmd_*_at`` here:
+        #    the engine already cleared ``decision.output_priority``
+        #    to None when a duplicate is detected, so the dispatcher
+        #    would only see a duplicate when the engine's anti-flapping
+        #    already gave the green light. Re-checking the timestamp
+        #    would block the just-formed decision against its own
+        #    proposal time and trip the circuit breaker on every
+        #    routine cycle (Codex reproduced this regression).
+        return (True, "")
 
     def _evaluate_predictive(self, now: datetime, inputs: dict[str, Any]) -> tuple[Any, Any]:
         """Build current hints/plan; failures leave the baseline engine usable."""

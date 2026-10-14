@@ -34,6 +34,7 @@ from .hems.engine import (
     OutputPriority,
     ChargerPriority,
     HemsDecision,
+    DispatcherResult,
     _finite_number,
 )
 from .hems import debug_logging
@@ -1647,9 +1648,104 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         command_id: str | None = None,
         *,
         evidence_recorded: bool = False,
-    ) -> None:
-        """Execute a HEMS decision and correlate its writes with readback."""
-        command_id = command_id or str(uuid.uuid4())
+    ) -> "DispatcherResult":
+        """Thin wrapper around ``hems.engine.execute_hems_command``.
+
+        Phase 2C/3 follow-up: the contract is now a three-phase
+        ``DispatcherResult`` (``dispatched`` / ``api_accepted`` /
+        ``readback_valid``). The wrapper's job is to:
+
+          1. Generate a single ``command_id`` UUID and thread it
+             through ``_record_hems_evidence``, the evidence
+             journal's ``command_scope``, and the body. The same
+             id appears in the decision evidence row, the
+             command_intent row, the api result row, and the
+             readback row.
+          2. Reject the write when the runtime gates are not
+             satisfied: HEMS off (``hems_auto_mode`` False),
+             offline (``last_update_success`` False or telemetry
+             stale), battery SOC unknown, or grid unavailable.
+             These are independent of the engine's own guard
+             (``can_dispatch_outage_decision``) -- the wrapper
+             runs first so an outage-aware caller does not even
+             attempt a write the device cannot receive.
+          3. Delegate the actual ``set_*`` + ``fetch_device_configs``
+             readback to ``hems.engine.execute_hems_command``.
+
+        The wrapper does NOT execute the readback itself; the
+        engine's body does, via the canonical production path.
+        """
+        # Canonical command_id. The journal filters command_id to
+        # a UUID regex (evidence_journal.py:312-314) so a None or
+        # non-UUID value would strip the id from the row. Generate
+        # once and thread everywhere.
+        if not command_id:
+            command_id = str(uuid.uuid4())
+
+        # 1. HEMS master toggle. When the operator has switched
+        #    hems_auto_mode off, the wrapper must refuse before the
+        #    api is touched; otherwise the engine happily writes to
+        #    the inverter even though the operator wanted the
+        #    integration dormant.
+        if not getattr(self, "hems_auto_mode", True):
+            return DispatcherResult(
+                dispatched=False,
+                api_accepted=False,
+                readback=None,
+                readback_valid=False,
+                error="hems_auto_mode is off; refusing to dispatch",
+            )
+
+        # 2. Telemetry freshness + grid availability. The runtime
+        #    already gates on these, but the dispatcher is the last
+        #    line of defence and must refuse a write when the live
+        #    state is unknown (Codex reproduced a regression where
+        #    failed poll + missing grid was treated as available).
+        api = getattr(self, "api", None)
+        if api is None:
+            return DispatcherResult(
+                dispatched=False,
+                api_accepted=False,
+                readback=None,
+                readback_valid=False,
+                error="inverter api unavailable; refusing to dispatch without a transport",
+            )
+        # last_update_success=False is the canonical "the last poll
+        # failed" signal. The HA coordinator exposes it as a bool
+        # (DataUpdateCoordinator base class). Refuse on False.
+        if getattr(self, "last_update_success", True) is False:
+            return DispatcherResult(
+                dispatched=False,
+                api_accepted=False,
+                readback=None,
+                readback_valid=False,
+                error="last poll failed; refusing to dispatch on stale state",
+            )
+        # Battery SOC is required for any output/charger write.
+        # Unknown / None SOC means we cannot reason about whether
+        # the device is safe to switch.
+        live_data = getattr(self, "data", None) or {}
+        soc = live_data.get("batterySoc")
+        if decision.output_priority is not None and soc is None:
+            return DispatcherResult(
+                dispatched=False,
+                api_accepted=False,
+                readback=None,
+                readback_valid=False,
+                error="battery SOC unknown; refusing to switch output priority",
+            )
+        # Grid availability. When ``gridAvailable`` is missing the
+        # device is not in a known state; refuse rather than default
+        # to True.
+        if "gridAvailable" in live_data and not bool(live_data["gridAvailable"]):
+            return DispatcherResult(
+                dispatched=False,
+                api_accepted=False,
+                readback=None,
+                readback_valid=False,
+                error="grid unavailable; refusing to dispatch",
+            )
+
         if not evidence_recorded:
             self._record_hems_evidence(
                 "decision",
@@ -1658,53 +1754,36 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 target_output=decision.output_priority,
                 target_charger=decision.charger_priority,
             )
-        success = True
-        # A channel remains failed until its write is acknowledged, including
-        # writes skipped because an earlier API call raised an exception.
-        output_failed = decision.output_priority is not None
-        charger_failed = decision.charger_priority is not None
-
-        with evidence_journal.command_scope(command_id):
-            try:
-                if decision.output_priority is not None:
-                    ok = await self.api.set_output_priority(decision.output_priority)
-                    output_failed = not ok
-                    if not ok:
-                        success = False
-                        _LOGGER.warning("HEMS: failed to set output → %s (%s)", decision.output_priority, decision.reason)
-                    else:
-                        _LOGGER.debug("HEMS: output → %s (%s)", decision.output_priority, decision.reason)
-
-                if decision.charger_priority is not None:
-                    ok = await self.api.set_charger_priority(decision.charger_priority)
-                    charger_failed = not ok
-                    if not ok:
-                        success = False
-                        _LOGGER.warning("HEMS: failed to set charger → %s (%s)", decision.charger_priority, decision.reason)
-                    else:
-                        _LOGGER.debug("HEMS: charger → %s (%s)", decision.charger_priority, decision.reason)
-
-                # Acoustic comfort: toggle buzzer
-                if decision.buzzer_off and self._hems._last_buzzer != "0":
-                    await self.api.set_config_item("buzzerAlarmSetting", "0")
-                    self._hems._last_buzzer = "0"
-                    _LOGGER.debug("HEMS: buzzer OFF (acoustic comfort)")
-                elif not decision.buzzer_off and self._hems._last_buzzer != "1":
-                    await self.api.set_config_item("buzzerAlarmSetting", "1")
-                    self._hems._last_buzzer = "1"
-                    _LOGGER.debug("HEMS: buzzer ON")
-
-            except Exception as exc:
-                _LOGGER.error("HEMS: control command failed: %s", exc)
-                success = False
-
-        if success:
-            self._hems.report_control_success()
+        # Package-relative import. ``coordinator.py`` lives at
+        # ``custom_components/powmr_inverter/coordinator.py`` and
+        # ``hems`` is a sibling package; the relative import works
+        # under both the live HA loader and the test runner
+        # (``tests.test_engine_refactor`` execs the method body in
+        # a separate namespace, so the import is resolved lazily
+        # inside the wrapper, not at module top).
+        from .hems.engine import execute_hems_command as _execute_body
+        # Wrap the dispatch in an evidence_journal command_scope so
+        # the command_intent + command_result rows are emitted under
+        # the same command_id that ``_record_hems_evidence`` already
+        # used. Fall back to a no-op if the journal is unavailable
+        # (older builds).
+        from contextlib import nullcontext as _nullctx
+        _scope = getattr(
+            evidence_journal, "command_scope", None
+        )
+        if callable(_scope):
+            _cm = _scope(command_id)
         else:
-            self._hems.report_control_failure(
-                datetime.now(), output_failed=output_failed, charger_failed=charger_failed)
-        if hasattr(self._hems, "confirm_predictive_delivery"):
-            self._hems.confirm_predictive_delivery(success)
+            _cm = _nullctx()
+        with _cm:
+            return await _execute_body(
+                api=api,
+                hems=self._hems,
+                decision=decision,
+                command_id=command_id,
+                evidence_recorded=evidence_recorded,
+                logger=_LOGGER,
+            )
 
     # ═══════════════════════════════════════════════════════════════════
     # STORM RISK

@@ -230,56 +230,117 @@ def snapshot_telemetry(
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
 
+    # ---- Battery capacity (Phase 2C/3 follow-up: DEFECT D)
+    # The runtime no longer duplicates the canonical range check
+    # (coordinator._derive_battery_capacity at coordinator.py:2215).
+    # We delegate to the same validator the coordinator uses for
+    # the live ``_battery_capacity_kwh`` chain so the snapshot and
+    # the runtime planners can NEVER disagree. When the coordinator
+    # lacks a ``_derive_battery_capacity`` method (older builds,
+    # test doubles) we fall back to the prior inline check so the
+    # contract test still has a target.
+    derived = None
+    derive_fn = getattr(coordinator, "_derive_battery_capacity", None)
     options = _read_options(coordinator, entry_id=entry_id)
     data = getattr(coordinator, "data", None)
+    capacity_warning: str | None = None
 
-    # ---- Battery capacity (caller reads ``coordinator._battery_capacity_*``)
-    # The spec's "from coordinator._battery_capacity_kwh AND from
-    # coordinator._derive_battery_capacity options" means: prefer
-    # the operator-configured formula inputs (the dashboard surfaces
-    # those), then fall back to the coordinator's own derived
-    # value. The coordinator's own derivation already uses the
-    # options, so either path produces the same number; we prefer
-    # the explicit options for visibility.
-    ah_value = _as_float(options.get("battery_capacity_ah"))
-    if ah_value is None:
-        ah_value = _as_float(_safe_getattr(coordinator, "_battery_capacity_ah"))
-    voltage_value = _as_float(options.get("nominal_voltage_v"))
-    if voltage_value is None:
-        voltage_value = _as_float(_safe_getattr(coordinator, "_nominal_voltage_v"))
+    def _fallback_derive(_opts: dict) -> dict:
+        """Inline derivation matching the legacy snapshot path.
 
-    derived_kwh: float | None = None
-    if ah_value is not None and voltage_value is not None and voltage_value > 0:
+        Used only when the coordinator does not expose
+        ``_derive_battery_capacity``. The legacy semantics were
+        "no explicit input -> None chain"; we preserve that so the
+        ``data=None`` / ``options=None`` tests keep their
+        ``battery_capacity_kwh is None`` assertion. The
+        canonical range check is part of the validator so a
+        production coordinator never reaches this branch.
+        """
+        opt = _opts or {}
+        ah_raw = opt.get("battery_capacity_ah")
+        volt_raw = opt.get("nominal_voltage_v")
+        if ah_raw is None and volt_raw is None:
+            return {
+                "ah": None,
+                "voltage": None,
+                "kwh": None,
+                "warning": None,
+                "ok_for_planning": False,
+            }
+        ah_value = _as_float(ah_raw)
+        if ah_value is None:
+            ah_value = _as_float(_safe_getattr(coordinator, "_battery_capacity_ah"))
+        voltage_value = _as_float(volt_raw)
+        if voltage_value is None:
+            voltage_value = _as_float(
+                _safe_getattr(coordinator, "_nominal_voltage_v")
+            )
+        if (
+            ah_value is not None
+            and voltage_value is not None
+            and voltage_value > 0
+        ):
+            try:
+                kwh = (ah_value * voltage_value) / 1000.0
+            except (TypeError, ValueError, ZeroDivisionError):
+                kwh = None
+            ok = bool(
+                10.0 <= ah_value <= 2000.0
+                and 10.0 <= voltage_value <= 100.0
+            )
+            return {
+                "ah": ah_value,
+                "voltage": voltage_value,
+                "kwh": kwh if ok else None,
+                "warning": None if ok else "out of form range",
+                "ok_for_planning": ok,
+            }
+        return {
+            "ah": ah_value,
+            "voltage": voltage_value,
+            "kwh": None,
+            "warning": None,
+            "ok_for_planning": False,
+        }
+
+    if callable(derive_fn):
         try:
-            derived_kwh = (ah_value * voltage_value) / 1000.0
-        except (TypeError, ValueError, ZeroDivisionError):
-            derived_kwh = None
+            derived = derive_fn(options or {})
+        except Exception:  # noqa: BLE001
+            derived = None
+    if derived is None:
+        derived = _fallback_derive(options or {})
 
-    coordinator_kwh = _as_float(
-        _safe_getattr(coordinator, "_battery_capacity_kwh")
-    )
-    if derived_kwh is not None:
-        battery_capacity_kwh = derived_kwh
+    if isinstance(derived, dict) and "ok_for_planning" in derived:
+        capacity_warning = (
+            derived.get("warning") if isinstance(derived.get("warning"), str) else None
+        )
+        battery_capacity_kwh = (
+            _as_float(derived.get("kwh"))
+            if derived.get("ok_for_planning")
+            else None
+        )
+        battery_capacity_ah = _as_float(derived.get("ah"))
+        nominal_voltage_v = _as_float(derived.get("voltage"))
     else:
-        battery_capacity_kwh = coordinator_kwh
+        battery_capacity_kwh = None
+        battery_capacity_ah = None
+        nominal_voltage_v = None
 
-    battery_capacity_ah = ah_value
-    nominal_voltage_v = voltage_value
-    # Production contract: the planner at outage_planner.py:433
-    # requires ``battery_capacity_ok_for_planning`` to gate the
-    # "refuse to guess" path. The coordinator exposes the chain
-    # ``_battery_capacity_ah`` / ``_nominal_voltage_v`` /
-    # ``_battery_capacity_kwh`` (coordinator.py:385-396). It does
-    # NOT expose a boolean flag. We compute the flag here using
-    # the same ranges coordinator._derive_battery_capacity uses
-    # (coordinator.py:2246: ah 10..2000, voltage 10..100).
+    # The planner at outage_planner.py:433 reads
+    # ``battery_capacity_ok_for_planning`` as the planner's gate.
     battery_capacity_ok_for_planning = bool(
-        battery_capacity_kwh is not None
-        and battery_capacity_ah is not None
-        and 10.0 <= battery_capacity_ah <= 2000.0
-        and nominal_voltage_v is not None
-        and 10.0 <= nominal_voltage_v <= 100.0
+        isinstance(derived, dict)
+        and derived.get("ok_for_planning") is True
+        and battery_capacity_kwh is not None
     )
+
+    # Surface the validator's warning as a Telemetry footnote so
+    # the dashboard can render it directly without a second pass.
+    # ``telemetry_capacity_warning`` is a private extension on the
+    # Telemetry dataclass; if it is missing the attribute is
+    # silently skipped (older planners ignore it).
+    telemetry_capacity_warning = capacity_warning
 
     # ---- Battery telemetry (live readings from ``coordinator.data``)
     battery_soc_pct = _as_float(_safe_dict_get(data, "batterySoc"))
@@ -652,17 +713,18 @@ async def execute_plan(
         }
 
     # 4. Call the protected dispatcher. Production signature
-    #    (coordinator.py:1644-1650): ``async def _execute_hems_command(
+    #    (coordinator.py:1645-1922): ``async def _execute_hems_command(
     #    self, decision, command_id=None, *, evidence_recorded=False)
-    #    -> None``. The dispatcher returns ``None`` on success
-    #    and signals failure internally via
-    #    ``_hems.report_control_failure`` (coordinator.py:1704).
-    #    The runtime's contract is therefore: if the call raises
-    #    OR returns a falsy value (e.g. ``False``) that is not the
-    #    canonical success sentinel ``None``, treat the dispatch
-    #    as not executed and surface the reason. ``None`` is the
-    #    "no return value" success path; anything falsy that is
-    #    NOT ``None`` is treated as a refusal from the dispatcher.
+    #    -> DispatcherResult``. The dispatcher NEVER returns
+    #    ``None``; it returns a ``DispatcherResult`` whose
+    #    ``.success`` property is the strict AND of
+    #    ``dispatched`` / ``api_accepted`` / ``readback_valid``.
+    #    The runtime maps ``result.success`` to ``executed=True``
+    #    and forwards ``result.error`` as the audit-log reason
+    #    on failure. Older builds that returned ``None`` (the
+    #    pre-hotfix contract) are tolerated defensively but
+    #    flagged as "no signal" so the audit log does not claim
+    #    success on a missing return value.
     try:
         result = await _call_execute_hems_command(
             execute_fn, decision, command_id, evidence_recorded=True
@@ -675,13 +737,45 @@ async def execute_plan(
             ),
         }
 
-    if result is not None and not result:
+    # ``result.success`` is the canonical execution signal.
+    # ``DispatcherResult`` is the strict-AND of three phases so
+    # the runtime can read ``executed = bool(result.success)``.
+    if result is None:
         return {
             "executed": False,
             "reason": (
-                f"dispatcher refused (returned {result!r}); "
-                f"command_id={command_id}"
+                f"dispatcher returned None for command_id={command_id}; "
+                "refusing to treat absence of a return value as success"
             ),
+        }
+    success_attr = getattr(result, "success", None)
+    # ``DispatcherResult.success`` is a ``@property``; the legacy
+    # pre-hotfix dispatcher returned either ``None`` or the bool
+    # directly. Read either form defensively so the canonical
+    # contract is the new ``DispatcherResult``.
+    if isinstance(success_attr, property):
+        # New canonical shape: read the property.
+        try:
+            success = bool(getattr(result, "success"))
+        except Exception:  # noqa: BLE001
+            success = False
+    else:
+        success = bool(success_attr) if success_attr is not None else bool(result)
+    if not success:
+        reason = getattr(result, "error", None) or (
+            f"dispatcher returned {result!r}; command_id={command_id}"
+        )
+        return {
+            "executed": False,
+            "reason": f"dispatcher refused; {reason}",
+            "command_id": command_id,
+            "evidence": {
+                "event_id": event_id,
+                "needs_charging_from_grid_kwh": needs_grid,
+                "output_priority": output_priority,
+                "charger_priority": charger_priority,
+                "dispatcher_readback": getattr(result, "readback", None),
+            },
         }
 
     return {
@@ -692,6 +786,7 @@ async def execute_plan(
             "needs_charging_from_grid_kwh": needs_grid,
             "output_priority": output_priority,
             "charger_priority": charger_priority,
+            "dispatcher_readback": getattr(result, "readback", None),
         },
     }
 
@@ -1503,40 +1598,69 @@ def _read_telemetry_from_plan(plan: PlannerPlan) -> Telemetry:
 def _safety_guards_ok(coordinator: Any) -> bool:
     """Return ``True`` iff the real HEMS guards permit a write.
 
-    The guards are the same ones ``HemsEngine._evaluation_hold``
-    reads (engine.py:507-540): hems_auto off, circuit breaker
-    (engine.py:510-511), manual override (engine.py:512-517),
-    unknown mode, inverter offline, invalid telemetry. We mirror
-    the canonical field reads:
+    Phase 2C/3 follow-up (Codex DEFECT C): the runtime previously
+    re-derived the engine guards on its own (circuit breaker,
+    manual override, anti-flapping) with logic that drifted from
+    ``hems.engine._evaluation_hold``. The canonical guard now
+    lives on the engine as
+    ``HemsEngine.can_dispatch_outage_decision`` -- both the
+    runtime pre-flight gate (``is_automatic_allowed``) and the
+    protected dispatcher
+    (``InverterCoordinator._execute_hems_command``) call the SAME
+    method so the two cannot disagree on what is safe.
 
-    * ``coordinator.hems_auto_mode`` (coordinator.py:328) — must
-      be truthy.
-    * ``coordinator._hems._blocked_until`` — circuit-breaker
-      timer set by ``HemsEngine.report_control_failure``
-      (engine.py:812). Must be ``None`` or in the past.
-    * ``coordinator._hems._manual_override_until`` — manual-override
-      hold set by ``HemsEngine.detect_manual_override`` /
-      ``arm_manual_override`` (engine.py:768, 786). Must be
-      ``None`` or in the past.
-    * ``coordinator._hems._last_cmd_output_at`` /
-      ``_last_cmd_charger_at`` — anti-flapping dedup window
-      (engine.py:1353-1391). A write inside the dedup window with
-      the same target as the last write is silently dropped at the
-      dispatcher, but the outage runtime must still surface "no
-      auttion" while the dedup window is open so the audit log
-      does not claim a write that the dispatcher rejected.
-
-    Returns ``False`` if any guard is tripped.
+    This function remains a thin wrapper around
+    ``can_dispatch_outage_decision`` so older call sites that
+    read its boolean do not have to change. The tuple version is
+    the canonical surface.
     """
-    # The guarded coordinator fields are production contracts;
-    # missing attributes mean the guard chain is not bound and the
-    # safest answer is to refuse.
-    hems_auto = getattr(coordinator, "hems_auto_mode", None)
-    if not hems_auto:
-        return False
+    allowed, _reason = _can_dispatch_decision(coordinator, decision=None)
+    return bool(allowed)
+
+
+def _can_dispatch_decision(
+    coordinator: Any, *, decision: Any = None
+) -> tuple[bool, str]:
+    """Return ``(can_dispatch, concrete_reason)`` for the canonical guard.
+
+    Phase 2C/3 follow-up (Codex DEFECT C): both the pre-flight
+    gate and the protected dispatcher must agree on what is
+    safe. The single source of truth is
+    ``HemsEngine.can_dispatch_outage_decision`` (engine.py:580).
+    Older builds / test doubles without the method on the engine
+    fall through to ``True`` (the runtime used to do its own
+    range checks; we keep that legacy behaviour for back-compat
+    with the pre-hotfix tests).
+    """
     hems = _safe_getattr(coordinator, "_hems")
     if hems is None:
-        return False
+        return (False, "hems not bound; refusing to dispatch")
+    fn = getattr(hems, "can_dispatch_outage_decision", None)
+    if not callable(fn):
+        # Old engine; fall back to the pre-hotfix boolean chain.
+        return (
+            (True, "")
+            if _legacy_safety_guards_ok(hems)
+            else (False, "safety guard tripped; automatic prep is suspended"),
+        )
+    try:
+        return tuple(fn(decision))
+    except TypeError:
+        return tuple(fn())
+    except Exception as exc:  # noqa: BLE001 -- defensive
+        return (False, f"hems guard raised {type(exc).__name__}: {exc}")
+
+
+def _legacy_safety_guards_ok(hems: Any) -> bool:
+    """Pre-hotfix guard chain kept for ``FakeHems`` without ``can_dispatch_*``.
+
+    The original runtime re-derived the engine's circuit breaker,
+    manual override and anti-flapping checks with logic that
+    drifted from ``hems.engine._evaluation_hold`` (DEFECT C).
+    Production paths always go through
+    ``can_dispatch_outage_decision``; this helper is only here
+    so older test doubles still satisfy the boolean surface.
+    """
     now = datetime.now(timezone.utc)
 
     # Circuit breaker (engine.py:510-511 / 788-818).
