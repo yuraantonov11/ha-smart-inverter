@@ -264,6 +264,17 @@ async def execute_hems_command(
     cid = command_id or str(uuid.uuid4())
     _log = logger or _LOGGER
 
+    # The engine's report_control_failure / report_control_success
+    # # paths use naive ``datetime.now()`` to compute ``_blocked_until``
+    # and other guards. The rest of the engine (e.g.
+    # ``_evaluation_hold``) compares those fields with a naive ``now``
+    # produced by ``coordinator._async_update_data``. If we ever pass
+    # an aware ``now`` here, the next HEMS cycle will crash with
+    # "can't compare offset-naive and offset-aware datetimes"
+    # (Codex reproduced this regression). Pass a NAIVE ``now`` to
+    # the engine's bookkeeping so both sides are naive.
+    _now_naive = _dt.now()
+
     # 0. Pre-flight. The HEMS guard is the single source of truth.
     try:
         allowed, guard_reason = hems.can_dispatch_outage_decision(decision)
@@ -274,7 +285,7 @@ async def execute_hems_command(
         _log.info("HEMS: dispatcher refused (command_id=%s, reason=%s)", cid, guard_reason)
         try:
             hems.report_control_failure(
-                _dt.now(_UTC),
+                _now_naive,
                 output_failed=bool(getattr(decision, "output_priority", None) is not None),
                 charger_failed=bool(getattr(decision, "charger_priority", None) is not None),
             )
@@ -492,7 +503,7 @@ async def execute_hems_command(
     else:
         try:
             hems.report_control_failure(
-                _dt.now(_UTC),
+                _now_naive,
                 output_failed=output_failed,
                 charger_failed=charger_failed,
             )
