@@ -283,6 +283,25 @@ class DispatcherResult:
     readback: dict | None = None
     readback_valid: bool = False
     readback_skipped: bool = False
+    # ``awaiting_confirmation`` is True when the write
+    # was API-acknowledged (``api_accepted=True``) but
+    # the readback could not confirm the value persisted
+    # on the device (typically rate-limited or transient
+    # network failure). The engine records the command
+    # in a pending-confirmation ledger and retries the
+    # readback on the next coordinator cycle WITHOUT
+    # re-issuing the write. A bounded retry budget
+    # prevents indefinite waits. The command is NOT
+    # declared applied until the readback matches the
+    # requested values.
+    awaiting_confirmation: bool = False
+    # ``rate_limited_readback`` is True when the readback
+    # specifically returned a rate-limit signal
+    # (``fetch_device_configs`` returned empty because
+    # the API rate-limited the call). The engine uses
+    # this to log a diagnostic without counting the
+    # cycle as a transport failure.
+    rate_limited_readback: bool = False
     no_op: bool = False
     error: str | None = None
 
@@ -599,6 +618,14 @@ async def execute_hems_command(
     readback: dict = {}
     readback_valid = True
     readback_skipped = False
+    # ``_readback_rate_limited`` is set to True when
+    # ``fetch_device_configs`` returned empty because
+    # the api rate-limited the call. The command is
+    # recorded in a pending-confirmation ledger and
+    # retried on the next coordinator cycle WITHOUT
+    # re-issuing the write. The failure counter is
+    # NOT incremented.
+    _readback_rate_limited = False
     if not _wrote_anything:
         readback_skipped = True
         _log.debug(
@@ -615,80 +642,161 @@ async def execute_hems_command(
                 cid,
             )
         else:
+            # Readback path. We attempt the readback
+            # once; the rate-limit signal
+            # (``api.was_last_device_configs_read_rate_limited()``)
+            # tells us whether the empty result was
+            # a rate-limit / transient failure
+            # (``awaiting_confirmation=True``) or a
+            # genuine rejection. A genuine rejection
+            # surfaces as ``readback_valid=False`` AND
+            # increments ``_consecutive_failures``;
+            # a rate-limit signal does NEITHER. The
+            # command is parked in a pending-confirmation
+            # ledger and retried on the next coordinator
+            # cycle WITHOUT re-issuing the write.
+            _readback_rate_limited = False
+            _readback_error: Exception | None = None
             try:
                 configs = await api.fetch_device_configs()
-                if not isinstance(configs, dict) or not configs:
-                    raise RuntimeError(
-                        "fetch_device_configs returned empty; cannot confirm write"
-                    )
-                if decision.output_priority is not None:
-                    state = configs.get("outputSourcePrioritySetting")
-                    if not isinstance(state, dict):
-                        raise RuntimeError(
-                            f"outputSourcePrioritySetting missing from readback; "
-                            f"got keys: {sorted(configs.keys())[:5]!r}"
-                        )
-                    returned_output = state.get("value")
-                    readback["output_priority"] = returned_output
-                    if str(returned_output) != str(decision.output_priority):
-                        raise RuntimeError(
-                            f"output readback mismatch: requested "
-                            f"{decision.output_priority!r} but device "
-                            f"reports {returned_output!r}"
-                        )
-                if decision.charger_priority is not None:
-                    state = configs.get("chargerSourcePrioritySetting")
-                    if not isinstance(state, dict):
-                        raise RuntimeError(
-                            f"chargerSourcePrioritySetting missing from readback; "
-                            f"got keys: {sorted(configs.keys())[:5]!r}"
-                        )
-                    returned_charger = state.get("value")
-                    readback["charger_priority"] = returned_charger
-                    if str(returned_charger) != str(decision.charger_priority):
-                        raise RuntimeError(
-                            f"charger readback mismatch: requested "
-                            f"{decision.charger_priority!r} but device "
-                            f"reports {returned_charger!r}"
-                        )
-                # Buzzer readback. The previous implementation
-                # never inspected ``buzzerAlarmSetting`` on
-                # the readback, so a write that the device
-                # silently rejected still looked successful
-                # on the audit log. Codex reproduction:
-                # ``set_config_item('buzzerAlarmSetting', '0')``
-                # returned ACK, readback reported ``'1'``,
-                # ``_last_buzzer`` had already been set to
-                # ``'0'`` and ``readback_valid`` stayed True.
-                _buzzer_off_rb = getattr(decision, "buzzer_off", None)
-                if _buzzer_off_rb is True:
-                    _expected_buzzer = "0"
-                elif _buzzer_off_rb is False:
-                    _expected_buzzer = "1"
-                else:
-                    _expected_buzzer = None
-                if _expected_buzzer is not None:
-                    state = configs.get("buzzerAlarmSetting")
-                    if not isinstance(state, dict):
-                        raise RuntimeError(
-                            f"buzzerAlarmSetting missing from readback; "
-                            f"got keys: {sorted(configs.keys())[:5]!r}"
-                        )
-                    returned_buzzer = state.get("value")
-                    readback["buzzer"] = returned_buzzer
-                    if str(returned_buzzer) != str(_expected_buzzer):
-                        raise RuntimeError(
-                            f"buzzer readback mismatch: requested "
-                            f"{_expected_buzzer!r} but device reports "
-                            f"{returned_buzzer!r}"
-                        )
             except Exception as exc:
-                _log.warning(
-                    "HEMS: readback failed (command_id=%s, reason=%s)",
-                    cid, exc,
+                # The network call itself failed. The
+                # rate-limit signal is unknown in this
+                # path; treat as transient failure
+                # (awaiting_confirmation).
+                _readback_error = exc
+                configs = None
+            else:
+                # Distinguish rate-limit (empty dict,
+                # ``last_device_configs_received_at``
+                # not updated) from a real rejection
+                # (the api returned a dict but the
+                # values are wrong).
+                _is_rate_limited = bool(
+                    getattr(api, "was_last_device_configs_read_rate_limited", lambda: False)()
                 )
-                readback_valid = False
-                api_exception = exc
+                if not isinstance(configs, dict) or not configs:
+                    if _is_rate_limited:
+                        _readback_rate_limited = True
+                        # Do not raise -- this is a
+                        # transient failure. The
+                        # command is recorded in the
+                        # pending ledger and retried
+                        # on the next coordinator
+                        # cycle. ``api_exception``
+                        # stays None so the failure
+                        # counter is not incremented.
+                        _log.info(
+                            "HEMS: readback rate-limited "
+                            "(command_id=%s); command will "
+                            "be retried without re-issuing "
+                            "the write",
+                            cid,
+                        )
+                    else:
+                        _readback_error = RuntimeError(
+                            "fetch_device_configs returned "
+                            "empty; cannot confirm write"
+                        )
+                else:
+                    # The api returned a populated dict.
+                    # Verify each channel we touched.
+                    if decision.output_priority is not None:
+                        state = configs.get("outputSourcePrioritySetting")
+                        if not isinstance(state, dict):
+                            _readback_error = RuntimeError(
+                                f"outputSourcePrioritySetting "
+                                f"missing from readback; got "
+                                f"keys: "
+                                f"{sorted(configs.keys())[:5]!r}"
+                            )
+                        else:
+                            returned_output = state.get("value")
+                            readback["output_priority"] = returned_output
+                            if str(returned_output) != str(
+                                decision.output_priority
+                            ):
+                                _readback_error = RuntimeError(
+                                    f"output readback mismatch: "
+                                    f"requested "
+                                    f"{decision.output_priority!r} "
+                                    f"but device reports "
+                                    f"{returned_output!r}"
+                                )
+                    if (
+                        _readback_error is None
+                        and decision.charger_priority is not None
+                    ):
+                        state = configs.get("chargerSourcePrioritySetting")
+                        if not isinstance(state, dict):
+                            _readback_error = RuntimeError(
+                                f"chargerSourcePrioritySetting "
+                                f"missing from readback; got "
+                                f"keys: "
+                                f"{sorted(configs.keys())[:5]!r}"
+                            )
+                        else:
+                            returned_charger = state.get("value")
+                            readback["charger_priority"] = returned_charger
+                            if str(returned_charger) != str(
+                                decision.charger_priority
+                            ):
+                                _readback_error = RuntimeError(
+                                    f"charger readback "
+                                    f"mismatch: requested "
+                                    f"{decision.charger_priority!r} "
+                                    f"but device reports "
+                                    f"{returned_charger!r}"
+                                )
+                    # Buzzer readback.
+                    if _readback_error is None:
+                        _buzzer_off_rb = getattr(
+                            decision, "buzzer_off", None
+                        )
+                        if _buzzer_off_rb is True:
+                            _expected_buzzer = "0"
+                        elif _buzzer_off_rb is False:
+                            _expected_buzzer = "1"
+                        else:
+                            _expected_buzzer = None
+                        if _expected_buzzer is not None:
+                            state = configs.get("buzzerAlarmSetting")
+                            if not isinstance(state, dict):
+                                _readback_error = RuntimeError(
+                                    f"buzzerAlarmSetting missing "
+                                    f"from readback; got keys: "
+                                    f"{sorted(configs.keys())[:5]!r}"
+                                )
+                            else:
+                                returned_buzzer = state.get("value")
+                                readback["buzzer"] = returned_buzzer
+                                if str(returned_buzzer) != str(
+                                    _expected_buzzer
+                                ):
+                                    _readback_error = RuntimeError(
+                                        f"buzzer readback "
+                                        f"mismatch: requested "
+                                        f"{_expected_buzzer!r} but "
+                                        f"device reports "
+                                        f"{returned_buzzer!r}"
+                                    )
+            if _readback_error is not None:
+                if _readback_rate_limited:
+                    # Transient failure: do not raise
+                    # readback_valid (leave True so the
+                    # bookkeeping does not count a
+                    # failure); record as
+                    # ``awaiting_confirmation`` for the
+                    # pending ledger.
+                    readback_valid = True
+                else:
+                    _log.warning(
+                        "HEMS: readback failed "
+                        "(command_id=%s, reason=%s)",
+                        cid, _readback_error,
+                    )
+                    readback_valid = False
+                    api_exception = _readback_error
 
     # 3. Build the result.
     if api_exception is not None and not readback:
@@ -712,8 +820,53 @@ async def execute_hems_command(
         readback=readback or None,
         readback_valid=readback_valid,
         readback_skipped=readback_skipped,
+        awaiting_confirmation=_readback_rate_limited,
+        rate_limited_readback=_readback_rate_limited,
         error=error,
     )
+
+    # 3.4. Pending-confirmation ledger. When the
+    #    readback is rate-limited (``_readback_rate_limited``)
+    #    we know the api ACK arrived but we could not
+    #    confirm the value persisted. Park the command
+    #    in a ledger so the next coordinator cycle can
+    #    retry the readback WITHOUT re-issuing the
+    #    write. A bounded retry budget (3 attempts
+    #    within 15s) prevents indefinite waits.
+    #    The command is NOT declared applied until the
+    #    readback matches the requested values.
+    if _readback_rate_limited and _wrote_anything and api_accepted:
+        try:
+            _pending_ledger = getattr(
+                hems, "_pending_confirmations", None
+            )
+            if _pending_ledger is None:
+                _pending_ledger = {}
+                hems._pending_confirmations = _pending_ledger
+            _pending_ledger[cid] = {
+                "command_id": cid,
+                "output_priority": getattr(
+                    decision, "output_priority", None
+                ),
+                "charger_priority": getattr(
+                    decision, "charger_priority", None
+                ),
+                "buzzer_off": getattr(
+                    decision, "buzzer_off", None
+                ),
+                "first_seen_at": _now_naive,
+                "last_attempt_at": _now_naive,
+                "attempts": 1,
+                # Deadline: 15s after the first attempt.
+                # ``_now_naive`` is local naive; the
+                # caller passes a UTC-aware ``now`` for
+                # the deadline. We store as naive local
+                # (matches the rest of the engine) and
+                # convert on read.
+                "deadline_at": _now_naive + timedelta(seconds=15),
+            }
+        except Exception:
+            pass
 
     # 3.5. Record LAST APPLIED state. The no-op gate (step 0a)
     #    compares against ``_last_applied_output`` /
@@ -732,6 +885,7 @@ async def execute_hems_command(
         _wrote_anything
         and api_accepted
         and (readback_valid or readback_skipped)
+        and not _readback_rate_limited
     ):
         if decision.output_priority is not None:
             try:
@@ -786,17 +940,32 @@ async def execute_hems_command(
         except Exception:
             pass
     else:
-        try:
-            hems.report_control_failure(
-                _now_naive,
-                output_failed=output_failed,
-                charger_failed=charger_failed,
-            )
-        except Exception:
-            pass
+        # Rate-limited readback is NOT a transport failure.
+        # Skip ``report_control_failure`` entirely: the
+        # command is parked in the pending-confirmation
+        # ledger and the failure counter stays at 0. A true
+        # mismatch (readback_valid=False AND
+        # ``_readback_rate_limited=False``) still calls
+        # ``report_control_failure`` below.
+        if not _readback_rate_limited:
+            try:
+                hems.report_control_failure(
+                    _now_naive,
+                    output_failed=output_failed,
+                    charger_failed=charger_failed,
+                )
+            except Exception:
+                pass
     if hasattr(hems, "confirm_predictive_delivery"):
+        # The user-facing predictive-delivery signal must
+        # also be False on a rate-limited readback (we did
+        # not physically confirm anything yet). True only
+        # on a confirmed apply (``readback_valid=True AND
+        # _readback_rate_limited=False``).
         try:
-            hems.confirm_predictive_delivery(legacy_success)
+            hems.confirm_predictive_delivery(
+                bool(legacy_success) and not _readback_rate_limited
+            )
         except Exception:
             pass
     return result
@@ -837,6 +1006,18 @@ class HemsEngine:
         self._last_applied_charger: str | None = None
         self._last_output_switch_at: datetime | None = None
         self._pending_commands: set[str] = set()
+        # ``_pending_confirmations`` is the dispatcher-level
+        # ledger: keys are ``command_id`` UUIDs of
+        # commands whose API ACK arrived but whose readback
+        # could not confirm the value persisted (typically
+        # rate-limited). The coordinator's
+        # ``confirm_pending`` retries the readback WITHOUT
+        # re-issuing the write; on success the entry is
+        # removed and the LAST APPLIED state is advanced.
+        # On a true mismatch the entry is removed and the
+        # failure counter is incremented. On a deadline
+        # the entry is dropped WITHOUT declaring applied.
+        self._pending_confirmations: dict[str, dict[str, Any]] = {}
         self._pending_output_previous_switch_at: datetime | None = None
         self._manual_override_until: datetime | None = None
         self._last_manual_override_log: datetime | None = None
@@ -1726,6 +1907,259 @@ class HemsEngine:
         self._blocked_until = None
         self._pending_commands.clear()
         self._pending_output_previous_switch_at = None
+
+    async def confirm_pending(
+        self,
+        api: Any,
+        *,
+        now: datetime | None = None,
+        logger: Any = None,
+    ) -> dict[str, Any]:
+        """Retry readback for commands parked in
+        ``_pending_confirmations`` after a rate-limited
+        readback. The bounded retry budget is 3
+        attempts within 15s; after the deadline the
+        entry is dropped WITHOUT declaring the command
+        applied (Codex demand: ``Не оголошуйте її
+        застосованою до підтвердження``).
+
+        Behaviour:
+          * Walks ``_pending_confirmations`` and
+            re-attempts the readback for entries whose
+            ``last_attempt_at`` is past the per-attempt
+            backoff (1s, 3s, 5s, 8s … capped at 10s).
+          * On a successful readback that matches the
+            requested values, the entry is removed and
+            the LAST APPLIED state is advanced (output,
+            charger, buzzer).
+          * On a successful readback that DIFFERS from
+            the requested values, the entry is removed
+            and ``report_control_failure`` is called
+            (real transport failure).
+          * On a rate-limited readback, the
+            ``last_attempt_at`` is updated and the
+            entry stays in the ledger. ``attempts`` is
+            incremented. The failure counter is NOT
+            touched.
+          * On a network exception, the entry stays
+            in the ledger with ``last_attempt_at``
+            updated. Failure counter is NOT touched.
+          * If the deadline (``first_seen_at + 15s``)
+            has elapsed, the entry is dropped WITHOUT
+            declaring applied. A WARNING is logged
+            so the operator can investigate.
+
+        Returns a summary dict ``{"confirmed":
+        int, "still_pending": int, "timed_out": int,
+        "failed": int}`` for the audit log.
+        """
+        from .engine import _LOGGER as _engine_logger
+        _log = logger or _engine_logger
+        _now = now or _dt.now()
+        # Normalise ``_now`` to UTC-aware.
+        if isinstance(_now, datetime) and _now.tzinfo is None:
+            _now = _now.astimezone().astimezone(_UTC)
+        summary = {
+            "confirmed": 0,
+            "still_pending": 0,
+            "timed_out": 0,
+            "failed": 0,
+        }
+        ledger = getattr(self, "_pending_confirmations", None)
+        if not ledger:
+            return summary
+        # Iterate over a copy so we can mutate the
+        # ledger while walking it.
+        for cid, entry in list(ledger.items()):
+            deadline_at = entry.get("deadline_at")
+            if isinstance(deadline_at, datetime):
+                deadline_aware = (
+                    deadline_at.astimezone().astimezone(_UTC)
+                    if deadline_at.tzinfo is None
+                    else deadline_at.astimezone(_UTC)
+                )
+            else:
+                deadline_aware = _now
+            if _tz_compare(_now, deadline_aware) > 0:
+                # Deadline elapsed. Drop the entry
+                # WITHOUT declaring applied.
+                _log.warning(
+                    "HEMS: pending confirmation for "
+                    "command_id=%s timed out (deadline "
+                    "%s); not declaring applied. "
+                    "Manual inspection recommended.",
+                    cid, deadline_aware.isoformat(),
+                )
+                ledger.pop(cid, None)
+                summary["timed_out"] += 1
+                continue
+            last_attempt_at = entry.get("last_attempt_at")
+            if isinstance(last_attempt_at, datetime):
+                last_aware = (
+                    last_attempt_at.astimezone().astimezone(_UTC)
+                    if last_attempt_at.tzinfo is None
+                    else last_attempt_at.astimezone(_UTC)
+                )
+            else:
+                last_aware = _now
+            # Per-attempt backoff: 1s, 3s, 5s, then 8s.
+            attempts = int(entry.get("attempts", 1))
+            backoff_sec = [0, 1, 3, 5, 8][min(attempts, 4)]
+            elapsed = (_now - last_aware).total_seconds()
+            if elapsed < backoff_sec:
+                summary["still_pending"] += 1
+                continue
+            # Re-attempt the readback.
+            try:
+                configs = await api.fetch_device_configs()
+            except Exception as exc:
+                _log.info(
+                    "HEMS: pending confirmation readback "
+                    "for command_id=%s raised %s; will "
+                    "retry",
+                    cid, type(exc).__name__,
+                )
+                entry["last_attempt_at"] = _now
+                entry["attempts"] = attempts + 1
+                summary["still_pending"] += 1
+                continue
+            _is_rate_limited = bool(
+                getattr(api, "was_last_device_configs_read_rate_limited", lambda: False)()
+            )
+            if not isinstance(configs, dict) or not configs:
+                if _is_rate_limited:
+                    _log.info(
+                        "HEMS: pending confirmation for "
+                        "command_id=%s still rate-limited "
+                        "(attempt %d); will retry",
+                        cid, attempts + 1,
+                    )
+                    entry["last_attempt_at"] = _now
+                    entry["attempts"] = attempts + 1
+                    summary["still_pending"] += 1
+                    continue
+                # The api returned empty but the
+                # rate-limit signal is not set. This
+                # is a permanent failure; drop the
+                # entry and count a real failure.
+                _log.warning(
+                    "HEMS: pending confirmation for "
+                    "command_id=%s got empty readback "
+                    "without rate-limit signal; "
+                    "counting as real failure",
+                    cid,
+                )
+                try:
+                    self.report_control_failure(
+                        _now,
+                        output_failed=entry.get(
+                            "output_priority"
+                        ) is not None,
+                        charger_failed=entry.get(
+                            "charger_priority"
+                        ) is not None,
+                    )
+                except Exception:
+                    pass
+                ledger.pop(cid, None)
+                summary["failed"] += 1
+                continue
+            # The api returned a populated dict.
+            # Compare each channel we touched.
+            mismatch = False
+            output_val = entry.get("output_priority")
+            if output_val is not None:
+                state = configs.get(
+                    "outputSourcePrioritySetting"
+                )
+                if not isinstance(state, dict):
+                    mismatch = True
+                else:
+                    returned = state.get("value")
+                    if str(returned) != str(output_val):
+                        mismatch = True
+            charger_val = entry.get("charger_priority")
+            if not mismatch and charger_val is not None:
+                state = configs.get(
+                    "chargerSourcePrioritySetting"
+                )
+                if not isinstance(state, dict):
+                    mismatch = True
+                else:
+                    returned = state.get("value")
+                    if str(returned) != str(charger_val):
+                        mismatch = True
+            buzzer_val = entry.get("buzzer_off")
+            if not mismatch and buzzer_val is not None:
+                expected = (
+                    "0" if buzzer_val is True
+                    else "1"
+                )
+                state = configs.get("buzzerAlarmSetting")
+                if not isinstance(state, dict):
+                    mismatch = True
+                else:
+                    returned = state.get("value")
+                    if str(returned) != str(expected):
+                        mismatch = True
+            if mismatch:
+                # True mismatch. Count a real
+                # failure and drop the entry.
+                _log.warning(
+                    "HEMS: pending confirmation for "
+                    "command_id=%s real mismatch on "
+                    "retry; counting as real failure",
+                    cid,
+                )
+                try:
+                    self.report_control_failure(
+                        _now,
+                        output_failed=(
+                            output_val is not None
+                        ),
+                        charger_failed=(
+                            charger_val is not None
+                        ),
+                    )
+                except Exception:
+                    pass
+                ledger.pop(cid, None)
+                summary["failed"] += 1
+                continue
+            # Match. The command is now physically
+            # confirmed. Advance the LAST APPLIED
+            # state.
+            if output_val is not None:
+                try:
+                    self._last_applied_output = str(
+                        output_val
+                    )
+                except Exception:
+                    pass
+            if charger_val is not None:
+                try:
+                    self._last_applied_charger = str(
+                        charger_val
+                    )
+                except Exception:
+                    pass
+            if buzzer_val is True:
+                try:
+                    self._last_buzzer = "0"
+                except Exception:
+                    pass
+            elif buzzer_val is False:
+                try:
+                    self._last_buzzer = "1"
+                except Exception:
+                    pass
+            try:
+                self.report_control_success()
+            except Exception:
+                pass
+            ledger.pop(cid, None)
+            summary["confirmed"] += 1
+        return summary
 
     def check_keepalive(self, battery_power: float, soc: float, now: datetime | None = None) -> HemsDecision | None:
         """Check if battery keepalive is needed.

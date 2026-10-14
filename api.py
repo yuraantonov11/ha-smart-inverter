@@ -190,6 +190,19 @@ class InverterApiClient:
         # Async lock for rate limiting (prevents 5 simultaneous requests
         # when both InverterCoordinator and HistoryCoordinator share one api)
         self._rate_limit_lock: asyncio.Lock = asyncio.Lock()
+        # Async lock for ``fetch_device_configs`` (the heavy
+        # two-step batch read). The coordinator's diagnostic
+        # fetch and the dispatcher's readback both call this
+        # method; if they race, one of them gets an empty
+        # response under the rate limit and is treated as a
+        # failure. The lock serialises the batch read so both
+        # callers see the same device state, and the
+        # dispatcher can distinguish "the device rejected the
+        # write" from "we could not read the device right
+        # now" (Codex reproduced a regression where a
+        # concurrent diagnostic read starved the dispatcher's
+        # confirmation and the failure counter advanced).
+        self._device_configs_lock: asyncio.Lock = asyncio.Lock()
 
         # Offline and response evidence metadata. Device measurement time is
         # intentionally unknown unless the API supplies a documented sample
@@ -1438,6 +1451,41 @@ class InverterApiClient:
           1. POST /apis/remote/device/configs/read  -> returns batchReadId
           2. GET  /apis/remote/device/configs/read/details?batchReadId=...
              poll until isFinished=True, then extract configAttributeStates
+
+        The entire body is wrapped in ``_device_configs_lock``
+        so the coordinator's diagnostic read and the
+        dispatcher's readback serialise. Without the lock,
+        two parallel callers race past the rate-limit gate,
+        the API serves one and the other sees an empty
+        response, and the dispatcher records a false
+        "readback failure" (Codex reproduced this regression
+        on 9a0b97e).
+        """
+        async with self._device_configs_lock:
+            return await self._fetch_device_configs_unlocked()
+
+    def was_last_device_configs_read_rate_limited(self) -> bool:
+        """Return True when the most recent
+        ``fetch_device_configs`` call returned an empty
+        dict because the API rate-limited the call (code
+        70021) or otherwise failed silently. False when
+        the call returned a populated config dict OR when
+        no call has been issued yet. The dispatcher uses
+        this to distinguish "the device rejected the
+        write" (true mismatch) from "we could not read
+        the device right now" (rate-limit / transient
+        failure). The latter MUST NOT increment the
+        failure counter; it is recorded as
+        ``awaiting_confirmation`` and retried.
+        """
+        if self.last_device_configs_received_at is None:
+            return True
+        return False
+
+    async def _fetch_device_configs_unlocked(self) -> dict[str, Any]:
+        """Unlocked implementation of ``fetch_device_configs``.
+        Always called with ``_device_configs_lock`` held by
+        the public wrapper.
         """
         if not self.device_sn:
             return {}

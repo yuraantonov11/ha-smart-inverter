@@ -1148,6 +1148,39 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         await self._maybe_evaluate_storm_risk(now)
 
         # ═══════════════════════════════════════════════════════════════
+        # Pending-confirmation retry. After any rate-limited
+        # readback the dispatcher parked a
+        # ``_pending_confirmations`` ledger entry. Retry the
+        # readback here WITHOUT re-issuing the write -- the
+        # bounded retry budget (3 attempts within 15s)
+        # prevents indefinite waits. Codex reproduced a
+        # regression at 9a0b97e where the failure counter
+        # advanced 6 times from concurrent
+        # diagnostic-vs-dispatcher batch reads; this
+        # ``confirm_pending`` call shares the api's
+        # ``_device_configs_lock`` so the two paths
+        # serialise.
+        if (
+            getattr(self._hems, "_pending_confirmations", None)
+            and self.hems_auto_mode
+        ):
+            try:
+                confirmation_summary = await self._hems.confirm_pending(
+                    self.api, now=now,
+                )
+                if any(confirmation_summary.values()):
+                    _LOGGER.info(
+                        "HEMS: pending confirmations: %s",
+                        confirmation_summary,
+                    )
+            except Exception as exc:
+                _LOGGER.debug(
+                    "HEMS: pending confirmation retry raised %s; "
+                    "ledger preserved for next cycle",
+                    type(exc).__name__,
+                )
+
+        # ═══════════════════════════════════════════════════════════════
         # HEMS ENGINE — Run decision cycle
         # ═══════════════════════════════════════════════════════════════
         if self.hems_auto_mode:
