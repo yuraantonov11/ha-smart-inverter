@@ -434,6 +434,12 @@ class FakeApiTransport:
                 f"{self._readback_mismatch_charger!r} but device "
                 f"reports {self._charger!r}"
             )
+        if getattr(self, "_readback_mismatch_buzzer", None) is not None:
+            raise RuntimeError(
+                f"buzzer readback mismatch: requested "
+                f"{self._readback_mismatch_buzzer!r} but device "
+                f"reports {self._buzzer!r}"
+            )
         return {
             "outputSourcePrioritySetting": {
                 "value": self._output,
@@ -442,6 +448,10 @@ class FakeApiTransport:
             "chargerSourcePrioritySetting": {
                 "value": self._charger,
                 "name": "Charger Source Priority",
+            },
+            "buzzerAlarmSetting": {
+                "value": self._buzzer,
+                "name": "Buzzer Alarm Setting",
             },
         }
 

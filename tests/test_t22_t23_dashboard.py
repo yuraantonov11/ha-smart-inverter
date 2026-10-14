@@ -4953,6 +4953,35 @@ def test_r91_predictive_decision_state_publishes_calibrator_metrics_on_hold() ->
     fake_engine.ChargerPriority = _StubChargerPriority
     fake_engine._normalize_output = lambda x: x
     fake_engine._normalize_charger = lambda x: x
+    # Phase 2C+3 follow-up v5: ``hems.predictive_control`` now
+    # imports ``_tz_compare`` and ``_as_utc`` from
+    # ``hems.engine`` for the naive/aware comparison fix.
+    # The stub must provide them so the ``exec`` of the
+    # production source succeeds.
+    def _stub_as_utc(dt):
+        if dt is None or not hasattr(dt, "tzinfo"):
+            return dt
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=__import__("datetime").timezone.utc)
+        return dt
+
+    def _stub_tz_compare(a, b):
+        if a is None and b is None:
+            return 0
+        if a is None:
+            return -1
+        if b is None:
+            return 1
+        a_utc = _stub_as_utc(a)
+        b_utc = _stub_as_utc(b)
+        if a_utc < b_utc:
+            return -1
+        if a_utc > b_utc:
+            return 1
+        return 0
+
+    fake_engine._tz_compare = _stub_tz_compare
+    fake_engine._as_utc = _stub_as_utc
     _sys.modules["hems.engine"] = fake_engine
     fake_pc = types.ModuleType(
         "hems.predictive_control"

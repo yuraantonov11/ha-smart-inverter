@@ -532,6 +532,20 @@ async def execute_hems_command(
                 _wrote_anything = True
 
         # Buzzer. Explicit None handling (DEFECT B).
+        # ``_last_buzzer`` is updated ONLY after the readback
+        # confirms the new value persisted on the device
+        # (see step 3.5 below). The previous implementation
+        # set ``_last_buzzer`` as soon as the API ACK
+        # returned, before the readback ran. A readback
+        # failure would still leave ``_last_buzzer`` in
+        # the new state, so the no-op gate on the next
+        # cycle would treat the device as confirmed in
+        # the new mode even though the device may have
+        # rejected the write. Codex reproduction: writing
+        # ``buzzerAlarmSetting='0'`` returned ACK but the
+        # readback reported ``'1'`` (mismatch). The
+        # previous code updated ``_last_buzzer='0'``
+        # anyway.
         _buzzer_off = getattr(decision, "buzzer_off", None)
         if _buzzer_off is None:
             pass  # Leave the acoustic state untouched.
@@ -544,10 +558,6 @@ async def execute_hems_command(
                     legacy_success = False
                 else:
                     _wrote_anything = True
-                    try:
-                        hems._last_buzzer = "0"
-                    except Exception:
-                        pass
         elif _buzzer_off is False:
             last = getattr(hems, "_last_buzzer", None)
             if last != "1":
@@ -557,10 +567,6 @@ async def execute_hems_command(
                     legacy_success = False
                 else:
                     _wrote_anything = True
-                    try:
-                        hems._last_buzzer = "1"
-                    except Exception:
-                        pass
 
     except Exception as exc:
         _log.error("HEMS: control command failed: %s", exc)
@@ -645,6 +651,37 @@ async def execute_hems_command(
                             f"{decision.charger_priority!r} but device "
                             f"reports {returned_charger!r}"
                         )
+                # Buzzer readback. The previous implementation
+                # never inspected ``buzzerAlarmSetting`` on
+                # the readback, so a write that the device
+                # silently rejected still looked successful
+                # on the audit log. Codex reproduction:
+                # ``set_config_item('buzzerAlarmSetting', '0')``
+                # returned ACK, readback reported ``'1'``,
+                # ``_last_buzzer`` had already been set to
+                # ``'0'`` and ``readback_valid`` stayed True.
+                _buzzer_off_rb = getattr(decision, "buzzer_off", None)
+                if _buzzer_off_rb is True:
+                    _expected_buzzer = "0"
+                elif _buzzer_off_rb is False:
+                    _expected_buzzer = "1"
+                else:
+                    _expected_buzzer = None
+                if _expected_buzzer is not None:
+                    state = configs.get("buzzerAlarmSetting")
+                    if not isinstance(state, dict):
+                        raise RuntimeError(
+                            f"buzzerAlarmSetting missing from readback; "
+                            f"got keys: {sorted(configs.keys())[:5]!r}"
+                        )
+                    returned_buzzer = state.get("value")
+                    readback["buzzer"] = returned_buzzer
+                    if str(returned_buzzer) != str(_expected_buzzer):
+                        raise RuntimeError(
+                            f"buzzer readback mismatch: requested "
+                            f"{_expected_buzzer!r} but device reports "
+                            f"{returned_buzzer!r}"
+                        )
             except Exception as exc:
                 _log.warning(
                     "HEMS: readback failed (command_id=%s, reason=%s)",
@@ -704,6 +741,21 @@ async def execute_hems_command(
         if decision.charger_priority is not None:
             try:
                 hems._last_applied_charger = decision.charger_priority
+            except Exception:
+                pass
+        # Buzzer: only commit ``_last_buzzer`` after the
+        # readback confirmed the new value. A readback
+        # failure / mismatch leaves the cache intact so the
+        # next cycle will retry.
+        _buzzer_off_ok = getattr(decision, "buzzer_off", None)
+        if _buzzer_off_ok is True:
+            try:
+                hems._last_buzzer = "0"
+            except Exception:
+                pass
+        elif _buzzer_off_ok is False:
+            try:
+                hems._last_buzzer = "1"
             except Exception:
                 pass
 
@@ -924,6 +976,40 @@ class HemsEngine:
         predictive_mode = self._reset_predictive_state()
         current_output = _normalize_output(current_output)
         current_charger = _normalize_charger(current_charger)
+        # 0. Reconcile the LAST APPLIED cache with the fresh
+        #    observed state. ``_last_applied_output`` /
+        #    ``_last_applied_charger`` record the LAST
+        #    CONFIRMED applied state of the inverter (set in
+        #    the dispatcher's success path). The device may
+        #    have changed externally between cycles (manual
+        #    override, grid event, hardware reset, …) so the
+        #    cache can drift from the truth. Without
+        #    reconciliation, the dispatcher's no-op gate
+        #    would see a stale cache and short-circuit a
+        #    legitimate new write (Codex reproduction:
+        #    ``_last_applied_output='2'`` set last cycle,
+        #    fresh ``current_output='0'`` arrives, engine
+        #    proposes ``'2'`` to recover, dispatcher
+        #    short-circuits with ``api.calls=[]`` and
+        #    ``no_op=True``, inverter stays at ``'0'``).
+        # The reconciliation:
+        #   * Skips when manual override is active (the
+        #     user is in control; the cache may legitimately
+        #     differ from observed).
+        #   * Skips when the anti-flapping dedup window is
+        #     open (a recent proposal may not have been
+        #     observed yet because the device is still
+        #     settling).
+        #   * Otherwise, when observed differs from
+        #     ``_last_applied_*``, update the cache to
+        #     observed. The next ``_finalize_decision`` will
+        #     see ``target != applied`` and the dispatcher
+        #     will issue a real write.
+        self._reconcile_applied_cache(
+            now=now,
+            current_output=current_output,
+            current_charger=current_charger,
+        )
         reserve_soc = self.tun.reserve_soc if reserve_soc is None else reserve_soc
         min_operating_soc = self.tun.min_operating_soc if min_operating_soc is None else min_operating_soc
         forecast_tomorrow_kwh = _forecast_energy(forecast_tomorrow_kwh)
@@ -1346,6 +1432,98 @@ class HemsEngine:
                 self._last_cmd_charger = decision.charger_priority
                 self._last_cmd_charger_at = now
         return self._log_decision(decision, now, inputs, entry_id)
+
+    def _reconcile_applied_cache(
+        self,
+        *,
+        now: datetime,
+        current_output: str | None,
+        current_charger: str | None,
+    ) -> None:
+        """Reconcile ``_last_applied_output`` /
+        ``_last_applied_charger`` with the fresh observed
+        state of the inverter.
+
+        Background: ``_last_applied_*`` is the LAST CONFIRMED
+        applied state of the inverter, set only on the
+        dispatcher's success path with a successful readback.
+        The device may change externally between cycles
+        (manual override, grid event, hardware reset, …) so
+        the cache can drift from the truth. Without
+        reconciliation, the dispatcher's no-op gate would see
+        a stale cache and short-circuit a legitimate new
+        write. Codex reproduction at fc1a2e8:
+
+          cycle 1: dispatcher writes '2/2', readback passes,
+                   ``_last_applied_output='2'``,
+                   ``_last_applied_charger='2'``.
+          cycle 2: device is now in '0/1' (manual change).
+                   ``current_output='0'``,
+                   ``current_charger='1'``. Engine proposes
+                   '2/2' to recover. Dispatcher no-op gate:
+                   ``'2' != '2'`` (``_last_applied_*``) =>
+                   no write. Inverter stays in '0/1'.
+
+        The reconciliation:
+          * Skips when manual override is active (the user
+            is in control; the cache may legitimately
+            differ from observed).
+          * Skips when the anti-flapping dedup window is
+            open (a recent proposal may not have been
+            observed yet).
+          * Skips when observed is ``None`` (no telemetry
+            from the inverter).
+          * Otherwise, when observed differs from
+            ``_last_applied_*``, update the cache to
+            observed. The next ``_finalize_decision`` will
+            see ``target != applied`` and the dispatcher
+            will issue a real write.
+        """
+        # 1. Manual override: preserve the cache.
+        if (
+            self._manual_override_until is not None
+            and _tz_compare(self._manual_override_until, now) > 0
+        ):
+            return
+        # 2. Anti-flapping dedup window: a recent proposal
+        #    may not have been observed yet. Do not
+        #    reconcile while the window is open.
+        _dedup_active = False
+        if (
+            self._last_cmd_output_at is not None
+            and (now - self._last_cmd_output_at) < self._command_dedup_window
+        ):
+            _dedup_active = True
+        if (
+            self._last_cmd_charger_at is not None
+            and (now - self._last_cmd_charger_at) < self._command_dedup_window
+        ):
+            _dedup_active = True
+        if _dedup_active:
+            return
+        # 3. Reconcile output channel. ``None`` observed =
+        #    no telemetry; do not invalidate the cache.
+        if (
+            current_output is not None
+            and self._last_applied_output is not None
+            and str(current_output) != str(self._last_applied_output)
+        ):
+            self._last_applied_output = str(current_output)
+        elif current_output is not None and self._last_applied_output is None:
+            # First observation after a restart. Seed the
+            # cache from the observed state so the no-op
+            # gate does not fire spuriously.
+            self._last_applied_output = str(current_output)
+        # 4. Reconcile charger channel (symmetric).
+        if (
+            current_charger is not None
+            and self._last_applied_charger is not None
+            and str(current_charger) != str(self._last_applied_charger)
+        ):
+            self._last_applied_charger = str(current_charger)
+        elif current_charger is not None and self._last_applied_charger is None:
+            self._last_applied_charger = str(current_charger)
+
 
     @staticmethod
     def _log_decision(decision: HemsDecision, now: datetime,

@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from .engine import HemsEngine, SmartMode, OutputPriority, ChargerPriority
 from .engine import _normalize_output, _normalize_charger
+from .engine import _tz_compare, _as_utc
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,9 +72,20 @@ def apply_feedback(engine, action, now, duration_min=30, new_target_soc=None):
         raise ValueError("modify requires new_target_soc 20..100")
     if action == "approve":
         return None
-    until = now + timedelta(minutes=duration_min)
+    # Promote ``now`` to UTC-aware so the resulting ``until``
+    # is comparable with ``engine._manual_override_until``
+    # (which is always UTC-aware). The previous
+    # implementation stored a naive ``until`` in
+    # ``engine._manual_override_until``; later comparisons
+    # against the engine's other UTC-aware fields raised
+    # ``TypeError`` (Codex reproduced on Europe/Kyiv).
+    if isinstance(now, datetime) and now.tzinfo is None:
+        now_aware = _as_utc(now)
+    else:
+        now_aware = now
+    until = now_aware + timedelta(minutes=duration_min)
     # Feedback may extend, never shorten an existing physical manual hold.
-    if engine._manual_override_until and engine._manual_override_until > until:
+    if engine._manual_override_until and _tz_compare(engine._manual_override_until, until) > 0:
         until = engine._manual_override_until
     engine._manual_override_until = until
     engine._predictive_user_target_soc = new_target_soc if action == "modify" else None
@@ -87,13 +99,23 @@ def restore_feedback(engine, record, now):
         until = datetime.fromisoformat(record["until"])
         if until.tzinfo is None:
             return
-        until = until.astimezone(now.tzinfo) if now.tzinfo else until.astimezone().replace(tzinfo=None)
+        # Promote naive ``now`` to UTC-aware for the
+        # comparison and for the engine's stored
+        # ``_manual_override_until`` (which is always
+        # UTC-aware). Codex reproduced ``TypeError`` on
+        # Europe/Kyiv when the previous code compared
+        # aware ``until`` against naive ``now``.
+        if isinstance(now, datetime) and now.tzinfo is None:
+            now_aware = _as_utc(now)
+        else:
+            now_aware = now
+        until_local = until.astimezone(now_aware.tzinfo)
         target = record.get("target_soc")
-        if record.get("action") not in ("reject", "modify") or until <= now:
+        if record.get("action") not in ("reject", "modify") or _tz_compare(until_local, now_aware) <= 0:
             return
         if record["action"] == "modify" and (type(target) is not int or not 20 <= target <= 100):
             return
-        engine._manual_override_until = until
+        engine._manual_override_until = until_local
         engine._predictive_user_target_soc = target
     except (TypeError, ValueError, KeyError):
         return
@@ -117,8 +139,30 @@ class PredictiveControlEngine(HemsEngine):
         self._predictive_selected = False
         self._predictive_ready = False
         now = kwargs.get("now") or datetime.now()
-        if not self._manual_override_until or self._manual_override_until <= now:
+        # ``_manual_override_until`` is UTC-aware (set by
+        # ``arm_manual_override`` / ``detect_manual_override`` /
+        # ``apply_feedback``). ``now`` is naive local from the
+        # caller (coordinator passes ``datetime.now()``). Bare
+        # ``<=`` / ``>`` raised ``TypeError: can't compare
+        # offset-naive and offset-aware datetimes`` on
+        # Europe/Kyiv. Use ``_tz_compare`` so the two sides
+        # agree on UTC regardless of the caller's tz.
+        _hold_active = False
+        if self._manual_override_until is not None:
+            # ``_tz_compare`` returns -1/0/1 in UTC. The hold
+            # is active iff the deadline is still in the future
+            # relative to ``now``.
+            _hold_active = _tz_compare(self._manual_override_until, now) > 0
+        if not _hold_active:
             self._predictive_user_target_soc = None
+        # Also expose the hold's expiry in the audit dict, in
+        # UTC so downstream consumers do not have to second-
+        # guess the engine's tz.
+        _override_until_iso: str | None = None
+        if _hold_active and self._manual_override_until is not None:
+            _override_until_iso = self._manual_override_until.astimezone(
+                timezone.utc
+            ).isoformat()
         mode = self.predictive_tuning.predictive_mode
         # Audit T22 round 9 (R9.1): the
         # init dict MUST publish
@@ -146,7 +190,7 @@ class PredictiveControlEngine(HemsEngine):
             "real_pairs": metrics.sample_count,
             "model_quality": metrics.confidence_factor,
             "readiness": False,
-            "override_pending_until": self._manual_override_until.isoformat() if self._manual_override_until and self._manual_override_until > now else None,
+            "override_pending_until": _override_until_iso,
         }
         decision = super().evaluate(**kwargs)
         self.predictive_decision_state["execution_reason"] = decision.reason
