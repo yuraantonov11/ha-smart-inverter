@@ -2854,5 +2854,353 @@ class NoOpDoesNotTripCircuitBreakerTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class AllChannelNoOpTests(unittest.TestCase):
+    """Phase 2C+3 final: the dispatcher must detect no-op via the
+    ACTUAL list of writes (output, charger, buzzer) -- not just
+    the ``is None`` check on each field. Codex reproduced a
+    regression where a ``HemsDecision(skip=True)`` with
+    ``buzzer_off=False`` and ``_last_buzzer='1'`` (already ON)
+    had no real writes to perform, but the dispatcher still
+    called ``fetch_device_configs()`` for readback. The api
+    returned empty (rate-limited), the readback was recorded
+    as failed, and ``report_control_failure`` incremented
+    ``_consecutive_failures``.
+
+    The fix:
+      1. Compare every channel's intended write against the
+         engine's last-known state.
+      2. If no channel would actually issue a ``set_*`` call,
+         the cycle is an all-channel no-op.
+      3. Skip the readback entirely (do not call
+         ``fetch_device_configs``).
+      4. Do not record a control failure (the failure
+         counter is reserved for real transport errors).
+      5. The ``DispatcherResult`` carries a dedicated
+         ``no_op`` flag so the audit log can distinguish
+         "we did not need to write" from "we tried to write
+         and it succeeded".
+    """
+
+    def setUp(self):
+        from hems.engine import (
+            HemsEngine, HemsDecision, execute_hems_command,
+        )
+        self._HemsEngine = HemsEngine
+        self._HemsDecision = HemsDecision
+        self._execute_hems_command = execute_hems_command
+
+    def _drive(self, decision, hems):
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        api = FakeApiTransport(last_success_at=fresh)
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api,
+                    hems=hems,
+                    decision=decision,
+                    command_id="noop-test",
+                )
+            ), api
+        finally:
+            loop.close()
+
+    def test_buzzer_off_false_with_last_buzzer_one_is_a_no_op(self):
+        """``buzzer_off=False`` with ``_last_buzzer='1'`` means
+        "keep the buzzer ON". The current state already matches
+        the proposal, so the dispatcher must NOT call
+        ``fetch_device_configs``. The api.calls list must be
+        empty (no set_config_item, no fetch_device_configs).
+        This is the EXACT Codex reproduction.
+        """
+        hems = self._HemsEngine()
+        hems._last_buzzer = "1"
+        decision = self._HemsDecision(
+            output_priority=None,
+            charger_priority=None,
+            buzzer_off=False,  # "buzzer ON" but _last_buzzer='1' = already ON
+            reason="keep_on",
+        )
+        result, api = self._drive(decision, hems)
+        # No transport call whatsoever.
+        self.assertEqual(
+            api.calls, [],
+            msg=f"all-channel no-op must NOT call the transport; "
+                f"got: {api.calls!r}",
+        )
+        # The result marks the cycle as a no-op.
+        self.assertTrue(
+            result.no_op,
+            msg=f"DispatcherResult must carry no_op=True; got "
+                f"{result!r}",
+        )
+        # No failure was recorded on the engine.
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="all-channel no-op must NOT increment failures",
+        )
+        self.assertIsNone(
+            hems._blocked_until,
+            msg="all-channel no-op must NOT arm the circuit breaker",
+        )
+        # Readback was intentionally skipped.
+        self.assertTrue(
+            result.readback_skipped,
+            msg="readback must be skipped when no write was issued",
+        )
+        # The result is NOT success in the "physical apply" sense.
+        self.assertFalse(
+            result.dispatched,
+            msg="no-op must NOT set dispatched=True; that would "
+                "falsely advertise a physical apply",
+        )
+        self.assertFalse(
+            result.api_accepted,
+            msg="no-op must NOT set api_accepted=True; no api call "
+                "was made",
+        )
+        self.assertFalse(
+            result.success,
+            msg="no_op must NOT advertise success; the dispatcher "
+                "did not apply anything to the device",
+        )
+
+    def test_buzzer_off_true_with_last_buzzer_one_is_a_real_write(self):
+        """``buzzer_off=True`` with ``_last_buzzer='1'`` means
+        "turn the buzzer OFF". The current state does NOT match
+        the proposal, so the dispatcher MUST call
+        ``set_config_item('buzzerAlarmSetting', '0')`` and then
+        readback via ``fetch_device_configs``.
+        """
+        hems = self._HemsEngine()
+        hems._last_buzzer = "1"
+        decision = self._HemsDecision(
+            output_priority=None,
+            charger_priority=None,
+            buzzer_off=True,
+            reason="turn_off",
+        )
+        result, api = self._drive(decision, hems)
+        # Exactly two transport calls: the buzzer set and the
+        # readback that confirms it persisted.
+        method_names = [call[0] for call in api.calls]
+        self.assertEqual(
+            method_names,
+            ["set_config_item", "fetch_device_configs"],
+            msg=f"buzzer set + readback; got: {method_names!r}",
+        )
+        # The engine recorded the new state.
+        self.assertEqual(hems._last_buzzer, "0")
+        # Real write -> readback ran.
+        self.assertFalse(
+            result.readback_skipped,
+            msg="readback must run after a real write",
+        )
+        # All counters clean (the write succeeded).
+        self.assertEqual(hems._consecutive_failures, 0)
+        self.assertIsNone(hems._blocked_until)
+        # Not a no-op.
+        self.assertFalse(result.no_op)
+        # Readback passed; the dispatcher reported a physical apply.
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.api_accepted)
+        self.assertTrue(result.readback_valid)
+        self.assertTrue(result.success)
+
+    def test_output_priority_matching_current_state_is_a_no_op(self):
+        """``output_priority='0'`` with ``_last_cmd_output='0'``
+        means the engine's proposal matches the current state.
+        No set_output_priority call. No readback. No failure.
+        """
+        hems = self._HemsEngine()
+        hems._last_cmd_output = "0"
+        hems._last_buzzer = "1"  # so buzzer_off=False is also a no-op
+        decision = self._HemsDecision(
+            output_priority="0",
+            charger_priority=None,
+            buzzer_off=False,  # matches _last_buzzer='1'
+            reason="already_in_target",
+        )
+        result, api = self._drive(decision, hems)
+        self.assertEqual(
+            api.calls, [],
+            msg=f"output match must NOT touch the transport; got: "
+                f"{api.calls!r}",
+        )
+        self.assertTrue(result.no_op)
+        self.assertEqual(hems._consecutive_failures, 0)
+
+    def test_readback_failure_with_no_writes_does_not_increment_failures(self):
+        """Codex reproduction: ``buzzer_off=False`` with
+        ``_last_buzzer='1'`` (no actual write) followed by an
+        empty readback response (rate limit). The previous
+        dispatcher recorded the readback failure as a transport
+        failure and incremented ``_consecutive_failures``. The
+        new dispatcher must NOT call ``fetch_device_configs`` at
+        all when no write was issued, so the empty response does
+        not even reach the bookkeeping path.
+        """
+        hems = self._HemsEngine()
+        hems._last_buzzer = "1"
+        decision = self._HemsDecision(
+            output_priority=None,
+            charger_priority=None,
+            buzzer_off=False,
+            reason="already_on",
+        )
+        # FakeApiTransport would raise on readback if we called
+        # it; this test asserts we did NOT call it.
+        class _RaisingApi(FakeApiTransport):
+            def __init__(self):
+                super().__init__(last_success_at=None)
+                self.calls = []
+
+            async def fetch_device_configs(self):
+                raise AssertionError(
+                    "fetch_device_configs MUST NOT be called when no "
+                    "write was issued"
+                )
+
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        api = _RaisingApi()
+        hems._last_realtime_at = fresh
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api,
+                    hems=hems,
+                    decision=decision,
+                    command_id="no-readback-test",
+                )
+            )
+        finally:
+            loop.close()
+        # Readback was skipped (the api's fetch_device_configs was
+        # never reached).
+        self.assertTrue(
+            result.readback_skipped,
+            msg=f"readback must be skipped when no write was issued; "
+                f"got: {result!r}",
+        )
+        # No transport contact.
+        self.assertEqual(
+            api.calls, [],
+            msg=f"transport must NOT be touched on all-channel no-op; "
+                f"got: {api.calls!r}",
+        )
+        # No failure recorded.
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="all-channel no-op must NOT increment failures; "
+                "Codex reproduced 133 failures on this path",
+        )
+        self.assertIsNone(
+            hems._blocked_until,
+            msg="all-channel no-op must NOT arm the circuit breaker",
+        )
+
+    def test_tz_aware_manual_override_compare_against_naive_now(self):
+        """Codex reproduced: ``_evaluation_hold`` and
+        ``detect_manual_override`` compared ``_manual_override_until``
+        (UTC-aware, set by ``arm_manual_override``) with a naive
+        ``now`` from the coordinator. The naive < aware comparison
+        raised TypeError on Europe/Kyiv.
+
+        After the fix, both setters (``arm_manual_override``,
+        ``detect_manual_override``) promote the naive ``now`` to
+        UTC-aware, and the getters use ``_tz_compare``. The
+        comparison must work without raising.
+        """
+        from datetime import datetime, timezone
+        hems = self._HemsEngine()
+        # Europe/Kyiv (UTC+2 in October, +3 in DST).
+        naive_local = datetime(2026, 10, 14, 11, 1, 0)  # naive
+        self.assertIsNone(naive_local.tzinfo)
+        # arm_manual_override must accept the naive local time
+        # and stamp a UTC-aware value (NOT pretend the local
+        # digits are already UTC -- that was the previous bug).
+        hems.arm_manual_override(naive_local)
+        self.assertIsNotNone(
+            hems._manual_override_until.tzinfo,
+            msg=f"arm_manual_override must stamp UTC-aware; got naive "
+                f"{hems._manual_override_until!r}",
+        )
+        # 11:01 EEST == 08:01 UTC (DST is +3 in October 2026).
+        # Default hold is 5 minutes, so 11:01 + 5min = 11:06.
+        self.assertEqual(
+            hems._manual_override_until,
+            naive_local.astimezone().astimezone(timezone.utc)
+            + timedelta(minutes=5),
+            msg=f"arm_manual_override must convert naive local to "
+                f"UTC correctly; got {hems._manual_override_until!r}",
+        )
+        # detect_manual_override must not raise when comparing
+        # the UTC-aware ``_manual_override_until`` to a naive
+        # ``now`` (the previous code raised TypeError).
+        # Pass a naive ``now`` that is BEFORE the hold expires.
+        hems._last_cmd_output = "0"
+        hems._last_cmd_output_at = naive_local - timedelta(minutes=1)
+        # 5 minutes later than the arm time -- the hold is still
+        # active (4-minute window). detect_manual_override reads
+        # the api-reported current_output.
+        try:
+            held = hems.detect_manual_override(
+                actual_output="2",  # mismatch
+                actual_charger="2",
+                now=naive_local + timedelta(seconds=30),
+            )
+        except TypeError as exc:
+            self.fail(
+                f"detect_manual_override must not raise TypeError on "
+                f"tz mismatch; got: {exc}"
+            )
+        # Hold is still active, so the function returns the
+        # mismatch flags.
+        self.assertTrue(held)
+
+    def test_real_write_skips_dispatcher_for_buzzer_only_when_already_set(self):
+        """Comprehensive: the exact Codex scenario
+        (``buzzer_off=False``, ``_last_buzzer='1'``) must skip
+        the readback AND not record a failure. The transport
+        call list must be empty.
+        """
+        hems = self._HemsEngine()
+        hems._last_buzzer = "1"
+        decision = self._HemsDecision(
+            output_priority=None,
+            charger_priority=None,
+            buzzer_off=False,
+            skip=True,
+            reason="keep_on",
+        )
+        result, api = self._drive(decision, hems)
+        # Transport was never touched.
+        self.assertEqual(
+            api.calls, [],
+            msg=f"all-channel no-op must NOT touch the transport; "
+                f"got: {api.calls!r}",
+        )
+        # Pending ledger was cleared (so the next cycle starts
+        # from a clean state) but the counter did NOT advance.
+        self.assertEqual(
+            hems._pending_commands, set(),
+            msg="no-op must clear the pending-commands ledger",
+        )
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="no-op must NOT increment the failure counter",
+        )
+        # DispatcherResult is clearly a no-op.
+        self.assertTrue(result.no_op)
+        self.assertFalse(result.dispatched)
+        self.assertFalse(result.api_accepted)
+        self.assertFalse(result.success)
+        self.assertIsNone(result.error)
+
+
 if __name__ == "__main__":
     unittest.main()

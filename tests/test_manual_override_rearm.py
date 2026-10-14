@@ -35,13 +35,23 @@ class ManualOverrideRearmTests(unittest.TestCase):
         first_hold_until = first_detection + timedelta(
             minutes=engine.tun.manual_override_hold_min
         )
-        self.assertEqual(engine._manual_override_until, first_hold_until)
+        # Phase 2C+3 hotfix: detect_manual_override now stamps
+        # _manual_override_until as UTC-aware (Codex reproduced a
+        # TypeError on Europe/Kyiv where a naive ``now`` was
+        # compared to a UTC-aware ``_manual_override_until``).
+        # The test's ``first_detection`` is naive local; promote
+        # to UTC so the assertion matches the new contract.
+        first_hold_until_utc = first_hold_until.astimezone()
+        first_hold_until_utc = first_hold_until_utc.astimezone(
+            __import__("datetime").timezone.utc
+        )
+        self.assertEqual(engine._manual_override_until, first_hold_until_utc)
 
         after_expiry = first_hold_until + timedelta(seconds=1)
         self.assertFalse(
             engine.detect_manual_override(actual_output, actual_charger, after_expiry)
         )
-        self.assertEqual(engine._manual_override_until, first_hold_until)
+        self.assertEqual(engine._manual_override_until, first_hold_until_utc)
 
         # A later HEMS command is a new mismatch episode, even when its target
         # and the observed inverter mode are unchanged.
@@ -53,10 +63,13 @@ class ManualOverrideRearmTests(unittest.TestCase):
         self.assertTrue(
             engine.detect_manual_override(actual_output, actual_charger, new_detection)
         )
-        self.assertEqual(
-            engine._manual_override_until,
-            new_detection + timedelta(minutes=engine.tun.manual_override_hold_min),
+        new_hold_until = new_detection + timedelta(
+            minutes=engine.tun.manual_override_hold_min
         )
+        new_hold_until_utc = new_hold_until.astimezone().astimezone(
+            __import__("datetime").timezone.utc
+        )
+        self.assertEqual(engine._manual_override_until, new_hold_until_utc)
 
     def test_return_to_commanded_modes_allows_a_new_observed_mode_override(self) -> None:
         engine = HemsEngine()
@@ -66,16 +79,19 @@ class ManualOverrideRearmTests(unittest.TestCase):
         engine._last_cmd_charger_at = NOW
         original_detection = NOW + timedelta(seconds=31)
         original_hold_until = NOW.replace(minute=5, second=31)
+        original_hold_until_utc = original_hold_until.astimezone().astimezone(
+            __import__("datetime").timezone.utc
+        )
 
         self.assertTrue(engine.detect_manual_override("0", "2", original_detection))
-        self.assertEqual(engine._manual_override_until, original_hold_until)
+        self.assertEqual(engine._manual_override_until, original_hold_until_utc)
 
         # Returning both channels to their commanded modes ends the mismatch
         # episode even though the current hold remains in effect.
         self.assertFalse(
             engine.detect_manual_override("2", "1", NOW + timedelta(minutes=1))
         )
-        self.assertEqual(engine._manual_override_until, original_hold_until)
+        self.assertEqual(engine._manual_override_until, original_hold_until_utc)
         after_expiry = original_hold_until + timedelta(seconds=1)
         self.assertFalse(engine.detect_manual_override("2", "1", after_expiry))
 
@@ -83,10 +99,13 @@ class ManualOverrideRearmTests(unittest.TestCase):
         # episode; the observation alone does not identify who or what caused it.
         new_detection = after_expiry + timedelta(seconds=31)
         self.assertTrue(engine.detect_manual_override("1", "1", new_detection))
-        self.assertEqual(
-            engine._manual_override_until,
-            new_detection + timedelta(minutes=engine.tun.manual_override_hold_min),
+        new_hold_until = new_detection + timedelta(
+            minutes=engine.tun.manual_override_hold_min
         )
+        new_hold_until_utc = new_hold_until.astimezone().astimezone(
+            __import__("datetime").timezone.utc
+        )
+        self.assertEqual(engine._manual_override_until, new_hold_until_utc)
 
     def test_simultaneous_mismatches_are_processed_without_sequential_rearm(self) -> None:
         engine = HemsEngine()
@@ -108,7 +127,14 @@ class ManualOverrideRearmTests(unittest.TestCase):
         self.assertNotIn("manual", detection_messages)
         self.assertIn("2 commanded → 0 observed", detection_messages)
         self.assertIn("1 commanded → 2 observed", detection_messages)
-        self.assertEqual(engine._manual_override_until, expected_hold_until)
+        # Phase 2C+3 hotfix: detect_manual_override now stamps
+        # _manual_override_until as UTC-aware. The expected
+        # naive value must be promoted to UTC for the
+        # comparison.
+        expected_hold_until_utc = expected_hold_until.astimezone().astimezone(
+            __import__("datetime").timezone.utc
+        )
+        self.assertEqual(engine._manual_override_until, expected_hold_until_utc)
 
         # Repeated coordinator polls during the hold must remain held and must
         # not leave the second channel waiting to arm a sequential hold.
@@ -148,7 +174,12 @@ class ManualOverrideRearmTests(unittest.TestCase):
         self.assertFalse(
             engine.detect_manual_override(actual_output, actual_charger, after_expiry)
         )
-        self.assertEqual(engine._manual_override_until, expected_hold_until)
+        # Phase 2C+3 hotfix: _manual_override_until is now
+        # UTC-aware; the test's expected_hold_until is naive.
+        expected_hold_until_utc = expected_hold_until.astimezone().astimezone(
+            __import__("datetime").timezone.utc
+        )
+        self.assertEqual(engine._manual_override_until, expected_hold_until_utc)
 
         resumed = engine.evaluate(
             smart_mode=SmartMode.ARBITRAGE,

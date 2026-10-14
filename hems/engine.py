@@ -231,18 +231,33 @@ class DispatcherResult:
       * ``dispatched`` — the dispatcher made the call no immediate
         exception. ``False`` when the HEMS guard pre-flight refused
         the write (so ``api`` was never touched), or when the
-        coordinator had no ``api`` attribute.
+        coordinator had no ``api`` attribute, or when the cycle
+        was a no-op (all channels match the current state).
       * ``api_accepted`` — every individual ``api.set_*`` call
         returned a truthy success value (HTTP 2xx or the fake
         transport's success sentinel). ``False`` if any single
-        write was rejected.
+        write was rejected. Also ``False`` for a no-op because
+        no api call was made.
       * ``readback_valid`` — a follow-up GET confirmed the same
         value persisted on the device. ``False`` on readback
         mismatch OR when no readback could be performed
         (typically when ``dispatched`` is already ``False``).
 
-    The convenience property ``success`` is the strict AND of all
-    three so the runtime's contract becomes a single boolean:
+    Additional flags:
+      * ``readback_skipped`` -- the readback was intentionally
+        skipped because the api lacks ``fetch_device_configs``
+        or the cycle was a no-op.
+      * ``no_op`` -- the cycle was an all-channel no-op: the
+        engine's proposal matched the current state across every
+        channel the dispatcher controls, so no api call was
+        needed. ``dispatched`` is ``False`` and ``api_accepted``
+        is ``False``; this is the canonical way to distinguish
+        "we did not need to write" from "we tried to write and
+        it succeeded".
+
+    The convenience property ``success`` is the strict AND of
+    ``dispatched`` / ``api_accepted`` / ``readback_valid`` so the
+    runtime's contract becomes a single boolean:
     ``executed = result.success``. Anything else must surface
     ``result.error`` as the audit-log reason.
     """
@@ -252,6 +267,7 @@ class DispatcherResult:
     readback: dict | None = None
     readback_valid: bool = False
     readback_skipped: bool = False
+    no_op: bool = False
     error: str | None = None
 
     @property
@@ -261,7 +277,14 @@ class DispatcherResult:
         ``readback_skipped`` is informational: a skipped readback
         (``api_accepted`` only) is treated as success because the
         canonical production path could not perform the readback.
+
+        ``no_op`` is a separate state and is NOT success: the
+        dispatcher did not apply anything to the device. Callers
+        that need to distinguish "skipped" from "applied" must
+        check ``no_op`` directly.
         """
+        if self.no_op:
+            return False
         if self.readback_skipped:
             return bool(self.dispatched and self.api_accepted)
         return bool(self.dispatched and self.api_accepted and self.readback_valid)
@@ -309,33 +332,87 @@ async def execute_hems_command(
     # the engine's bookkeeping so both sides are naive.
     _now_naive = _dt.now()
 
-    # 0a. No-op detection. When the engine's decision carries
-    # nothing for the dispatcher to write -- no output priority,
-    # no charger priority, no buzzer toggle -- the cycle is a
-    # legitimate "already in target state" no-op. The dispatcher
-    # must NOT call the transport and must NOT record a failure
-    # (the engine's ``_consecutive_failures`` counter is reserved
-    # for actual transport errors, not for routine cycles that
-    # do not need a write). Codex reproduced a regression where
-    # every no-op cycle incremented the counter and tripped the
-    # circuit breaker after five routine cycles.
+    # 0a. All-channel no-op detection. Codex reproduced a regression
+    # where a ``HemsDecision(skip=True)`` with ``buzzer_off=False``
+    # and ``_last_buzzer='1'`` (already ON) had no actual writes to
+    # perform but the body still called ``fetch_device_configs()``
+    # for readback. The api returned empty (rate-limited), the
+    # dispatcher recorded ``readback_valid=False``, and
+    # ``report_control_failure`` incremented
+    # ``_consecutive_failures``. Five such routine cycles tripped
+    # the circuit breaker.
+    #
+    # The fix: check each channel (output, charger, buzzer)
+    # against the engine's last-known state. If none of the
+    # channels would actually issue an api.set_* call, the
+    # cycle is a no-op. Skip the transport, skip the readback,
+    # do NOT record a failure. Mark the result with
+    # ``no_op=True`` so the audit log distinguishes "we tried
+    # to write" from "we did not need to write".
     _out = getattr(decision, "output_priority", None)
     _chg = getattr(decision, "charger_priority", None)
     _buz = getattr(decision, "buzzer_off", None)
-    if _out is None and _chg is None and _buz is None:
+    # Channel write detection: a channel is a real write only
+    # when the engine's proposal DIFFERS from the last-known
+    # state. ``_last_cmd_output='0'`` with proposed ``output_priority='0'``
+    # is a no-op (matches the current state). The buzzer channel
+    # is similar (``_last_buzzer`` tracks the last value the
+    # dispatcher wrote).
+    _has_output_write = (
+        _out is not None
+        and str(_out) != str(getattr(hems, "_last_cmd_output", None))
+    )
+    _has_charger_write = (
+        _chg is not None
+        and str(_chg) != str(getattr(hems, "_last_cmd_charger", None))
+    )
+    _has_buzzer_write = False
+    if _buz is True:
+        if getattr(hems, "_last_buzzer", None) != "0":
+            _has_buzzer_write = True
+    elif _buz is False:
+        if getattr(hems, "_last_buzzer", None) != "1":
+            _has_buzzer_write = True
+    # ``_buz is None`` -> do not touch the buzzer; no write.
+    if not (_has_output_write or _has_charger_write or _has_buzzer_write):
+        # All-channel no-op: the engine's proposal matches the
+        # current state across every channel the dispatcher
+        # controls. The cycle is a "we are already in target
+        # state" no-op. Do NOT call the transport, do NOT call
+        # ``fetch_device_configs`` (it would race the
+        # coordinator's diagnostic fetch and either return
+        # empty under the rate limit or needlessly contact the
+        # api), and do NOT increment ``_consecutive_failures``.
         _log.debug(
             "HEMS: dispatcher no-op (command_id=%s reason=%s); "
-            "no transport call, no failure recorded",
+            "all channels match current state, no transport call",
             cid, getattr(decision, "reason", ""),
         )
-        return DispatcherResult(
-            dispatched=True,
-            api_accepted=True,
+        # Clear the pending ledger so the next cycle starts
+        # from a clean state. No failure reported.
+        try:
+            hems.report_control_failure(
+                _now_naive,
+                output_failed=False,
+                charger_failed=False,
+                no_op=True,
+            )
+        except Exception:
+            pass
+        result = DispatcherResult(
+            dispatched=False,
+            api_accepted=False,
             readback=None,
             readback_valid=True,
             readback_skipped=True,
+            no_op=True,
             error=None,
         )
+        try:
+            hems.confirm_predictive_delivery(True)
+        except Exception:
+            pass
+        return result
 
     # 0b. Pre-flight. The HEMS guard is the single source of truth
     # for HARD barriers (circuit breaker, manual pause). A refusal
@@ -390,6 +467,15 @@ async def execute_hems_command(
     api_accepted = True
     legacy_success = True
     api_exception: Exception | None = None
+    # Track whether at least one ``api.set_*`` call was issued in
+    # this cycle. Readback only runs when a write was actually
+    # issued; an empty cycle (``_has_output_write=False and
+    # ``_has_charger_write=False and ``_has_buzzer_write=False``)
+    # already short-circuited at the no-op gate above, so this
+    # flag guards against the ``buzzer_off=False`` /
+    # ``_last_buzzer='1'`` case where the proposal asks for a
+    # state already in effect.
+    _wrote_anything = False
     try:
         # Output priority
         if decision.output_priority is not None:
@@ -402,6 +488,8 @@ async def execute_hems_command(
                     "HEMS: failed to set output -> %s (%s)",
                     decision.output_priority, getattr(decision, "reason", ""),
                 )
+            else:
+                _wrote_anything = True
 
         # Charger priority
         if decision.charger_priority is not None:
@@ -414,6 +502,8 @@ async def execute_hems_command(
                     "HEMS: failed to set charger -> %s (%s)",
                     decision.charger_priority, getattr(decision, "reason", ""),
                 )
+            else:
+                _wrote_anything = True
 
         # Buzzer. Explicit None handling (DEFECT B).
         _buzzer_off = getattr(decision, "buzzer_off", None)
@@ -427,6 +517,7 @@ async def execute_hems_command(
                     api_accepted = False
                     legacy_success = False
                 else:
+                    _wrote_anything = True
                     try:
                         hems._last_buzzer = "0"
                     except Exception:
@@ -439,6 +530,7 @@ async def execute_hems_command(
                     api_accepted = False
                     legacy_success = False
                 else:
+                    _wrote_anything = True
                     try:
                         hems._last_buzzer = "1"
                     except Exception:
@@ -465,10 +557,24 @@ async def execute_hems_command(
     #    signal rather than refusing a write the device likely
     #    accepted. This matches the pre-readback contract that the
     #    engine's ``report_control_success`` was already relying on.
+    #
+    #    Skip the readback entirely when no write was issued. This
+    #    avoids the rate-limit / empty-response race with the
+    #    coordinator's diagnostic ``fetch_device_configs`` call
+    #    (coordinator.py:1130) and the false-failure mode Codex
+    #    reproduced for ``buzzer_off=False`` with
+    #    ``_last_buzzer='1'``.
     readback: dict = {}
     readback_valid = True
     readback_skipped = False
-    if api_accepted and api_exception is None:
+    if not _wrote_anything:
+        readback_skipped = True
+        _log.debug(
+            "HEMS: readback skipped (no api.set_* issued this cycle; "
+            "command_id=%s reason=%s)",
+            cid, getattr(decision, "reason", ""),
+        )
+    elif api_accepted and api_exception is None:
         if not hasattr(api, "fetch_device_configs"):
             readback_skipped = True
             _log.debug(
@@ -1209,8 +1315,19 @@ class HemsEngine:
         A mismatch's source is unknown to this method. A new mismatch for a
         command older than 30 seconds arms the configured protective hold.
         """
+        # Codex reproduced: ``detect_manual_override`` and
+        # ``arm_manual_override`` use bare datetime comparisons
+        # against ``self._manual_override_until`` (now UTC-aware
+        # from the dispatcher) and a naive ``now`` from the
+        # coordinator. The naive < aware comparison raises
+        # TypeError on Europe/Kyiv after the first failure.
+        # Use the tz-safe helpers so the comparison works in
+        # both directions.
         now = now or datetime.now()
-        hold_active = bool(self._manual_override_until and self._manual_override_until > now)
+        hold_active = bool(
+            self._manual_override_until
+            and _tz_compare(now, self._manual_override_until) < 0
+        )
         output_mismatch_active = False
         charger_mismatch_active = False
         new_output_mismatch = False
@@ -1246,6 +1363,15 @@ class HemsEngine:
         if hold_active:
             return output_mismatch_active or charger_mismatch_active
         if new_output_mismatch or new_charger_mismatch:
+            # Stamp ``_manual_override_until`` as a UTC-aware
+            # ``datetime`` so the engine's guards compare against
+            # ``datetime.now(_UTC)`` consistently regardless of
+            # the coordinator's tz. Codex reproduced a TypeError
+            # on Europe/Kyiv where a naive ``now`` was compared to
+            # the UTC-aware value set by ``arm_manual_override``.
+            if isinstance(now, datetime) and now.tzinfo is None:
+                now = now.astimezone()  # naive -> local-aware
+                now = now.astimezone(_UTC)  # local-aware -> UTC
             self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
             if new_output_mismatch:
                 _LOGGER.info(
@@ -1264,6 +1390,15 @@ class HemsEngine:
     def arm_manual_override(self, now: datetime | None = None) -> None:
         """Externally arm manual override (e.g. from UI control panel)."""
         now = now or datetime.now()
+        # Stamp ``_manual_override_until`` as UTC-aware so the
+        # engine's guards compare consistently regardless of
+        # the caller's tz. Codex reproduced a TypeError on
+        # Europe/Kyiv where a naive ``now`` was compared to a
+        # UTC-aware ``_manual_override_until`` left over from a
+        # previous arming.
+        if isinstance(now, datetime) and now.tzinfo is None:
+            now = now.astimezone()
+            now = now.astimezone(_UTC)
         self._manual_override_until = now + timedelta(minutes=self.tun.manual_override_hold_min)
 
     def report_control_failure(
