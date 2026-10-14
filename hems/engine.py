@@ -19,6 +19,40 @@ from typing import Any
 # Canonical UTC alias used by the dispatcher helper below.
 _UTC = _tz.utc
 
+
+def _as_utc(dt: datetime) -> datetime:
+    """Promote a naive ``datetime`` to UTC; pass through aware."""
+    if not isinstance(dt, datetime):
+        return dt
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_UTC)
+    return dt
+
+
+def _tz_compare(a: datetime, b: datetime) -> int:
+    """Compare two datetimes regardless of tz-awareness.
+
+    Both are promoted to UTC. Returns negative if ``a < b``,
+    positive if ``a > b``, zero if equal. Used by the HEMS
+    engine's guards so naive ``now`` from the coordinator and
+    aware ``_blocked_until`` from the dispatcher compare
+    correctly (Codex reproduced the 3-hour skew bug).
+    """
+    a_utc = _as_utc(a)
+    b_utc = _as_utc(b)
+    if a_utc < b_utc:
+        return -1
+    if a_utc > b_utc:
+        return 1
+    return 0
+
+
+def _tz_diff_seconds(a: datetime, b: datetime) -> float:
+    """``a - b`` in seconds, regardless of tz-awareness."""
+    a_utc = _as_utc(a)
+    b_utc = _as_utc(b)
+    return (a_utc - b_utc).total_seconds()
+
 # Alias for the common ``datetime.now(tz=...)`` default. The
 # ``can_dispatch_outage_decision`` method below uses it as the
 # fallback tz when an engine timestamp happens to be naive.
@@ -884,11 +918,11 @@ class HemsEngine:
         reason = None
         if not hems_auto:
             reason = "hems_auto_off"
-        elif self._blocked_until and now < self._blocked_until:
+        elif self._blocked_until and _tz_compare(now, self._blocked_until) < 0:
             reason = "circuit_breaker"
-        elif self._manual_override_until and now < self._manual_override_until:
-            if self._last_manual_override_log is None or now - self._last_manual_override_log > timedelta(minutes=5):
-                remaining = (self._manual_override_until - now).total_seconds()
+        elif self._manual_override_until and _tz_compare(now, self._manual_override_until) < 0:
+            if self._last_manual_override_log is None or _tz_diff_seconds(now, self._last_manual_override_log) > timedelta(minutes=5).total_seconds():
+                remaining = _tz_diff_seconds(self._manual_override_until, now)
                 _LOGGER.info("HEMS: observed command-readback mismatch hold (%.0fs remaining)", remaining)
                 self._last_manual_override_log = now
             reason = _Reason.MANUAL_OVERRIDE
@@ -1253,7 +1287,15 @@ class HemsEngine:
         (Codex reproduced this regression -- 133 failures, all
         from no-op cycles).
         """
-        now = now or datetime.now()
+        # Always stamp ``_blocked_until`` as a UTC-aware ``datetime``
+        # so the guard's comparison works regardless of the
+        # coordinator's tz configuration. Codex reproduced a
+        # 3-hour clock-skew bug where the normaliser assigned UTC
+        # to a local-naive timestamp, causing the guard to keep
+        # reporting the breaker as "until X" well past X.
+        if isinstance(now, datetime) and now.tzinfo is None:
+            now = now.replace(tzinfo=_tz.utc)
+        now = now or _dt.now(_UTC)
         if output_failed and "output" in self._pending_commands:
             self._last_cmd_output = self._last_cmd_output_at = None
             self._last_output_switch_at = self._pending_output_previous_switch_at

@@ -2818,6 +2818,41 @@ class NoOpDoesNotTripCircuitBreakerTests(unittest.TestCase):
             msg="no-op must NOT increment failure counter",
         )
 
+    def test_report_control_failure_stamps_blocked_until_as_utc(self):
+        """Codex reproduced a 3-hour clock-skew bug where
+        ``_blocked_until`` was set with naive local time but the
+        guard's normaliser assigned UTC to it. The guard then
+        reported the breaker as "until X" long past X.
+
+        After the fix ``_blocked_until`` is stamped UTC-aware so
+        the guard's comparison with ``datetime.now(_UTC)`` is
+        consistent regardless of the coordinator's local tz.
+        """
+        from datetime import datetime, timezone
+        # Simulate a naive local ``now`` (EEST 11:01) being
+        # passed by the coordinator.
+        naive_eest = datetime(2026, 10, 14, 11, 1, 0)  # EEST
+        self.assertIsNone(naive_eest.tzinfo)
+        hems = self._HemsEngine()
+        hems.report_control_failure(naive_eest, no_op=False)
+        # The stored ``_blocked_until`` must be tz-aware. A naive
+        # value would silently use the caller's local tz, which
+        # is the very bug we are fixing.
+        self.assertIsNotNone(
+            hems._blocked_until.tzinfo,
+            msg=f"_blocked_until must be UTC-aware; got naive "
+                f"({hems._blocked_until!r})",
+        )
+        # And the guard's comparison (now_utc > blocked_utc) must
+        # see the value as a real wall-clock instant, not as
+        # 11:01 UTC (which would be 3 hours off).
+        guard_now = datetime(2026, 10, 14, 11, 1, 10, tzinfo=timezone.utc)
+        # 11:01:00 + 5s = 11:01:05, which is < 11:01:10. Guard allows.
+        self.assertLess(
+            hems._blocked_until, guard_now,
+            msg=f"blocked {hems._blocked_until!r} should be < guard_now {guard_now!r}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

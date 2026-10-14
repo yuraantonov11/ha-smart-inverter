@@ -6,7 +6,7 @@ import sys
 import unittest
 import uuid
 from contextlib import nullcontext
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -217,7 +217,16 @@ class TestEngineRefactor(unittest.TestCase):
         e = HemsEngine()
         for delay in (5, 12, 25, 45, 45):
             e.report_control_failure(NOW)
-            self.assertEqual(e._blocked_until, NOW+timedelta(seconds=delay))
+            # Phase 2C+3 hotfix: ``_blocked_until`` is now stamped
+            # as a UTC-aware ``datetime`` so the guard's
+            # ``datetime.now(_UTC)`` comparison is consistent
+            # regardless of the coordinator's local tz (Codex
+            # reproduced a 3-hour clock-skew bug where the
+            # normaliser assigned UTC to a local-naive timestamp).
+            self.assertEqual(
+                e._blocked_until,
+                (NOW + timedelta(seconds=delay)).replace(tzinfo=timezone.utc),
+            )
             self.assertEqual(evaluate(e, soc=10.).reason, 'circuit_breaker')
         e.report_control_success()
         self.assertFalse(evaluate(e).skip)
