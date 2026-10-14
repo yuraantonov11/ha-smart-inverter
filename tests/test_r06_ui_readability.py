@@ -101,8 +101,8 @@ class ExistingCardReadability(unittest.TestCase):
             todayPv:text('invTodayPv'),savings:text('invDailySavings'),soc:text('fcBattVal')};
           return {absent,unavailable};
         }""")
-        self.assertEqual(set(values["absent"].values()), {"Дані недоступні"})
-        self.assertEqual(set(values["unavailable"].values()), {"Дані недоступні"})
+        self.assertEqual(set(values["absent"].values()), {"—"})
+        self.assertEqual(set(values["unavailable"].values()), {"—"})
         self.assertEqual(errors, [])
 
     def test_k_flow_reported_zero_energy_remains_zero_with_two_places(self) -> None:

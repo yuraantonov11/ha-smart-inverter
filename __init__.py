@@ -14,6 +14,7 @@ tag is created by this commit.
 import hashlib
 import logging
 import json
+import math
 import os
 import shutil
 import tempfile
@@ -1359,6 +1360,10 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         ("battery_power", "battery_power"),
         ("battery_current", "battery_current"),
         ("battery_voltage", "battery_voltage"),
+        ("grid_voltage", "grid_voltage"),
+        ("inv_temp", "inverter_temperature"),
+        ("inverter_load_percentage", "load_percentage"),
+        ("inverter_rated_power", "rated_active_power"),
         ("today_pv", "daily_energy"),
         ("daily_savings", "daily_savings"),
     ]:
@@ -1370,6 +1375,27 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         flow_cfg["battery_soc"] = _e("battery_soc")
     flow_cfg["sun"] = "sun.sun"
     flow_cfg["_show_battery"] = True
+    runtime = hass.data.get(DOMAIN, {}).get(entry.entry_id)
+    flow_coordinator = runtime.get("coordinator") if isinstance(runtime, dict) else runtime
+    flow_data = getattr(flow_coordinator, "data", None) or {}
+    source_fields = flow_data.get("rawFields")
+    if isinstance(source_fields, dict) and source_fields:
+        def reported_power_matches(keys, value):
+            for key in keys:
+                item = source_fields.get(key)
+                raw = item.get("value") if isinstance(item, dict) else item
+                if raw is None or isinstance(raw, bool):
+                    continue
+                try:
+                    observed = float(raw)
+                    actual = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(observed) and math.isfinite(actual) and math.isclose(abs(observed), abs(actual)):
+                    return True
+            return False
+        flow_cfg["grid_power_estimated"] = not reported_power_matches(("gridPower", "acInputPower"), flow_data.get("gridPower"))
+        flow_cfg["battery_power_estimated"] = not reported_power_matches(("batteryPower",), flow_data.get("batteryPower"))
     overview_cards.append({"type": "grid", "cards": [flow_cfg]})
 
     # ── Combined energy flow + voltage + SOC graphs ──

@@ -617,6 +617,9 @@ class KFlowCardEditor extends HTMLElement {
       picker('pv_total_power',  'Total PV Power',  true),
       divider(),
       picker('inv_temp',        'Inverter Temp'),
+      picker('inverter_load_percentage', 'Inverter Load (%)'),
+      picker('inverter_rated_power', 'Rated Inverter Power'),
+      picker('grid_voltage', 'Grid Voltage'),
       picker('today_pv',        'Today PV Gen'),
       picker('today_batt_chg',  'Today Batt Charge'),
       picker('today_load',      'Today Load'),
@@ -630,6 +633,8 @@ class KFlowCardEditor extends HTMLElement {
       picker('grid_active_power',  'Grid Active Power'),
       picker('grid_import_energy', 'Grid Import Energy'),
       picker('grid_export_energy', 'Grid Export Energy', true),
+      switchRow('grid_power_estimated', 'Розрахункова потужність мережі', 'Позначати потужність мережі символом ≈'),
+      switchRow('battery_power_estimated', 'Розрахункова потужність АКБ', 'Позначати потужність АКБ символом ≈'),
       picker('grid_power_alt',     'Alt Grid Sensor',    true),
     ]));
 
@@ -772,7 +777,14 @@ class KFlowCard extends HTMLElement {
   static getConfigElement() { return document.createElement('k-flow-card-editor'); }
 
   setConfig(config) {
-    this.config = { ...KFlowCard.getStubConfig(), ...config };
+    const defaults = KFlowCard.getStubConfig();
+    // Editor examples are not connected sensors or known hardware limits.
+    for (const [key,value] of Object.entries(defaults)) {
+      if (typeof value === 'string' && value.startsWith('sensor.')) defaults[key] = '';
+    }
+    defaults.inverter_max_power = '';
+    defaults.pv_max_power = '';
+    this.config = { ...defaults, ...config };
     this._buildStaticSVG();
   }
 
@@ -783,7 +795,7 @@ class KFlowCard extends HTMLElement {
     const s = this._hass?.states?.[eid];
     if (!s || s.state === 'unavailable' || s.state === 'unknown') return null;
     const v = parseFloat(s.state);
-    if (isNaN(v)) return null;
+    if (!Number.isFinite(v)) return null;
     if (toWatts) {
       const unit = (s.attributes?.unit_of_measurement || '').trim();
       if (unit === 'kW' || unit === 'kilowatt') return v * 1000;
@@ -828,7 +840,7 @@ class KFlowCard extends HTMLElement {
     // by subtracting one day when the event is more than 18 h in the future.
     // elevation is used only for night detection and bell (arc height) — it is a
     // live real-time value and is never affected by the tomorrow-flip problem.
-    let rise = '06:00', set = '18:00';
+    let rise = '—', set = '—';
     let t = 0.5;
     let night = false;
     let bell = 0.5;
@@ -841,12 +853,14 @@ class KFlowCard extends HTMLElement {
       if (!iso) return null;
       try {
         const future = new Date(iso);
+        if (!Number.isFinite(future.getTime())) return null;
         if ((future - Date.now()) > 18 * 3600000) {
           // Step back one day while preserving the exact local clock time
           future.setDate(future.getDate() - 1);
         }
         // Return local HH:MM (correct for user's timezone)
-        return String(future.getHours()).padStart(2, '0') + ':' + String(future.getMinutes()).padStart(2, '0');
+        return new Intl.DateTimeFormat('en-GB', {timeZone:this._hass?.config?.time_zone,
+          hour:'2-digit',minute:'2-digit',hour12:false}).format(future);
       } catch (e) { return null; }
     };
 
@@ -856,8 +870,9 @@ class KFlowCard extends HTMLElement {
       set  = nearestTime(attrs.next_setting) || set;
 
       const toMin = ts => { const p = ts.split(':').map(Number); return p[0] * 60 + p[1]; };
-      const now = new Date();
-      const nowMin = now.getHours() * 60 + now.getMinutes();
+      const nowTime = new Intl.DateTimeFormat('en-GB', {timeZone:this._hass?.config?.time_zone,
+        hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date());
+      const nowMin = toMin(nowTime);
       const RISE = toMin(rise), SET = toMin(set);
       const dayLen = SET - RISE;
 
@@ -886,7 +901,8 @@ class KFlowCard extends HTMLElement {
     if (night) {
       const toMin2 = ts => { const p = ts.split(':').map(Number); return p[0] * 60 + p[1]; };
       const RISE2 = toMin2(rise), SET2 = toMin2(set);
-      const nowMin2 = new Date().getHours() * 60 + new Date().getMinutes();
+      const nowMin2 = toMin2(new Intl.DateTimeFormat('en-GB', {timeZone:this._hass?.config?.time_zone,
+        hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date()));
       // Night length = 1440 - day length; guard against SET2 > RISE2 edge case
       const dayLen2 = SET2 > RISE2 ? SET2 - RISE2 : 0;
       const nightLen = Math.max(1, 1440 - dayLen2);
@@ -900,7 +916,8 @@ class KFlowCard extends HTMLElement {
       mx = Math.round((1 - tMoon) * (1 - tMoon) * 485 + 2 * (1 - tMoon) * tMoon * 260 + tMoon * tMoon * 35);
       my = Math.round((1 - tMoon) * (1 - tMoon) * 78  + 2 * (1 - tMoon) * tMoon * 158  + tMoon * tMoon * 78);
     }
-    return { rise, set, night, bell, bx, by, mx, my, t };
+    return { rise, set, night, bell, bx, by, mx, my, t,
+      available: /^\d{2}:\d{2}$/.test(rise) && /^\d{2}:\d{2}$/.test(set) };
   }
 
   _battFill(soc){
@@ -1008,10 +1025,16 @@ class KFlowCard extends HTMLElement {
       .pvi .lbl{font-size:.44rem;color:#8b949e;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px}
       .pvi .val{font-size:.76rem;font-weight:700;color:#c9d1d9}
       .pvi .val.yw{color:#f4d03f} text{font-family:'Segoe UI',Arial,sans-serif}
+      .readings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}
+      .reading{min-width:0;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:9px 10px}
+      .reading .name{font-size:12px;line-height:1.4;color:#9da7b3;overflow-wrap:anywhere}
+      .reading .value{font-size:16px;line-height:1.5;font-weight:650;color:#e6edf3;font-variant-numeric:tabular-nums}
+      .data-note{font-size:12px;line-height:1.5;color:#9da7b3;margin-top:8px;overflow-wrap:anywhere}
+      .ct{font-size:12px;letter-spacing:.5px}.pvi .lbl{font-size:12px;letter-spacing:0;text-transform:none}.pvi .val{font-size:16px}
     </style>
     <div style="background:#161b22;border:1px solid #21262d;border-radius:12px;padding:13px;box-shadow:0 4px 20px rgba(0,0,0,.4);width:100%;box-sizing:border-box;">
-      <div class="ct">⚡ Energy Flow <span id="battStatusBadge" style="margin-left:auto;font-size:.5rem;font-weight:700;letter-spacing:1.5px;padding:1px 8px;border-radius:8px;background:#21262d;color:#8b949e;text-transform:uppercase">IDLE</span></div>
-      <div style="width:100%;margin:0 auto"><svg id="flowSvg" viewBox="0 0 520 470" style="width:100%;display:block">
+      <div class="ct">⚡ Потік енергії <span id="battStatusBadge" style="margin-left:auto;font-size:12px;font-weight:700;letter-spacing:0;padding:1px 8px;border-radius:8px;background:#21262d;color:#8b949e">—</span></div>
+      <div style="width:100%;margin:0 auto"><svg id="flowSvg" viewBox="0 0 520 510" style="width:100%;display:block">
       <defs>
         <filter id="arcSunF" x="-150%" y="-150%" width="400%" height="400%"><feGaussianBlur stdDeviation="7"/></filter>
         <filter id="arcSunF2" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="3"/></filter>
@@ -1042,7 +1065,7 @@ class KFlowCard extends HTMLElement {
       <circle cx="260" cy="78" r="2.5" fill="rgba(255,255,255,.25)"/>
       <circle cx="485" cy="78" r="3.5" fill="rgba(255,110,55,.7)"/>
       <text id="arcRiseLabel" x="35" y="92" fill="rgba(255,255,255,.5)" font-size="10" text-anchor="middle">06:00</text>
-      <text x="260" y="92" fill="rgba(255,255,255,.28)" font-size="10" text-anchor="middle">12:00</text>
+      <text id="arcMidLabel" x="260" y="92" fill="rgba(255,255,255,.5)" font-size="10" text-anchor="middle">—</text>
       <text id="arcSetLabel" x="485" y="92" fill="rgba(255,255,255,.5)" font-size="10" text-anchor="middle">18:00</text>
       <path d="M 35,78 Q 260,-45 485,78" fill="none" stroke="url(#arcDayGrad)" stroke-width="2.2"/>
       <path d="M 485,78 Q 260,158 35,78" fill="none" stroke="url(#arcNightGrad)" stroke-width="1.5" stroke-dasharray="4,5" opacity=".35"/>
@@ -1097,14 +1120,18 @@ class KFlowCard extends HTMLElement {
       ${evtxt}
       </svg></div>`+
 
-      `<div style="display:flex;gap:8px;align-items:center;margin-top:10px">
-        <div style="flex:1;display:flex;align-items:center;gap:4px"><span style="font-size:.42rem;color:#8b949e;letter-spacing:1px;text-transform:uppercase">PV</span><div style="flex:1;display:flex;gap:2px;align-items:flex-end;height:10px" id="pvBlocks"></div></div>
-        <div style="flex:1;display:flex;align-items:center;gap:4px"><span style="font-size:.42rem;color:#8b949e;letter-spacing:1px;text-transform:uppercase">Pwr</span><div style="flex:1;background:#21262d;border-radius:20px;height:9px;overflow:hidden;position:relative"><div id="pwrBar" style="position:absolute;inset:0;right:auto;width:0%;border-radius:20px;background:#3fb950;transition:width .4s,background .4s"></div></div></div>
+      `<div id="capacityBars" style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <div id="pvCapacityRow" style="flex:1;display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:#8b949e">PV</span><div style="flex:1;display:flex;gap:2px;align-items:flex-end;height:10px" id="pvBlocks"></div></div>
+        <div id="loadCapacityRow" style="flex:1;display:flex;align-items:center;gap:4px"><span style="font-size:11px;color:#8b949e">Навантаження</span><div style="flex:1;background:#21262d;border-radius:20px;height:9px;overflow:hidden;position:relative"><div id="pwrBar" style="position:absolute;inset:0;right:auto;width:0%;border-radius:20px;background:#3fb950;transition:width .4s,background .4s"></div></div></div>
       </div>
+      <div class="readings">
+        ${[['pv','Сонячна генерація'],['load','Споживання будинку'],['grid','Потужність мережі'],['battery','Потужність АКБ'],['current','Струм АКБ'],['voltage','Напруга АКБ'],['soc','Заряд АКБ'],['temperature','Температура інвертора'],['gridVoltage','Напруга мережі'],['loadPercent','Навантаження інвертора']].map(([key,name])=>`<div class="reading" id="reading-${key}"><div class="name" id="name-${key}">${name}</div><div class="value" id="value-${key}">—</div></div>`).join('')}
+      </div>
+      <div id="estimateNote" class="data-note" style="display:none">≈ — розрахункова потужність за даними хмари. Напрямок потоку не визначає джерело заряджання.</div>
       <div class="dv"></div>
       <div style="display:flex;justify-content:center;gap:8px;margin-top:10px">
-        <div class="pvi" style="flex:1;max-width:200px"><div class="ico">☀️</div><div class="lbl">Today PV</div><div class="val yw" id="invTodayPv">-- kWh</div></div>
-        <div class="pvi" style="flex:1;max-width:200px"><div class="ico">💰</div><div class="lbl">Savings</div><div class="val" id="invDailySavings" style="color:#4ade80">-- ₴</div></div>
+        <div class="pvi" style="flex:1;max-width:200px"><div class="ico">☀️</div><div class="lbl">PV сьогодні</div><div class="val yw" id="invTodayPv">—</div></div>
+        <div class="pvi" style="flex:1;max-width:200px" title="Оцінка вартості енергії розряду АКБ. Витрати заряджання та втрати не відняті."><div class="ico">💰</div><div class="lbl">Валова оцінка</div><div class="val" id="invDailySavings" style="color:#4ade80">—</div></div>
       </div>
     </div>`;
   }
@@ -1121,20 +1148,26 @@ class KFlowCard extends HTMLElement {
     const _n = (v, fallback = 0) => (v !== null && !isNaN(v)) ? v : fallback;
     const _nullOr0 = (v) => (v !== null && !isNaN(v)) ? v : 0; // for flow/direction values where 0 is valid
 
-    const pv1 = _n(this._val(this.config.pv1_power, true));
-    const pv2 = _n(this._val(this.config.pv2_power, true));
-    const pv3 = this.config._show_pv_extra ? _n(this._val(this.config.pv3_power, true)) : 0;
-    const pv4 = this.config._show_pv_extra ? _n(this._val(this.config.pv4_power, true)) : 0;
+    const pv1Raw = this._val(this.config.pv1_power, true);
+    const pv2Raw = this._val(this.config.pv2_power, true);
+    const pv1 = _n(pv1Raw);
+    const pv2 = _n(pv2Raw);
+    const pv3Raw = this.config._show_pv_extra ? this._val(this.config.pv3_power, true) : null;
+    const pv4Raw = this.config._show_pv_extra ? this._val(this.config.pv4_power, true) : null;
+    const pv3 = _n(pv3Raw), pv4 = _n(pv4Raw);
     const totalPvSensor = this._val(this.config.pv_total_power, true);
-    const pvTotal = (totalPvSensor !== null && !isNaN(totalPvSensor) && totalPvSensor > 0) ? totalPvSensor : pv1 + pv2 + pv3 + pv4;
+    const pvTotalRaw = totalPvSensor ?? ([pv1Raw,pv2Raw,this.config._show_pv_extra ? this._val(this.config.pv3_power,true) : null,this.config._show_pv_extra ? this._val(this.config.pv4_power,true) : null].some(Number.isFinite) ? pv1 + pv2 + pv3 + pv4 : null);
+    const pvTotal = _n(pvTotalRaw);
     const _gridPrimary = this._val(this.config.grid_active_power, true);
-    let gridActive = _gridPrimary !== null ? _gridPrimary : _nullOr0(this._val(this.config.grid_power_alt, true));
+    const gridRaw = _gridPrimary ?? this._val(this.config.grid_power_alt, true);
+    let gridActive = _nullOr0(gridRaw);
     if (this.config.invert_grid_power) gridActive = -gridActive;
     const gridImportRaw = this._val(this.config.grid_import_energy);
     const gridExportRaw = this._val(this.config.grid_export_energy);
     const gridImport = _n(gridImportRaw);
     const gridExport = _n(gridExportRaw);
-    const load = _n(this._val(this.config.consump, true));
+    const loadRaw = this._val(this.config.consump, true);
+    const load = _n(loadRaw);
     // Fix #9: store raw null so we can show '--' and use toFixed(2) to avoid float artefacts
     const _todayPvRaw = this._val(this.config.today_pv);
     const _todayBattChgRaw = this._val(this.config.today_batt_chg);
@@ -1144,12 +1177,14 @@ class KFlowCard extends HTMLElement {
     const todayLoad = _n(_todayLoadRaw);
     const battSocRaw = this._val(this.config.battery_soc) ?? this._val(this.config.goodwe_battery_soc);
     const battSoc1 = _n(battSocRaw);
-    let battPwr1 = _nullOr0(this._val(this.config.battery_power, true));
+    const battPowerRaw = this._val(this.config.battery_power, true);
+    let battPwr1 = _nullOr0(battPowerRaw);
     if (this.config.invert_battery_power) battPwr1 = -battPwr1;
     let battCurr1 = this._val(this.config.battery_current) ?? this._val(this.config.goodwe_battery_curr);
     if (this.config.invert_battery_power && battCurr1 !== null) battCurr1 = -battCurr1;
     const formatCurrent = current => Number.isFinite(current) ? current.toFixed(1) + ' A' : '— A';
-    const battVolt1 = _n(this._val(this.config.battery_voltage));
+    const battVoltRaw = this._val(this.config.battery_voltage);
+    const battVolt1 = _n(battVoltRaw);
     const temp1_1 = _n(this._val(this.config.battery_temp1));
     const temp2_1 = _n(this._val(this.config.battery_temp2));
     const mos1 = _n(this._val(this.config.battery_mos));
@@ -1170,22 +1205,33 @@ class KFlowCard extends HTMLElement {
     const _voltForCap = _n(this._val(this.config.battery_voltage));
     const fullWh  = capUnit === 'kwh' ? (Number(this.config.battery_full_wh) || 0) * 1000
                                       : (fullAh > 0 && _voltForCap > 0 ? fullAh * _voltForCap : 0);
-    const invMax = Number(this.config.inverter_max_power) || 6000;
-    const pvMax  = Number(this.config.pv_max_power)       || 7500;
+    const ratedRaw = this._val(this.config.inverter_rated_power, true);
+    const invMaxRaw = ratedRaw ?? Number(this.config.inverter_max_power);
+    const invMax = Number.isFinite(invMaxRaw) && invMaxRaw > 0 ? invMaxRaw : null;
+    const pvMaxRaw = Number(this.config.pv_max_power);
+    const pvMax = Number.isFinite(pvMaxRaw) && pvMaxRaw > 0 ? pvMaxRaw : null;
+    const reportedLoadPct = this._val(this.config.inverter_load_percentage);
+    const invLoadPctRaw = reportedLoadPct !== null && reportedLoadPct >= 0 ? reportedLoadPct :
+      (loadRaw !== null && invMax !== null ? load / invMax * 100 : null);
+    const formatPower = (value, estimated = false) => !Number.isFinite(value) ? '—' :
+      (estimated ? '≈ ' : '') + (Math.abs(value) >= 1000 ? (Math.round(Math.abs(value) / 10) / 100).toFixed(2) + ' kW' : Math.abs(value).toFixed(0) + ' W');
 
     const remCap1 = fullAh > 0 ? (battSoc1 / 100) * fullAh : 0;
     // Fix #14: dual-battery charging ETA — battery2_full_wh entered in kWh, ×1000 for internal Wh
     const fullWh2 = Number(this.config.battery2_full_wh) > 0 ? Number(this.config.battery2_full_wh) * 1000 : fullWh;
 
     const dual = !!(this.config._show_battery2);
-    const battSoc2 = dual ? _n(this._val(this.config.battery2_soc)) : 0;
-    let battPwr2 = dual ? _nullOr0(this._val(this.config.battery2_power, true)) : 0;
+    const battSoc2Raw = dual ? this._val(this.config.battery2_soc) : null;
+    const battSoc2 = _n(battSoc2Raw);
+    const battPower2Raw = dual ? this._val(this.config.battery2_power, true) : null;
+    let battPwr2 = _nullOr0(battPower2Raw);
     let battCurr2 = dual ? this._val(this.config.battery2_current) : null;
     if (dual && this.config.invert_battery_power) {
       battPwr2 = -battPwr2;
       if (battCurr2 !== null) battCurr2 = -battCurr2;
     }
-    const battVolt2 = dual ? _n(this._val(this.config.battery2_voltage)) : 0;
+    const battVolt2Raw = dual ? this._val(this.config.battery2_voltage) : null;
+    const battVolt2 = _n(battVolt2Raw);
     const mos2 = dual ? _n(this._val(this.config.battery2_mos)) : 0;
 
     const chargerPower = _n(this._val(this.config.charger_power, true));
@@ -1199,20 +1245,25 @@ class KFlowCard extends HTMLElement {
     const auraEl = getEl('skyAura');
     if (auraEl) auraEl.setAttribute('cy', (94 - Math.round((sun.bell || 0.5) * 22)).toString());
     ['arcSunDot', 'arcSunGlow1', 'arcSunGlow2'].forEach(id => { const e = getEl(id); if (e) { e.setAttribute('cx', sun.bx); e.setAttribute('cy', sun.by); } });
-    getEl('arcSunGroup')?.setAttribute('opacity', sun.night ? '0' : '1');
+    getEl('arcSunGroup')?.setAttribute('opacity', !sun.available || sun.night ? '0' : '1');
     const moonGroup = getEl('moonGroup');
     if (sun.night) {
       ['moonGlow', 'moonDot'].forEach(id => { const e = getEl(id); if (e) { e.setAttribute('cx', sun.mx || 260); e.setAttribute('cy', sun.my || 72); } });
       if (moonGroup) moonGroup.setAttribute('opacity', '1');
     } else { if (moonGroup) moonGroup.setAttribute('opacity', '0'); }
 
-    const pvTxt = (pvTotal >= 1000 ? (pvTotal / 1000).toFixed(2) + ' kW' : pvTotal.toFixed(0) + ' W') + ' ⚡';
+    const pvTxt = formatPower(pvTotalRaw) + (pvTotalRaw !== null ? ' ⚡' : '');
     const pvLabelRect = getEl('arcPvLabelRect');
     const pvLabelText = getEl('arcPvLabelText');
     if (pvLabelRect) { pvLabelRect.setAttribute('x', sun.t < 0.5 ? Math.max(4, sun.bx - 108) : Math.min(sun.bx + 14, 420)); pvLabelRect.setAttribute('y', Math.max(2, sun.by - 28)); }
     if (pvLabelText) { pvLabelText.setAttribute('x', sun.t < 0.5 ? Math.max(52, sun.bx - 60) : Math.min(sun.bx + 62, 468)); pvLabelText.setAttribute('y', Math.max(19, sun.by - 11)); pvLabelText.textContent = pvTxt; }
     setText('arcRiseLabel', sun.rise);
     setText('arcSetLabel', sun.set);
+    const minutes = time => /^\d{2}:\d{2}$/.test(time) ? Number(time.slice(0,2))*60+Number(time.slice(3)) : null;
+    const riseMin = minutes(sun.rise), setMin = minutes(sun.set);
+    const midMin = riseMin !== null && setMin !== null ? Math.round((riseMin + setMin) / 2) : null;
+    setText('arcMidLabel', midMin !== null ? String(Math.floor(midMin/60)).padStart(2,'0') + ':' + String(midMin%60).padStart(2,'0') : '—');
+    setAttr('arcMidLabel','aria-label','Середина світлового проміжку');
 
     if (pvTotal !== this._prevPvTotal || sun.bx !== this._prevSunPos.bx || sun.by !== this._prevSunPos.by) {
       this._prevPvTotal = pvTotal; this._prevSunPos = { bx: sun.bx, by: sun.by };
@@ -1278,13 +1329,13 @@ class KFlowCard extends HTMLElement {
       const bh1 = getEl('battFillHL1'); if (bh1) { bh1.setAttribute('y', fill1.y); bh1.setAttribute('height', fill1.height); }
       const bf2 = getEl('battFillBar2'); if (bf2) { bf2.setAttribute('y', fill2.y); bf2.setAttribute('height', fill2.height); bf2.setAttribute('fill', fill2.color); bf2.setAttribute('filter', fill2.filter); }
       const bh2 = getEl('battFillHL2'); if (bh2) { bh2.setAttribute('y', fill2.y); bh2.setAttribute('height', fill2.height); }
-      setText('fcBattVal1', battSoc1 + '%'); setAttr('fcBattVal1', 'fill', fill1.textColor);
-      setText('fcBattVal2', battSoc2 + '%'); setAttr('fcBattVal2', 'fill', fill2.textColor);
-      setText('battVoltageFlow1', battVolt1.toFixed(1) + ' V'); setText('battVoltageFlow2', battVolt2.toFixed(1) + ' V');
+      setText('fcBattVal1', battSocRaw !== null ? battSoc1.toFixed(0) + '%' : '—'); setAttr('fcBattVal1', 'fill', fill1.textColor);
+      setText('fcBattVal2', battSoc2Raw !== null ? battSoc2.toFixed(0) + '%' : '—'); setAttr('fcBattVal2', 'fill', fill2.textColor);
+      setText('battVoltageFlow1', battVoltRaw !== null ? battVolt1.toFixed(1) + ' V' : '—'); setText('battVoltageFlow2', battVolt2Raw !== null ? battVolt2.toFixed(1) + ' V' : '—');
       // Current & power placed outside battery group
-      setText('battPwrFlow1', Math.abs(battPwr1).toFixed(0) + ' W');
+      setText('battPwrFlow1', formatPower(battPowerRaw, this.config.battery_power_estimated));
       setText('battCurrFlow1', formatCurrent(battCurr1));
-      setText('battPwrFlow2', Math.abs(battPwr2).toFixed(0) + ' W');
+      setText('battPwrFlow2', formatPower(battPower2Raw));
       setText('battCurrFlow2', formatCurrent(battCurr2));
       const bolt1 = getEl('battBoltGroup1'), bolt2 = getEl('battBoltGroup2');
       if (bolt1) bolt1.setAttribute('opacity', battPwr1 > 10 ? '1' : '0');
@@ -1295,9 +1346,9 @@ class KFlowCard extends HTMLElement {
       const fill = this._battFill(battSoc1);
       const bf = getEl('battFillBar'); if (bf) { bf.setAttribute('y', fill.y); bf.setAttribute('height', fill.height); bf.setAttribute('fill', fill.color); bf.setAttribute('filter', fill.filter); }
       const bh = getEl('battFillHL'); if (bh) { bh.setAttribute('y', fill.y); bh.setAttribute('height', fill.height); }
-      setText('fcBattVal', battSocRaw !== null ? battSoc1 + '%' : 'Дані недоступні'); setAttr('fcBattVal', 'fill', fill.textColor);
-      setText('battVoltageFlow', battVolt1.toFixed(1) + ' V');
-      setText('battPwrFlow', absPwr1.toFixed(0) + ' W');
+      setText('fcBattVal', battSocRaw !== null ? battSoc1.toFixed(0) + '%' : '—'); setAttr('fcBattVal', 'fill', fill.textColor);
+      setText('battVoltageFlow', battVoltRaw !== null ? battVolt1.toFixed(1) + ' V' : '—');
+      setText('battPwrFlow', formatPower(battPowerRaw, this.config.battery_power_estimated));
       setText('battCurrFlow', formatCurrent(battCurr1));
       const bolt = getEl('battBoltGroup'); if (bolt) bolt.setAttribute('opacity', battPwr1 > 10 ? '1' : '0');
       // Fix #16: bTemp1/bTemp2 written once below in the label override block — skip early write
@@ -1356,14 +1407,16 @@ class KFlowCard extends HTMLElement {
     }
     const pwrBar = getEl('pwrBar');
     if (pwrBar) {
-      pwrBar.style.width = Math.min(absPwr1 / invMax * 100, 100).toFixed(1) + '%';
-      pwrBar.style.background = absPwr1 < 50 ? '#8b949e' : isCharging1 ? '#2b59ff' :
-        'linear-gradient(to right, #f4d03f, #f39c4b ' + ((absPwr1 / invMax * 100) * 0.5).toFixed(0) + '%, #f85149)';
+      pwrBar.style.width = (invLoadPctRaw !== null ? Math.min(invLoadPctRaw,100).toFixed(1) : '0') + '%';
+      pwrBar.style.background = invLoadPctRaw === null ? '#8b949e' : invLoadPctRaw <= 50 ? '#3fb950' : '#f39c4b';
     }
+    setDisplay('pvCapacityRow', pvMax !== null && pvTotalRaw !== null);
+    setDisplay('loadCapacityRow', invLoadPctRaw !== null);
+    setDisplay('capacityBars', (pvMax !== null && pvTotalRaw !== null) || invLoadPctRaw !== null);
     const badge = getEl('battStatusBadge');
-    if (badge) { badge.textContent = absPwr1 < 50 ? 'IDLE' : isCharging1 ? 'CHG' : 'DISCHG'; badge.style.color = absPwr1 < 50 ? '#8b949e' : isCharging1 ? '#00d7ff' : '#3ce878'; }
+    if (badge) { badge.textContent = battPowerRaw === null ? 'Немає даних' : absPwr1 <= 10 ? 'Очікування' : isCharging1 ? 'Заряд' : 'Розряд'; badge.style.color = battPowerRaw === null || absPwr1 <= 10 ? '#8b949e' : isCharging1 ? '#00d7ff' : '#3ce878'; }
 
-    setText('invTempFlow', invTempRaw !== null ? invTemp.toFixed(1) + ' °C' : 'Дані недоступні');
+    setText('invTempFlow', invTempRaw !== null ? invTemp.toFixed(1) + ' °C' : '—');
     const inverterName = String(this.config.inverter_name || 'INV');
     const inverterNameLabel = getEl('invNameLabel');
     if (inverterNameLabel) {
@@ -1374,33 +1427,55 @@ class KFlowCard extends HTMLElement {
       inverterNameLabel.setAttribute('title', inverterName);
     }
     setAttr('invTempFlow', 'fill', invTempRaw === null ? '#8b949e' : invTemp <= 45 ? '#58a6ff' : invTemp <= 55 ? '#f39c4b' : '#f85149');
-    const invLoadPct = Math.min(load / invMax * 100, 100).toFixed(0);
+    const invLoadPct = invLoadPctRaw !== null ? invLoadPctRaw.toFixed(0) : null;
     // Fix #8: toFixed() returns a string; use Number() for the colour comparison
-    setText('invLoadPctFlow', invLoadPct + '%'); setAttr('invLoadPctFlow', 'fill', Number(invLoadPct) <= 50 ? '#3fb950' : '#f39c4b');
+    setText('invLoadPctFlow', invLoadPct !== null ? invLoadPct + '%' : '—'); setAttr('invLoadPctFlow', 'fill', invLoadPct === null ? '#8b949e' : Number(invLoadPct) <= 50 ? '#3fb950' : '#f39c4b');
 
     const gridDir = gridActive > 10 ? '▼ ' : gridActive < -10 ? '▲ ' : '';
     // Fix #7: grid power now auto-switches to kW like load/PV (was always showing W)
     const absGrid2 = Math.abs(gridActive);
-    setText('fcGridVal', gridDir + (absGrid2 >= 1000 ? (absGrid2 / 1000).toFixed(2) + ' kW' : absGrid2.toFixed(0) + ' W'));
+    setText('fcGridVal', gridRaw !== null ? gridDir + formatPower(gridActive, this.config.grid_power_estimated) : '—');
     setAttr('fcGridVal', 'fill', gridActive > 10 ? '#FF2929' : gridActive < -10 ? '#2ecc71' : '#8b949e');
-    setText('gridImportVal', gridImportRaw !== null ? '▼ ' + gridImport.toFixed(2) + ' kWh' : 'Дані недоступні');
-    setDisplay('gridExportVal', true);
-    setText('gridExportVal', gridExportRaw !== null ? '▲ ' + gridExport.toFixed(2) + ' kWh' : 'Дані недоступні');
+    setDisplay('gridImportVal', !!this.config.grid_import_energy);
+    setText('gridImportVal', gridImportRaw !== null ? '▼ ' + gridImport.toFixed(2) + ' kWh' : '—');
+    setDisplay('gridExportVal', !!this.config.grid_export_energy);
+    setText('gridExportVal', gridExportRaw !== null ? '▲ ' + gridExport.toFixed(2) + ' kWh' : '—');
 
-    setText('fcLoadVal', load >= 1000 ? (load / 1000).toFixed(2) + ' kW' : load.toFixed(0) + ' W');
+    setText('fcLoadVal', formatPower(loadRaw));
     setAttr('fcLoadVal', 'fill', load > 10 ? loadFlowColor : '#8b949e');
 
-    setText('pv1FlowVal', pv1 >= 1000 ? (pv1 / 1000).toFixed(2) + ' kW' : pv1.toFixed(0) + ' W');
-    setText('pv2FlowVal', pv2 >= 1000 ? (pv2 / 1000).toFixed(2) + ' kW' : pv2.toFixed(0) + ' W');
-    setDisplay('pv3label', this.config._show_pv_extra);
-    setDisplay('pv3FlowVal', this.config._show_pv_extra);
-    if (this.config._show_pv_extra) setText('pv3FlowVal', pv3 >= 1000 ? (pv3 / 1000).toFixed(2) + ' kW' : pv3.toFixed(0) + ' W');
-    setDisplay('pv4label', this.config._show_pv_extra);
-    setDisplay('pv4FlowVal', this.config._show_pv_extra);
-    if (this.config._show_pv_extra) setText('pv4FlowVal', pv4 >= 1000 ? (pv4 / 1000).toFixed(2) + ' kW' : pv4.toFixed(0) + ' W');
+    setDisplay('pv1label', !!this.config.pv1_power); setDisplay('pv1FlowVal', !!this.config.pv1_power);
+    setDisplay('pv2label', !!this.config.pv2_power); setDisplay('pv2FlowVal', !!this.config.pv2_power);
+    setText('pv1FlowVal', formatPower(pv1Raw));
+    setText('pv2FlowVal', formatPower(pv2Raw));
+    setDisplay('pv3label', this.config._show_pv_extra && !!this.config.pv3_power);
+    setDisplay('pv3FlowVal', this.config._show_pv_extra && !!this.config.pv3_power);
+    if (this.config._show_pv_extra) setText('pv3FlowVal', formatPower(pv3Raw));
+    setDisplay('pv4label', this.config._show_pv_extra && !!this.config.pv4_power);
+    setDisplay('pv4FlowVal', this.config._show_pv_extra && !!this.config.pv4_power);
+    if (this.config._show_pv_extra) setText('pv4FlowVal', formatPower(pv4Raw));
+
+    setText('value-pv', formatPower(pvTotalRaw));
+    setText('value-load', formatPower(loadRaw));
+    setText('value-grid', formatPower(gridRaw, this.config.grid_power_estimated));
+    setText('value-battery', formatPower(battPowerRaw, this.config.battery_power_estimated));
+    setText('value-current', formatCurrent(battCurr1));
+    setText('value-voltage', battVoltRaw !== null ? battVoltRaw.toFixed(1) + ' V' : '—');
+    setText('value-soc', battSocRaw !== null ? battSocRaw.toFixed(0) + '%' : '—');
+    setText('value-temperature', invTempRaw !== null ? invTempRaw.toFixed(1) + ' °C' : '—');
+    const gridVoltRaw = this._val(this.config.grid_voltage);
+    setText('value-gridVoltage', gridVoltRaw !== null ? gridVoltRaw.toFixed(1) + ' V' : '—');
+    setText('value-loadPercent', invLoadPct !== null ? invLoadPct + '%' : '—');
+    setText('name-grid', gridRaw === null ? 'Потужність мережі' : gridActive < 0 ? 'Мережа · експорт' : 'Мережа · імпорт');
+    setText('name-battery', 'АКБ' + (dual ? ' 1' : '') + (battPowerRaw === null ? ' · потужність' : battPwr1 > 10 ? ' · заряд' : battPwr1 < -10 ? ' · розряд' : ' · потужність'));
+    setText('name-current', 'Струм АКБ' + (dual ? ' 1' : ''));
+    setText('name-voltage', 'Напруга АКБ' + (dual ? ' 1' : ''));
+    setText('name-soc', 'Заряд АКБ' + (dual ? ' 1' : ''));
+    setDisplay('reading-gridVoltage', !!this.config.grid_voltage);
+    setDisplay('estimateNote', !!(this.config.grid_power_estimated || this.config.battery_power_estimated));
 
     // Fix #9: use toFixed(2) to prevent floating-point artefacts; show '--' when sensor unavailable
-    setText('invTodayPv',      _todayPvRaw      !== null ? todayPv.toFixed(2)      + ' kWh' : 'Дані недоступні');
+    setText('invTodayPv',      _todayPvRaw      !== null ? todayPv.toFixed(2)      + ' kWh' : '—');
     setText('invTodayBattChg', _todayBattChgRaw !== null ? todayBattChg.toFixed(2) + ' kWh' : 'Дані недоступні');
     setText('invTodayBattDis', battDis1Raw      !== null ? battDis1.toFixed(2)     + ' kWh' : 'Дані недоступні');
     setText('invTodayLoad',    _todayLoadRaw    !== null ? todayLoad.toFixed(2)    + ' kWh' : 'Дані недоступні');
@@ -1413,7 +1488,7 @@ class KFlowCard extends HTMLElement {
         savingsEl.textContent = savingsVal.toFixed(2) + ' ₴';
         savingsEl.style.color = savingsVal > 0 ? '#4ade80' : '#8b949e';
       } else {
-        savingsEl.textContent = 'Дані недоступні';
+        savingsEl.textContent = '—';
         savingsEl.style.color = '#8b949e';
       }
     }
@@ -1625,7 +1700,7 @@ class KFlowCard extends HTMLElement {
     // Fix #11: guard pvBlocks rebuild (was regenerating 20 divs on every state update)
     if (pvBlocks && pvTotal !== this._prevPvBlocksTotal) {
       this._prevPvBlocksTotal = pvTotal;
-      const lit = Math.round((pvTotal / pvMax) * 20); const heights = [20, 35, 50, 60, 70, 80, 90, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]; let html = ''; for (let i = 0; i < 20; i++) html += `<div style="flex:1;background:${i < lit ? 'rgba(255,255,255,0.55)' : '#21262d'};height:${i < lit ? heights[i] : 100}%;opacity:${i < lit ? 1 : 0.35};border-radius:2px;"></div>`; pvBlocks.innerHTML = html;
+      const lit = pvMax !== null ? Math.round((pvTotal / pvMax) * 20) : 0; const heights = [20, 35, 50, 60, 70, 80, 90, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]; let html = ''; for (let i = 0; i < 20; i++) html += `<div style="flex:1;background:${i < lit ? 'rgba(255,255,255,0.55)' : '#21262d'};height:${i < lit ? heights[i] : 100}%;opacity:${i < lit ? 1 : 0.35};border-radius:2px;"></div>`; pvBlocks.innerHTML = html;
     }
 
     // EV

@@ -1165,6 +1165,52 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
             self.assertEqual(actual, expected)
         self.assertEqual(errors, [])
 
+    def test_k_flow_all_readings_match_sensors_without_invented_limits_or_zeroes(self) -> None:
+        for width in (360, 1280):
+            page, errors = self._load_page("k-flow-card")
+            page.set_viewport_size({"width": width, "height": 1200})
+            result = page.evaluate("""() => {
+              const card = document.createElement('k-flow-card');
+              const config = {pv_total_power:'sensor.pv',grid_active_power:'sensor.grid',
+                consump:'sensor.load',battery_power:'sensor.battery',battery_current:'sensor.current',
+                battery_voltage:'sensor.voltage',battery_soc:'sensor.soc',inv_temp:'sensor.temp',
+                grid_voltage:'sensor.grid_voltage',inverter_load_percentage:'sensor.percent',
+                inverter_rated_power:'sensor.rated',today_pv:'sensor.today',daily_savings:'sensor.savings',
+                grid_power_estimated:true,battery_power_estimated:true};
+              card.setConfig(config); document.body.appendChild(card);
+              const values = {pv:581,grid:2197.3,load:2295,battery:483.3,current:9,voltage:53.7,
+                soc:95,temp:33,grid_voltage:227.7,percent:37,rated:6200,today:0.462,savings:4};
+              const states = Object.fromEntries(Object.entries(values).map(([key,value]) =>
+                ['sensor.'+key,{state:String(value),attributes:{unit_of_measurement:'W'}}]));
+              card.hass = {states}; const root=card.shadowRoot;
+              const text=id=>root.getElementById(id).textContent;
+              const readings=()=>Object.fromEntries(['pv','load','grid','battery','current','voltage','soc','temperature','gridVoltage','loadPercent'].map(key=>[key,text('value-'+key)]));
+              const normal=readings();
+              const hidden=['pv1FlowVal','pv2FlowVal','gridImportVal','gridExportVal','pvCapacityRow'].map(id=>getComputedStyle(root.getElementById(id)).display==='none');
+              const badge=text('battStatusBadge'),percentage=text('invLoadPctFlow');
+              const readable=[...root.querySelectorAll('.reading .value')].every(el=>parseFloat(getComputedStyle(el).fontSize)>=14);
+              const noOverflow=document.documentElement.scrollWidth<=innerWidth;
+              card.hass={states:{}};const absent=readings();const missingBadge=text('battStatusBadge');
+              for(const key of Object.keys(states)) states[key].state='0';
+              card.hass={states};const zero=readings();
+              card.setConfig({...config,pv1_power:'sensor.pv1'});
+              states['sensor.pv1']={state:'100',attributes:{unit_of_measurement:'W'}};
+              card.hass={states};const totalZero=text('value-pv');
+              return {normal,hidden,badge,percentage,readable,noOverflow,absent,missingBadge,zero,totalZero};
+            }""")
+            self.assertEqual(result['normal'], {'pv':'581 W','load':'2.30 kW','grid':'≈ 2.20 kW',
+                'battery':'≈ 483 W','current':'9.0 A','voltage':'53.7 V','soc':'95%',
+                'temperature':'33.0 °C','gridVoltage':'227.7 V','loadPercent':'37%'})
+            self.assertTrue(all(result['hidden']))
+            self.assertEqual((result['badge'], result['percentage']), ('Заряд', '37%'))
+            self.assertTrue(result['readable'] and result['noOverflow'], result)
+            self.assertEqual(set(result['absent'].values()), {'—', '— A'})
+            self.assertEqual(result['missingBadge'], 'Немає даних')
+            self.assertEqual(result['zero']['current'], '0.0 A')
+            self.assertEqual(result['zero']['soc'], '0%')
+            self.assertEqual(result['totalZero'], '0 W')
+            self.assertEqual(errors, [])
+
     def test_k_flow_same_object_renders_updated_hass_after_five_reconnects(self) -> None:
         page, errors = self._load_page("k-flow-card")
         page.evaluate(
