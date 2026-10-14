@@ -1146,8 +1146,9 @@ class KFlowCard extends HTMLElement {
     const battSoc1 = _n(battSocRaw);
     let battPwr1 = _nullOr0(this._val(this.config.battery_power, true));
     if (this.config.invert_battery_power) battPwr1 = -battPwr1;
-    let battCurr1 = _nullOr0(this._val(this.config.battery_current) ?? this._val(this.config.goodwe_battery_curr));
-    if (this.config.invert_battery_power) battCurr1 = -battCurr1;
+    let battCurr1 = this._val(this.config.battery_current) ?? this._val(this.config.goodwe_battery_curr);
+    if (this.config.invert_battery_power && battCurr1 !== null) battCurr1 = -battCurr1;
+    const formatCurrent = current => Number.isFinite(current) ? current.toFixed(1) + ' A' : '— A';
     const battVolt1 = _n(this._val(this.config.battery_voltage));
     const temp1_1 = _n(this._val(this.config.battery_temp1));
     const temp2_1 = _n(this._val(this.config.battery_temp2));
@@ -1179,8 +1180,11 @@ class KFlowCard extends HTMLElement {
     const dual = !!(this.config._show_battery2);
     const battSoc2 = dual ? _n(this._val(this.config.battery2_soc)) : 0;
     let battPwr2 = dual ? _nullOr0(this._val(this.config.battery2_power, true)) : 0;
-    let battCurr2 = dual ? _nullOr0(this._val(this.config.battery2_current)) : 0;
-    if (dual && this.config.invert_battery_power) { battPwr2 = -battPwr2; battCurr2 = -battCurr2; }
+    let battCurr2 = dual ? this._val(this.config.battery2_current) : null;
+    if (dual && this.config.invert_battery_power) {
+      battPwr2 = -battPwr2;
+      if (battCurr2 !== null) battCurr2 = -battCurr2;
+    }
     const battVolt2 = dual ? _n(this._val(this.config.battery2_voltage)) : 0;
     const mos2 = dual ? _n(this._val(this.config.battery2_mos)) : 0;
 
@@ -1279,9 +1283,9 @@ class KFlowCard extends HTMLElement {
       setText('battVoltageFlow1', battVolt1.toFixed(1) + ' V'); setText('battVoltageFlow2', battVolt2.toFixed(1) + ' V');
       // Current & power placed outside battery group
       setText('battPwrFlow1', Math.abs(battPwr1).toFixed(0) + ' W');
-      setText('battCurrFlow1', battCurr1.toFixed(1) + ' A');
+      setText('battCurrFlow1', formatCurrent(battCurr1));
       setText('battPwrFlow2', Math.abs(battPwr2).toFixed(0) + ' W');
-      setText('battCurrFlow2', battCurr2.toFixed(1) + ' A');
+      setText('battCurrFlow2', formatCurrent(battCurr2));
       const bolt1 = getEl('battBoltGroup1'), bolt2 = getEl('battBoltGroup2');
       if (bolt1) bolt1.setAttribute('opacity', battPwr1 > 10 ? '1' : '0');
       if (bolt2) bolt2.setAttribute('opacity', battPwr2 > 10 ? '1' : '0');
@@ -1294,7 +1298,7 @@ class KFlowCard extends HTMLElement {
       setText('fcBattVal', battSocRaw !== null ? battSoc1 + '%' : 'Дані недоступні'); setAttr('fcBattVal', 'fill', fill.textColor);
       setText('battVoltageFlow', battVolt1.toFixed(1) + ' V');
       setText('battPwrFlow', absPwr1.toFixed(0) + ' W');
-      setText('battCurrFlow', battCurr1.toFixed(1) + ' A');
+      setText('battCurrFlow', formatCurrent(battCurr1));
       const bolt = getEl('battBoltGroup'); if (bolt) bolt.setAttribute('opacity', battPwr1 > 10 ? '1' : '0');
       // Fix #16: bTemp1/bTemp2 written once below in the label override block — skip early write
       // bMinCell, bMaxCell, bBattDis handled by label override block below

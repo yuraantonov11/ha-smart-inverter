@@ -1121,6 +1121,50 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
         self.assertNotIn("animation:", pv)
         self.assertNotIn("<animate", pv)
 
+    def test_k_flow_current_preserves_missing_zero_and_charge_discharge_values(self) -> None:
+        page, errors = self._load_page("k-flow-card")
+        page.evaluate("""() => {
+          const card = document.createElement('k-flow-card');
+          card.setConfig({battery_current: 'sensor.flow_current',
+                          goodwe_battery_curr: 'sensor.flow_fallback'});
+          document.body.appendChild(card);
+          window.__currentCard = card;
+        }""")
+        cases = [
+            ({}, '— A'),
+            ({'sensor.flow_current': {'state': 'unknown'}}, '— A'),
+            ({'sensor.flow_current': {'state': 'unavailable'}}, '— A'),
+            ({'sensor.flow_current': {'state': 'Infinity'}}, '— A'),
+            ({'sensor.flow_current': {'state': '0'}}, '0.0 A'),
+            ({'sensor.flow_current': {'state': '3'}}, '3.0 A'),
+            ({'sensor.flow_current': {'state': '-2.4'}}, '-2.4 A'),
+            ({'sensor.flow_current': {'state': 'unknown'},
+              'sensor.flow_fallback': {'state': '1.5'}}, '1.5 A'),
+            ({'sensor.flow_current': {'state': '0'},
+              'sensor.flow_fallback': {'state': '1.5'}}, '0.0 A'),
+        ]
+        for states, expected in cases:
+            with self.subTest(states=states):
+                actual = page.evaluate("""states => {
+                  window.__currentCard.hass = {states};
+                  return window.__currentCard.shadowRoot.getElementById('battCurrFlow').textContent;
+                }""", states)
+                self.assertEqual(actual, expected)
+        page.evaluate("""() => window.__currentCard.setConfig({
+          battery_current: 'sensor.flow_current', invert_battery_power: true,
+          _show_battery2: true, battery2_current: 'sensor.flow_second'
+        })""")
+        for states, expected in [({}, ['— A', '— A']),
+                                 ({'sensor.flow_current': {'state': '3'},
+                                   'sensor.flow_second': {'state': '-2'}}, ['-3.0 A', '2.0 A'])]:
+            actual = page.evaluate("""states => {
+              window.__currentCard.hass = {states};
+              return ['battCurrFlow1','battCurrFlow2'].map(id =>
+                window.__currentCard.shadowRoot.getElementById(id).textContent);
+            }""", states)
+            self.assertEqual(actual, expected)
+        self.assertEqual(errors, [])
+
     def test_k_flow_same_object_renders_updated_hass_after_five_reconnects(self) -> None:
         page, errors = self._load_page("k-flow-card")
         page.evaluate(

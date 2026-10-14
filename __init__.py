@@ -1357,6 +1357,7 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         ("consump", "load_power"),
         ("battery_soc", "battery_soc_corrected"),
         ("battery_power", "battery_power"),
+        ("battery_current", "battery_current"),
         ("battery_voltage", "battery_voltage"),
         ("today_pv", "daily_energy"),
         ("daily_savings", "daily_savings"),
