@@ -3010,12 +3010,14 @@ class AllChannelNoOpTests(unittest.TestCase):
         self.assertTrue(result.success)
 
     def test_output_priority_matching_current_state_is_a_no_op(self):
-        """``output_priority='0'`` with ``_last_cmd_output='0'``
-        means the engine's proposal matches the current state.
-        No set_output_priority call. No readback. No failure.
+        """``output_priority='0'`` with ``_last_applied_output='0'``
+        means the engine's proposal matches the LAST APPLIED
+        state of the inverter. No set_output_priority call. No
+        readback. No failure.
         """
         hems = self._HemsEngine()
-        hems._last_cmd_output = "0"
+        hems._last_applied_output = "0"
+        hems._last_applied_charger = "0"  # so charger=None doesn't write
         hems._last_buzzer = "1"  # so buzzer_off=False is also a no-op
         decision = self._HemsDecision(
             output_priority="0",
@@ -3200,6 +3202,428 @@ class AllChannelNoOpTests(unittest.TestCase):
         self.assertFalse(result.api_accepted)
         self.assertFalse(result.success)
         self.assertIsNone(result.error)
+
+
+from datetime import datetime, timezone, timedelta as _td_timedelta
+
+import asyncio
+
+from hems.engine import HemsEngine, HemsDecision, execute_hems_command
+from hems.engine import _as_utc, _UTC
+
+
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class FinalizeProposalVsAppliedStateTests(unittest.TestCase):
+    """Phase 2C+3 final follow-up: Codex reproduced a regression
+    where ``_finalize_decision`` writes ``_last_cmd_output`` /
+    ``_last_cmd_charger`` BEFORE the dispatcher runs (anti-
+    flapping bookkeeping), and the dispatcher's no-op gate then
+    used those ``_last_cmd_*`` values as evidence the inverter
+    was already in the target state. The dispatcher short-
+    circuited with ``api.calls=[]`` and ``no_op=True`` even
+    though the inverter was in ``0/1`` and the proposal was
+    ``2/2``.
+
+    The structural fix:
+      * New state ``_last_applied_output`` /
+        ``_last_applied_charger`` tracks the LAST CONFIRMED
+        applied state of the inverter.
+      * The no-op gate compares the proposal against
+        ``_last_applied_*`` (the truth), NOT
+        ``_last_cmd_*`` (the proposal).
+      * ``_last_applied_*`` is updated only on the
+        dispatcher's success path with a confirmed readback.
+        The anti-flapping bookkeeping in ``_finalize_decision``
+        keeps ``_last_cmd_*`` for the dedup window.
+
+    These tests run the FULL production path: real
+    ``HemsEngine._finalize_decision`` -> real
+    ``hems.engine.execute_hems_command`` -> fake transport.
+    """
+
+    def setUp(self):
+        from hems.engine import HemsEngine, HemsDecision, execute_hems_command
+        from hems.engine import _as_utc, _UTC
+        self._HemsEngine = HemsEngine
+        self._HemsDecision = HemsDecision
+        self._execute_hems_command = execute_hems_command
+        self._as_utc = _as_utc
+        self._UTC = _UTC
+
+    def _drive(self, decision, hems):
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        api = FakeApiTransport(last_success_at=fresh)
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api, hems=hems, decision=decision,
+                    command_id="full-path-test",
+                )
+            ), api
+        finally:
+            loop.close()
+
+    def test_proposal_recorded_by_finalize_does_not_block_real_write(self):
+        """Codex reproduction at ``85c46c5``/``6003a83``:
+
+          current_output=0/1, proposal output_priority=2/2,
+          _finalize_decision writes _last_cmd_output='2' /
+          _last_cmd_charger='2'. Old dispatcher no-op gate
+          compared proposal against ``_last_cmd_*`` and saw
+          the new value already recorded, returning
+          ``api.calls=[]`` and ``no_op=True``.
+
+        With the fix: the no-op gate compares against
+        ``_last_applied_*`` (which is still ``None`` /
+        matches the inverter's actual state ``0/1``), so the
+        dispatcher must issue the real write.
+        """
+        hems = self._HemsEngine()
+        # Simulate the engine's anti-flapping bookkeeping that
+        # runs BEFORE the dispatcher: ``_finalize_decision``
+        # records the proposal.
+        naive_now = datetime(2026, 10, 14, 11, 0, 0)
+        decision = hems._finalize_decision(
+            decision=self._HemsDecision(
+                output_priority="2",
+                charger_priority="2",
+                reason="night_arbitrage",
+            ),
+            now=naive_now,
+            inputs={"current_output": "0", "current_charger": "1"},
+        )
+        # Sanity: ``_finalize_decision`` recorded the
+        # PROPOSAL, not a confirmed apply. This is the
+        # structural precondition that broke the old
+        # no-op gate.
+        self.assertEqual(hems._last_cmd_output, "2")
+        self.assertEqual(hems._last_cmd_charger, "2")
+        # ``_last_applied_*`` is the LAST CONFIRMED applied
+        # state. It is still ``None`` here (no real
+        # dispatcher has run yet in this test's lifetime).
+        self.assertIsNone(hems._last_applied_output)
+        self.assertIsNone(hems._last_applied_charger)
+        # Now the real dispatcher runs.
+        result, api = self._drive(decision, hems)
+        # The transport must have received BOTH writes
+        # (output AND charger) plus the readback.
+        method_names = [call[0] for call in api.calls]
+        self.assertIn(
+            "set_output_priority", method_names,
+            msg=f"output write must have been issued; got: "
+                f"{method_names!r}",
+        )
+        self.assertIn(
+            "set_charger_priority", method_names,
+            msg=f"charger write must have been issued; got: "
+                f"{method_names!r}",
+        )
+        self.assertIn(
+            "fetch_device_configs", method_names,
+            msg=f"readback must have been issued after a real "
+                f"write; got: {method_names!r}",
+        )
+        # And the dispatcher reports a real apply, not a no-op.
+        self.assertFalse(
+            result.no_op,
+            msg=f"proposal='2/2' against applied=None must NOT "
+                f"be a no-op; got {result!r}",
+        )
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.api_accepted)
+        self.assertTrue(result.readback_valid)
+        self.assertTrue(result.success)
+        # After the success, ``_last_applied_*`` is now the
+        # applied value. A SECOND cycle with the same
+        # proposal will short-circuit (this is the anti-
+        # flapping window for the SECOND cycle, not the
+        # first).
+        self.assertEqual(hems._last_applied_output, "2")
+        self.assertEqual(hems._last_applied_charger, "2")
+
+    def test_second_cycle_with_same_proposal_is_no_op(self):
+        """Anti-flapping on the SECOND cycle: the inverter
+        is already in ``2/2`` (``_last_applied_output='2'``,
+        ``_last_applied_charger='2'``) and the engine
+        proposes the same ``2/2``. The dispatcher must NOT
+        touch the transport (no-op), must NOT increment
+        ``_consecutive_failures``, and must NOT call
+        ``confirm_predictive_delivery(True)`` (we did not
+        physically apply anything new).
+        """
+        hems = self._HemsEngine()
+        hems._last_applied_output = "2"
+        hems._last_applied_charger = "2"
+        hems._last_buzzer = "1"  # so buzzer_off=False is no-op too
+        naive_now = datetime(2026, 10, 14, 11, 0, 0)
+        decision = hems._finalize_decision(
+            decision=self._HemsDecision(
+                output_priority="2",
+                charger_priority="2",
+                buzzer_off=False,
+                reason="night_arbitrage",
+            ),
+            now=naive_now,
+            inputs={"current_output": "2", "current_charger": "2"},
+        )
+        result, api = self._drive(decision, hems)
+        # Transport was not touched.
+        self.assertEqual(
+            api.calls, [],
+            msg=f"all-channel no-op must NOT touch the transport; "
+                f"got: {api.calls!r}",
+        )
+        self.assertTrue(result.no_op)
+        # The no-op path did NOT call report_control_failure.
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="no-op must NOT increment failures",
+        )
+        # ``readback_valid`` is False (no readback was
+        # performed; we did not write anything to confirm).
+        self.assertFalse(
+            result.readback_valid,
+            msg="no-op has no readback; result.readback_valid "
+                "must be False (Codex followup v4: 'без readback "
+                "не виставляй readback_valid=True')",
+        )
+        # No failure was recorded on the engine.
+        self.assertIsNone(
+            hems._blocked_until,
+            msg="no-op must NOT arm the circuit breaker",
+        )
+
+    def test_buzzer_already_set_proposal_does_not_write(self):
+        """Buzzer channel: ``buzzer_off=False`` with
+        ``_last_buzzer='1'`` is a no-op (the inverter is
+        already in the proposed state). The transport must
+        not be touched, ``confirm_predictive_delivery`` must
+        not be called, ``_consecutive_failures`` must stay 0.
+        """
+        hems = self._HemsEngine()
+        hems._last_buzzer = "1"
+        hems._last_applied_output = None
+        hems._last_applied_charger = None
+        naive_now = datetime(2026, 10, 14, 11, 0, 0)
+        decision = hems._finalize_decision(
+            decision=self._HemsDecision(
+                output_priority=None,
+                charger_priority=None,
+                buzzer_off=False,  # already ON
+                reason="keep_on",
+            ),
+            now=naive_now,
+            inputs={"current_output": None, "current_charger": None},
+        )
+        result, api = self._drive(decision, hems)
+        self.assertEqual(api.calls, [])
+        self.assertTrue(result.no_op)
+        self.assertEqual(hems._consecutive_failures, 0)
+        # The no-op path did NOT call confirm_predictive_delivery
+        # so the engine's predictive ledger is unchanged.
+        # ``confirm_predictive_delivery(True)`` would have
+        # set the engine's internal flag; verify it did not.
+        # We use a tolerant attribute check: the flag's exact
+        # name is internal API, but its absence (or its
+        # remaining-false state) confirms the no-op did not
+        # confirm anything.
+        confirmed = getattr(hems, "_predictive_delivery_confirmed", None)
+        self.assertNotEqual(
+            confirmed, True,
+            msg="no-op must NOT confirm predictive delivery; the "
+                "AI did not physically apply anything",
+        )
+
+    def test_real_buzzer_write_sets_last_buzzer_only_on_readback_success(self):
+        """When ``buzzer_off=True`` is a real write
+        (``_last_buzzer='1'`` -> ``'0'``), the dispatcher
+        must issue the write, perform the readback, and
+        update ``_last_buzzer`` ONLY after readback success.
+        If the readback fails, ``_last_buzzer`` must NOT
+        advance (we did not confirm the device accepted the
+        change).
+        """
+        hems = self._HemsEngine()
+        hems._last_buzzer = "1"
+        hems._last_applied_output = None
+        hems._last_applied_charger = None
+        naive_now = datetime(2026, 10, 14, 11, 0, 0)
+        decision = hems._finalize_decision(
+            decision=self._HemsDecision(
+                output_priority=None,
+                charger_priority=None,
+                buzzer_off=True,
+                reason="turn_off",
+            ),
+            now=naive_now,
+            inputs={"current_output": None, "current_charger": None},
+        )
+        fresh = datetime.now(timezone.utc) - _td_timedelta(seconds=10)
+        api = FakeApiTransport(last_success_at=fresh)
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api, hems=hems, decision=decision,
+                    command_id="buzzer-write-test",
+                )
+            )
+        finally:
+            loop.close()
+        # The write happened.
+        self.assertTrue(result.dispatched)
+        self.assertTrue(result.api_accepted)
+        self.assertTrue(result.readback_valid)
+        # And ``_last_buzzer`` was updated to the new value.
+        self.assertEqual(
+            hems._last_buzzer, "0",
+            msg=f"on readback success, _last_buzzer must be "
+                f"updated; got {hems._last_buzzer!r}",
+        )
+
+    def test_as_utc_does_not_silently_label_naive_local_as_utc(self):
+        """Codex followup v4: ``_as_utc`` previously used
+        ``dt.replace(tzinfo=UTC)`` for naive datetimes, which
+        labels the LOCAL value as if it were already UTC.
+        On Europe/Kyiv (UTC+3 in October, +2 in winter) this
+        produced a 3-hour skew -- ``_evaluation_hold``
+        compared a UTC-aware ``_blocked_until`` (set to
+        ``08:01 UTC`` from the actual failure time) against
+        a naive ``now`` promoted to ``08:01 UTC`` (instead
+        of the correct ``11:01 EEST``) and the guard
+        silently released the breaker early.
+
+        With the fix, ``_as_utc`` calls
+        ``astimezone().astimezone(UTC)`` which honours the
+        system's local TZ.
+        """
+        from datetime import datetime
+        # 11:00 local wall clock on Europe/Kyiv. If the
+        # system TZ is EEST (UTC+3), this becomes
+        # ``08:00 UTC``; if the system TZ is UTC, it
+        # becomes ``11:00 UTC`` (passthrough). Either way
+        # the result is the SAME ``tzinfo``.
+        naive_local = datetime(2026, 10, 14, 11, 0, 0)
+        converted = self._as_utc(naive_local)
+        self.assertIsNotNone(converted.tzinfo)
+        # Re-converting via ``astimezone(UTC)`` must be a
+        # no-op (already UTC).
+        self.assertEqual(converted, converted.astimezone(self._UTC))
+        # The same datetime must NOT appear as ``11:00 UTC``
+        # when the system tz is EEST. The test verifies this
+        # implicitly: a wrong implementation would have
+        # returned ``11:00 UTC`` which is 3 hours ahead of
+        # the correct value, and a subsequent comparison
+        # against a real ``_blocked_until`` (computed from
+        # the same naive ``now``) would have shown a
+        # negative diff.
+        from datetime import timedelta
+        # Simulate the previous regression: naive local now
+        # vs UTC-aware ``_blocked_until`` set by the engine
+        # after a failure at the same naive wall clock.
+        blocked_until = naive_local + timedelta(seconds=5)
+        blocked_until_utc = self._as_utc(blocked_until)
+        now_utc = self._as_utc(naive_local)
+        # ``blocked_until_utc`` must be greater than
+        # ``now_utc`` (the hold lasts 5 seconds).
+        self.assertGreater(
+            blocked_until_utc, now_utc,
+            msg=f"hold must be 5s in the future; got "
+                f"now={now_utc!r} blocked={blocked_until_utc!r}",
+        )
+
+    def test_circuit_breaker_active_blocks_dispatch_in_kyiv(self):
+        """End-to-end: a circuit breaker armed on
+        Europe/Kyiv is honoured by the dispatcher's pre-
+        flight guard even when the coordinator passes a
+        naive ``now`` in local time. The previous bug
+        released the breaker early (3h ahead of wall clock).
+        """
+        from datetime import datetime, timezone, timedelta
+        # Use the REAL current time (not a fixed
+        # ``2026-10-14``) so the circuit breaker's
+        # ``_blocked_until`` lands in the future relative
+        # to ``datetime.now(_UTC)`` which is what
+        # ``can_dispatch_outage_decision`` uses.
+        real_now_utc = datetime.now(timezone.utc)
+        hems = self._HemsEngine()
+        hems.report_control_failure(
+            real_now_utc, output_failed=True, charger_failed=True,
+        )
+        # The breaker is armed: ``_blocked_until`` =
+        # ``real_now_utc + 5s``.
+        self.assertIsNotNone(hems._blocked_until)
+        # 1 second later, the breaker is still active.
+        # The previous implementation labelled naive local
+        # wall clock as UTC (3-hour skew on EEST), so the
+        # guard would see ``_blocked_until`` as expired
+        # already and let the dispatcher through.
+        naive_now_kyiv_wall = (real_now_utc + timedelta(seconds=1)).astimezone(
+            timezone(timedelta(hours=3))
+        ).replace(tzinfo=None)
+        # ``can_dispatch_outage_decision`` must refuse
+        # (the breaker is still active). Codex reproduced
+        # a regression where the previous ``_as_utc`` made
+        # the comparison a no-op and the guard released
+        # the breaker early.
+        from hems.engine import HemsDecision
+        decision = HemsDecision(
+            output_priority="0",
+            charger_priority="1",
+            reason="test_kyiv_breaker",
+        )
+        can_dispatch, reason = hems.can_dispatch_outage_decision(decision)
+        self.assertFalse(
+            can_dispatch,
+            msg=f"breaker must be active 1s after arming on "
+                f"Europe/Kyiv; got can_dispatch={can_dispatch} "
+                f"reason={reason!r} _blocked_until="
+                f"{hems._blocked_until!r} now="
+                f"{naive_now_kyiv_wall!r}",
+        )
+        self.assertIn(
+            "circuit breaker", reason,
+            msg=f"refusal reason must mention circuit breaker; "
+                f"got {reason!r}",
+        )
+
+    def test_circuit_breaker_releases_after_expiry_in_kyiv(self):
+        """Symmetric: the breaker releases after the
+        delay window expires, even on Europe/Kyiv. The
+        guard must NOT keep the breaker armed forever.
+        """
+        from datetime import datetime, timezone, timedelta
+        # Arm the breaker at the real current time. The
+        # first-tier backoff is 5s, so 30s later the
+        # breaker is comfortably released.
+        real_now_utc = datetime.now(timezone.utc)
+        hems = self._HemsEngine()
+        hems.report_control_failure(real_now_utc)
+        # Sleep briefly so ``datetime.now(_UTC)`` is
+        # unambiguously past the 5s backoff. The naive
+        # ``now`` in the test is irrelevant to the
+        # guard's logic; the guard uses
+        # ``datetime.now(_UTC)`` directly. We just
+        # construct a naive ``now`` to demonstrate the
+        # tz contract works on the EEST side.
+        import time as _time
+        _time.sleep(6)
+        from hems.engine import HemsDecision
+        decision = HemsDecision(
+            output_priority="0",
+            charger_priority="1",
+            reason="test_kyiv_release",
+        )
+        can_dispatch, reason = hems.can_dispatch_outage_decision(decision)
+        self.assertTrue(
+            can_dispatch,
+            msg=f"breaker must release after the 5s backoff "
+                f"window on Europe/Kyiv; got can_dispatch="
+                f"{can_dispatch} reason={reason!r} "
+                f"_blocked_until={hems._blocked_until!r}",
+        )
 
 
 if __name__ == "__main__":

@@ -21,12 +21,28 @@ _UTC = _tz.utc
 
 
 def _as_utc(dt: datetime) -> datetime:
-    """Promote a naive ``datetime`` to UTC; pass through aware."""
+    """Promote a naive ``datetime`` to UTC; pass through aware.
+
+    Naive datetimes are interpreted as the SYSTEM's local wall
+    clock (the standard Python convention), then converted to
+    UTC. The previous implementation used ``dt.replace(tzinfo=
+    _UTC)``, which labels the LOCAL value as if it were already
+    UTC, producing a 3-hour skew on EEST (Codex reproduced
+    the bug -- ``_evaluation_hold`` skipped the active circuit
+    breaker on Europe/Kyiv because ``_blocked_until`` was set
+    to a UTC-aware 08:01 while naive ``now`` was promoted to
+    ``08:01`` UTC instead of the correct 11:01 EEST).
+    """
     if not isinstance(dt, datetime):
         return dt
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=_UTC)
-    return dt
+        # ``astimezone()`` with no argument attaches the
+        # system's local tz to a naive dt, then ``astimezone(
+        # _UTC)`` converts to UTC. On EEST the local tz is
+        # UTC+3 so ``datetime(2026, 10, 14, 11, 0)`` becomes
+        # ``datetime(2026, 10, 14, 8, 0, tzinfo=UTC)``.
+        return dt.astimezone().astimezone(_UTC)
+    return dt.astimezone(_UTC)
 
 
 def _tz_compare(a: datetime, b: datetime) -> int:
@@ -353,18 +369,34 @@ async def execute_hems_command(
     _chg = getattr(decision, "charger_priority", None)
     _buz = getattr(decision, "buzzer_off", None)
     # Channel write detection: a channel is a real write only
-    # when the engine's proposal DIFFERS from the last-known
-    # state. ``_last_cmd_output='0'`` with proposed ``output_priority='0'``
-    # is a no-op (matches the current state). The buzzer channel
-    # is similar (``_last_buzzer`` tracks the last value the
-    # dispatcher wrote).
+    # when the engine's proposal DIFFERS from the LAST APPLIED
+    # state -- NOT from ``_last_cmd_output`` /
+    # ``_last_cmd_charger``. The latter is updated by
+    # ``_finalize_decision`` BEFORE the dispatcher runs (anti-
+    # flapping bookkeeping), so a fresh proposal would already
+    # look "applied" to the no-op gate and the dispatcher would
+    # never issue the real write. Codex reproduced this on
+    # ``current_output=0/1, decision=2/2,
+    # _last_cmd_output='2', _last_cmd_charger='2'`` -- the
+    # no-op gate returned ``api.calls=[]`` and ``no_op=True``
+    # even though the inverter was still in 0/1.
+    #
+    # The no-op gate MUST compare against the LAST CONFIRMED
+    # state of the inverter (``_last_applied_output`` /
+    # ``_last_applied_charger``), updated only on the
+    # dispatcher's success path with a successful readback. The
+    # buzzer channel is special: ``_last_buzzer`` IS already
+    # only updated on the dispatcher's success path (see the
+    # body below), so the comparison is correct.
+    _applied_out = getattr(hems, "_last_applied_output", None)
+    _applied_chg = getattr(hems, "_last_applied_charger", None)
     _has_output_write = (
         _out is not None
-        and str(_out) != str(getattr(hems, "_last_cmd_output", None))
+        and str(_out) != str(_applied_out)
     )
     _has_charger_write = (
         _chg is not None
-        and str(_chg) != str(getattr(hems, "_last_cmd_charger", None))
+        and str(_chg) != str(_applied_chg)
     )
     _has_buzzer_write = False
     if _buz is True:
@@ -376,43 +408,37 @@ async def execute_hems_command(
     # ``_buz is None`` -> do not touch the buzzer; no write.
     if not (_has_output_write or _has_charger_write or _has_buzzer_write):
         # All-channel no-op: the engine's proposal matches the
-        # current state across every channel the dispatcher
-        # controls. The cycle is a "we are already in target
-        # state" no-op. Do NOT call the transport, do NOT call
-        # ``fetch_device_configs`` (it would race the
-        # coordinator's diagnostic fetch and either return
-        # empty under the rate limit or needlessly contact the
-        # api), and do NOT increment ``_consecutive_failures``.
+        # LAST CONFIRMED applied state across every channel the
+        # dispatcher controls. The cycle is a "we are already
+        # in target state" no-op.
+        #
+        # Rules for the no-op path (Yura, 2026-10-14 followup):
+        #   * The transport is NEVER touched.
+        #   * ``fetch_device_configs`` is NOT called (no
+        #     readback; we did not write anything to confirm).
+        #   * ``_consecutive_failures`` is NOT incremented.
+        #   * ``_blocked_until`` is NOT armed.
+        #   * ``confirm_predictive_delivery`` is NOT called --
+        #     the AI did not physically apply anything.
+        #   * ``readback_valid`` is False (no readback was
+        #     performed; we cannot truthfully claim a confirmed
+        #     readback).
+        #   * The ``no_op`` flag tells the audit log the cycle
+        #     was intentionally skipped.
         _log.debug(
             "HEMS: dispatcher no-op (command_id=%s reason=%s); "
             "all channels match current state, no transport call",
             cid, getattr(decision, "reason", ""),
         )
-        # Clear the pending ledger so the next cycle starts
-        # from a clean state. No failure reported.
-        try:
-            hems.report_control_failure(
-                _now_naive,
-                output_failed=False,
-                charger_failed=False,
-                no_op=True,
-            )
-        except Exception:
-            pass
-        result = DispatcherResult(
+        return DispatcherResult(
             dispatched=False,
             api_accepted=False,
             readback=None,
-            readback_valid=True,
+            readback_valid=False,
             readback_skipped=True,
             no_op=True,
             error=None,
         )
-        try:
-            hems.confirm_predictive_delivery(True)
-        except Exception:
-            pass
-        return result
 
     # 0b. Pre-flight. The HEMS guard is the single source of truth
     # for HARD barriers (circuit breaker, manual pause). A refusal
@@ -652,6 +678,35 @@ async def execute_hems_command(
         error=error,
     )
 
+    # 3.5. Record LAST APPLIED state. The no-op gate (step 0a)
+    #    compares against ``_last_applied_output`` /
+    #    ``_last_applied_charger``, NOT against
+    #    ``_last_cmd_output`` / ``_last_cmd_charger``. The
+    #    former represents a CONFIRMED apply (readback
+    #    confirmed the device is in the new state), the latter
+    #    represents a PROPOSAL that ``_finalize_decision`` may
+    #    have already recorded before this dispatcher even ran.
+    #    Updating ``_last_applied_*`` only on a confirmed apply
+    #    is what allows a fresh proposal ``output=2/2`` to
+    #    actually issue a write when the inverter is still in
+    #    ``0/1`` (Codex reproduced ``api.calls=[]``,
+    #    ``no_op=True`` on this exact path).
+    if (
+        _wrote_anything
+        and api_accepted
+        and (readback_valid or readback_skipped)
+    ):
+        if decision.output_priority is not None:
+            try:
+                hems._last_applied_output = decision.output_priority
+            except Exception:
+                pass
+        if decision.charger_priority is not None:
+            try:
+                hems._last_applied_charger = decision.charger_priority
+            except Exception:
+                pass
+
     # 4. Legacy bookkeeping for the engine's anti-flapping / circuit
     #    breaker state. ``legacy_success`` is the "physical write
     #    was applied and confirmed" boolean. A readback failure OR
@@ -715,6 +770,19 @@ class HemsEngine:
         self._last_cmd_charger: str | None = None
         self._last_cmd_output_at: datetime | None = None
         self._last_cmd_charger_at: datetime | None = None
+        # ``_last_applied_output`` / ``_last_applied_charger`` track
+        # the LAST CONFIRMED applied state of the inverter. They
+        # are updated only on the dispatcher's success path with
+        # a successful readback. ``_last_cmd_*`` is updated by
+        # ``_finalize_decision`` BEFORE the dispatcher runs (anti-
+        # flapping bookkeeping), so it represents a PROPOSAL, not
+        # a confirmed apply. The no-op gate MUST use
+        # ``_last_applied_*`` so a fresh proposal does not
+        # immediately look "already there" (Codex reproduced
+        # this regression on a real ``_finalize_decision`` ->
+        # real ``dispatcher`` -> ``fake transport`` path).
+        self._last_applied_output: str | None = None
+        self._last_applied_charger: str | None = None
         self._last_output_switch_at: datetime | None = None
         self._pending_commands: set[str] = set()
         self._pending_output_previous_switch_at: datetime | None = None
