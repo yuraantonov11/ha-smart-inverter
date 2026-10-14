@@ -2486,5 +2486,338 @@ class FinalizeThenDispatchFullPathTests(unittest.TestCase):
         self.assertTrue(hasattr(mod, "DispatcherResult"))
 
 
+@unittest.skipUnless(STRUCTURAL_PROBE_OK, PROBE_FAILURE_REASON)
+class NoOpDoesNotTripCircuitBreakerTests(unittest.TestCase):
+    """Phase 2C+3 follow-up (Codex): the engine's ``_finalize_decision``
+    routinely emits a decision with ``skip=True`` (no output/charger
+    payload) on cycles where the device is already in the target
+    state. The previous dispatcher treated every such no-op as a
+    transport failure and called ``report_control_failure``,
+    incrementing ``_consecutive_failures`` until the circuit breaker
+    tripped after five routine cycles (Codex observed 133 failures
+    in a 24-hour live window).
+
+    These tests drive the real ``HemsEngine.evaluate`` and the real
+    ``execute_hems_command`` together and assert:
+
+      1. Repeated no-op cycles do NOT increment
+         ``_consecutive_failures`` and do NOT trip the circuit
+         breaker.
+      2. Protective hold (circuit breaker / manual pause) does
+         NOT contact the transport and does NOT increment
+         failures.
+      3. A real API failure (set_* returns False) DOES increment
+         failures and DOES set ``_blocked_until``.
+      4. A real API exception (set_* raises) DOES increment
+         failures.
+      5. A readback mismatch DOES increment failures.
+      6. A successful write passes through and increments the
+         success bookkeeping.
+    """
+
+    def setUp(self):
+        from hems.engine import HemsEngine, HemsDecision, execute_hems_command
+        self._HemsEngine = HemsEngine
+        self._HemsDecision = HemsDecision
+        self._execute_hems_command = execute_hems_command
+
+    def _drive_one_cycle(
+        self, *, fresh_inputs: dict | None = None,
+        hems: "HemsEngine" = None,
+        hems_auto: bool = True,
+    ):
+        """One full HEMS cycle: evaluate -> execute -> return result.
+
+        Used to verify the failure counter is stable across many
+        no-op cycles.
+        """
+        from datetime import datetime, timezone
+        if hems is None:
+            hems = self._HemsEngine()
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        decision = hems._finalize_decision(
+            decision=self._HemsDecision(
+                output_priority="0",
+                charger_priority="1",
+                reason="night_arbitrage",
+            ),
+            now=fresh,
+            inputs=fresh_inputs or {
+                "current_output": "0",
+                "current_charger": "1",
+            },
+        )
+        api = FakeApiTransport(last_success_at=fresh)
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api,
+                    hems=hems,
+                    decision=decision,
+                    command_id="noop-test",
+                )
+            )
+        finally:
+            loop.close()
+        return hems, result
+
+    def test_repeated_noop_cycles_do_not_trip_circuit_breaker(self):
+        """50 no-op cycles: ``_consecutive_failures`` stays 0 and
+        ``_blocked_until`` stays None. The engine's anti-flapping
+        cleared the decision to ``skip=True`` because the device
+        is already in the target state.
+        """
+        hems = self._HemsEngine()
+        # ``current_output='0'`` matches the proposed '0', so
+        # ``_finalize_decision`` sets ``output_priority=None``
+        # and ``skip=True``. The decision is a no-op.
+        for cycle in range(50):
+            hems, result = self._drive_one_cycle(
+                hems=hems,
+                fresh_inputs={"current_output": "0", "current_charger": "1"},
+            )
+            # Sanity: the engine should have skipped the
+            # proposal because it matched the current state.
+            self.assertEqual(
+                hems._pending_commands, set(),
+                msg=f"cycle {cycle}: pending must be empty on no-op",
+            )
+        # 50 routine no-op cycles must not have produced a single
+        # failure (Codex reproduced 133 failures in 24h from this path).
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="no-op cycles must not increment the failure counter",
+        )
+        self.assertIsNone(
+            hems._blocked_until,
+            msg="no-op cycles must not arm the circuit breaker",
+        )
+
+    def test_protective_hold_does_not_touch_transport(self):
+        """``_blocked_until`` in the future -> the dispatcher
+        refuses via the guard and the api is NEVER contacted.
+        ``_consecutive_failures`` is NOT incremented because
+        the guard's refusal is a protective hold, not a
+        transport error.
+        """
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        hems = self._HemsEngine()
+        hems._blocked_until = future
+        # Pre-arm _consecutive_failures with a non-zero value to
+        # prove the guard refusal does not ADD to it.
+        hems._consecutive_failures = 2
+        decision = self._HemsDecision(
+            output_priority="0", charger_priority="1", reason="forced",
+        )
+        api = FakeApiTransport(last_success_at=fresh)
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api, hems=hems, decision=decision,
+                    command_id="guard-test",
+                )
+            )
+        finally:
+            loop.close()
+        # Dispatcher refused.
+        self.assertFalse(result.dispatched, msg=result)
+        self.assertIn("circuit breaker", result.error or "")
+        # Transport was never contacted.
+        self.assertEqual(
+            api.calls, [],
+            msg=f"api must not be touched on guard refusal; got: {api.calls!r}",
+        )
+        # Failure counter was NOT incremented.
+        self.assertEqual(
+            hems._consecutive_failures, 2,
+            msg="guard refusal is a protective hold; the failure counter "
+                "must not change",
+        )
+
+    def test_real_api_failure_increments_failures(self):
+        """When the api rejects a write (e.g. ``set_output_priority``
+        returns False), the dispatcher records a real failure
+        and ``_consecutive_failures`` increments by 1.
+        """
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        hems = self._HemsEngine()
+        api = FakeApiTransport(reject_output=True, last_success_at=fresh)
+        decision = self._HemsDecision(
+            output_priority="0", charger_priority="1", reason="forced",
+        )
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api, hems=hems, decision=decision,
+                    command_id="api-fail-test",
+                )
+            )
+        finally:
+            loop.close()
+        # Transport was contacted (api.reject_output=True) but
+        # the dispatcher records api_accepted=False.
+        self.assertFalse(result.api_accepted, msg=result)
+        self.assertFalse(result.dispatched, msg=result)
+        # The failure counter advanced.
+        self.assertEqual(
+            hems._consecutive_failures, 1,
+            msg="real api failure must increment _consecutive_failures",
+        )
+        self.assertIsNotNone(
+            hems._blocked_until,
+            msg="real api failure must arm the circuit breaker",
+        )
+
+    def test_real_api_exception_increments_failures(self):
+        """When ``set_output_priority`` raises an exception, the
+        dispatcher catches it, records a real failure, and
+        ``_consecutive_failures`` increments.
+        """
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        hems = self._HemsEngine()
+        api = FakeApiTransport(raise_on_set=OSError("offline"), last_success_at=fresh)
+        decision = self._HemsDecision(
+            output_priority="0", charger_priority="1", reason="forced",
+        )
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api, hems=hems, decision=decision,
+                    command_id="api-exc-test",
+                )
+            )
+        finally:
+            loop.close()
+        self.assertFalse(result.dispatched, msg=result)
+        self.assertEqual(
+            hems._consecutive_failures, 1,
+            msg="raised exception must increment _consecutive_failures",
+        )
+
+    def test_readback_mismatch_increments_failures(self):
+        """The api accepts the write but the readback returns a
+        different value. This is a real device-state failure and
+        must increment ``_consecutive_failures``.
+        """
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        hems = self._HemsEngine()
+        api = FakeApiTransport(
+            readback_mismatch_output="1",  # != "0"
+            last_success_at=fresh,
+        )
+        decision = self._HemsDecision(
+            output_priority="0", charger_priority="1", reason="forced",
+        )
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api, hems=hems, decision=decision,
+                    command_id="readback-fail-test",
+                )
+            )
+        finally:
+            loop.close()
+        # Readback failed: api accepted the write but the device
+        # reports a different value. ``api_accepted`` is True (the
+        # transport acknowledged the POST); ``readback_valid`` is
+        # False (the GET showed a mismatch).
+        self.assertTrue(
+            result.api_accepted,
+            msg=f"api accepted the write; api_accepted must be True: {result!r}",
+        )
+        # Readback failed, so readback_valid is False.
+        self.assertFalse(
+            getattr(result, "readback_valid", True),
+            msg=f"readback mismatch must set readback_valid=False: {result!r}",
+        )
+        self.assertFalse(
+            result.dispatched,
+            msg="readback mismatch must set dispatched=False",
+        )
+        self.assertEqual(
+            hems._consecutive_failures, 1,
+            msg="readback mismatch must increment _consecutive_failures",
+        )
+
+    def test_successful_write_passes_through_protected_path(self):
+        """A decision with output/charger set goes through the
+        real write + readback path. The api is contacted,
+        ``_consecutive_failures`` is NOT incremented, and
+        ``_blocked_until`` stays None.
+        """
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        hems = self._HemsEngine()
+        api = FakeApiTransport(last_success_at=fresh)
+        decision = self._HemsDecision(
+            output_priority="0", charger_priority="1", reason="forced",
+        )
+        loop = asyncio.new_event_loop()
+        try:
+            result = loop.run_until_complete(
+                self._execute_hems_command(
+                    api=api, hems=hems, decision=decision,
+                    command_id="success-test",
+                )
+            )
+        finally:
+            loop.close()
+        # Successful path: dispatched, readback verified.
+        self.assertTrue(result.dispatched, msg=result)
+        self.assertTrue(result.api_accepted, msg=result)
+        # The transport received the write AND the readback.
+        method_names = {call[0] for call in api.calls}
+        self.assertIn("set_output_priority", method_names)
+        self.assertIn("set_charger_priority", method_names)
+        self.assertIn("fetch_device_configs", method_names)
+        # Failure counter was NOT incremented.
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="successful write must not increment failures",
+        )
+        self.assertIsNone(
+            hems._blocked_until,
+            msg="successful write must not arm circuit breaker",
+        )
+
+    def test_noop_clears_pending_ledger_without_incrementing_failures(self):
+        """When ``_pending_commands`` carries 'output' from a
+        prior failed cycle, a no-op must clear the ledger
+        (so the next real write starts from a clean state)
+        but must NOT increment ``_consecutive_failures``.
+        """
+        from datetime import datetime, timezone
+        fresh = datetime.now(timezone.utc) - timedelta(seconds=10)
+        hems = self._HemsEngine()
+        hems._pending_commands = {"output", "charger"}
+        hems._consecutive_failures = 0
+        # Run a no-op cycle.
+        self._drive_one_cycle(
+            hems=hems,
+            fresh_inputs={"current_output": "0", "current_charger": "1"},
+        )
+        # The pending ledger was cleared (so the next real write
+        # is not blocked by stale entries) but the counter did
+        # NOT advance.
+        self.assertEqual(
+            hems._pending_commands, set(),
+            msg="no-op must clear pending-commands ledger",
+        )
+        self.assertEqual(
+            hems._consecutive_failures, 0,
+            msg="no-op must NOT increment failure counter",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

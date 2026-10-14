@@ -275,7 +275,41 @@ async def execute_hems_command(
     # the engine's bookkeeping so both sides are naive.
     _now_naive = _dt.now()
 
-    # 0. Pre-flight. The HEMS guard is the single source of truth.
+    # 0a. No-op detection. When the engine's decision carries
+    # nothing for the dispatcher to write -- no output priority,
+    # no charger priority, no buzzer toggle -- the cycle is a
+    # legitimate "already in target state" no-op. The dispatcher
+    # must NOT call the transport and must NOT record a failure
+    # (the engine's ``_consecutive_failures`` counter is reserved
+    # for actual transport errors, not for routine cycles that
+    # do not need a write). Codex reproduced a regression where
+    # every no-op cycle incremented the counter and tripped the
+    # circuit breaker after five routine cycles.
+    _out = getattr(decision, "output_priority", None)
+    _chg = getattr(decision, "charger_priority", None)
+    _buz = getattr(decision, "buzzer_off", None)
+    if _out is None and _chg is None and _buz is None:
+        _log.debug(
+            "HEMS: dispatcher no-op (command_id=%s reason=%s); "
+            "no transport call, no failure recorded",
+            cid, getattr(decision, "reason", ""),
+        )
+        return DispatcherResult(
+            dispatched=True,
+            api_accepted=True,
+            readback=None,
+            readback_valid=True,
+            readback_skipped=True,
+            error=None,
+        )
+
+    # 0b. Pre-flight. The HEMS guard is the single source of truth
+    # for HARD barriers (circuit breaker, manual pause). A refusal
+    # here is a protective hold, not a transport error -- the
+    # transport was never contacted and the failure counter is
+    # not incremented. We do call ``report_control_failure`` with
+    # ``no_op=True`` to clear the pending-commands ledger so the
+    # next cycle starts from a clean state.
     try:
         allowed, guard_reason = hems.can_dispatch_outage_decision(decision)
     except AttributeError:
@@ -286,8 +320,9 @@ async def execute_hems_command(
         try:
             hems.report_control_failure(
                 _now_naive,
-                output_failed=bool(getattr(decision, "output_priority", None) is not None),
-                charger_failed=bool(getattr(decision, "charger_priority", None) is not None),
+                output_failed=bool(_out is not None),
+                charger_failed=bool(_chg is not None),
+                no_op=True,
             )
         except Exception:
             pass
@@ -492,9 +527,12 @@ async def execute_hems_command(
     #    The api's own success signal is the only evidence we have
     #    for those builds, and the engine's bookkeeping already
     #    relied on that signal before readback was added.
-    if api_accepted and api_exception is None:
-        if not readback_skipped and not readback_valid:
-            legacy_success = False
+    if not readback_skipped and not readback_valid:
+        # Readback was attempted and the device rejected the
+        # value (or the readback raised). Either way, the
+        # write is NOT confirmed. This is a real transport
+        # failure that must increment the failure counter.
+        legacy_success = False
     if legacy_success:
         try:
             hems.report_control_success()
@@ -889,46 +927,39 @@ class HemsEngine:
         different surface. To guarantee pre-flight and dispatcher
         agree on what is safe, both call this single method.
 
-        Checks (each returns the FIRST reason that matches):
+        The guard only refuses on HARD barriers that would make
+        any inverter write unsafe:
 
-          1. ``decision`` is not ``None`` AND has at least one of
-             ``output_priority`` / ``charger_priority`` set. The
-             "has-payload" rule is skipped when the runtime calls
-             this method pre-flight without a built decision --
-             a probe-time check is allowed to query the engine
-             state in isolation. The dispatcher's call always
-             carries a real decision and so the rule applies.
-
-          2. Circuit breaker
+          1. Circuit breaker
              (``self._blocked_until`` > ``now``) — set by
              ``report_control_failure`` after a failed write.
 
-          3. Manual override
+          2. Manual override
              (``self._manual_override_until`` > ``now``) — set by
              ``arm_manual_override`` / ``detect_manual_override``.
 
-          4. Anti-flapping dedup window — a write inside the
-             configured ``command_dedup_window`` after the last
-             command on the same channel. The runtime previously
-             checked ``_last_cmd_output_at`` AND
-             ``_last_cmd_charger_at`` for any prior write; the
-             guard mirrors that.
-
         Returns ``(True, "")`` when the dispatcher may proceed,
         otherwise ``(False, "<concrete reason>")``.
+
+        The guard does NOT refuse on:
+          - "decision has no output/charger payload" -- the
+            engine routinely emits ``HemsDecision(skip=True)``
+            on cycles where the device is already in the target
+            state. The dispatcher routes those to a no-op
+            (no API call, no ``report_control_failure``). Treating
+            a no-op as a transport failure would trip the circuit
+            breaker after five routine cycles (Codex reproduced
+            this regression -- 133 failures, all from no-op cycles).
+          - "anti-flapping window" -- the engine's
+            ``_apply_anti_flapping`` already nulled the
+            ``decision.output_priority`` field for a duplicate
+            proposal. Re-checking the timestamp here would block
+            the just-formed decision against its own proposal
+            time and trip the circuit breaker (Codex reproduced
+            this regression).
         """
         now = datetime.now(_UTC)
-        # 1. Decision-shape check. Only when a decision is provided
-        #    -- a probe-time check (no decision yet) is allowed to
-        #    inspect the engine state in isolation. The dispatcher
-        #    always passes a real decision, so the rule fires there.
-        if decision is not None:
-            if (
-                getattr(decision, "output_priority", None) is None
-                and getattr(decision, "charger_priority", None) is None
-            ):
-                return (False, "decision has no output/charger payload; refusing to dispatch")
-        # 2. Circuit breaker
+        # 1. Circuit breaker
         blocked_until = getattr(self, "_blocked_until", None)
         if not isinstance(blocked_until, datetime):
             pass
@@ -940,7 +971,7 @@ class HemsEngine:
                     False,
                     f"circuit breaker until {blocked_utc.isoformat()}",
                 )
-        # 3. Manual override
+        # 2. Manual override
         manual_until = getattr(self, "_manual_override_until", None)
         if not isinstance(manual_until, datetime):
             pass
@@ -952,16 +983,7 @@ class HemsEngine:
                     False,
                     f"manual pause until {manual_utc.isoformat()}",
                 )
-        # 4. Anti-flapping dedup is enforced by the engine BEFORE
-        #    ``_finalize_decision`` records the proposal. The
-        #    dispatcher must NOT re-check ``_last_cmd_*_at`` here:
-        #    the engine already cleared ``decision.output_priority``
-        #    to None when a duplicate is detected, so the dispatcher
-        #    would only see a duplicate when the engine's anti-flapping
-        #    already gave the green light. Re-checking the timestamp
-        #    would block the just-formed decision against its own
-        #    proposal time and trip the circuit breaker on every
-        #    routine cycle (Codex reproduced this regression).
+        # No hard barriers -- the dispatcher may attempt the write.
         return (True, "")
 
     def _evaluate_predictive(self, now: datetime, inputs: dict[str, Any]) -> tuple[Any, Any]:
@@ -1213,11 +1235,23 @@ class HemsEngine:
     def report_control_failure(
         self, now: datetime | None = None, *,
         output_failed: bool = True, charger_failed: bool = True,
+        no_op: bool = False,
     ) -> None:
         """Back off failed writes without treating them as applied commands.
 
         Partial success preserves the successful channel. Failed/uncertain
         writes cannot cause a false manual override or block a retry via dedup.
+
+        ``no_op=True`` is the special "we did not try to write" mode:
+        the guard refused (circuit breaker, manual pause, etc.) OR
+        the decision was a no-op (engine decided to skip). In that
+        case the function still clears the pending-commands ledger
+        so the next cycle can dispatch cleanly, but it does NOT
+        increment ``_consecutive_failures`` and does NOT extend
+        ``_blocked_until``. Treating a no-op as a transport failure
+        would trip the circuit breaker after five routine cycles
+        (Codex reproduced this regression -- 133 failures, all
+        from no-op cycles).
         """
         now = now or datetime.now()
         if output_failed and "output" in self._pending_commands:
@@ -1227,6 +1261,12 @@ class HemsEngine:
             self._last_cmd_charger = self._last_cmd_charger_at = None
         self._pending_commands.clear()
         self._pending_output_previous_switch_at = None
+
+        if no_op:
+            # No increment, no backoff. Just clear the ledger so the
+            # next cycle starts from a clean state.
+            return
+
         self._consecutive_failures += 1
 
         # Exponential backoff: 5s, 12s, 25s, 45s
