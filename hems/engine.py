@@ -1287,15 +1287,30 @@ class HemsEngine:
         (Codex reproduced this regression -- 133 failures, all
         from no-op cycles).
         """
-        # Always stamp ``_blocked_until`` as a UTC-aware ``datetime``
-        # so the guard's comparison works regardless of the
-        # coordinator's tz configuration. Codex reproduced a
-        # 3-hour clock-skew bug where the normaliser assigned UTC
-        # to a local-naive timestamp, causing the guard to keep
-        # reporting the breaker as "until X" well past X.
-        if isinstance(now, datetime) and now.tzinfo is None:
-            now = now.replace(tzinfo=_tz.utc)
-        now = now or _dt.now(_UTC)
+        # ``_blocked_until`` must be a UTC-aware ``datetime`` so
+        # the engine's guards (``can_dispatch_outage_decision``,
+        # ``_evaluation_hold``) compare against
+        # ``datetime.now(_UTC)`` consistently regardless of the
+        # coordinator's tz. The previous implementation accepted
+        # a naive ``now`` and treated its wall-clock digits as
+        # UTC (``.replace(tzinfo=_tz.utc)``), which produced a
+        # 3-hour skew on EEST (Codex reproduced the bug). The
+        # fix: when ``now`` is naive, treat it as local time and
+        # convert to the SYSTEM's local tz, then to UTC. When
+        # ``now`` is None, use ``_dt.now(_UTC)`` directly.
+        if now is None:
+            now = _dt.now(_UTC)
+        elif isinstance(now, datetime) and now.tzinfo is None:
+            # Promote naive local to system local tz, then to UTC.
+            # The previous ``now.replace(tzinfo=_tz.utc)`` was
+            # wrong: it labelled the LOCAL value as if it were
+            # already UTC, producing a wall-clock-vs-UTC skew.
+            # We delegate to ``datetime.astimezone`` which uses
+            # the system tz when called with no argument, so a
+            # naive ``now`` is interpreted as the system's
+            # local wall clock and converted to UTC correctly.
+            now = now.astimezone()  # naive -> local-aware
+            now = now.astimezone(_UTC)  # local-aware -> UTC
         if output_failed and "output" in self._pending_commands:
             self._last_cmd_output = self._last_cmd_output_at = None
             self._last_output_switch_at = self._pending_output_previous_switch_at
