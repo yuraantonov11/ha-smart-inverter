@@ -294,6 +294,17 @@ class DispatcherResult:
     # prevents indefinite waits. The command is NOT
     # declared applied until the readback matches the
     # requested values.
+    #
+    # This is a DISTINCT state from no-op, dispatched,
+    # and from a confirmed apply. ``readback_valid`` is
+    # False (we did not confirm the value), ``success``
+    # is False (we did not declare the apply), and the
+    # error message describes the awaiting state. Codex
+    # reproduced a regression where the rate-limited
+    # path also set ``readback_valid=True`` /
+    # ``success=True`` and ``report_control_success``
+    # was called -- the command was then advertised as
+    # physically applied without confirmation.
     awaiting_confirmation: bool = False
     # ``rate_limited_readback`` is True when the readback
     # specifically returned a rate-limit signal
@@ -317,8 +328,19 @@ class DispatcherResult:
         dispatcher did not apply anything to the device. Callers
         that need to distinguish "skipped" from "applied" must
         check ``no_op`` directly.
+
+        ``awaiting_confirmation`` is also a separate state and
+        is NOT success: the api ACK arrived but the readback
+        could not confirm the value persisted on the device
+        (rate-limited or transient network failure). The
+        command is parked in the pending-confirmation ledger
+        and the dispatcher did not declare the apply. Callers
+        that need to know whether the apply is awaiting a
+        retry must check ``awaiting_confirmation`` directly.
         """
         if self.no_op:
+            return False
+        if self.awaiting_confirmation:
             return False
         if self.readback_skipped:
             return bool(self.dispatched and self.api_accepted)
@@ -425,11 +447,53 @@ async def execute_hems_command(
         if getattr(hems, "_last_buzzer", None) != "1":
             _has_buzzer_write = True
     # ``_buz is None`` -> do not touch the buzzer; no write.
-    if not (_has_output_write or _has_charger_write or _has_buzzer_write):
-        # All-channel no-op: the engine's proposal matches the
-        # LAST CONFIRMED applied state across every channel the
-        # dispatcher controls. The cycle is a "we are already
-        # in target state" no-op.
+    # Pending-confirmation dedup. If the engine's
+    # proposal matches a command already parked in
+    # ``_pending_confirmations`` (same output, charger,
+    # buzzer target), the cycle is logically a no-op:
+    # the write was already issued, the api ACK arrived,
+    # we are just waiting for the readback retry. The
+    # dispatcher must NOT issue a second ``set_*`` for
+    # the same target; it must NOT create a second
+    # pending ledger entry. Codex reproduced a regression
+    # at e6cf963 where the runtime proposed the same
+    # intent twice (cycle 1 rate-limited, cycle 2 still
+    # pending) and the dispatcher re-issued ``set_*``,
+    # creating a second pending record. The device then
+    # received two writes for the same target. The fix:
+    # the no-op gate short-circuits BEFORE the body
+    # re-issues the write. The pending ledger entry's
+    # deadline is extended so the confirm_pending retry
+    # has the full retry budget.
+    _pending_matches = False
+    _pending_cid: str | None = None
+    try:
+        _ledger = getattr(hems, "_pending_confirmations", None) or {}
+        for _cid, _entry in list(_ledger.items()):
+            if (
+                str(_entry.get("output_priority")) == str(_out)
+                and str(_entry.get("charger_priority")) == str(_chg)
+                and _entry.get("buzzer_off") == _buz
+            ):
+                _pending_matches = True
+                _pending_cid = _cid
+                # Extend the deadline so the retry
+                # budget is preserved across cycles.
+                _entry["deadline_at"] = _now_naive + timedelta(
+                    seconds=15
+                )
+                _entry["last_attempt_at"] = _now_naive
+                break
+    except Exception:
+        _pending_matches = False
+    if (
+        not (_has_output_write or _has_charger_write or _has_buzzer_write)
+        or _pending_matches
+    ):
+        # All-channel no-op OR pending-confirmation
+        # dedup. The cycle is a "we are already in
+        # target state" no-op or "we already wrote and
+        # are waiting for confirmation" no-op.
         #
         # Rules for the no-op path (Yura, 2026-10-14 followup):
         #   * The transport is NEVER touched.
@@ -446,8 +510,15 @@ async def execute_hems_command(
         #     was intentionally skipped.
         _log.debug(
             "HEMS: dispatcher no-op (command_id=%s reason=%s); "
-            "all channels match current state, no transport call",
+            "%s, no transport call",
             cid, getattr(decision, "reason", ""),
+            "all channels match current state"
+            if not _pending_matches
+            else (
+                f"pending confirmation in flight for "
+                f"command_id={_pending_cid}; reusing "
+                f"existing pending entry"
+            ),
         )
         return DispatcherResult(
             dispatched=False,
@@ -456,6 +527,14 @@ async def execute_hems_command(
             readback_valid=False,
             readback_skipped=True,
             no_op=True,
+            # ``awaiting_confirmation`` is True on the
+            # pending-dedup path so callers (e.g. the
+            # outage runtime) can distinguish a fresh
+            # no-op from a "we are still waiting for
+            # confirmation of a previous write". The
+            # ``success`` property is False in both
+            # cases.
+            awaiting_confirmation=_pending_matches,
             error=None,
         )
 
@@ -678,6 +757,26 @@ async def execute_hems_command(
                 if not isinstance(configs, dict) or not configs:
                     if _is_rate_limited:
                         _readback_rate_limited = True
+                        # ``readback_valid`` MUST be
+                        # False: we did not confirm the
+                        # value persisted on the
+                        # device. The command is parked
+                        # in the pending-confirmation
+                        # ledger and retried on the
+                        # next coordinator cycle.
+                        # ``api_accepted`` is preserved
+                        # (the write itself succeeded)
+                        # and the result is tagged with
+                        # ``awaiting_confirmation=True``.
+                        # Codex reproduced a regression
+                        # where this branch also set
+                        # ``readback_valid=True`` /
+                        # ``success=True`` and
+                        # ``report_control_success`` was
+                        # called -- the command was then
+                        # advertised as physically
+                        # applied without confirmation.
+                        readback_valid = False
                         # Do not raise -- this is a
                         # transient failure. The
                         # command is recorded in the
@@ -782,13 +881,23 @@ async def execute_hems_command(
                                     )
             if _readback_error is not None:
                 if _readback_rate_limited:
-                    # Transient failure: do not raise
-                    # readback_valid (leave True so the
-                    # bookkeeping does not count a
-                    # failure); record as
-                    # ``awaiting_confirmation`` for the
-                    # pending ledger.
-                    readback_valid = True
+                    # Transient failure: ``readback_valid``
+                    # MUST stay False. We did not
+                    # confirm the value persisted on
+                    # the device. The command is
+                    # parked in the pending-confirmation
+                    # ledger and retried on the next
+                    # coordinator cycle. ``api_accepted``
+                    # is preserved (the write itself
+                    # succeeded) and the result is
+                    # tagged with
+                    # ``awaiting_confirmation=True``.
+                    # Codex reproduced a regression
+                    # where ``readback_valid`` was
+                    # forced True here -- the result
+                    # then advertised a physical apply
+                    # that was never confirmed.
+                    readback_valid = False
                 else:
                     _log.warning(
                         "HEMS: readback failed "
@@ -798,8 +907,23 @@ async def execute_hems_command(
                     readback_valid = False
                     api_exception = _readback_error
 
-    # 3. Build the result.
-    if api_exception is not None and not readback:
+    # 3. Build the result. ``dispatched`` is True ONLY
+    #    when the write was applied AND the readback
+    #    confirmed the value persisted on the device
+    #    (the canonical success path). On a rate-limited
+    #    readback ``dispatched`` is False because we did
+    #    not confirm the apply. The audit log uses
+    #    ``awaiting_confirmation=True`` to mark the
+    #    transient state and ``success=False`` to signal
+    #    "we did not declare the apply". The error
+    #    message describes the awaiting state.
+    if _readback_rate_limited:
+        error = (
+            "awaiting confirmation: readback rate-limited; "
+            "command parked in pending ledger; will retry "
+            "without re-issuing the write"
+        )
+    elif api_exception is not None and not readback:
         error = f"api raised {type(api_exception).__name__}: {api_exception}"
     elif not api_accepted:
         error = "api rejected at least one write; see channels above"
@@ -814,8 +938,16 @@ async def execute_hems_command(
         error = f"api raised {type(api_exception).__name__}: {api_exception}"
     else:
         error = None
+    # ``dispatched`` is the strict "physically applied AND
+    # confirmed" boolean. On a rate-limited readback we
+    # are NOT dispatched -- the apply is pending. The
+    # audit log uses ``awaiting_confirmation=True`` to
+    # distinguish this from a true rejection.
+    _is_dispatched = bool(
+        api_accepted and readback_valid and not _readback_rate_limited
+    )
     result = DispatcherResult(
-        dispatched=api_accepted and readback_valid,
+        dispatched=_is_dispatched,
         api_accepted=api_accepted,
         readback=readback or None,
         readback_valid=readback_valid,
