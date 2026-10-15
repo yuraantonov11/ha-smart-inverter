@@ -46,7 +46,7 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import MISSING as _MISSING, asdict, dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -216,10 +216,26 @@ class OutageEvent:
             )
         allowed = {f.name for f in fields(cls)}
         kwargs: dict[str, Any] = {}
-        for name in allowed:
-            if name not in data:
-                raise ValueError(f"event missing required field {name!r}")
-            kwargs[name] = data[name]
+        missing_required: list[str] = []
+        for f in fields(cls):
+            if f.name in data:
+                kwargs[f.name] = data[f.name]
+            elif (
+                f.default is not _MISSING
+                or f.default_factory is not _MISSING  # type: ignore[misc]
+            ):
+                # Field has a default; fall back to it.
+                # This keeps backward compat: a payload
+                # persisted by an older version that did
+                # not record this field still loads.
+                continue
+            else:
+                missing_required.append(f.name)
+        if missing_required:
+            raise ValueError(
+                f"event missing required field(s) "
+                f"{missing_required!r}"
+            )
         unknown = set(data) - allowed
         if unknown:
             _LOGGER.debug("Dropping unknown keys on event load: %s", sorted(unknown))
@@ -1442,26 +1458,86 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
         event_store = _get_store(hass, entry_id)
         inbox = await _load_inbox_store(hass, entry_id=entry_id)
         parsed = adapter.parse(raw)
-        outcome = await adapter.ingest(parsed, event_store, inbox)
-        # Persist any event mutations the adapter
-        # produced.
-        if outcome.action == "added" and outcome.event is not None:
-            await event_store.add(outcome.event)
-        elif outcome.action in (
-            "updated_pending",
-            "cancelled",
-            "superseded",
-        ):
-            if outcome.target_event is not None:
-                await event_store.update(outcome.target_event)
-            if outcome.event is not None and (
-                outcome.event.id != (
+        # Phase 4 v2 atomicity: ``decide`` does NOT
+        # write the inbox. The handler applies the
+        # event mutations first; if any of them
+        # raises, the inbox is left untouched and a
+        # redelivery can re-decide. The inbox
+        # commit is the LAST step.
+        outcome = await adapter.decide(parsed, event_store, inbox)
+        # Idempotency replay (``inbox_entry is None``)
+        # needs no event mutation: the entry is
+        # already on disk and we just return the
+        # recorded outcome.
+        if outcome.inbox_entry is None:
+            return {
+                "action": outcome.action,
+                "event_id": (
+                    outcome.event.id
+                    if outcome.event is not None
+                    else None
+                ),
+                "target_event_id": (
                     outcome.target_event.id
                     if outcome.target_event is not None
                     else None
-                )
-            ):
+                ),
+                "replacement_event_id": (
+                    outcome.replacement_event.id
+                    if outcome.replacement_event is not None
+                    else None
+                ),
+                "reason": outcome.reason,
+                "inbox_key": None,
+                "idempotent_replay": True,
+            }
+        # Apply event mutations. Each path is
+        # responsible for one ``add`` and one
+        # ``update`` (the old event's
+        # ``superseded_by`` flip for supersession
+        # is a single ``update`` on the
+        # ``target_event`` returned by the
+        # adapter).
+        try:
+            if outcome.action == "added" and outcome.event is not None:
                 await event_store.add(outcome.event)
+            elif outcome.action in (
+                "updated_pending",
+                "cancelled",
+                "superseded",
+                "duplicate_event",
+            ):
+                if outcome.target_event is not None:
+                    await event_store.update(outcome.target_event)
+                if (
+                    outcome.event is not None
+                    and outcome.replacement_event is not None
+                    and outcome.replacement_event.id
+                    != (
+                        outcome.target_event.id
+                        if outcome.target_event is not None
+                        else None
+                    )
+                ):
+                    await event_store.add(outcome.replacement_event)
+        except Exception:
+            # Inbox is intentionally NOT committed:
+            # a redelivery of the same
+            # ``(source, channel, message_id)`` can
+            # retry. The handler surfaces the
+            # failure to the caller.
+            _LOGGER.error(
+                "outage: event mutation failed for "
+                "%s/%s/%s; inbox not committed, "
+                "redelivery allowed",
+                raw.source.value,
+                raw.channel,
+                raw.message_id,
+                exc_info=True,
+            )
+            raise
+        # Commit the inbox as the LAST step.
+        await adapter.commit(outcome, inbox)
         return {
             "action": outcome.action,
             "event_id": (
@@ -1478,11 +1554,7 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 else None
             ),
             "reason": outcome.reason,
-            "inbox_key": (
-                outcome.inbox_entry.key
-                if outcome.inbox_entry is not None
-                else None
-            ),
+            "inbox_key": outcome.inbox_entry.key,
         }
 
     hass.services.async_register(

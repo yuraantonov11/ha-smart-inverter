@@ -581,6 +581,38 @@ class NotificationAdapterV2:
         event_store: EventStore,
         inbox: InboxStore,
     ) -> IngestOutcomeV2:
+        """Decide + apply atomic commit.
+
+        Two-phase: ``self.decide()`` computes the
+        outcome WITHOUT writing the inbox; the
+        caller (``services/outage.py`` service
+        handler) applies the event mutations and
+        then calls ``self.commit()`` to persist
+        the inbox. This guarantees that the inbox
+        never says ``added/cancelled/superseded``
+        without the corresponding event state on
+        disk. On error between event mutation and
+        inbox commit the redelivery is allowed
+        (the inbox has no entry yet).
+        """
+        outcome = await self.decide(parsed, event_store, inbox)
+        if outcome.inbox_entry is not None:
+            await self.commit(outcome, inbox)
+        return outcome
+
+    async def decide(
+        self,
+        parsed: ParsedNotificationV2,
+        event_store: EventStore,
+        inbox: InboxStore,
+    ) -> IngestOutcomeV2:
+        """Compute the outcome without writing the
+        inbox. The handler is responsible for
+        applying the event mutations
+        (``event_store.add`` / ``event_store.update``)
+        and calling ``self.commit`` as the LAST
+        step.
+        """
         raw = parsed.raw
         key = raw.key()
 
@@ -602,7 +634,7 @@ class NotificationAdapterV2:
                     f"inbox already processed "
                     f"{key.as_storage_key()!r}: {existing.reason}"
                 ),
-                inbox_entry=existing,
+                inbox_entry=None,  # already on disk
                 target_event=target,
             )
 
@@ -635,7 +667,7 @@ class NotificationAdapterV2:
 
         # 3. Cancellation path.
         if parsed.is_cancellation:
-            return await self._handle_cancellation(
+            return self._decide_cancellation(
                 parsed, event_store, inbox, inbox_entry
             )
 
@@ -650,7 +682,6 @@ class NotificationAdapterV2:
                 parsed.ambiguity_reason
                 or "parser produced no time window"
             )
-            await inbox.upsert(inbox_entry)
             return IngestOutcomeV2(
                 action=inbox_entry.action,
                 event=None,
@@ -677,8 +708,10 @@ class NotificationAdapterV2:
         if raw.original_message_id:
             reschedule_target = self._find_event_by_original_message_id(
                 event_store,
+                inbox,
                 raw.original_message_id,
-                source_tag=source_tag,
+                source=raw.source.value,
+                channel=raw.channel,
             )
 
         # 6. Standard dedup. If an active event
@@ -719,7 +752,11 @@ class NotificationAdapterV2:
                 bumped_old,
                 superseded_by=new_event.id,
             )
-            # Record the inbox as SUPERSEDED.
+            # Record the inbox as SUPERSEDED. The
+            # handler applies ``target_event.update``
+            # AND ``event_store.add(new_event)``
+            # before the commit; the inbox is the
+            # LAST write.
             inbox_entry.action = InboxAction.SUPERSEDED.value
             inbox_entry.event_id = new_event.id
             inbox_entry.reason = (
@@ -728,7 +765,6 @@ class NotificationAdapterV2:
             )
             inbox_entry.target_event_id = reschedule_target.id
             inbox_entry.replacement_event_id = new_event.id
-            await inbox.upsert(inbox_entry)
             return IngestOutcomeV2(
                 action=inbox_entry.action,
                 event=new_event,
@@ -739,21 +775,19 @@ class NotificationAdapterV2:
             )
 
         if duplicate is not None:
-            return await self._handle_revision(
-                parsed, event_store, inbox, inbox_entry, duplicate
+            return self._decide_revision(
+                parsed, inbox_entry, duplicate
             )
 
         # 7. Fresh event. The adapter returns the
         # new event; the caller persists it via
-        # ``await event_store.add(new_event)`` (and
-        # the inbox is already written by the
-        # ``await inbox.upsert`` above).
+        # ``await event_store.add(new_event)`` and
+        # then commits the inbox.
         new_event = self._build_new_event(parsed)
         inbox_entry.action = InboxAction.ADDED.value
         inbox_entry.event_id = new_event.id
         inbox_entry.reason = "fresh event from notification"
         inbox_entry.replacement_event_id = None
-        await inbox.upsert(inbox_entry)
         return IngestOutcomeV2(
             action=inbox_entry.action,
             event=new_event,
@@ -761,11 +795,32 @@ class NotificationAdapterV2:
             inbox_entry=inbox_entry,
         )
 
+    async def commit(
+        self,
+        outcome: IngestOutcomeV2,
+        inbox: InboxStore,
+    ) -> IngestOutcomeV2:
+        """Persist the inbox entry. Called as the
+        LAST step by the handler AFTER the event
+        mutations have been applied and persisted.
+
+        Idempotent: a second call with the same
+        ``inbox_entry.key`` overwrites the entry
+        with the same content (the action /
+        event_id / reason are already final).
+        """
+        if outcome.inbox_entry is None:
+            # ``decide`` returned an idempotency
+            # replay (the entry is already on disk).
+            return outcome
+        await inbox.upsert(outcome.inbox_entry)
+        return outcome
+
     # ------------------------------------------------------------------
     # Cancellation
     # ------------------------------------------------------------------
 
-    async def _handle_cancellation(
+    def _decide_cancellation(
         self,
         parsed: ParsedNotificationV2,
         event_store: EventStore,
@@ -784,8 +839,10 @@ class NotificationAdapterV2:
         if parsed.original_message_id:
             target = self._find_event_by_original_message_id(
                 event_store,
+                inbox,
                 parsed.original_message_id,
-                source_tag=source_tag,
+                source=raw.source.value,
+                channel=raw.channel,
             )
             if target is not None:
                 match_count = 1
@@ -854,7 +911,6 @@ class NotificationAdapterV2:
             inbox_entry.target_event_id = (
                 target.id if target is not None else None
             )
-            await inbox.upsert(inbox_entry)
             return IngestOutcomeV2(
                 action=inbox_entry.action,
                 event=target,
@@ -880,7 +936,6 @@ class NotificationAdapterV2:
             f"{parsed.original_message_id!r})"
         )
         inbox_entry.target_event_id = target.id
-        await inbox.upsert(inbox_entry)
         return IngestOutcomeV2(
             action=inbox_entry.action,
             event=bumped,
@@ -898,11 +953,9 @@ class NotificationAdapterV2:
     # Revision (higher-confidence re-parse)
     # ------------------------------------------------------------------
 
-    async def _handle_revision(
+    def _decide_revision(
         self,
         parsed: ParsedNotificationV2,
-        event_store: EventStore,
-        inbox: InboxStore,
         inbox_entry: InboxEntry,
         duplicate: OutageEvent,
     ) -> IngestOutcomeV2:
@@ -921,7 +974,6 @@ class NotificationAdapterV2:
                 "operator must cancel and re-add"
             )
             inbox_entry.target_event_id = duplicate.id
-            await inbox.upsert(inbox_entry)
             return IngestOutcomeV2(
                 action=inbox_entry.action,
                 event=duplicate,
@@ -941,7 +993,6 @@ class NotificationAdapterV2:
                 "confidence improvement"
             )
             inbox_entry.target_event_id = duplicate.id
-            await inbox.upsert(inbox_entry)
             return IngestOutcomeV2(
                 action=inbox_entry.action,
                 event=duplicate,
@@ -966,7 +1017,6 @@ class NotificationAdapterV2:
             f"confidence {old_confidence} -> {parsed.confidence}"
         )
         inbox_entry.target_event_id = duplicate.id
-        await inbox.upsert(inbox_entry)
         return IngestOutcomeV2(
             action=inbox_entry.action,
             event=bumped,
@@ -1004,26 +1054,35 @@ class NotificationAdapterV2:
     def _find_event_by_original_message_id(
         self,
         event_store: EventStore,
+        inbox: InboxStore,
         original_message_id: str,
         *,
-        source_tag: str,
+        source: str,
+        channel: str,
     ) -> OutageEvent | None:
         """Find the event that the original
         notification (with the given
-        ``message_id``) created. We scan all events
-        whose ``source`` matches the current
-        notification's source and whose ``notes``
-        mention ``message_id=<id>``. The match is
-        exact (the operator passed the id through
-        the service call).
+        ``message_id``) created.
+
+        Uses the **structured** InboxStore key
+        ``(source, channel, message_id)`` to look
+        up the original inbox entry, then resolves
+        its ``event_id`` against the event store.
+        This is more reliable than scanning
+        ``event.notes`` for a substring: the
+        structured key is part of the inbox's
+        contract; notes are operator-mutable
+        free-form.
         """
-        needle = f"message_id={original_message_id}"
-        for ev in event_store.list_events():
-            if ev.source != source_tag:
-                continue
-            if ev.notes and needle in ev.notes:
-                return ev
-        return None
+        key = InboxKey(
+            source=source,
+            channel=channel or "",
+            message_id=original_message_id,
+        )
+        entry = inbox.get(key)
+        if entry is None or not entry.event_id:
+            return None
+        return event_store.get(entry.event_id)
 
     def _find_event_by_address_window(
         self,

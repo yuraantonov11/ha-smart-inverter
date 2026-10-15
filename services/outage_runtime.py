@@ -1314,6 +1314,15 @@ def _find_active_event(
         # cancelled / completed are terminal (services/outage.py:531-344).
         if status != "confirmed":
             continue
+        # Phase 4 v2: events that were rescheduled carry a
+        # ``superseded_by`` link to the replacement event. The
+        # replacement event is the one that should be acted on;
+        # the old event stays in the store for audit but is
+        # EXCLUDED from runtime selection. Picking the old
+        # event would dispatch against a window the operator
+        # already corrected.
+        if getattr(ev, "superseded_by", None) is not None:
+            continue
         if _event_in_eligible_window(ev, now_utc):
             return ev
     return None
