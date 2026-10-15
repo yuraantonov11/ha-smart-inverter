@@ -154,6 +154,18 @@ class OutageEvent:
     # Operator note
     notes: str | None
 
+    # Reschedule history. ``superseded_by`` points to
+    # the id of a later ``OutageEvent`` that REPLACES
+    # this one (a reschedule / time-shift). The old
+    # event is kept in the store for audit. A
+    # ``None`` value (the default) means the event is
+    # the current truth. The new event carries a
+    # ``supersedes`` field via notes (the
+    # ``OutageEvent`` schema does not need a new
+    # field for the reverse link; notes is human-
+    # readable audit context).
+    superseded_by: str | None = None
+
     def __post_init__(self) -> None:
         """Validate the time-window fields at construction.
 
@@ -1035,6 +1047,90 @@ def _ensure_store(
     return stores_map[entry_id]
 
 
+# ---------------------------------------------------------------------
+# Inbox store helpers (Phase 4 v2). Mirrors the
+# ``_get_store`` / ``_ensure_store`` pattern but for
+# ``InboxStore`` so the notification audit log
+# survives across restarts.
+# ---------------------------------------------------------------------
+
+
+def _get_inbox_store(
+    hass: HomeAssistant,
+    entry_id: str | None = None,
+):
+    """Return the ``InboxStore`` for ``entry_id``.
+
+    Lazy-imports ``services.outage_inbox`` to avoid the
+    HA import cost on the test path. When
+    ``entry_id`` is ``None``, require exactly one
+    loaded entry (mirroring the resolver contract used
+    by the existing services).
+    """
+    from .outage_inbox import InboxStore
+    loaded = hass.data.get(f"{DOMAIN}_inbox_stores", {})
+    if entry_id is None:
+        loaded_entry_ids = list(loaded.keys())
+        if not loaded_entry_ids:
+            raise ValueError(
+                "No Inverter config entry is loaded; cannot resolve inbox store"
+            )
+        if len(loaded_entry_ids) > 1:
+            raise ValueError(
+                "Multiple Inverter config entries loaded; specify entry_id "
+                "to choose one"
+            )
+        return loaded[loaded_entry_ids[0]]
+    if entry_id not in loaded:
+        raise ValueError(f"Unknown inverter config entry {entry_id!r}")
+    return loaded[entry_id]
+
+
+def _ensure_inbox_store(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+):
+    """Create the inbox store on demand. The HA ``Store``
+    key is namespaced so the inbox is a separate file
+    from the events.
+    """
+    from .outage_inbox import InboxStore
+    stores_map = hass.data.setdefault(f"{DOMAIN}_inbox_stores", {})
+    if entry_id not in stores_map:
+        if not _HA_AVAILABLE:
+            raise RuntimeError(
+                "InboxStore construction requires the Home Assistant runtime; "
+                "no HA ``Store`` available in the current process"
+            )
+        from .outage_inbox import INBOX_STORE_VERSION
+        storage = Store(
+            hass,
+            INBOX_STORE_VERSION,
+            f"{STORE_KEY_BASE}_{entry_id}_inbox",
+        )
+        stores_map[entry_id] = InboxStore(storage, entry_id)
+    return stores_map[entry_id]
+
+
+async def _load_inbox_store(
+    hass: HomeAssistant,
+    *,
+    entry_id: str,
+):
+    """Open the inbox store and load the persisted state.
+
+    The HA ``Store`` is loaded on first use; subsequent
+    reads come from the in-memory dict. The
+    production coordinator calls this on startup so a
+    redelivery after reload is a no-op (the inbox has
+    the original entry).
+    """
+    store = _ensure_inbox_store(hass, entry_id=entry_id)
+    await store.async_load()
+    return store
+
+
 async def _build_event_from_call(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -1291,6 +1387,122 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 vol.Optional("status"): str,
             }
         ),
+    )
+    # Phase 4 v2: notification ingestion. The handler
+    # builds a ``RawNotificationV2`` from the service
+    # call and forwards to ``NotificationAdapterV2``,
+    # which decides between add / update / cancel /
+    # supersede / needs_operator_review. The inbox
+    # is the canonical record; a redelivery of the
+    # same ``(source, channel, message_id)`` after
+    # reload is a no-op.
+    from .outage_inbox import (
+        NotificationAdapterV2,
+        NotificationParserV2,
+        NotificationSourceV2,
+        RawNotificationV2,
+    )
+
+    async def handle_ingest_outage_notification(
+        call: ServiceCall,
+    ) -> dict[str, Any]:
+        entry_id = call.data.get("entry_id")
+        if not entry_id:
+            entry_id = _resolve_single_entry_id(hass)
+        tz_name = _default_tz_name(hass)
+        source_value = str(call.data.get("source", "manual:import"))
+        try:
+            source = NotificationSourceV2(source_value)
+        except ValueError as exc:
+            raise ServiceValidationError(
+                f"unknown notification source {source_value!r}: {exc}"
+            )
+        raw = RawNotificationV2(
+            source=source,
+            channel=str(call.data.get("channel", "")),
+            message_id=str(call.data["message_id"]),
+            received_at=str(
+                call.data.get("received_at", _now_iso_utc())
+            ),
+            raw_text=str(call.data["raw_text"]),
+            sender=str(call.data.get("sender", "")),
+            address_hint=(
+                str(call.data["address_hint"])
+                if call.data.get("address_hint") is not None
+                else None
+            ),
+            original_message_id=(
+                str(call.data["original_message_id"])
+                if call.data.get("original_message_id") is not None
+                else None
+            ),
+        )
+        parser = NotificationParserV2(tz_name)
+        adapter = NotificationAdapterV2(parser)
+        event_store = _get_store(hass, entry_id)
+        inbox = await _load_inbox_store(hass, entry_id=entry_id)
+        parsed = adapter.parse(raw)
+        outcome = await adapter.ingest(parsed, event_store, inbox)
+        # Persist any event mutations the adapter
+        # produced.
+        if outcome.action == "added" and outcome.event is not None:
+            await event_store.add(outcome.event)
+        elif outcome.action in (
+            "updated_pending",
+            "cancelled",
+            "superseded",
+        ):
+            if outcome.target_event is not None:
+                await event_store.update(outcome.target_event)
+            if outcome.event is not None and (
+                outcome.event.id != (
+                    outcome.target_event.id
+                    if outcome.target_event is not None
+                    else None
+                )
+            ):
+                await event_store.add(outcome.event)
+        return {
+            "action": outcome.action,
+            "event_id": (
+                outcome.event.id if outcome.event is not None else None
+            ),
+            "target_event_id": (
+                outcome.target_event.id
+                if outcome.target_event is not None
+                else None
+            ),
+            "replacement_event_id": (
+                outcome.replacement_event.id
+                if outcome.replacement_event is not None
+                else None
+            ),
+            "reason": outcome.reason,
+            "inbox_key": (
+                outcome.inbox_entry.key
+                if outcome.inbox_entry is not None
+                else None
+            ),
+        }
+
+    hass.services.async_register(
+        DOMAIN,
+        "ingest_outage_notification",
+        handle_ingest_outage_notification,
+        schema=vol.Schema(
+            {
+                vol.Optional("entry_id"): str,
+                vol.Required("message_id"): str,
+                vol.Required("raw_text"): str,
+                vol.Optional("source", default="manual:import"): str,
+                vol.Optional("channel", default=""): str,
+                vol.Optional("received_at"): str,
+                vol.Optional("sender", default=""): str,
+                vol.Optional("address_hint"): str,
+                vol.Optional("original_message_id"): str,
+            }
+        ),
+        supports_response=True,
     )
     # Phase 2C addition (DEFECT 7 follow-up): a per-entry
     # ``compute_outage_plan`` service so the dashboard / scripts

@@ -329,6 +329,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await async_register_services(hass)
         from .services.outage import async_register_outage_services
         await async_register_outage_services(hass)
+        # Phase 4 v2: load the inbox store so a
+        # redelivery of the same (source, channel,
+        # message_id) after a reload is a no-op. The
+        # adapter reads the loaded entries on the
+        # first ingest call.
+        try:
+            from .services.outage import _load_inbox_store
+            await _load_inbox_store(hass, entry_id=entry.entry_id)
+        except Exception:  # noqa: BLE001 -- additive
+            _LOGGER.debug("InboxStore load failed; will lazy-load", exc_info=True)
         from .services.outage_runtime import wire_outage_runtime
         wire_outage_runtime(hass, entry, coordinator)
 
