@@ -733,6 +733,75 @@ class NotificationAdapterV2:
             # the store; the old one gets
             # ``superseded_by`` set; the new one
             # records the link in notes.
+            #
+            # Idempotency contract: a previous
+            # attempt may have completed the
+            # ``add(new_event)`` and / or
+            # ``update(old, superseded_by=...)`` but
+            # crashed before the inbox commit. We
+            # detect that by inspecting
+            # ``reschedule_target.superseded_by``:
+            #   * ``None`` -- first attempt; build
+            #     a new replacement and apply both
+            #     mutations.
+            #   * non-None -- a previous attempt
+            #     already wrote the link. Look up
+            #     the replacement event; if it
+            #     exists, the work is complete and
+            #     we just commit the inbox. If the
+            #     pointer is dangling (the previous
+            #     attempt's ``add`` failed after the
+            #     ``update`` did), we log a warning
+            #     and rebuild -- the dangling
+            #     pointer is overwritten in the
+            #     store by the new attempt's
+            #     ``update``.
+            existing_superseded_by = (
+                reschedule_target.superseded_by
+            )
+            if existing_superseded_by is not None:
+                existing_replacement = event_store.get(
+                    existing_superseded_by
+                )
+                if existing_replacement is not None:
+                    # The previous attempt
+                    # completed: the new event is
+                    # in the store AND the OLD has
+                    # the link. The handler just
+                    # commits the inbox.
+                    inbox_entry.action = (
+                        InboxAction.SUPERSEDED.value
+                    )
+                    inbox_entry.event_id = (
+                        existing_replacement.id
+                    )
+                    inbox_entry.reason = (
+                        f"reschedule of "
+                        f"{reschedule_target.id} "
+                        f"already complete; "
+                        f"original_message_id="
+                        f"{raw.original_message_id}"
+                    )
+                    inbox_entry.target_event_id = (
+                        reschedule_target.id
+                    )
+                    inbox_entry.replacement_event_id = (
+                        existing_replacement.id
+                    )
+                    return IngestOutcomeV2(
+                        action=inbox_entry.action,
+                        event=existing_replacement,
+                        reason=inbox_entry.reason,
+                        inbox_entry=inbox_entry,
+                        target_event=reschedule_target,
+                        replacement_event=existing_replacement,
+                    )
+                # Dangling pointer: the previous
+                # attempt's update landed but
+                # the add failed. The handler
+                # rebuilds the replacement and
+                # overwrites the pointer via
+                # the new update.
             new_event = self._build_new_event(parsed)
             new_event = replace(
                 new_event,
@@ -836,34 +905,43 @@ class NotificationAdapterV2:
         # The adapter looks up the original
         # notification's inbox entry and uses its
         # ``event_id`` to find the original event.
+        # A successful primary match is FINAL --
+        # the address+window fallback must NOT
+        # run and must NOT overwrite the target
+        # (the structured key is exact; the
+        # fallback is for messages that do NOT
+        # carry ``original_message_id`` at all).
+        primary_target: OutageEvent | None = None
         if parsed.original_message_id:
-            target = self._find_event_by_original_message_id(
-                event_store,
-                inbox,
-                parsed.original_message_id,
-                source=raw.source.value,
-                channel=raw.channel,
+            primary_target = (
+                self._find_event_by_original_message_id(
+                    event_store,
+                    inbox,
+                    parsed.original_message_id,
+                    source=raw.source.value,
+                    channel=raw.channel,
+                )
             )
-            if target is not None:
+            if primary_target is not None:
+                target = primary_target
                 match_count = 1
 
         # 2. Fallback: address+window match. The
         # adapter only accepts a cancellation if
         # EXACTLY one event matches the address and
-        # the time window. Zero matches ->
-        # ``unmatched_cancellation``; more-than-one
-        # matches -> ``needs_operator_review``; in
-        # either case the inbox records the outcome
-        # and NO event is mutated.
-        candidates: List[OutageEvent] = []
-        if raw.address_hint:
-            # The cancellation may or may not carry a
-            # parseable window. With a window the
-            # adapter narrows the candidates to those
-            # that OVERLAP; without a window the
-            # candidates are every event with this
-            # ``address_hint``. In both cases the
-            # count must be exactly 1 for the
+        # the time window. The fallback runs ONLY
+        # when the primary lookup did not resolve
+        # a target; if the primary already found
+        # one, the address+window pass is skipped
+        # so the existing target is preserved.
+        if target is None and raw.address_hint:
+            # The cancellation may or may not carry
+            # a parseable window. With a window the
+            # adapter narrows the candidates to
+            # those that OVERLAP; without a window
+            # the candidates are every event with
+            # this ``address_hint``. In both cases
+            # the count must be exactly 1 for the
             # cancellation to be unambiguous.
             candidates, _count = (
                 self._find_event_by_address_window(
@@ -874,9 +952,11 @@ class NotificationAdapterV2:
                     source_tag=source_tag,
                 )
             )
-        if len(candidates) == 1:
-            target = candidates[0]
-        match_count = len(candidates)
+            if len(candidates) == 1:
+                target = candidates[0]
+                match_count = 1
+            else:
+                match_count = len(candidates)
 
         if target is None or match_count != 1:
             # Ambiguous cancellation. The operator

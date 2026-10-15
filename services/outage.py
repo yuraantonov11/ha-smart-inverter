@@ -513,6 +513,22 @@ class EventStore:
         await self.async_save()
         return event
 
+    async def remove(self, event_id: str) -> None:
+        """Remove an event by id. No-op if the id is
+        absent. The handler uses this to roll back a
+        failed reschedule: ``add(new)`` succeeded but
+        ``update(old, superseded_by=new.id)`` failed
+        -- the new event must be removed so its id
+        does not dangle.
+
+        Production note: HA ``Store`` saves the full
+        payload; a missing key is the deletion. The
+        in-memory store mirrors that.
+        """
+        if event_id in self._events:
+            del self._events[event_id]
+            await self.async_save()
+
     def iter_active(self) -> Iterable[OutageEvent]:
         """Iterate non-terminal events.
 
@@ -1491,45 +1507,77 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 "inbox_key": None,
                 "idempotent_replay": True,
             }
-        # Apply event mutations. Each path is
-        # responsible for one ``add`` and one
-        # ``update`` (the old event's
-        # ``superseded_by`` flip for supersession
-        # is a single ``update`` on the
-        # ``target_event`` returned by the
-        # adapter).
+        # Apply event mutations. The order is
+        # ``add`` BEFORE ``update``: the
+        # replacement event must be persisted
+        # first so the OLD's ``superseded_by``
+        # link is not dangling. If ``update``
+        # fails, the handler rolls back the
+        # ``add`` (the new event is removed) so
+        # the store is left consistent.
+        added_event_id: str | None = None
         try:
             if outcome.action == "added" and outcome.event is not None:
                 await event_store.add(outcome.event)
+                added_event_id = outcome.event.id
+            elif outcome.action == "superseded":
+                if outcome.replacement_event is not None:
+                    # Add the new event FIRST. The
+                    # OLD's ``superseded_by`` is
+                    # updated only after the
+                    # replacement is on disk, so
+                    # the link is never dangling.
+                    try:
+                        await event_store.add(
+                            outcome.replacement_event
+                        )
+                        added_event_id = (
+                            outcome.replacement_event.id
+                        )
+                    except ValueError:
+                        # The replacement id
+                        # already exists (a
+                        # previous attempt
+                        # completed; see
+                        # ``decide`` reschedule
+                        # idempotency). Continue
+                        # with the update.
+                        pass
+                    if outcome.target_event is not None:
+                        await event_store.update(
+                            outcome.target_event
+                        )
             elif outcome.action in (
                 "updated_pending",
                 "cancelled",
-                "superseded",
                 "duplicate_event",
             ):
                 if outcome.target_event is not None:
-                    await event_store.update(outcome.target_event)
-                if (
-                    outcome.event is not None
-                    and outcome.replacement_event is not None
-                    and outcome.replacement_event.id
-                    != (
-                        outcome.target_event.id
-                        if outcome.target_event is not None
-                        else None
+                    await event_store.update(
+                        outcome.target_event
                     )
-                ):
-                    await event_store.add(outcome.replacement_event)
         except Exception:
-            # Inbox is intentionally NOT committed:
-            # a redelivery of the same
-            # ``(source, channel, message_id)`` can
-            # retry. The handler surfaces the
-            # failure to the caller.
+            # Roll back the ``add`` so the
+            # replacement id does not dangle.
+            # The inbox is NOT committed: a
+            # redelivery of the same
+            # ``(source, channel, message_id)``
+            # can retry. The handler surfaces
+            # the failure to the caller.
+            if added_event_id is not None:
+                try:
+                    await event_store.remove(added_event_id)
+                except Exception:
+                    _LOGGER.error(
+                        "outage: rollback remove failed for "
+                        "%s; store may be inconsistent",
+                        added_event_id,
+                        exc_info=True,
+                    )
             _LOGGER.error(
                 "outage: event mutation failed for "
-                "%s/%s/%s; inbox not committed, "
-                "redelivery allowed",
+                "%s/%s/%s; rolled back add and did not "
+                "commit inbox; redelivery allowed",
                 raw.source.value,
                 raw.channel,
                 raw.message_id,
