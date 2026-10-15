@@ -355,10 +355,20 @@ async def execute_hems_command(
     *,
     evidence_recorded: bool = False,
     logger: Any = None,
+    now: datetime | None = None,
 ) -> DispatcherResult:
     """Module-level dispatcher body. ``InverterCoordinator._execute_hems_command``
     delegates to this function so the same logic is testable without
     a full coordinator instance.
+
+    The optional ``now`` parameter accepts a naive ``datetime`` that
+    is used as the wall-clock anchor for the dispatcher's
+    bookkeeping (``_now_naive``). When omitted, the dispatcher
+    reads ``datetime.now()`` from the system clock. Tests that
+    drive the dispatcher with a controlled clock can pass
+    ``now`` directly so the entire flow (deadline stamping,
+    pending-dedup matching, rate-limit-aware readback) sees the
+    same wall clock.
 
     Three-phase contract (see ``DispatcherResult``):
 
@@ -387,7 +397,10 @@ async def execute_hems_command(
     # "can't compare offset-naive and offset-aware datetimes"
     # (Codex reproduced this regression). Pass a NAIVE ``now`` to
     # the engine's bookkeeping so both sides are naive.
-    _now_naive = _dt.now()
+    if now is not None:
+        _now_naive = now
+    else:
+        _now_naive = _dt.now()
 
     # 0a. All-channel no-op detection. Codex reproduced a regression
     # where a ``HemsDecision(skip=True)`` with ``buzzer_off=False``
@@ -462,9 +475,17 @@ async def execute_hems_command(
     # creating a second pending record. The device then
     # received two writes for the same target. The fix:
     # the no-op gate short-circuits BEFORE the body
-    # re-issues the write. The pending ledger entry's
-    # deadline is extended so the confirm_pending retry
-    # has the full retry budget.
+    # re-issues the write. The existing entry's
+    # ``deadline_at`` and ``last_attempt_at`` are NOT
+    # touched: the deadline is anchored to the FIRST
+    # command's wall clock (15s from the original ACK),
+    # and ``last_attempt_at`` is only updated by the
+    # actual ``confirm_pending`` readback retry --
+    # not by a repeat no-op cycle that did not call
+    # ``fetch_device_configs``. Codex demand:
+    # ``Deadline незмінний від першої команди; час
+    # останньої спроби змінюється лише після справжнього
+    # readback``.
     _pending_matches = False
     _pending_cid: str | None = None
     try:
@@ -477,12 +498,14 @@ async def execute_hems_command(
             ):
                 _pending_matches = True
                 _pending_cid = _cid
-                # Extend the deadline so the retry
-                # budget is preserved across cycles.
-                _entry["deadline_at"] = _now_naive + timedelta(
-                    seconds=15
-                )
-                _entry["last_attempt_at"] = _now_naive
+                # Do NOT extend ``deadline_at`` or
+                # update ``last_attempt_at`` here.
+                # The pending entry preserves its
+                # original deadline (15s from the
+                # first ACK) and its last-attempt
+                # timestamp (only updated by the
+                # next real ``confirm_pending``
+                # readback).
                 break
     except Exception:
         _pending_matches = False

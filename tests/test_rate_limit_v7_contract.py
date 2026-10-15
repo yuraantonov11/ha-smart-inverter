@@ -301,8 +301,13 @@ class PendingDedupTests(unittest.TestCase):
         Cycle 2: same intent, still rate-limited -> the
         no-op gate matches the existing pending entry
         and the dispatcher does NOT call ``set_*``
-        again. The pending ledger has exactly 1 entry.
+        again. The pending ledger has exactly 1 entry
+        and the entry's ``deadline_at`` /
+        ``last_attempt_at`` are NOT modified by the
+        no-op cycle. The deadline stays anchored to
+        the first command's wall clock.
         """
+        from datetime import datetime as _dt
         eng = HemsEngine()
         api = _ProgrammableApi()
         decision = HemsDecision(
@@ -324,6 +329,18 @@ class PendingDedupTests(unittest.TestCase):
             msg="cycle 1 must create exactly one pending "
             "entry",
         )
+        # Snapshot the entry's deadline and last-attempt
+        # after the FIRST readback. These are anchored
+        # to the first command's wall clock and must
+        # NOT change on a no-op dedup cycle.
+        entry_after_cycle_1 = eng._pending_confirmations["dedup-1"]
+        deadline_after_cycle_1 = entry_after_cycle_1["deadline_at"]
+        last_attempt_after_cycle_1 = entry_after_cycle_1[
+            "last_attempt_at"
+        ]
+        first_seen_after_cycle_1 = entry_after_cycle_1[
+            "first_seen_at"
+        ]
         # Count the writes issued so far.
         writes_after_cycle_1 = [
             c for c in api.calls
@@ -337,6 +354,8 @@ class PendingDedupTests(unittest.TestCase):
         # Cycle 2: same intent, still rate-limited. The
         # dispatcher must short-circuit on the pending
         # match.
+        import time as _time
+        _time.sleep(1.5)  # ensure real wall-clock advance
         api.program_fetch("rate_limited")
         result_2 = _run(
             execute_hems_command(
@@ -377,13 +396,40 @@ class PendingDedupTests(unittest.TestCase):
             msg=f"cycle 2 must NOT re-issue the write; "
             f"got {writes_after_cycle_2!r}",
         )
-        # The existing entry's deadline was extended.
-        entry = eng._pending_confirmations["dedup-1"]
-        self.assertGreater(
-            entry["deadline_at"],
-            datetime.now() + timedelta(seconds=10),
-            msg=f"cycle 2 must extend the existing entry's "
-            f"deadline; got {entry['deadline_at']!r}",
+        # The pending entry's deadline and last-attempt
+        # were NOT touched by the no-op dedup cycle.
+        # The deadline is anchored to the first
+        # command's wall clock (15s from the original
+        # ACK) and ``last_attempt_at`` is only updated
+        # by the next real ``confirm_pending``
+        # readback. Codex demand: ``Deadline незмінний
+        # від першої команди; час останньої спроби
+        # змінюється лише після справжнього readback``.
+        entry_after_cycle_2 = eng._pending_confirmations["dedup-1"]
+        self.assertEqual(
+            entry_after_cycle_2["deadline_at"],
+            deadline_after_cycle_1,
+            msg=f"no-op dedup cycle must NOT extend the "
+            f"entry's deadline; "
+            f"deadline_after_cycle_1={deadline_after_cycle_1!r} "
+            f"deadline_after_cycle_2="
+            f"{entry_after_cycle_2['deadline_at']!r}",
+        )
+        self.assertEqual(
+            entry_after_cycle_2["last_attempt_at"],
+            last_attempt_after_cycle_1,
+            msg=f"no-op dedup cycle must NOT update "
+            f"last_attempt_at; "
+            f"last_attempt_after_cycle_1="
+            f"{last_attempt_after_cycle_1!r} "
+            f"last_attempt_after_cycle_2="
+            f"{entry_after_cycle_2['last_attempt_at']!r}",
+        )
+        self.assertEqual(
+            entry_after_cycle_2["first_seen_at"],
+            first_seen_after_cycle_1,
+            msg="first_seen_at must be stable across the "
+            "no-op dedup cycle",
         )
 
     def test_repeat_intent_continues_after_pending_confirms(self):
@@ -632,6 +678,386 @@ class OutageRuntimeContractTests(unittest.TestCase):
             msg=f"error must mention awaiting so the "
             f"runtime surfaces the awaiting state; got "
             f"{result.error!r}",
+        )
+
+
+class ControlledClockScenarioTests(unittest.TestCase):
+    """v7 follow-up v8: Codex reproduced a regression
+    at 634aeaa where the pending-dedup path updated
+    ``deadline_at`` and ``last_attempt_at`` on every
+    repeat no-op cycle. The deadline should be
+    anchored to the FIRST command's wall clock (15s
+    from the original ACK), and ``last_attempt_at``
+    should be updated only by the next REAL readback
+    retry (``confirm_pending``), not by a repeat
+    no-op cycle that never called
+    ``fetch_device_configs``.
+
+    These tests drive the full production path with
+    a controlled clock. The clock advances only when
+    the test calls ``tick(seconds=N)``. Each test
+    models a real coordinator loop:
+
+      * cycle 1: ``_run_hems_engine`` -> dispatcher
+        -> set_* -> rate-limited readback -> pending
+        entry parked.
+      * cycles 2..N: every 5 seconds the runtime
+        proposes the SAME intent. The dispatcher's
+        no-op gate short-circuits (no second
+        ``set_*``, no second pending entry,
+        ``last_attempt_at`` unchanged,
+        ``deadline_at`` unchanged).
+      * ``confirm_pending`` is called by the
+        coordinator's update loop. Per-attempt
+        backoff: 0s, 1s, 3s, 5s, 8s.
+
+    Two scenarios:
+      A. The pending entry's readback is
+         ALWAYS rate-limited. The retry budget
+         expires (15s after the first ACK) and
+         the entry is dropped WITHOUT declaring
+         applied. The set_* was issued exactly
+         once.
+      B. The pending entry's readback SUCCEEDS
+         before the deadline. The LAST APPLIED
+         state advances. The set_* was issued
+         exactly once.
+    """
+
+    class _Clock:
+        """A monotonic clock the test can advance by
+        ``tick(seconds=N)``. ``now()`` returns UTC
+        ``datetime`` so the engine's tz comparisons
+        are consistent.
+        """
+
+        def __init__(self, start_iso="2026-10-14T11:00:00"):
+            from datetime import datetime as _dt
+            from datetime import timezone as _tz
+            self._start = _dt.fromisoformat(start_iso).replace(
+                tzinfo=_tz.utc
+            )
+            self._now_offset_sec = 0.0
+
+        def now(self) -> "datetime":
+            from datetime import timedelta
+            return self._start + timedelta(
+                seconds=self._now_offset_sec
+            )
+
+        def now_naive(self) -> "datetime":
+            """Return naive local wall clock (what
+            ``datetime.now()`` would return on a host
+            whose local TZ is Europe/Kyiv -- but the
+            engine normalises this through
+            ``_as_utc``). For test purposes the host
+            TZ is treated as the same as the test
+            reference UTC.
+            """
+            return self.now().replace(tzinfo=None)
+
+        def tick(self, seconds: float) -> None:
+            self._now_offset_sec += seconds
+
+    def setUp(self):
+        self._clock = self._Clock()
+        # No clock monkey-patching. The dispatcher's
+        # ``execute_hems_command`` accepts a ``now``
+        # parameter; the engine's ``confirm_pending``
+        # also accepts ``now``. Both are called with
+        # the same wall clock in each test cycle.
+
+    def tearDown(self):
+        pass
+
+    def _run(self, coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_repeat_intent_5s_cadence_until_deadline_no_apply(self):
+        """Scenario A: same intent every 5 seconds for
+        20 seconds, persistent rate-limit. The
+        deadline expires at 15s. The set_* was
+        issued exactly ONCE (cycle 1). No
+        transport call after cycle 1. The pending
+        entry is dropped after 15s WITHOUT
+        declaring applied. The audit log records
+        ``timed_out=1`` and no ``confirmed``.
+        """
+        eng = HemsEngine()
+        api = _ProgrammableApi()
+        decision = HemsDecision(
+            output_priority="2",
+            charger_priority=None,
+            reason="night_arbitrage",
+        )
+        # Cycle 1 at t=0s: write + rate-limited readback.
+        api.program_fetch("rate_limited")
+        result_1 = self._run(
+            execute_hems_command(
+                api=api, hems=eng, decision=decision,
+                command_id="sc-A-1",
+                now=self._clock.now_naive(),
+            )
+        )
+        self.assertTrue(result_1.awaiting_confirmation)
+        self.assertFalse(result_1.success)
+        # Snapshot the entry's deadline (15s from t=0s).
+        entry = eng._pending_confirmations["sc-A-1"]
+        deadline = entry["deadline_at"]
+        first_seen = entry["first_seen_at"]
+        first_attempt = entry["last_attempt_at"]
+        # Cycles 2..5 at t=5s, 10s, 15s, 20s: the
+        # runtime proposes the SAME intent. The
+        # dispatcher's no-op gate matches the
+        # pending entry; no second set_*; no second
+        # pending entry; deadline and last_attempt
+        # are NOT touched.
+        self._clock.tick(5.0)
+        for cycle_idx in range(2, 6):
+            api.program_fetch("rate_limited")
+            result = self._run(
+                execute_hems_command(
+                    api=api, hems=eng, decision=decision,
+                    command_id=f"sc-A-{cycle_idx}",
+                    now=self._clock.now_naive(),
+                )
+            )
+            self.assertTrue(
+                result.no_op,
+                msg=f"cycle {cycle_idx}: pending-dedup "
+                f"must be a no-op; got {result!r}",
+            )
+            self.assertTrue(
+                result.awaiting_confirmation,
+                msg=f"cycle {cycle_idx}: pending-dedup "
+                f"must carry awaiting_confirmation=True; "
+                f"got {result!r}",
+            )
+            self.assertEqual(
+                len(eng._pending_confirmations), 1,
+                msg=f"cycle {cycle_idx}: must NOT create "
+                f"a second pending entry; got "
+                f"{list(eng._pending_confirmations.keys())!r}",
+            )
+            # The deadline and last-attempt are
+            # anchored to cycle 1.
+            self.assertEqual(
+                eng._pending_confirmations[
+                    "sc-A-1"
+                ]["deadline_at"],
+                deadline,
+                msg=f"cycle {cycle_idx}: deadline must "
+                f"NOT be touched by the no-op dedup; "
+                f"got {eng._pending_confirmations['sc-A-1']['deadline_at']!r}",
+            )
+            self.assertEqual(
+                eng._pending_confirmations[
+                    "sc-A-1"
+                ]["last_attempt_at"],
+                first_attempt,
+                msg=f"cycle {cycle_idx}: last_attempt_at "
+                f"must NOT be touched by the no-op dedup; "
+                f"got {eng._pending_confirmations['sc-A-1']['last_attempt_at']!r}",
+            )
+            self.assertEqual(
+                eng._pending_confirmations[
+                    "sc-A-1"
+                ]["first_seen_at"],
+                first_seen,
+                msg=f"cycle {cycle_idx}: first_seen_at "
+                f"must NOT be touched by the no-op dedup",
+            )
+            self._clock.tick(5.0)
+        # The set_* was issued exactly once across
+        # all 5 cycles.
+        writes = [
+            c for c in api.calls
+            if c[0] in ("set_output_priority", "set_charger_priority")
+        ]
+        self.assertEqual(
+            len(writes), 1,
+            msg=f"set_* must have been issued exactly "
+            f"once across 5 cycles; got {writes!r}",
+        )
+        # The LAST APPLIED state was NOT advanced
+        # (the readback never succeeded).
+        self.assertIsNone(
+            eng._last_applied_output,
+            msg="LAST APPLIED state must NOT advance on a "
+            "rate-limited readback",
+        )
+        # Drive the confirm_pending retry path on
+        # the coordinator's update loop. The entry
+        # has now aged past its 15s deadline.
+        summary = self._run(eng.confirm_pending(
+            api, now=self._clock.now()
+        ))
+        self.assertEqual(
+            summary["timed_out"], 1,
+            msg=f"after 25s the entry must be timed out; "
+            f"got {summary!r}",
+        )
+        self.assertEqual(
+            summary["confirmed"], 0,
+            msg=f"timed-out entry must NOT be confirmed; "
+            f"got {summary!r}",
+        )
+        # The pending ledger is empty.
+        self.assertEqual(len(eng._pending_confirmations), 0)
+        # The LAST APPLIED state is still None -- we
+        # did NOT declare the command applied.
+        self.assertIsNone(
+            eng._last_applied_output,
+            msg="timed-out confirmation must NOT declare "
+            "the command applied",
+        )
+        # The failure counter was NOT incremented
+        # (a rate-limited / timed-out readback is NOT
+        # a transport failure).
+        self.assertEqual(
+            eng._consecutive_failures, 0,
+            msg="timed-out confirmation must NOT count "
+            "as a transport failure",
+        )
+
+    def test_repeat_intent_succeeds_on_real_readback_before_deadline(self):
+        """Scenario B: same intent every 5 seconds for
+        10 seconds, rate-limited for cycles 1-3,
+        then a real readback match at t=10s. The
+        set_* was issued exactly once (cycle 1).
+        The ``confirm_pending`` retry at t=10s
+        succeeds, the entry is removed, and
+        ``_last_applied_output`` advances to '2'.
+        """
+        eng = HemsEngine()
+        api = _ProgrammableApi()
+        decision = HemsDecision(
+            output_priority="2",
+            charger_priority=None,
+            reason="night_arbitrage",
+        )
+        # Cycle 1 at t=0s: rate-limited.
+        api.program_fetch("rate_limited")
+        result_1 = self._run(
+            execute_hems_command(
+                api=api, hems=eng, decision=decision,
+                command_id="sc-B-1",
+                now=self._clock.now_naive(),
+            )
+        )
+        self.assertTrue(result_1.awaiting_confirmation)
+        # Cycle 2 at t=5s: same intent, still rate-
+        # limited -> no-op via dedup. The
+        # ``fetch_device_configs`` is NOT called by
+        # the dispatcher; the ``_ProgrammableApi``
+        # queue keeps the next "rate_limited" entry
+        # untouched.
+        self._clock.tick(5.0)
+        api.program_fetch("rate_limited")
+        result_2 = self._run(
+            execute_hems_command(
+                api=api, hems=eng, decision=decision,
+                command_id="sc-B-2",
+                now=self._clock.now_naive(),
+            )
+        )
+        self.assertTrue(result_2.no_op)
+        self.assertTrue(result_2.awaiting_confirmation)
+        # Cycle 3 at t=10s: same intent, but this
+        # time we run ``confirm_pending`` from the
+        # coordinator's update loop. The api now
+        # returns a matching readback. The
+        # pre-condition: ``_last_applied_output`` is
+        # still None (no set applied yet).
+        #
+        # NOTE on the fake transport: the
+        # ``_ProgrammableApi`` queue still holds the
+        # "rate_limited" outcome that cycle 2
+        # ``program_fetch``-ed but the no-op dedup
+        # did NOT consume (the no-op body never
+        # called ``fetch_device_configs``). The
+        # queue is therefore
+        # ``["rate_limited", "match"]``. The next
+        # ``fetch_device_configs`` call will pop
+        # the "rate_limited" entry first. To model
+        # the production reality, drop the stale
+        # "rate_limited" entry from the queue
+        # before ``confirm_pending`` runs.
+        self._clock.tick(5.0)
+        self.assertIsNone(eng._last_applied_output)
+        # The cycle 2 no-op did not consume the
+        # "rate_limited" outcome; clear it so the
+        # confirm_pending retry sees the "match".
+        if api._fetch_sequence and api._fetch_sequence[0] == "rate_limited":
+            api._fetch_sequence.pop(0)
+        # Pre-set the device state to match the
+        # requested value (the api has accepted the
+        # write in cycle 1; the readback at t=10s
+        # confirms it).
+        api._output = "2"
+        # The next readback (driven by
+        # ``confirm_pending``) is a "match".
+        api.program_fetch("match")
+        summary = self._run(eng.confirm_pending(
+            api, now=self._clock.now()
+        ))
+        # The entry is confirmed and removed.
+        self.assertEqual(
+            summary["confirmed"], 1,
+            msg=f"confirm_pending must confirm the entry "
+            f"on a real match; got {summary!r}",
+        )
+        self.assertEqual(len(eng._pending_confirmations), 0)
+        # The LAST APPLIED state advanced.
+        self.assertEqual(eng._last_applied_output, "2")
+        # The set_* was issued exactly once.
+        writes = [
+            c for c in api.calls
+            if c[0] in ("set_output_priority", "set_charger_priority")
+        ]
+        self.assertEqual(
+            len(writes), 1,
+            msg=f"set_* must have been issued exactly "
+            f"once across 3 cycles; got {writes!r}",
+        )
+        # The failure counter was NOT incremented
+        # (the rate-limited cycles are not transport
+        # failures; the real readback matched).
+        self.assertEqual(eng._consecutive_failures, 0)
+        # A subsequent cycle (cycle 4) proposing the
+        # same intent must be a no-op via the
+        # all-channel no-op gate (``_last_applied_output``
+        # matches the requested value).
+        self._clock.tick(5.0)
+        result_4 = self._run(
+            execute_hems_command(
+                api=api, hems=eng, decision=decision,
+                command_id="sc-B-4",
+                now=self._clock.now_naive(),
+            )
+        )
+        self.assertTrue(
+            result_4.no_op,
+            msg=f"cycle 4 must be a no-op (the LAST "
+            f"APPLIED state matches the request); got "
+            f"{result_4!r}",
+        )
+        # And the set_* was still issued exactly
+        # once (no second set_* across the 4
+        # cycles).
+        writes_after_4 = [
+            c for c in api.calls
+            if c[0] in ("set_output_priority", "set_charger_priority")
+        ]
+        self.assertEqual(
+            len(writes_after_4), 1,
+            msg=f"set_* must NOT be re-issued after the "
+            f"pending entry is confirmed; got "
+            f"{writes_after_4!r}",
         )
 
 
