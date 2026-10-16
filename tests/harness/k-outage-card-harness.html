@@ -1,0 +1,218 @@
+<!doctype html>
+<!--
+  Harness for the manual outage-scenarios card.
+
+  The card at ../../frontend/k-outage-scenarios-card.js
+  is a self-contained Web Component. We load it via a
+  plain ``<script src>`` so the real (un-mocked)
+  ``customElements.define`` runs -- this catches real
+  JS bugs the JS-only stubs can't.
+
+  ``window.__harness`` records every call the card makes
+  to ``callService`` so the Python test can read them
+  back via ``page.evaluate()`` and assert on the
+  payload. The Python test seeds ``window.__harness``
+  with a canned ``listResponse`` and a
+  ``computePlanResponse`` BEFORE the card is attached,
+  so the very first ``hass = `` assignment (which
+  triggers ``_refresh``) returns the seeded events.
+
+  No live HA, no auth -- the entire test is offline.
+-->
+<html lang="uk">
+  <head>
+    <meta charset="utf-8" />
+    <title>k-outage-scenarios-card harness</title>
+    <style>
+      /* Ensure the harness page itself never adds
+         a horizontal scrollbar -- the
+         ``viewports_360_and_1280_no_clipping`` test
+         sizes the viewport at 360 px and asserts
+         that ``document.documentElement.scrollWidth``
+         does not exceed the viewport width. */
+      html, body { margin: 0; padding: 0; overflow-x: hidden; }
+      body {
+        font-family: system-ui;
+        background: #1c1c1c;
+        color: #fff;
+        padding: 12px;
+        box-sizing: border-box;
+      }
+      k-outage-scenarios-card { display: block; max-width: 800px; width: 100%; }
+    </style>
+    <script>
+      // ---------------------------------------------------------------------
+      // Harness state -- mutable per-test.
+      // ---------------------------------------------------------------------
+      window.__harness = {
+        // ``list_outage_events`` payload. The card calls
+        // this on ``set hass`` and after every add/edit/
+        // cancel. ``Promise.resolve`` defers the resolution
+        // one microtick so the async path is exercised.
+        listResponse: {
+          response: { events: [] },
+        },
+        // ``<entry_id>_compute_outage_plan`` payload.
+        computePlanResponse: {
+          response: {
+            planned: true,
+            blocked: false,
+            plan: {
+              attainable_target_soc_pct: 80,
+              energy_needed_kwh: 4.0,
+              energy_available_kwh: 6.5,
+              energy_reserve_kwh: 0.5,
+              needs_charging_from_grid_kwh: 0.0,
+              grid_charge_hours_per_hour: 0.0,
+              prep_start_iso: "2026-10-20T06:00:00+03:00",
+            },
+            reason_if_blocked: null,
+            reason_if_incomplete: null,
+          },
+        },
+        // Which ``return_response`` path to surface.
+        // ``"wrapped"`` -> ``res.response = payload``.
+        // ``"bare"``   -> ``res = payload`` directly.
+        // ``"auto"``   -> ``res.response`` for ``list_*`` /
+        //                 compute, plain ``undefined``
+        //                 otherwise.
+        responseShape: "wrapped",
+        // Recorded calls. The card fires
+        // ``hass.callService(domain, service, data,
+        //  target, return_response)``.
+        calls: [],
+        // Optional error to throw from the next
+        // ``callService`` invocation (one-shot).
+        nextError: null,
+        hass: null,
+      };
+
+      // ---------------------------------------------------------------------
+      // Stub ``hass``: records calls, returns canned
+      // payloads, supports ``config.time_zone``.
+      // ---------------------------------------------------------------------
+      function makeHass() {
+        return {
+          config: {
+            time_zone:
+              window.__harness.timeZone || "Europe/Kyiv",
+          },
+          callService: function (domain, service, data) {
+            // Record the call.  We capture ``arguments``
+            // by value so a later mutation of
+            // ``window.__harness`` can't rewrite history.
+            var args = Array.prototype.slice.call(arguments);
+            window.__harness.calls.push({
+              domain: domain,
+              service: service,
+              data: data || {},
+              returnResponse: args[4] === true,
+              ts: Date.now(),
+            });
+            // Simulated failure.
+            if (window.__harness.nextError) {
+              var err = window.__harness.nextError;
+              window.__harness.nextError = null;
+              return Promise.reject(
+                err instanceof Error ? err : new Error(String(err))
+              );
+            }
+            // Pick the response shape.
+            var shape = window.__harness.responseShape;
+            var wrapped = null;
+            if (service === "list_outage_events") {
+              wrapped =
+                shape === "bare" ? null : window.__harness.listResponse;
+            } else if (service.indexOf("_compute_outage_plan") !== -1) {
+              wrapped =
+                shape === "bare" ? null : window.__harness.computePlanResponse;
+            }
+            if (shape === "bare" && wrapped === null) {
+              // Bare path: the response IS the payload
+              // (no ``res.response`` wrap).
+              var payload = pickPayload(args[1]);
+              return Promise.resolve(payload || undefined);
+            }
+            if (wrapped) return Promise.resolve(wrapped);
+            return Promise.resolve(undefined);
+          },
+          // The card doesn't read states but we provide
+          // it for completeness so a stray lookup
+          // doesn't throw.
+          states: {},
+          // Just-in-case defaults.
+          user: { name: "Harness" },
+          panels: {},
+        };
+      }
+
+      function pickPayload(service) {
+        if (service === "list_outage_events") {
+          return window.__harness.listResponse.response || window.__harness.listResponse;
+        }
+        if (service && service.indexOf("_compute_outage_plan") !== -1) {
+          return window.__harness.computePlanResponse.response || window.__harness.computePlanResponse;
+        }
+        return null;
+      }
+
+      window.__harness.makeHass = makeHass;
+    </script>
+    <script src="../../frontend/k-outage-scenarios-card.js"></script>
+  </head>
+  <body>
+    <k-outage-scenarios-card
+      entry_id="01M3XWJ8DRYDQC8A0NCPRVB53N"
+    ></k-outage-scenarios-card>
+    <script>
+      // Wire the card once it has been upgraded. The
+      // custom element's ``set hass`` triggers a
+      // ``list_outage_events`` call, so the seeded
+      // canned payload (set in the test) is already
+      // visible by the time the next paint fires.
+      function attach() {
+        var el = document.querySelector(
+          "k-outage-scenarios-card"
+        );
+        if (!el) {
+          // The element hasn't upgraded yet. Wait one
+          // microtask and retry.
+          return Promise.resolve().then(attach);
+        }
+        // Pull the (possibly test-overridden)
+        // ``hassTimeZone`` so the very first card
+        // rendering honours it. We also call
+        // ``setConfig`` with the
+        // ``entry_id`` attribute (if any) so the
+        // card's internal ``this._config.entry_id``
+        // is populated -- this mirrors what HA does
+        // when it instantiates the card via the
+        // ``custom:...`` widget registry.
+        var tz =
+          (window.__harness && window.__harness.timeZone) ||
+          "Europe/Kyiv";
+        var cfg = { type: "custom:k-outage-scenarios-card" };
+        var attrEntry = el.getAttribute("entry_id");
+        if (attrEntry) cfg.entry_id = attrEntry;
+        try {
+          el.setConfig(cfg);
+        } catch (e) {
+          // ``setConfig`` throws on invalid type,
+          // but we set the type above so this
+          // should never happen.  We log for
+          // diagnostic purposes only.
+          console.warn(
+            "[harness] setConfig failed:", e
+          );
+        }
+        var hass = window.__harness.makeHass();
+        hass.config.time_zone = tz;
+        window.__harness.hass = hass;
+        el.hass = hass;
+        window.__card = el;
+        return Promise.resolve();
+      }
+      attach();
+    </script>
+  </body>
+</html>

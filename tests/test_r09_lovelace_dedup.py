@@ -269,6 +269,14 @@ class TestR09ResourceExtraction(unittest.IsolatedAsyncioTestCase):
                             "pv-comparison-card.js",
                             "power-history-card.js",
                             "total-energy-card.js",
+                            # Outage scenarios card added
+                            # together with the manual
+                            # outage scenario UI. The test
+                            # pins the operator's
+                            # lovelace resources for all
+                            # 6 cards; if more are
+                            # added, update this list.
+                            "k-outage-scenarios-card.js",
                         ]
                     )
                 ],
@@ -282,7 +290,7 @@ class TestR09ResourceExtraction(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 captured, [],
                 f"no URL should be re-registered when operator "
-                f"pinned all 5: {captured}",
+                f"pinned all 6: {captured}",
             )
 
 

@@ -99,7 +99,13 @@ _VALID_STATUSES = frozenset(
 # a defensive fallback so a future caller that forgets the
 # ``:<name>`` suffix is at least syntactically valid.
 _VALID_SOURCES = frozenset(
-    {"manual:service", "manual:text", "system", "adapter"}
+    {
+        "manual:service",
+        "manual:text",
+        "manual:dashboard",
+        "system",
+        "adapter",
+    }
 )
 
 
@@ -336,6 +342,40 @@ def _require_offset_aware_iso(label: str, value: Any) -> datetime:
             "naive datetimes are not allowed"
         )
     return dt
+
+
+def _validate_structured_interval(
+    call_name: str, start: Any, end: Any
+) -> tuple[datetime, datetime]:
+    """Validate a structured ``start``/``end`` pair.
+
+    Used by both ``add_outage_event`` and
+    ``update_outage_event`` so the dashboard cannot
+    submit an empty / reversed / over-long interval
+    via either path.
+
+    Returns ``(start_dt, end_dt)`` so the caller does
+    not have to re-parse. Raises
+    ``ServiceValidationError`` with a message
+    prefixed by ``call_name`` so the dashboard can
+    identify which service call failed.
+    """
+    start_dt = _require_offset_aware_iso("start", start)
+    end_dt = _require_offset_aware_iso("end", end)
+    if end_dt <= start_dt:
+        raise ServiceValidationError(
+            f"{call_name}: 'end' must be strictly after 'start' "
+            f"(got start={start!r}, end={end!r})"
+        )
+    if (end_dt - start_dt) < timedelta(minutes=1):
+        raise ServiceValidationError(
+            f"{call_name}: interval is too short (< 1 minute)"
+        )
+    if (end_dt - start_dt) > timedelta(days=7):
+        raise ServiceValidationError(
+            f"{call_name}: interval is too long (> 7 days)"
+        )
+    return start_dt, end_dt
 
 
 def _validate_tz_name(tz_name: str | None) -> str:
@@ -1456,8 +1496,9 @@ async def _build_event_from_call(
             raise ServiceValidationError(
                 "structured insert requires both 'start' and 'end'"
             )
-        _require_offset_aware_iso("start", start)
-        _require_offset_aware_iso("end", end)
+        _validate_structured_interval(
+            "add_outage_event", start, end
+        )
         # Build a ParsedOutage that overrides the parser result.
         parsed = ParsedOutage(
             start_iso=str(start),
@@ -1981,8 +2022,9 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 raise ServiceValidationError(
                     "updating the time window requires both 'start' and 'end'"
                 )
-            _require_offset_aware_iso("start", new_start)
-            _require_offset_aware_iso("end", new_end)
+            _validate_structured_interval(
+                "update_outage_event", new_start, new_end
+            )
             start_iso = str(new_start)
             end_iso = str(new_end)
         if new_tz is not None:

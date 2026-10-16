@@ -664,6 +664,31 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
                 _LOGGER.warning(
                     "Could not install total-energy-card.js: %s", err
                 )
+        # Outage scenarios card (manual add / edit / cancel).
+        # Pure UI affordance: the card calls the
+        # already-registered powmr_invalidator.*
+        # service handlers and the per-entry
+        # <entry_id>_compute_outage_plan service.
+        out_src = os.path.join(
+            src_dir, "k-outage-scenarios-card.js"
+        )
+        if os.path.exists(out_src):
+            try:
+                shutil.copy2(
+                    out_src,
+                    os.path.join(
+                        www_dir, "k-outage-scenarios-card.js"
+                    ),
+                )
+                _LOGGER.info(
+                    "Installed k-outage-scenarios-card.js → www/"
+                )
+            except OSError as err:
+                _LOGGER.warning(
+                    "Could not install "
+                    "k-outage-scenarios-card.js: %s",
+                    err,
+                )
         # Icon PNGs → both primary AND legacy path (safety net for cached JS)
         for fname in ("grid-icon.png", "home-icon.png", "ev-charger-icon.png"):
             src = os.path.join(src_dir, fname)
@@ -730,6 +755,11 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
                 "pc": _compute_assets_cache_bust(
                     installed_www, ["pv-comparison-card.js"]
                 ),
+                "outage": _compute_assets_cache_bust(
+                    installed_www, [
+                        "k-outage-scenarios-card.js"
+                    ]
+                ),
             }
 
         hashes = await hass.async_add_executor_job(
@@ -748,6 +778,10 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # do NOT silently register
         # it with the empty-hash.
         _pc_bust = hashes["pc"]
+        # Outage scenarios card (manual add / edit / cancel).
+        # Added together with the manual outage
+        # scenario UI (Phase 4 v2 was already on live).
+        _outage_bust = hashes["outage"]
         # R09: read operator-installed
         # resource paths before we add
         # anything. We compute this on
@@ -825,10 +859,23 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         # Total energy info card
         te_url = "/local/community/powmr-inverter/total-energy-card.js"
         _register(te_url, _te_bust)
+        # Outage scenarios card (manual add / edit / cancel).
+        outage_url = (
+            "/local/community/powmr-inverter/"
+            "k-outage-scenarios-card.js"
+        )
+        _register(outage_url, _outage_bust)
         _LOGGER.info(
-            "Flow card + forecast card + power-history card + total-energy card registered "
-            "(cache-bust: flow=%s forecast=%s ph=%s te=%s pc=%s)",
-            _flow_bust, _forecast_bust, _ph_bust, _te_bust, _pc_bust,
+            "Flow card + forecast card + power-history card + "
+            "total-energy card + outage-scenarios card registered "
+            "(cache-bust: flow=%s forecast=%s ph=%s te=%s pc=%s "
+            "outage=%s)",
+            _flow_bust,
+            _forecast_bust,
+            _ph_bust,
+            _te_bust,
+            _pc_bust,
+            _outage_bust,
         )
     except Exception as exc:
         _LOGGER.warning("Could not register flow card: %s", exc)
@@ -1650,6 +1697,38 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         "type": "sections",
         "max_columns": 2,
         "sections": econ_cards,
+    })
+
+    # ═══════════════════════════════════════════════════════════════
+    # View: Відключення (manual outage scenarios)
+    # ═══════════════════════════════════════════════════════════════
+    # The card uses the already-registered
+    # powmr_invalidator.add_outage_event /
+    # update_outage_event / cancel_outage_event /
+    # list_outage_events services. It also
+    # calls the per-entry
+    # ``powmr_inverter.<entry_id>_compute_outage_plan``
+    # service to surface planner
+    # recommendations per event.
+    views.append({
+        "title": "Відключення",
+        "path": "powmr-outages",
+        "icon": "mdi:calendar-alert",
+        "type": "sections",
+        "max_columns": 2,
+        "sections": [
+            {
+                "type": "grid",
+                "cards": [
+                    {
+                        "type": (
+                            "custom:k-outage-scenarios-card"
+                        ),
+                        "entry_id": entry.entry_id,
+                    }
+                ],
+            }
+        ],
     })
 
     # ═══════════════════════════════════════════════════════════════
