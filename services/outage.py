@@ -628,14 +628,18 @@ class EventStore:
 
         ``pending_inbox_entries`` is the
         structured ``(source, channel,
-        message_id)`` inbox key the adapter
-        would have committed. Persisting it
+        message_id)`` inbox keys the adapter
+        would have committed. Persisting them
         alongside the snapshot lets a
         snapshot-success / inbox-commit-failure
         redelivery find the operation already
-        done after a reload (the InboxStore is
-        finalised from the event store's
-        ``_pending_inbox_commits`` list).
+        done after a reload. The new entries
+        are MERGED with any existing
+        ``self._pending_inbox_commits`` (key-
+        deduplicated; later wins) so a
+        subsequent snapshot does not
+        accidentally drop an earlier
+        unfinished operation.
 
         Idempotency: if the OLD already has the
         expected ``superseded_by`` and the new
@@ -653,52 +657,96 @@ class EventStore:
             new_events[snapshot.previous_replacement.id] = (
                 snapshot.previous_replacement
             )
+        # Merge pending inbox entries with the
+        # existing list. Deduplication is by
+        # ``inbox.key``; later wins. This
+        # guarantees that a new snapshot does
+        # not overwrite a previous unfinished
+        # operation -- the recovery is
+        # incremental.
+        merged: dict[str, Any] = {
+            e.key: e for e in self._pending_inbox_commits
+        }
+        for entry in pending_inbox_entries or []:
+            merged[entry.key] = entry
+        new_pending: list[Any] = list(merged.values())
         payload: dict[str, Any] = {
             "__version__": STORE_VERSION,
             "events": {
                 eid: ev.to_dict() for eid, ev in new_events.items()
             },
         }
-        if pending_inbox_entries:
+        if new_pending:
             payload["_pending_inbox_commits"] = [
-                e.to_dict() for e in pending_inbox_entries
+                e.to_dict() for e in new_pending
             ]
         await self._storage.async_save(payload)
         # Only now update the working state.
         self._events = new_events
-        if pending_inbox_entries:
-            self._pending_inbox_commits = list(
-                pending_inbox_entries
-            )
+        self._pending_inbox_commits = new_pending
 
-    async def clear_pending_inbox_commits(self) -> None:
-        """Drop the persisted pending-inbox-commit
-        list. Called by the handler after a
-        successful inbox commit so the next
-        reload does not double-commit.
+    async def commit_pending_inbox_entry(self, key: str) -> None:
+        """Remove a SPECIFIC pending entry by its
+        inbox key. Called by the handler after
+        a successful inbox commit so a
+        subsequent reload does not double-commit
+        the same entry.
+
+        A save failure leaves the entry in the
+        list (the entry is recovered on the
+        next reload). The other pending entries
+        are NOT touched -- removing one must
+        not affect the rest of the queue.
         """
-        self._pending_inbox_commits = []
-        # Re-save the payload WITHOUT the
-        # pending list. The events dict is
-        # unchanged.
+        before = list(self._pending_inbox_commits)
+        self._pending_inbox_commits = [
+            e for e in self._pending_inbox_commits if e.key != key
+        ]
+        # No-op if the key was not in the list.
+        if len(self._pending_inbox_commits) == len(before):
+            return
         payload: dict[str, Any] = {
             "__version__": STORE_VERSION,
             "events": {
                 eid: ev.to_dict() for eid, ev in self._events.items()
             },
         }
+        if self._pending_inbox_commits:
+            payload["_pending_inbox_commits"] = [
+                e.to_dict() for e in self._pending_inbox_commits
+            ]
         await self._storage.async_save(payload)
 
     def take_pending_inbox_commits(self) -> list[Any]:
         """Return and clear the in-memory
         pending-inbox-commit list. The caller
-        (the entry setup / reload hook) is
+        (the entry setup / reload hook or the
+        per-handler recovery path) is
         responsible for upserting each entry
-        into the InboxStore.
+        into the InboxStore and re-attaching
+        the ones that failed.
         """
         pending = list(self._pending_inbox_commits)
         self._pending_inbox_commits = []
         return pending
+
+    def attach_pending_inbox_commits(
+        self, entries: list[Any]
+    ) -> None:
+        """Re-attach a list of pending entries
+        that could not be recovered (e.g. the
+        inbox upsert failed). The caller is
+        responsible for persisting via
+        ``async_save`` (or letting the next
+        snapshot save do it).
+        """
+        # Key-dedup: later wins.
+        merged: dict[str, Any] = {
+            e.key: e for e in self._pending_inbox_commits
+        }
+        for entry in entries:
+            merged[entry.key] = entry
+        self._pending_inbox_commits = list(merged.values())
 
     async def remove(self, event_id: str) -> None:
         """Remove an event by id. No-op if the id is
@@ -1415,6 +1463,102 @@ async def _build_event_from_call(
     return parsed.to_event(source=source, raw_text=raw_text, notes=notes)
 
 
+async def _load_outage_store(
+    hass: HomeAssistant, *, entry_id: str
+) -> "EventStore":
+    """Create the event store (if needed) and
+    load its persisted state. Mirrors
+    ``_load_inbox_store``.
+    """
+    store = _ensure_store(hass, entry_id=entry_id)
+    await store.async_load()
+    return store
+
+
+async def reconcile_pending_inbox_commits(
+    event_store: "EventStore",
+    inbox: "InboxStore",
+) -> int:
+    """Reconcile pending inbox commits that
+    were persisted in the event store but
+    not yet committed to the inbox (typically
+    because the inbox commit failed or the
+    process crashed between snapshot and
+    inbox-commit).
+
+    The recovery is called from two places:
+      * the entry-setup / reload hook (before
+        the first ``decide`` runs);
+      * ``handle_ingest_outage_notification``
+        before each ``decide`` so a partial
+        recovery from a previous service call
+        completes before the redelivery
+        reaches the adapter.
+
+    Returns the count of entries successfully
+    committed to the inbox. A redelivery after
+    a partial failure is safe: the entries
+    that did NOT commit stay in the event
+    store's pending list for the next attempt.
+    Other pending entries (from earlier
+    unfinished operations) are NOT cleared
+    preemptively -- a single failure does not
+    lose the rest of the queue.
+    """
+    pending = event_store.take_pending_inbox_commits()
+    if not pending:
+        return 0
+    recovered = 0
+    failed: list[Any] = []
+    for entry in pending:
+        try:
+            await inbox.upsert(entry)
+            recovered += 1
+        except Exception:
+            _LOGGER.warning(
+                "outage: pending inbox commit "
+                "recovery failed for key %s; will "
+                "retry on the next reconcile",
+                entry.key,
+                exc_info=True,
+            )
+            failed.append(entry)
+    if failed:
+        # Re-attach the failed entries so a
+        # subsequent reconcile retries them.
+        # The other entries that succeeded are
+        # NOT touched -- the snapshot's
+        # _pending_inbox_commits list shrinks
+        # one entry at a time.
+        event_store.attach_pending_inbox_commits(failed)
+        try:
+            await event_store.async_save()
+        except Exception:
+            _LOGGER.warning(
+                "outage: failed to persist recovered "
+                "pending list; will retry on the "
+                "next reconcile",
+                exc_info=True,
+            )
+    else:
+        # All entries recovered. The
+        # in-memory list is empty (taken
+        # above); the persistent payload
+        # still carries the old list. Re-save
+        # WITHOUT the list so the next reload
+        # does not re-run recovery.
+        try:
+            await event_store.async_save()
+        except Exception:
+            _LOGGER.warning(
+                "outage: failed to persist empty "
+                "pending list; will retry on the "
+                "next reconcile",
+                exc_info=True,
+            )
+    return recovered
+
+
 async def apply_ingest_outcome(
     *,
     event_store: "EventStore",
@@ -1538,16 +1682,22 @@ async def apply_ingest_outcome(
         raise
     # Snapshot success + inbox commit success:
     # the pending inbox entry was already in the
-    # event store payload -- drop it now so the
-    # next reload does not double-commit.
+    # event store payload -- remove the SPECIFIC
+    # entry (not the whole queue) so the next
+    # reload does not double-commit this one.
+    # Other pending entries (from earlier
+    # unfinished operations) stay in the queue
+    # for the next recovery pass.
     if outcome.action == "superseded":
         try:
-            await event_store.clear_pending_inbox_commits()
+            await event_store.commit_pending_inbox_entry(
+                outcome.inbox_entry.key
+            )
         except Exception:
             _LOGGER.debug(
-                "outage: clear_pending_inbox_commits "
-                "failed; the next reload will "
-                "deduplicate via inbox.has()",
+                "outage: commit_pending_inbox_entry "
+                "failed; the entry will be "
+                "recovered on the next reload",
                 exc_info=True,
             )
     return {
@@ -1815,6 +1965,28 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
         adapter = NotificationAdapterV2(parser)
         event_store = _get_store(hass, entry_id)
         inbox = await _load_inbox_store(hass, entry_id=entry_id)
+        # Phase 4 v2 recovery: a previous
+        # attempt may have left a pending
+        # inbox commit in the event store's
+        # payload. Reconcile BEFORE the
+        # adapter runs so a redelivery sees
+        # the inbox already populated for
+        # those (source, channel, message_id)
+        # keys (and the adapter returns a
+        # replay instead of building a new
+        # event).
+        try:
+            from .outage import reconcile_pending_inbox_commits
+            await reconcile_pending_inbox_commits(
+                event_store, inbox
+            )
+        except Exception:  # noqa: BLE001 -- additive
+            _LOGGER.debug(
+                "outage: pending inbox commit "
+                "reconciliation failed; "
+                "the next call will retry",
+                exc_info=True,
+            )
         parsed = adapter.parse(raw)
         # Phase 4 v2 atomicity: ``decide`` does NOT
         # write the inbox. The handler applies the

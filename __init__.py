@@ -333,10 +333,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # redelivery of the same (source, channel,
         # message_id) after a reload is a no-op. The
         # adapter reads the loaded entries on the
-        # first ingest call.
+        # first ingest call. Also reconcile any
+        # pending inbox commits persisted in the
+        # event store's payload (snapshot success /
+        # inbox-commit failure on a previous run).
         try:
-            from .services.outage import _load_inbox_store
+            from .services.outage import (
+                _load_inbox_store,
+                _load_outage_store,
+                reconcile_pending_inbox_commits,
+            )
             await _load_inbox_store(hass, entry_id=entry.entry_id)
+            event_store = await _load_outage_store(
+                hass, entry_id=entry.entry_id
+            )
+            await reconcile_pending_inbox_commits(
+                event_store,
+                hass.data[f"{DOMAIN}_inbox_stores"][entry.entry_id],
+            )
         except Exception:  # noqa: BLE001 -- additive
             _LOGGER.debug("InboxStore load failed; will lazy-load", exc_info=True)
         from .services.outage_runtime import wire_outage_runtime
