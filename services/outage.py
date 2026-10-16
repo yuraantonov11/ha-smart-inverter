@@ -730,6 +730,24 @@ class EventStore:
         self._pending_inbox_commits = []
         return pending
 
+    def has_pending_inbox_commit(self, key: str) -> bool:
+        """True iff the pending list contains an
+        entry with the given ``inbox.key``.
+
+        The handler uses this after
+        ``reconcile_pending_inbox_commits`` to
+        decide whether the current message's
+        operation is still pending. When the
+        recovery helper failed to commit the
+        entry (the inbox is unavailable), the
+        entry is still in the list and the
+        handler returns ``recovery_pending``
+        without calling ``decide``.
+        """
+        return any(
+            e.key == key for e in self._pending_inbox_commits
+        )
+
     def attach_pending_inbox_commits(
         self, entries: list[Any]
     ) -> None:
@@ -1559,6 +1577,165 @@ async def reconcile_pending_inbox_commits(
     return recovered
 
 
+async def ingest_with_recovery(
+    *,
+    event_store: "EventStore",
+    inbox: "InboxStore",
+    raw: "RawNotificationV2",
+    parser: "NotificationParserV2 | None" = None,
+    adapter: "NotificationAdapterV2 | None" = None,
+) -> dict[str, Any]:
+    """Full handler body: recover pending
+    inbox commits, check the current key,
+    decide, apply, commit.
+
+    Returns one of:
+      * ``{"action": "recovery_pending", ...}``
+        when the current ``(source, channel,
+        message_id)`` operation is already in
+        the event store's pending list (the
+        inbox is unavailable). The handler MUST
+        NOT call ``decide`` or mutate events
+        in this state -- the operation is
+        already done; only the inbox commit is
+        outstanding. The caller can retry
+        later; once the inbox is back, the
+        recovery helper commits the entry and
+        the next call returns the original
+        outcome as a replay.
+      * ``{"action": "added"|"cancelled"|...,
+        ...}`` -- the standard handler outcome.
+      * ``{"idempotent_replay": True, ...}``
+        when the inbox already has the entry
+        (the redelivery is a clean replay).
+
+    The function is module-level so the
+    service-registration closure and the
+    tests exercise the same code path.
+    """
+    # 1. Reconcile pending inbox commits from
+    #    a previous run that crashed between
+    #    snapshot and inbox-commit.
+    try:
+        await reconcile_pending_inbox_commits(
+            event_store, inbox
+        )
+    except Exception:  # noqa: BLE001 -- additive
+        _LOGGER.debug(
+            "outage: pending inbox commit "
+            "reconciliation failed; the next "
+            "call will retry",
+            exc_info=True,
+        )
+    # 2. Check the current key. If the
+    #    operation is still pending (the
+    #    recovery failed for THIS key), the
+    #    handler MUST short-circuit:
+    #    ``decide`` is not called, no events
+    #    are mutated, no second snapshot is
+    #    written. The caller sees a
+    #    ``recovery_pending`` state with the
+    #    reason and a retry flag. Once the
+    #    inbox is back, the recovery helper
+    #    commits the entry and the next call
+    #    returns the original outcome as a
+    #    replay.
+    current_key = raw.key().as_storage_key()
+    if event_store.has_pending_inbox_commit(
+        current_key
+    ):
+        _LOGGER.warning(
+            "outage: recovery_pending for %s; "
+            "the inbox is unavailable; the "
+            "operation will be finalised when "
+            "the inbox is back. Caller can "
+            "retry.",
+            current_key,
+        )
+        return {
+            "action": "recovery_pending",
+            "message_id": raw.message_id,
+            "source": raw.source.value,
+            "channel": raw.channel,
+            "inbox_key": current_key,
+            "retry": True,
+            "reason": (
+                f"inbox commit for {current_key!r} "
+                "is pending; the inbox is "
+                "unavailable. The event store "
+                "already has the snapshot; the "
+                "operation will be finalised when "
+                "the inbox is back. No new event "
+                "is created."
+            ),
+        }
+    # 3. Standard handler flow: decide, apply,
+    #    commit.
+    if parser is None:
+        parser = NotificationParserV2("UTC")
+    if adapter is None:
+        adapter = NotificationAdapterV2(parser)
+    parsed = parser.parse(raw)
+    try:
+        outcome = await adapter.decide(
+            parsed, event_store, inbox
+        )
+        return await apply_ingest_outcome(
+            event_store=event_store,
+            inbox=inbox,
+            adapter=adapter,
+            raw=raw,
+            outcome=outcome,
+        )
+    except Exception as exc:
+        # A failure between the snapshot and
+        # the inbox commit leaves the event
+        # store with the snapshot applied and
+        # the inbox entry in the pending list
+        # (the recovery helper has already
+        # persisted it). The handler MUST NOT
+        # raise; the operation is partially
+        # complete and the caller can retry.
+        # If the pending list contains the
+        # current key, return ``recovery_pending``
+        # so the next redelivery sees the
+        # pending check and short-circuits.
+        if event_store.has_pending_inbox_commit(
+            current_key
+        ):
+            _LOGGER.warning(
+                "outage: recovery_pending for %s; "
+                "the inbox is unavailable; the "
+                "operation will be finalised when "
+                "the inbox is back. Caller can "
+                "retry. Original error: %s",
+                current_key,
+                exc,
+            )
+            return {
+                "action": "recovery_pending",
+                "message_id": raw.message_id,
+                "source": raw.source.value,
+                "channel": raw.channel,
+                "inbox_key": current_key,
+                "retry": True,
+                "reason": (
+                    f"inbox commit for {current_key!r} "
+                    "failed; the snapshot is on disk "
+                    "and the inbox commit is pending. "
+                    "The operation will be finalised "
+                    "when the inbox is back. No new "
+                    "event is created. Underlying "
+                    f"error: {exc!r}"
+                ),
+            }
+        # The pending list does NOT contain
+        # the current key: the failure was
+        # NOT a snapshot / inbox-commit
+        # mismatch. Re-raise.
+        raise
+
+
 async def apply_ingest_outcome(
     *,
     event_store: "EventStore",
@@ -1965,42 +2142,20 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
         adapter = NotificationAdapterV2(parser)
         event_store = _get_store(hass, entry_id)
         inbox = await _load_inbox_store(hass, entry_id=entry_id)
-        # Phase 4 v2 recovery: a previous
-        # attempt may have left a pending
-        # inbox commit in the event store's
-        # payload. Reconcile BEFORE the
-        # adapter runs so a redelivery sees
-        # the inbox already populated for
-        # those (source, channel, message_id)
-        # keys (and the adapter returns a
-        # replay instead of building a new
-        # event).
-        try:
-            from .outage import reconcile_pending_inbox_commits
-            await reconcile_pending_inbox_commits(
-                event_store, inbox
-            )
-        except Exception:  # noqa: BLE001 -- additive
-            _LOGGER.debug(
-                "outage: pending inbox commit "
-                "reconciliation failed; "
-                "the next call will retry",
-                exc_info=True,
-            )
-        parsed = adapter.parse(raw)
-        # Phase 4 v2 atomicity: ``decide`` does NOT
-        # write the inbox. The handler applies the
-        # event mutations first; if any of them
-        # raises, the inbox is left untouched and a
-        # redelivery can re-decide. The inbox
-        # commit is the LAST step.
-        outcome = await adapter.decide(parsed, event_store, inbox)
-        return await apply_ingest_outcome(
+        # Phase 4 v2: the full handler body
+        # (recover -> check -> decide -> apply ->
+        # commit) lives in the module-level
+        # ``ingest_with_recovery`` helper. The
+        # service-registration closure is a
+        # thin wrapper so the production
+        # handler and the tests exercise the
+        # same code path.
+        return await ingest_with_recovery(
             event_store=event_store,
             inbox=inbox,
-            adapter=adapter,
             raw=raw,
-            outcome=outcome,
+            parser=parser,
+            adapter=adapter,
         )
 
     hass.services.async_register(
