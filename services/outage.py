@@ -254,10 +254,26 @@ class RescheduleSnapshot:
     previous ``superseded_by`` (or ``None``) and
     no replacement event is created. A redelivery
     can then retry the whole flow.
+
+    When the OLD is itself a replacement in a
+    chain (a previous reschedule updated the
+    ORIGINAL's ``superseded_by`` to point at
+    the OLD), the new reschedule must ALSO
+    supersede the OLD's previous target. The
+    snapshot carries that previous replacement
+    in ``previous_replacement`` so the chain
+    link is updated atomically.
     """
 
     old_event: OutageEvent  # OLD with ``superseded_by`` set to ``new_event.id``.
     new_event: OutageEvent  # Replacement.
+    # Optional: when ``old_event`` is itself a
+    # replacement in a chain, this is the OLD's
+    # previous target (the one ``old_event`` was
+    # pointing at). Its ``superseded_by`` is
+    # updated to ``new_event.id`` so the chain
+    # stays connected.
+    previous_replacement: OutageEvent | None = None
 
     def __post_init__(self) -> None:
         if self.old_event.superseded_by != self.new_event.id:
@@ -271,6 +287,25 @@ class RescheduleSnapshot:
                 "RescheduleSnapshot.old_event.id and "
                 "new_event.id must differ"
             )
+        if self.previous_replacement is not None:
+            if (
+                self.previous_replacement.superseded_by
+                != self.new_event.id
+            ):
+                raise ValueError(
+                    "previous_replacement.superseded_by "
+                    f"({self.previous_replacement.superseded_by!r}) "
+                    "must point at new_event.id "
+                    f"({self.new_event.id!r})"
+                )
+            if self.previous_replacement.id in (
+                self.old_event.id,
+                self.new_event.id,
+            ):
+                raise ValueError(
+                    "previous_replacement.id must differ from "
+                    "old_event.id and new_event.id"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -441,6 +476,14 @@ class EventStore:
         self._storage = storage
         self._entry_id = entry_id
         self._events: dict[str, OutageEvent] = {}
+        # Inbox commits that were pending when
+        # the event store was last saved. The
+        # entry-setup / reload hook reads this
+        # list and finalises the InboxStore so
+        # the same (source, channel, message_id)
+        # is treated as a replay on the next
+        # ``decide`` call.
+        self._pending_inbox_commits: list[Any] = []
 
     @classmethod
     def in_memory(cls, entry_id: str = "test-entry") -> "EventStore":
@@ -486,6 +529,18 @@ class EventStore:
         for event_id, payload in events_raw.items():
             loaded[event_id] = OutageEvent.from_dict(payload)
         self._events = loaded
+        # Load the pending-inbox-commit list
+        # (lazily imported to avoid a circular
+        # import). The reload hook finalises
+        # the InboxStore from this list.
+        pending_raw = data.get("_pending_inbox_commits", [])
+        if pending_raw:
+            from .outage_inbox import InboxEntry
+            self._pending_inbox_commits = [
+                InboxEntry.from_dict(p) for p in pending_raw
+            ]
+        else:
+            self._pending_inbox_commits = []
 
     async def async_save(self) -> None:
         """Persist the in-memory state."""
@@ -495,6 +550,10 @@ class EventStore:
                 event_id: ev.to_dict() for event_id, ev in self._events.items()
             },
         }
+        if self._pending_inbox_commits:
+            payload["_pending_inbox_commits"] = [
+                e.to_dict() for e in self._pending_inbox_commits
+            ]
         await self._storage.async_save(payload)
 
     # ------------------------------------------------------------------
@@ -545,7 +604,9 @@ class EventStore:
         return event
 
     async def apply_reschedule_snapshot(
-        self, snapshot: "RescheduleSnapshot"
+        self,
+        snapshot: "RescheduleSnapshot",
+        pending_inbox_entries: list[Any] | None = None,
     ) -> None:
         """Atomically persist a reschedule.
 
@@ -559,6 +620,23 @@ class EventStore:
         handler can roll back without explicit
         cleanup.
 
+        When ``previous_replacement`` is set on
+        the snapshot, the chain link is updated
+        atomically: that event's
+        ``superseded_by`` is rewritten to point
+        at ``new_event.id``.
+
+        ``pending_inbox_entries`` is the
+        structured ``(source, channel,
+        message_id)`` inbox key the adapter
+        would have committed. Persisting it
+        alongside the snapshot lets a
+        snapshot-success / inbox-commit-failure
+        redelivery find the operation already
+        done after a reload (the InboxStore is
+        finalised from the event store's
+        ``_pending_inbox_commits`` list).
+
         Idempotency: if the OLD already has the
         expected ``superseded_by`` and the new
         event is already in the store, the call
@@ -571,15 +649,56 @@ class EventStore:
         new_events = dict(self._events)
         new_events[snapshot.old_event.id] = snapshot.old_event
         new_events[snapshot.new_event.id] = snapshot.new_event
-        payload = {
+        if snapshot.previous_replacement is not None:
+            new_events[snapshot.previous_replacement.id] = (
+                snapshot.previous_replacement
+            )
+        payload: dict[str, Any] = {
             "__version__": STORE_VERSION,
             "events": {
                 eid: ev.to_dict() for eid, ev in new_events.items()
             },
         }
+        if pending_inbox_entries:
+            payload["_pending_inbox_commits"] = [
+                e.to_dict() for e in pending_inbox_entries
+            ]
         await self._storage.async_save(payload)
         # Only now update the working state.
         self._events = new_events
+        if pending_inbox_entries:
+            self._pending_inbox_commits = list(
+                pending_inbox_entries
+            )
+
+    async def clear_pending_inbox_commits(self) -> None:
+        """Drop the persisted pending-inbox-commit
+        list. Called by the handler after a
+        successful inbox commit so the next
+        reload does not double-commit.
+        """
+        self._pending_inbox_commits = []
+        # Re-save the payload WITHOUT the
+        # pending list. The events dict is
+        # unchanged.
+        payload: dict[str, Any] = {
+            "__version__": STORE_VERSION,
+            "events": {
+                eid: ev.to_dict() for eid, ev in self._events.items()
+            },
+        }
+        await self._storage.async_save(payload)
+
+    def take_pending_inbox_commits(self) -> list[Any]:
+        """Return and clear the in-memory
+        pending-inbox-commit list. The caller
+        (the entry setup / reload hook) is
+        responsible for upserting each entry
+        into the InboxStore.
+        """
+        pending = list(self._pending_inbox_commits)
+        self._pending_inbox_commits = []
+        return pending
 
     async def remove(self, event_id: str) -> None:
         """Remove an event by id. No-op if the id is
@@ -1296,6 +1415,161 @@ async def _build_event_from_call(
     return parsed.to_event(source=source, raw_text=raw_text, notes=notes)
 
 
+async def apply_ingest_outcome(
+    *,
+    event_store: "EventStore",
+    inbox: "InboxStore",
+    adapter: "NotificationAdapterV2",
+    raw: "RawNotificationV2",
+    outcome: "IngestOutcomeV2",
+) -> dict[str, Any]:
+    """Module-level handler body.
+
+    The service-registration closure
+    (``handle_ingest_outage_notification``) and
+    the tests call this function so the same
+    decide / event-mutate / commit sequencing
+    is exercised in both paths.
+
+    Phase 4 v2 atomicity:
+      * ``decide`` already ran; the outcome is
+        the adapter's decision without any
+        writes.
+      * Idempotency replay: ``outcome.inbox_entry
+        is None`` means the inbox already has the
+        entry. Return the recorded outcome
+        without any event mutations.
+      * Supersession: ``apply_reschedule_snapshot``
+        persists old + new in ONE ``async_save``
+        call. The pending inbox entry is recorded
+        alongside so a snapshot-success /
+        inbox-commit-failure redelivery can find
+        the operation already done after a reload.
+      * Inbox commit: the LAST step. A failure
+        here is recoverable: the snapshot is on
+        disk with a pending-inbox-commit key.
+        After reload, the InboxStore is finalised
+        from that pending list and the next
+        redelivery of the same
+        ``(source, channel, message_id)`` is a
+        clean replay.
+    """
+    # Idempotency replay.
+    if outcome.inbox_entry is None:
+        return {
+            "action": outcome.action,
+            "event_id": (
+                outcome.event.id
+                if outcome.event is not None
+                else None
+            ),
+            "target_event_id": (
+                outcome.target_event.id
+                if outcome.target_event is not None
+                else None
+            ),
+            "replacement_event_id": (
+                outcome.replacement_event.id
+                if outcome.replacement_event is not None
+                else None
+            ),
+            "reason": outcome.reason,
+            "inbox_key": None,
+            "idempotent_replay": True,
+        }
+    # Apply event mutations.
+    try:
+        if outcome.action == "added" and outcome.event is not None:
+            await event_store.add(outcome.event)
+        elif outcome.action == "superseded":
+            if outcome.snapshot is not None:
+                # Atomic reschedule: one save, two
+                # events. The OLD's
+                # ``superseded_by`` link and the
+                # new replacement land together.
+                # The structured inbox key is
+                # persisted alongside so a
+                # subsequent inbox-commit failure
+                # is recoverable on reload.
+                pending_inbox = (
+                    [outcome.inbox_entry]
+                    if outcome.inbox_entry is not None
+                    else None
+                )
+                await event_store.apply_reschedule_snapshot(
+                    outcome.snapshot,
+                    pending_inbox_entries=pending_inbox,
+                )
+        elif outcome.action in (
+            "updated_pending",
+            "cancelled",
+            "duplicate_event",
+        ):
+            if outcome.target_event is not None:
+                await event_store.update(
+                    outcome.target_event
+                )
+    except Exception:
+        _LOGGER.error(
+            "outage: event mutation failed for "
+            "%s/%s/%s; store consistent, inbox not "
+            "committed, redelivery allowed",
+            raw.source.value,
+            raw.channel,
+            raw.message_id,
+            exc_info=True,
+        )
+        raise
+    # Commit the inbox as the LAST step.
+    try:
+        await adapter.commit(outcome, inbox)
+    except Exception:
+        _LOGGER.error(
+            "outage: inbox commit failed for "
+            "%s/%s/%s; the structured key is "
+            "persisted in the event store payload "
+            "and a redelivery after reload will "
+            "finalise the inbox",
+            raw.source.value,
+            raw.channel,
+            raw.message_id,
+            exc_info=True,
+        )
+        raise
+    # Snapshot success + inbox commit success:
+    # the pending inbox entry was already in the
+    # event store payload -- drop it now so the
+    # next reload does not double-commit.
+    if outcome.action == "superseded":
+        try:
+            await event_store.clear_pending_inbox_commits()
+        except Exception:
+            _LOGGER.debug(
+                "outage: clear_pending_inbox_commits "
+                "failed; the next reload will "
+                "deduplicate via inbox.has()",
+                exc_info=True,
+            )
+    return {
+        "action": outcome.action,
+        "event_id": (
+            outcome.event.id if outcome.event is not None else None
+        ),
+        "target_event_id": (
+            outcome.target_event.id
+            if outcome.target_event is not None
+            else None
+        ),
+        "replacement_event_id": (
+            outcome.replacement_event.id
+            if outcome.replacement_event is not None
+            else None
+        ),
+        "reason": outcome.reason,
+        "inbox_key": outcome.inbox_entry.key,
+    }
+
+
 async def async_register_outage_services(hass: HomeAssistant) -> None:
     """Register the add / update / confirm / cancel / list services.
 
@@ -1549,100 +1823,13 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
         # redelivery can re-decide. The inbox
         # commit is the LAST step.
         outcome = await adapter.decide(parsed, event_store, inbox)
-        # Idempotency replay (``inbox_entry is None``)
-        # needs no event mutation: the entry is
-        # already on disk and we just return the
-        # recorded outcome.
-        if outcome.inbox_entry is None:
-            return {
-                "action": outcome.action,
-                "event_id": (
-                    outcome.event.id
-                    if outcome.event is not None
-                    else None
-                ),
-                "target_event_id": (
-                    outcome.target_event.id
-                    if outcome.target_event is not None
-                    else None
-                ),
-                "replacement_event_id": (
-                    outcome.replacement_event.id
-                    if outcome.replacement_event is not None
-                    else None
-                ),
-                "reason": outcome.reason,
-                "inbox_key": None,
-                "idempotent_replay": True,
-            }
-        # Apply event mutations. The supersession
-        # path is atomic: ``EventStore.apply_reschedule_snapshot``
-        # persists BOTH events in a single
-        # ``async_save`` call. The in-memory
-        # working state is updated only after the
-        # save succeeds; a save failure leaves
-        # the store consistent (no dangling
-        # ``superseded_by``).
-        try:
-            if outcome.action == "added" and outcome.event is not None:
-                await event_store.add(outcome.event)
-            elif outcome.action == "superseded":
-                if outcome.snapshot is not None:
-                    # Atomic reschedule: one save,
-                    # two events. The OLD's
-                    # ``superseded_by`` link and
-                    # the new replacement land
-                    # together.
-                    await event_store.apply_reschedule_snapshot(
-                        outcome.snapshot
-                    )
-            elif outcome.action in (
-                "updated_pending",
-                "cancelled",
-                "duplicate_event",
-            ):
-                if outcome.target_event is not None:
-                    await event_store.update(
-                        outcome.target_event
-                    )
-        except Exception:
-            # The store is consistent by
-            # construction (``apply_reschedule_snapshot``
-            # is atomic). The inbox is NOT
-            # committed: a redelivery of the
-            # same ``(source, channel, message_id)``
-            # can retry. The handler surfaces
-            # the failure to the caller.
-            _LOGGER.error(
-                "outage: event mutation failed for "
-                "%s/%s/%s; store consistent, inbox not "
-                "committed, redelivery allowed",
-                raw.source.value,
-                raw.channel,
-                raw.message_id,
-                exc_info=True,
-            )
-            raise
-        # Commit the inbox as the LAST step.
-        await adapter.commit(outcome, inbox)
-        return {
-            "action": outcome.action,
-            "event_id": (
-                outcome.event.id if outcome.event is not None else None
-            ),
-            "target_event_id": (
-                outcome.target_event.id
-                if outcome.target_event is not None
-                else None
-            ),
-            "replacement_event_id": (
-                outcome.replacement_event.id
-                if outcome.replacement_event is not None
-                else None
-            ),
-            "reason": outcome.reason,
-            "inbox_key": outcome.inbox_entry.key,
-        }
+        return await apply_ingest_outcome(
+            event_store=event_store,
+            inbox=inbox,
+            adapter=adapter,
+            raw=raw,
+            outcome=outcome,
+        )
 
     hass.services.async_register(
         DOMAIN,

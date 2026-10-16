@@ -273,9 +273,23 @@ class InboxStore:
         """Insert or replace an entry by its key. The
         caller is responsible for filling ``action``,
         ``event_id``, ``reason``, etc.
+
+        Atomic: a save failure leaves the in-memory
+        state unchanged. The handler retries
+        without producing a duplicate entry.
         """
-        self._entries[entry.key] = entry
-        await self.async_save()
+        # Build the new entries dict without
+        # mutating the working state.
+        new_entries = dict(self._entries)
+        new_entries[entry.key] = entry
+        payload: dict[str, Any] = {
+            "__version__": INBOX_STORE_VERSION,
+            "entries": {
+                k: e.to_dict() for k, e in new_entries.items()
+            },
+        }
+        await self._storage.async_save(payload)
+        self._entries = new_entries
         return entry
 
     def list(self) -> list[InboxEntry]:
@@ -779,14 +793,55 @@ class NotificationAdapterV2:
                 bumped_old,
                 superseded_by=new_event.id,
             )
+            # Chain handling. When the OLD is
+            # itself a replacement in a chain
+            # (its ``superseded_by`` was set by a
+            # prior reschedule), the previous
+            # replacement must also be marked as
+            # superseded by the new event. The
+            # chain becomes
+            # ``original -> new_event`` (the
+            # ``original`` stays unchanged --
+            # its ``superseded_by`` already
+            # pointed at the OLD, and we update
+            # the OLD's ``superseded_by`` to
+            # ``new_event.id`` above) and
+            # ``previous_replacement -> new_event``
+            # (the OLD's previous target is now
+            # also superseded). The runtime
+            # selector excludes every event with
+            # ``superseded_by`` set, so the entire
+            # chain is hidden from the runtime
+            # until the new event is confirmed /
+            # cancelled. Cancelling the new event
+            # does NOT re-activate the OLD or
+            # previous_replacement: their
+            # ``superseded_by`` links remain set
+            # and the runtime filter excludes them.
+            previous_replacement: OutageEvent | None = None
+            if reschedule_target.superseded_by is not None:
+                prev = event_store.get(
+                    reschedule_target.superseded_by
+                )
+                if prev is not None:
+                    bumped_prev = _bump(
+                        prev, status=prev.status
+                    )
+                    bumped_prev = replace(
+                        bumped_prev,
+                        superseded_by=new_event.id,
+                    )
+                    previous_replacement = bumped_prev
             # Build the atomic snapshot. The
-            # handler persists old + new in a
-            # single ``async_save`` so a partial
-            # save never leaves a dangling
-            # ``superseded_by``.
+            # handler persists old + new (and
+            # the previous-replacement update) in
+            # a single ``async_save`` so a
+            # partial save never leaves a
+            # dangling ``superseded_by``.
             snapshot = RescheduleSnapshot(
                 old_event=bumped_old,
                 new_event=new_event,
+                previous_replacement=previous_replacement,
             )
             # Record the inbox as SUPERSEDED. The
             # handler applies ``target_event.update``
