@@ -242,6 +242,37 @@ class OutageEvent:
         return cls(**kwargs)
 
 
+@dataclass(frozen=True)
+class RescheduleSnapshot:
+    """An atomic reschedule: old + new events
+    persisted as a single ``async_save`` call.
+
+    The handler MUST apply this via
+    ``EventStore.apply_reschedule_snapshot``.
+    A save failure leaves the in-memory working
+    state unchanged -- the OLD keeps its
+    previous ``superseded_by`` (or ``None``) and
+    no replacement event is created. A redelivery
+    can then retry the whole flow.
+    """
+
+    old_event: OutageEvent  # OLD with ``superseded_by`` set to ``new_event.id``.
+    new_event: OutageEvent  # Replacement.
+
+    def __post_init__(self) -> None:
+        if self.old_event.superseded_by != self.new_event.id:
+            raise ValueError(
+                "RescheduleSnapshot.old_event.superseded_by "
+                f"({self.old_event.superseded_by!r}) must point "
+                f"at new_event.id ({self.new_event.id!r})"
+            )
+        if self.old_event.id == self.new_event.id:
+            raise ValueError(
+                "RescheduleSnapshot.old_event.id and "
+                "new_event.id must differ"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Validation helpers
 # ---------------------------------------------------------------------------
@@ -512,6 +543,43 @@ class EventStore:
         self._events[event.id] = event
         await self.async_save()
         return event
+
+    async def apply_reschedule_snapshot(
+        self, snapshot: "RescheduleSnapshot"
+    ) -> None:
+        """Atomically persist a reschedule.
+
+        Both events are bundled in a single
+        ``async_save`` call so the OLD's
+        ``superseded_by`` link and the new
+        replacement land on disk together. The
+        in-memory working state is updated ONLY
+        after the save succeeds -- a save failure
+        leaves ``self._events`` unchanged and the
+        handler can roll back without explicit
+        cleanup.
+
+        Idempotency: if the OLD already has the
+        expected ``superseded_by`` and the new
+        event is already in the store, the call
+        is a no-op (the snapshot reflects the
+        current state).
+        """
+        # Build the new events dict without
+        # mutating the working state. If the save
+        # fails the working state is untouched.
+        new_events = dict(self._events)
+        new_events[snapshot.old_event.id] = snapshot.old_event
+        new_events[snapshot.new_event.id] = snapshot.new_event
+        payload = {
+            "__version__": STORE_VERSION,
+            "events": {
+                eid: ev.to_dict() for eid, ev in new_events.items()
+            },
+        }
+        await self._storage.async_save(payload)
+        # Only now update the working state.
+        self._events = new_events
 
     async def remove(self, event_id: str) -> None:
         """Remove an event by id. No-op if the id is
@@ -1507,46 +1575,27 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 "inbox_key": None,
                 "idempotent_replay": True,
             }
-        # Apply event mutations. The order is
-        # ``add`` BEFORE ``update``: the
-        # replacement event must be persisted
-        # first so the OLD's ``superseded_by``
-        # link is not dangling. If ``update``
-        # fails, the handler rolls back the
-        # ``add`` (the new event is removed) so
-        # the store is left consistent.
-        added_event_id: str | None = None
+        # Apply event mutations. The supersession
+        # path is atomic: ``EventStore.apply_reschedule_snapshot``
+        # persists BOTH events in a single
+        # ``async_save`` call. The in-memory
+        # working state is updated only after the
+        # save succeeds; a save failure leaves
+        # the store consistent (no dangling
+        # ``superseded_by``).
         try:
             if outcome.action == "added" and outcome.event is not None:
                 await event_store.add(outcome.event)
-                added_event_id = outcome.event.id
             elif outcome.action == "superseded":
-                if outcome.replacement_event is not None:
-                    # Add the new event FIRST. The
-                    # OLD's ``superseded_by`` is
-                    # updated only after the
-                    # replacement is on disk, so
-                    # the link is never dangling.
-                    try:
-                        await event_store.add(
-                            outcome.replacement_event
-                        )
-                        added_event_id = (
-                            outcome.replacement_event.id
-                        )
-                    except ValueError:
-                        # The replacement id
-                        # already exists (a
-                        # previous attempt
-                        # completed; see
-                        # ``decide`` reschedule
-                        # idempotency). Continue
-                        # with the update.
-                        pass
-                    if outcome.target_event is not None:
-                        await event_store.update(
-                            outcome.target_event
-                        )
+                if outcome.snapshot is not None:
+                    # Atomic reschedule: one save,
+                    # two events. The OLD's
+                    # ``superseded_by`` link and
+                    # the new replacement land
+                    # together.
+                    await event_store.apply_reschedule_snapshot(
+                        outcome.snapshot
+                    )
             elif outcome.action in (
                 "updated_pending",
                 "cancelled",
@@ -1557,27 +1606,17 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                         outcome.target_event
                     )
         except Exception:
-            # Roll back the ``add`` so the
-            # replacement id does not dangle.
-            # The inbox is NOT committed: a
-            # redelivery of the same
-            # ``(source, channel, message_id)``
+            # The store is consistent by
+            # construction (``apply_reschedule_snapshot``
+            # is atomic). The inbox is NOT
+            # committed: a redelivery of the
+            # same ``(source, channel, message_id)``
             # can retry. The handler surfaces
             # the failure to the caller.
-            if added_event_id is not None:
-                try:
-                    await event_store.remove(added_event_id)
-                except Exception:
-                    _LOGGER.error(
-                        "outage: rollback remove failed for "
-                        "%s; store may be inconsistent",
-                        added_event_id,
-                        exc_info=True,
-                    )
             _LOGGER.error(
                 "outage: event mutation failed for "
-                "%s/%s/%s; rolled back add and did not "
-                "commit inbox; redelivery allowed",
+                "%s/%s/%s; store consistent, inbox not "
+                "committed, redelivery allowed",
                 raw.source.value,
                 raw.channel,
                 raw.message_id,

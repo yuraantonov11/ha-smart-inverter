@@ -68,6 +68,7 @@ from .outage import (
     OutageEvent,
     OutageParser,
     ParsedOutage,
+    RescheduleSnapshot,
     STATUS_CANCELLED,
     STATUS_CONFIRMED,
     STATUS_PENDING,
@@ -479,6 +480,14 @@ class IngestOutcomeV2:
     # For supersession: the new event that REPLACES
     # the target.
     replacement_event: OutageEvent | None = None
+    # Atomic reschedule snapshot. When the
+    # adapter decides a supersession, both
+    # events are bundled here so the handler
+    # can persist them in ONE ``async_save``
+    # call. The handler MUST call
+    # ``event_store.apply_reschedule_snapshot``
+    # (not separate ``add`` + ``update``).
+    snapshot: Any = None
 
 
 def _audit_notes(
@@ -734,74 +743,23 @@ class NotificationAdapterV2:
             # ``superseded_by`` set; the new one
             # records the link in notes.
             #
-            # Idempotency contract: a previous
-            # attempt may have completed the
-            # ``add(new_event)`` and / or
-            # ``update(old, superseded_by=...)`` but
-            # crashed before the inbox commit. We
-            # detect that by inspecting
-            # ``reschedule_target.superseded_by``:
-            #   * ``None`` -- first attempt; build
-            #     a new replacement and apply both
-            #     mutations.
-            #   * non-None -- a previous attempt
-            #     already wrote the link. Look up
-            #     the replacement event; if it
-            #     exists, the work is complete and
-            #     we just commit the inbox. If the
-            #     pointer is dangling (the previous
-            #     attempt's ``add`` failed after the
-            #     ``update`` did), we log a warning
-            #     and rebuild -- the dangling
-            #     pointer is overwritten in the
-            #     store by the new attempt's
-            #     ``update``.
-            existing_superseded_by = (
-                reschedule_target.superseded_by
-            )
-            if existing_superseded_by is not None:
-                existing_replacement = event_store.get(
-                    existing_superseded_by
-                )
-                if existing_replacement is not None:
-                    # The previous attempt
-                    # completed: the new event is
-                    # in the store AND the OLD has
-                    # the link. The handler just
-                    # commits the inbox.
-                    inbox_entry.action = (
-                        InboxAction.SUPERSEDED.value
-                    )
-                    inbox_entry.event_id = (
-                        existing_replacement.id
-                    )
-                    inbox_entry.reason = (
-                        f"reschedule of "
-                        f"{reschedule_target.id} "
-                        f"already complete; "
-                        f"original_message_id="
-                        f"{raw.original_message_id}"
-                    )
-                    inbox_entry.target_event_id = (
-                        reschedule_target.id
-                    )
-                    inbox_entry.replacement_event_id = (
-                        existing_replacement.id
-                    )
-                    return IngestOutcomeV2(
-                        action=inbox_entry.action,
-                        event=existing_replacement,
-                        reason=inbox_entry.reason,
-                        inbox_entry=inbox_entry,
-                        target_event=reschedule_target,
-                        replacement_event=existing_replacement,
-                    )
-                # Dangling pointer: the previous
-                # attempt's update landed but
-                # the add failed. The handler
-                # rebuilds the replacement and
-                # overwrites the pointer via
-                # the new update.
+            # Replay vs. new correction: a
+            # redelivery of the CURRENT message is
+            # already filtered by the
+            # ``inbox.get(current_key)`` check at
+            # the top of ``decide``. If we are
+            # here, the current ``message_id`` is
+            # NOT in the inbox, so this is a NEW
+            # correction -- even when the OLD has
+            # been superseded by a prior correction
+            # (chain of reschedules). The previous
+            # ``target.superseded_by != None``
+            # check is REMOVED: it conflated
+            # "this reschedule was already
+            # processed" with "the target has been
+            # superseded (perhaps by a different
+            # prior correction)" and incorrectly
+            # suppressed new corrections.
             new_event = self._build_new_event(parsed)
             new_event = replace(
                 new_event,
@@ -820,6 +778,15 @@ class NotificationAdapterV2:
             bumped_old = replace(
                 bumped_old,
                 superseded_by=new_event.id,
+            )
+            # Build the atomic snapshot. The
+            # handler persists old + new in a
+            # single ``async_save`` so a partial
+            # save never leaves a dangling
+            # ``superseded_by``.
+            snapshot = RescheduleSnapshot(
+                old_event=bumped_old,
+                new_event=new_event,
             )
             # Record the inbox as SUPERSEDED. The
             # handler applies ``target_event.update``
@@ -841,6 +808,7 @@ class NotificationAdapterV2:
                 inbox_entry=inbox_entry,
                 target_event=bumped_old,
                 replacement_event=new_event,
+                snapshot=snapshot,
             )
 
         if duplicate is not None:
