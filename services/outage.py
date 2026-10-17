@@ -61,7 +61,11 @@ _LOGGER = logging.getLogger(__name__)
 try:
     import voluptuous as vol  # noqa: F401
 
-    from homeassistant.core import HomeAssistant, ServiceCall
+    from homeassistant.core import (
+        HomeAssistant,
+        ServiceCall,
+        SupportsResponse,
+    )
     from homeassistant.exceptions import ServiceValidationError
     from homeassistant.helpers.storage import Store
 
@@ -72,6 +76,20 @@ except ImportError:  # noqa: BLE001 -- testing without HA
     HomeAssistant = Any  # type: ignore[assignment,misc]
     ServiceCall = Any  # type: ignore[assignment,misc]
     ServiceValidationError = Exception  # type: ignore[assignment,misc]
+
+    class _SupportsResponseFallback:
+        """Stub enum mirroring HA ``SupportsResponse`` so unit tests
+        that do not have HA installed can still assert the service
+        registration flag. The real values are ``"none"`` /
+        ``"optional"`` / ``"only"`` (string members of HA's
+        ``SupportsResponse`` enum).
+        """
+
+        NONE = "none"
+        OPTIONAL = "optional"
+        ONLY = "only"
+
+    SupportsResponse = _SupportsResponseFallback  # type: ignore[assignment,misc]
     Store = None  # type: ignore[assignment]
     DOMAIN = "powmr_inverter"  # type: ignore[assignment]
     _HA_AVAILABLE = False
@@ -404,6 +422,89 @@ def _validate_source(source: str | None) -> str:
         f"source {source!r} is not one of {sorted(_VALID_SOURCES)} "
         "or 'adapter:<name>'"
     )
+
+
+def _resolve_local_to_utc(
+    tz_name: str,
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+    minute: int,
+) -> tuple[str, str | None]:
+    """Resolve a (year, month, day, hour, minute) wall-clock
+    expressed in ``tz_name`` to an offset-aware UTC ISO 8601
+    string.
+
+    The mirror of the card's JavaScript
+    ``_localInputToHaIso``. Returns ``(iso, reason)`` where
+    ``reason`` is one of:
+
+      * ``None`` -- the wall-clock is unambiguous in
+        ``tz_name`` (the common case).
+      * ``"non_existent"`` -- the wall-clock does not exist
+        in ``tz_name`` because of a DST spring-forward
+        gap. The helper nudges forward by one hour to the
+        next valid wall-clock and surfaces the original
+        intent so the caller can show an inline notice.
+      * ``"ambiguous"`` -- the wall-clock exists twice in
+        ``tz_name`` because of a DST autumn fallback. The
+        helper returns the standard-time (post-fallback)
+        offset -- the conventional choice for scheduled
+        events -- and surfaces the reason so the caller
+        can show an inline notice.
+
+    Used by both the dashboard (test-only path) and by
+    the unit tests in ``test_outage_scenarios_manual``
+    that verify the same DST / non-existent / ambiguous
+    behaviour the card renders. The card mirrors this
+    logic in JavaScript so a typed wall-clock in the HA
+    timezone always resolves to a valid UTC instant,
+    even in DST zones.
+    """
+    tz = ZoneInfo(_validate_tz_name(tz_name))
+    # First, try to build the wall-clock as a
+    # ``datetime`` in the requested zone. ``datetime``
+    # accepts the numbers and converts to UTC using
+    # the LMT-style fall-back rules of ``astimezone``.
+    naive = datetime(year, month, day, hour, minute)
+    aware = naive.replace(tzinfo=tz)
+    utc = aware.astimezone(timezone.utc)
+    iso = utc.isoformat()
+    # Detect non-existent (spring-forward) by
+    # round-tripping the UTC instant back through the
+    # zone and comparing the wall-clock numbers.
+    back_in_zone = utc.astimezone(tz)
+    if (
+        back_in_zone.year != year
+        or back_in_zone.month != month
+        or back_in_zone.day != day
+        or back_in_zone.hour != hour
+        or back_in_zone.minute != minute
+    ):
+        # Non-existent: nudge forward by 1 hour
+        # (the next valid wall-clock in the same
+        # zone is the first one after the gap).
+        nudged = naive + timedelta(hours=1)
+        nudged_aware = nudged.replace(tzinfo=tz)
+        nudged_utc = nudged_aware.astimezone(timezone.utc)
+        return nudged_utc.isoformat(), "non_existent"
+    # Detect ambiguous (autumn fallback) by
+    # checking whether ``fold`` flips when we
+    # build the wall-clock with ``fold=0`` and
+    # ``fold=1``. PEP 495 ``fold`` resolves the
+    # ambiguity: ``fold=0`` -> first occurrence
+    # (DST offset), ``fold=1`` -> second
+    # occurrence (standard offset). We prefer
+    # ``fold=1`` (standard time) for scheduled
+    # events so a DST transition does not move the
+    # event silently.
+    first_occurrence = naive.replace(tzinfo=tz, fold=0)
+    second_occurrence = naive.replace(tzinfo=tz, fold=1)
+    if first_occurrence.utcoffset() != second_occurrence.utcoffset():
+        utc_standard = second_occurrence.astimezone(timezone.utc)
+        return utc_standard.isoformat(), "ambiguous"
+    return iso, None
 
 
 def _default_tz_name(hass: HomeAssistant | None) -> str:
@@ -2076,10 +2177,19 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 vol.Optional("end"): str,
                 vol.Optional("tz"): str,
                 vol.Optional("source"): str,
-                vol.Optional("notes"): str,
+                # ``notes`` accepts an empty string
+                # (the "clear the note" marker) or
+                # ``None`` (no note). The card sends
+                # ``""`` for empty input so the
+                # service contract is unambiguous --
+                # a sentinel ``""`` value is never
+                # silently coalesced with the
+                # structured insert flow.
+                vol.Optional("notes"): vol.Any(str, None),
                 vol.Optional("force", default=False): bool,
             }
         ),
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
@@ -2093,9 +2203,16 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 vol.Optional("start"): str,
                 vol.Optional("end"): str,
                 vol.Optional("tz"): str,
-                vol.Optional("notes"): str,
+                # ``update_outage_event`` distinguishes
+                # ``""`` (clear) from ``None`` (do not
+                # change) -- see the handler body.
+                # The schema must accept both shapes
+                # so the service contract matches the
+                # card behaviour and the test surface.
+                vol.Optional("notes"): vol.Any(str, None),
             }
         ),
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
@@ -2107,6 +2224,7 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 vol.Required("id"): str,
             }
         ),
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
@@ -2119,6 +2237,7 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 vol.Optional("reason"): str,
             }
         ),
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,
@@ -2130,6 +2249,23 @@ async def async_register_outage_services(hass: HomeAssistant) -> None:
                 vol.Optional("status"): str,
             }
         ),
+        # DEFECT 2: ``list_outage_events`` was
+        # previously registered without a
+        # ``supports_response`` flag, which made
+        # HA reject any ``return_response=true``
+        # call with
+        # ``service_does_not_support_response``.
+        # The card calls this service with
+        # ``return_response=true`` so it can
+        # refresh the events list without
+        # piggybacking on a separate event
+        # stream. The flag is the documented
+        # way to opt a service into the
+        # ``ServiceCallResponse{context, response}``
+        # round-trip; ``OPTIONAL`` keeps backward
+        # compatibility with existing callers that
+        # do not request a response.
+        supports_response=SupportsResponse.OPTIONAL,
     )
     # Phase 4 v2: notification ingestion. The handler
     # builds a ``RawNotificationV2`` from the service

@@ -17,6 +17,17 @@
   so the very first ``hass = `` assignment (which
   triggers ``_refresh``) returns the seeded events.
 
+  DEFECT 1 (callService arg order): the harness
+  records the FULL positional ``arguments`` so the
+  Python test can assert that the 5th argument is
+  ``notifyOnError`` and the 6th is ``returnResponse``.
+  Responses are wrapped in ``{context, response}``
+  per the documented
+  ``ServiceCallResponse<T> = { context: Context;
+  response?: T }`` shape -- the production HA
+  frontend returns the handler payload at
+  ``res.response.response``.
+
   No live HA, no auth -- the entire test is offline.
 -->
 <html lang="uk">
@@ -49,11 +60,18 @@
         // this on ``set hass`` and after every add/edit/
         // cancel. ``Promise.resolve`` defers the resolution
         // one microtick so the async path is exercised.
+        // ``listResponse`` is the wrapped shape the card
+        // expects after DEFECT 1: ``res.response.response``
+        // holds the handler payload. The harness returns
+        // ``{context: {id: '...'}, response: <payload>}``.
         listResponse: {
+          context: { id: "harness-list" },
           response: { events: [] },
         },
         // ``<entry_id>_compute_outage_plan`` payload.
+        // Same wrap: ``{context, response: <payload>}``.
         computePlanResponse: {
+          context: { id: "harness-plan" },
           response: {
             planned: true,
             blocked: false,
@@ -70,7 +88,7 @@
             reason_if_incomplete: null,
           },
         },
-        // Which ``return_response`` path to surface.
+        // Which ``returnResponse`` path to surface.
         // ``"wrapped"`` -> ``res.response = payload``.
         // ``"bare"``   -> ``res = payload`` directly.
         // ``"auto"``   -> ``res.response`` for ``list_*`` /
@@ -79,7 +97,10 @@
         responseShape: "wrapped",
         // Recorded calls. The card fires
         // ``hass.callService(domain, service, data,
-        //  target, return_response)``.
+        //  target, notifyOnError, returnResponse)``.
+        // We capture the FULL positional ``arguments``
+        // so the Python test can assert on each
+        // position individually (DEFECT 1).
         calls: [],
         // Optional error to throw from the next
         // ``callService`` invocation (one-shot).
@@ -97,16 +118,27 @@
             time_zone:
               window.__harness.timeZone || "Europe/Kyiv",
           },
-          callService: function (domain, service, data) {
+          callService: function (domain, service, data, target, notifyOnError, returnResponse) {
             // Record the call.  We capture ``arguments``
             // by value so a later mutation of
             // ``window.__harness`` can't rewrite history.
             var args = Array.prototype.slice.call(arguments);
+            // DEFECT 1: assert-friendly shape. The
+            // Python test inspects ``argNotifyOnError``
+            // / ``argReturnResponse`` directly to
+            // assert the positional contract.
             window.__harness.calls.push({
               domain: domain,
               service: service,
               data: data || {},
-              returnResponse: args[4] === true,
+              // Positional slots -- the test asserts
+              // ``argReturnResponse === true`` and
+              // ``argNotifyOnError === false`` per
+              // the documented ``callService``
+              // signature.
+              argTarget: target === undefined ? null : target,
+              argNotifyOnError: notifyOnError === true,
+              argReturnResponse: returnResponse === true,
               ts: Date.now(),
             });
             // Simulated failure.
@@ -121,18 +153,25 @@
             var shape = window.__harness.responseShape;
             var wrapped = null;
             if (service === "list_outage_events") {
-              wrapped =
-                shape === "bare" ? null : window.__harness.listResponse;
+              wrapped = window.__harness.listResponse;
             } else if (service.indexOf("_compute_outage_plan") !== -1) {
-              wrapped =
-                shape === "bare" ? null : window.__harness.computePlanResponse;
+              wrapped = window.__harness.computePlanResponse;
             }
-            if (shape === "bare" && wrapped === null) {
+            if (shape === "bare") {
               // Bare path: the response IS the payload
-              // (no ``res.response`` wrap).
-              var payload = pickPayload(args[1]);
+              // (no ``res.response`` wrap). The card's
+              // defensive triple-path should still find
+              // ``events`` at the top level.
+              var payload = null;
+              if (service === "list_outage_events") {
+                payload = window.__harness.listResponse.response;
+              } else if (service.indexOf("_compute_outage_plan") !== -1) {
+                payload = window.__harness.computePlanResponse.response;
+              }
               return Promise.resolve(payload || undefined);
             }
+            // Default ``wrapped`` shape -- the card
+            // expects ``res.response.response``.
             if (wrapped) return Promise.resolve(wrapped);
             return Promise.resolve(undefined);
           },
@@ -144,16 +183,6 @@
           user: { name: "Harness" },
           panels: {},
         };
-      }
-
-      function pickPayload(service) {
-        if (service === "list_outage_events") {
-          return window.__harness.listResponse.response || window.__harness.listResponse;
-        }
-        if (service && service.indexOf("_compute_outage_plan") !== -1) {
-          return window.__harness.computePlanResponse.response || window.__harness.computePlanResponse;
-        }
-        return null;
       }
 
       window.__harness.makeHass = makeHass;

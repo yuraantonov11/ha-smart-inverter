@@ -836,6 +836,150 @@ class ManualOutagePathTests(unittest.TestCase):
             "manual:dashboard",
         )
 
+    def test_list_outage_events_supports_response(self):
+        """The ``list_outage_events`` service is
+        registered with ``supports_response !=
+        SupportsResponse.NONE`` so HA does not
+        reject ``return_response=True`` calls with
+        ``service_does_not_support_response``.
+        Drives the real
+        ``async_register_outage_services`` and
+        inspects the service description that HA
+        would surface in the dev-tools panel.
+        """
+        # The outage module is loaded under the
+        # test stub package; look it up there to
+        # avoid the ``services`` package's
+        # relative-import bootstrap.
+        outage_mod = sys.modules.get(
+            f"{_STUB_PKG}.outage"
+        )
+        async_register = outage_mod.async_register_outage_services
+        SupportsResponse = outage_mod.SupportsResponse
+        # Build a fresh hass/services pair for
+        # this test so the registration does not
+        # touch ``self.hass`` (which may already
+        # be wired by _setup()).
+        captured_hass, captured_services = _build_hass_with_service()
+        captured: list = []
+
+        def _rec(domain, name, handler, **kw):
+            if (domain, name) == (
+                "powmr_inverter",
+                "list_outage_events",
+            ):
+                captured.append(kw.get("supports_response"))
+            captured_services._handlers[
+                (domain, name)
+            ] = handler
+            return None
+
+        captured_hass.services.async_register = _rec
+        try:
+            _run(async_register(captured_hass))
+        finally:
+            pass
+        # Debug: print all calls observed.
+        if not captured:
+            # Re-raise the original error but include
+            # the full list of services that DID
+            # register, so a future failure is
+            # diagnosable.
+            all_calls = list(
+                captured_services._handlers.keys()
+            )
+            self.fail(
+                f"list_outage_events was not "
+                f"registered; services registered: "
+                f"{all_calls}; supports_response "
+                f"flag passed: {captured!r}"
+            )
+        # The list handler must opt-in to response.
+        self.assertTrue(
+            captured,
+            "list_outage_events was not registered "
+            "during this test; the wrapper around "
+            "services.async_register did not see "
+            "any call matching (powmr_invalidator, "
+            "list_outage_events)",
+        )
+        self.assertIsNotNone(
+            captured[0],
+            "list_outage_events was registered "
+            "without supports_response; HA would reject "
+            "return_response=True with "
+            "service_does_not_support_response",
+        )
+        self.assertNotEqual(
+            captured[0],
+            SupportsResponse.NONE,
+            f"list_outage_events supports_response "
+            f"is NONE; got {captured[0]!r}",
+        )
+
+    def test_add_outage_event_does_not_send_null_notes(self):
+        """The production schema accepts an empty
+        string for ``notes`` (not ``None``). The
+        card contract: empty input → ``""`` (not
+        ``null``).
+
+        The schema in ``async_register_outage_services``
+        uses ``vol.Optional("notes"):
+        vol.Any(str, None)``; both ``""`` and
+        ``None`` are accepted by the voluptuous
+        schema. But the card MUST send ``""``,
+        not ``None``, because the dashboard UI
+        shows the empty input as "no note" — if
+        the card sent ``None``, the dev-tools
+        panel would render it as a ``null`` field
+        and the typed value would be lost in a
+        future schema tightening.
+
+        This test pins the contract by adding an
+        event with ``notes=""`` and verifying the
+        round-trip via the list service (the add
+        response only echoes id/status, but the
+        full event dict IS available via list).
+        """
+        self._setup()
+        add_handler = self.services._handlers[
+            ("powmr_inverter", "add_outage_event")
+        ]
+        list_handler = self.services._handlers[
+            ("powmr_inverter", "list_outage_events")
+        ]
+        # Empty string is accepted and the event
+        # is stored with notes="" (not None).
+        result_empty = _run(
+            add_handler(
+                types.SimpleNamespace(
+                    data={
+                        "source": "manual:dashboard",
+                        "start": "2026-10-25T09:00:00+03:00",
+                        "end": "2026-10-25T11:00:00+03:00",
+                        "notes": "",
+                    }
+                )
+            )
+        )
+        listed = _run(
+            list_handler(
+                types.SimpleNamespace(
+                    data={"entry_id": None, "status": None}
+                )
+            )
+        )
+        events = listed["events"]
+        self.assertEqual(
+            len(events), 1,
+            "the add call must have created exactly "
+            f"one event; got {len(events)}",
+        )
+        self.assertEqual(
+            events[0]["notes"], "",
+            "empty string must round-trip; got "
+            f"{events[0].get('notes')!r}",
+        )
 
 if __name__ == "__main__":
     unittest.main()

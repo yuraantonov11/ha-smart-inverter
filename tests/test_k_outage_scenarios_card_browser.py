@@ -334,13 +334,17 @@ class KOutageScenariosCardBrowserTests(unittest.TestCase):
         self.assertIsNotNone(
             recorded, "add_outage_event was not called"
         )
-        # notes: null -- an empty input forwards
-        # ``null`` (not ``""``) so the server stores
-        # the event with no notes field.
-        self.assertIsNone(
-            recorded.get("notes"),
-            f"notes must be null for empty input; got "
-            f"{recorded.get('notes')!r}",
+        # The card's contract is: empty input forwards
+        # ``""`` (empty string), NOT null. The
+        # production server schema accepts a string
+        # ``notes``; null is rejected as
+        # ``expected str @ data['notes']``. The
+        # previous (wrong) contract of "null for
+        # empty input" was a bug.
+        self.assertEqual(
+            recorded.get("notes"), "",
+            f"empty notes must be empty string; "
+            f"got {recorded.get('notes')!r}",
         )
         # entry_id flows through.
         self.assertEqual(
@@ -1112,6 +1116,198 @@ class KOutageScenariosCardBrowserTests(unittest.TestCase):
                 )
             finally:
                 ctx.close()
+
+    # -----------------------------------------------------------------
+    # 8. callService arg order (Defect 1)
+    # -----------------------------------------------------------------
+    def test_call_service_arg_order(self) -> None:
+        """Every ``hass.callService`` call the card
+        makes for the manual scenario (add, list,
+        update, cancel, plan) uses the correct
+        positional argument order:
+
+            callService(domain, service, data,
+                        target, notifyOnError,
+                        returnResponse)
+
+        The 5th argument is ``notifyOnError`` (NOT
+        ``returnResponse``); the 6th is
+        ``returnResponse``. The card must set
+        ``returnResponse`` in the 6th position to
+        actually receive the handler's return value
+        (HA wraps it as
+        ``{context, response}``).
+        """
+        page, ctx, errors = self._fx.new_page()
+        self.addCleanup(ctx.close)
+        page.goto(self._fx.harness_url, wait_until="load")
+        _wait_for_card(page)
+
+        # The card calls ``list_outage_events`` on
+        # every ``set hass``. The harness already
+        # records every call with positional args.
+        # We trigger a fresh ``set hass`` to ensure
+        # at least one list call is captured.
+        page.evaluate(
+            """() => {
+                window.__harness.calls.length = 0;
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                card.hass = window.__harness.makeHass();
+            }"""
+        )
+        # Wait for the debounced refresh to fire.
+        page.wait_for_function(
+            """() => window.__harness.calls.some(
+                c => c.service === 'list_outage_events'
+            )""",
+            timeout=4000,
+        )
+        # The list call MUST be in the call log
+        # with the 6th arg = true and the 5th
+        # arg = false. The harness records
+        # positional slots by name (the
+        # ``argNotifyOnError`` / ``argReturnResponse``
+        # fields) and ALSO the raw ``args`` array.
+        list_call = page.evaluate(
+            """() => {
+                const c = window.__harness.calls.find(
+                    x => x.service === 'list_outage_events');
+                if (!c) return null;
+                return {
+                    domain: c.domain,
+                    service: c.service,
+                    data: c.data,
+                    target: c.argTarget,
+                    notifyOnError: c.argNotifyOnError,
+                    returnResponse: c.argReturnResponse,
+                };
+            }"""
+        )
+        self.assertIsNotNone(
+            list_call,
+            "list_outage_events was not called; "
+            f"recorded services: "
+            f"{page.evaluate('() => window.__harness.calls.map(c => c.service)')}",
+        )
+        self.assertEqual(
+            list_call["service"], "list_outage_events"
+        )
+        # Defect 1: 5th arg must be notifyOnError,
+        # 6th must be returnResponse.
+        self.assertFalse(
+            list_call["notifyOnError"],
+            f"5th arg (notifyOnError) must be False "
+            f"or undefined; got "
+            f"{list_call['notifyOnError']!r}",
+        )
+        self.assertTrue(
+            list_call["returnResponse"],
+            f"6th arg (returnResponse) must be True; "
+            f"got {list_call['returnResponse']!r}",
+        )
+
+    # -----------------------------------------------------------------
+    # 9. Input persistence across set hass (Defect 5)
+    # -----------------------------------------------------------------
+    def test_input_persistence_across_set_hass(self) -> None:
+        """While the operator is typing in the form,
+        telemetry updates fire ``set hass`` every
+        few seconds. The card must not rebuild the
+        form DOM (which would drop the in-progress
+        text and the focus).
+
+        The contract: after the operator types in
+        the notes field, calling
+        ``card.hass = newHass`` (which is what HA
+        does on every telemetry tick) preserves
+        the typed value AND the focus on the notes
+        input.
+        """
+        page, ctx, errors = self._fx.new_page()
+        self.addCleanup(ctx.close)
+        page.goto(self._fx.harness_url, wait_until="load")
+        _wait_for_card(page)
+
+        # Focus the notes input and type a partial
+        # word.
+        page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const inp = card.shadowRoot.querySelector(
+                    'input[data-field="notes"]');
+                inp.focus();
+                inp.value = 'Ремонт ТП';
+                inp.dispatchEvent(new Event('change', {bubbles: true}));
+                return true;
+            }"""
+        )
+        # Sanity: the form input has the typed value.
+        value_before = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                return card.shadowRoot.querySelector(
+                    'input[data-field="notes"]').value;
+            }"""
+        )
+        self.assertEqual(
+            value_before, "Ремонт ТП",
+            f"typed value not in DOM; got {value_before!r}",
+        )
+        # Simulate a telemetry tick by calling
+        # set hass with a new (slightly different)
+        # hass object.
+        page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const h = window.__harness.makeHass();
+                h.states = Object.assign({}, h.states, {
+                    'sensor.test_telemetry_1':
+                        {state: '1', attributes: {}, last_changed: '', last_updated: ''}
+                });
+                card.hass = h;
+                return true;
+            }"""
+        )
+        # Defect 5: the form input must still hold
+        # the typed value, NOT be reset to "".
+        value_after = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                return card.shadowRoot.querySelector(
+                    'input[data-field="notes"]').value;
+            }"""
+        )
+        self.assertEqual(
+            value_after, "Ремонт ТП",
+            f"DEFECT 5: typed notes value lost after "
+            f"set hass; got {value_after!r} (expected 'Ремонт ТП')",
+        )
+        # And the focus must still be on the
+        # notes input (not jumped to the body).
+        # NOTE: ``document.activeElement`` for a
+        # shadow-DOM input always points to the
+        # shadow host. The actually-focused input
+        # is at ``shadowRoot.activeElement``.
+        focused_field = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const ae = card.shadowRoot.activeElement;
+                if (!ae) return null;
+                return ae.getAttribute
+                    && ae.getAttribute('data-field');
+            }"""
+        )
+        self.assertEqual(
+            focused_field, "notes",
+            f"DEFECT 5: focus lost on set hass; "
+            f"active field is {focused_field!r}",
+        )
 
 
 if __name__ == "__main__":

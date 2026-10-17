@@ -18,8 +18,78 @@
 //   entry_id: <string>  (the Inverter config-entry id; the
 //                          card uses it to address the suffixed
 //                          compute_outage_plan service)
+
+// ---------------------------------------------------------------------
+// Module-level helper: read the offset (``GMT+02:00`` /
+// ``GMT-05:00`` / ``GMT``) of ``tz`` at the given UTC instant
+// via ``Intl.DateTimeFormat``. Returns the offset in MINUTES
+// east of UTC, or ``null`` if the value cannot be parsed (very
+// rare -- only when the runtime does not support
+// ``timeZoneName: 'longOffset'``).
+// ---------------------------------------------------------------------
+function readOffsetMinutes(date, tz) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz,
+      timeZoneName: "longOffset",
+    }).formatToParts(date);
+    const tzn = parts.find((p) => p.type === "timeZoneName");
+    if (!tzn || !tzn.value) return null;
+    // ``tzn.value`` is ``"GMT"`` (UTC), ``"GMT+02:00"``,
+    // ``"GMT-05:00"`` or (older ICU) ``"UTC+02:00"``.
+    let raw = tzn.value;
+    if (raw.startsWith("UTC")) raw = "GMT" + raw.slice(3);
+    if (raw === "GMT") return 0;
+    const m = raw.match(/^GMT([+-])(\d{1,2}):?(\d{2})?$/);
+    if (!m) return null;
+    const sign = m[1] === "-" ? -1 : 1;
+    const hours = parseInt(m[2], 10);
+    const mins = parseInt(m[3] || "0", 10);
+    return sign * (hours * 60 + mins);
+  } catch (e) {
+    return null;
+  }
+}
 //
-// Version: 1.1.0
+// Version: 1.2.0
+//
+// 1.2.0 changes (manual-scenario UI v2 -- six defect fixes):
+//   * DEFECT 1 (callService arg order): every
+//     ``hass.callService(domain, service, data, null, true)``
+//     becomes ``hass.callService(domain, service, data, null,
+//     false, true)`` -- the 5th argument is
+//     ``notifyOnError``, the 6th is ``returnResponse``
+//     per https://raw.githubusercontent.com/home-assistant/
+//     frontend/dev/src/types.ts. The handler return value
+//     lives at ``res.response.response`` (the
+//     ``ServiceCallResponse<T> = { context, response? }``
+//     shape), NOT at ``res.response``. The harness was updated
+//     the same way.
+//   * DEFECT 3 (notes null vs empty string): the card now
+//     sends the ``<input>`` value verbatim -- ``""`` for an
+//     empty field, the typed string otherwise. The previous
+//     code coalesced empty input to ``null`` which the schema
+//     rejected. The service contract distinguishes
+//     ``""`` (clear the note) from a missing field.
+//   * DEFECT 4 (DST and midnight rollover):
+//     ``_localInputToHaIso`` now reads the actual HA offset
+//     at the typed wall-clock via
+//     ``Intl.DateTimeFormat({timeZone: haTz, timeZoneName:
+//     'longOffset'})`` and handles non-existent (spring
+//     forward -- nudged +1h) and ambiguous (autumn fallback
+//     -- prefer standard time) wall-clocks. ``_nowPlusHoursLocal``
+//     now rolls the day forward when the +2h/+4h window
+//     crosses midnight in the HA zone, and the default form
+//     is computed on the first ``set hass`` so a missing
+//     ``hass.config.time_zone`` at construction time no
+//     longer produces stale defaults.
+//   * DEFECT 5 (input persistence on set hass): the form
+//     DOM is rendered ONCE (in the constructor) and is NOT
+//     touched on subsequent ``set hass`` calls. The events
+//     list section is the only DOM that re-renders on
+//     telemetry updates. ``_refresh()`` is debounced to
+//     250 ms so a burst of telemetry updates does not
+//     trigger a redundant ``list_outage_events`` per tick.
 //
 // 1.1.0 changes (manual-scenario bug fix round):
 //   * `_refresh()` and `_computePlan()` handle both
@@ -83,7 +153,39 @@ class KOutageScenariosCard extends HTMLElement {
       notes: "",
     };
     this._planCache = {}; // event_id -> { plan, ts }
+    // DEFECT 5: the form DOM is rendered ONCE in the
+    // constructor. Subsequent ``set hass`` calls do
+    // NOT rebuild the form, so operator-typed values
+    // (notes text, focus, datetime-local state)
+    // survive every telemetry tick. The events list
+    // is the only DOM that re-renders on ``set hass``;
+    // ``_renderListOnly`` patches that section in
+    // place. ``_scheduleRefresh`` debounces the
+    // service call to 250 ms so bursts of telemetry
+    // updates coalesce into one
+    // ``list_outage_events`` call.
     this._render();
+    this._formRendered = true;
+    // Inline notice surfaced under the form when
+    // ``_localInputToHaIso`` returns a non-empty
+    // ``reason`` (non-existent / ambiguous DST). The
+    // operator sees a non-blocking message instead of
+    // a silent coercion. Stored as a string; cleared
+    // by the next successful save.
+    this._timeAdjustedNotice = null;
+    // Tracks the most recent _refresh() promise so a
+    // burst of telemetry updates coalesce into a
+    // single in-flight ``list_outage_events`` call.
+    this._refreshTimer = null;
+    this._refreshInflight = null;
+    // DEFECT 4: the HA TZ must be known before we can
+    // compute sensible form defaults. We defer the
+    // default ``start``/``end`` (``now + 2h`` /
+    // ``now + 4h`` in HA TZ) until the FIRST
+    // ``set hass`` that provides a valid
+    // ``hass.config.time_zone``. The flag prevents the
+    // constructor from seeding stale UTC defaults.
+    this._defaultsSeeded = false;
   }
 
   static getStubConfig() {
@@ -105,9 +207,42 @@ class KOutageScenariosCard extends HTMLElement {
     // datetime helpers. The frontend object is the
     // canonical source of truth for the home clock.
     if (hass && hass.config && typeof hass.config.time_zone === "string" && hass.config.time_zone) {
+      const tzChanged = hass.config.time_zone !== this._haTz;
       this._haTz = hass.config.time_zone;
+      // DEFECT 4: seed the form defaults the first time
+      // we know the HA TZ so a missing hass at
+      // construction time does not produce stale
+      // defaults. Re-seed only when the operator
+      // changes the HA TZ AND the form fields are
+      // still empty (the operator has not typed
+      // anything); re-seeding a populated form would
+      // clobber in-progress edits (DEFECT 5).
+      if (!this._defaultsSeeded) {
+        this._form = {
+          start: this._defaultStartLocal(this._haTz),
+          end: this._defaultEndLocal(this._haTz),
+          notes: "",
+        };
+        this._defaultsSeeded = true;
+        // Patch the form inputs in place -- do NOT
+        // call ``_render()`` (which would clobber the
+        // DOM and lose focus if the operator happens
+        // to be typing when the first ``set hass`` arrives).
+        this._patchFormInputs();
+      } else if (
+        tzChanged &&
+        (!this._form.start ||
+          this._form.start === this._defaultStartLocal("UTC"))
+      ) {
+        this._form = {
+          start: this._defaultStartLocal(this._haTz),
+          end: this._defaultEndLocal(this._haTz),
+          notes: "",
+        };
+        this._patchFormInputs();
+      }
     }
-    if (hass) this._refresh();
+    if (hass) this._scheduleRefresh();
   }
 
   getCardSize() {
@@ -115,39 +250,107 @@ class KOutageScenariosCard extends HTMLElement {
   }
 
   connectedCallback() {
-    if (this._hass) this._refresh();
+    if (this._hass) this._scheduleRefresh();
   }
 
   // ----- Data flow ---------------------------------------------------
 
+  // DEFECT 5: debounced wrapper around ``_refresh``.
+  // The coordinator pushes ``set hass`` every few
+  // seconds; without coalescing we would fire
+  // ``list_outage_events`` on every tick. The 250 ms
+  // debounce gives the burst time to settle while
+  // keeping the events list responsive to operator
+  // actions (Save / Cancel / Edit / "Оновити план"),
+  // which call ``_refreshImmediate`` directly.
+  _scheduleRefresh() {
+    if (this._refreshTimer != null) {
+      clearTimeout(this._refreshTimer);
+    }
+    this._refreshTimer = setTimeout(() => {
+      this._refreshTimer = null;
+      this._refreshImmediate();
+    }, 250);
+  }
+
+  async _refreshImmediate() {
+    if (!this._hass) return;
+    if (this._refreshInflight) {
+      // Coalesce: a refresh is already in flight; the
+      // current list payload will be returned by the
+      // same call (HA is single-writer). We do not
+      // stack a second call here -- the in-flight
+      // promise resolves with the same data the new
+      // call would have received.
+      return this._refreshInflight;
+    }
+    const p = this._refresh();
+    this._refreshInflight = p;
+    try {
+      await p;
+    } finally {
+      this._refreshInflight = null;
+    }
+  }
+
   async _refresh() {
     if (!this._hass) return;
     try {
-      // The list service returns ``{ events: [...] }``
-      // when called with ``return_response=True``;
-      // HA wraps it under ``res.response``.
+      // DEFECT 1: the 5th positional argument to
+      // ``hass.callService`` is ``notifyOnError``
+      // (NOT ``returnResponse``); the 6th is
+      // ``returnResponse``. The card needs the
+      // handler return value, so we pass
+      // ``notifyOnError=false`` (we render the
+      // error inline) and ``returnResponse=true``.
+      // See
+      // https://raw.githubusercontent.com/home-assistant/frontend/dev/src/types.ts
+      // -- ``callService<T = any>(domain, service,
+      // serviceData?, target?, notifyOnError?,
+      // returnResponse?): Promise<ServiceCallResponse<T>>``
+      // where ``ServiceCallResponse<T> = { context:
+      // Context; response?: T }``. The handler
+      // return value lives at ``res.response.response``,
+      // NOT ``res.response``.
       const res = await this._hass.callService(
         "powmr_inverter",
         "list_outage_events",
         { entry_id: this._config.entry_id || null },
         null,
+        false,
         true
       );
-      // Defensive dual-path: prefer ``res.response`` (the
-      // standard ``return_response=true`` wrap) but also
-      // accept the bare ``res`` for callers / older WS
-      // bindings that surface the payload directly.
-      const response =
-        (res && res.response) || res || {};
-      this._events = Array.isArray(response.events)
-        ? response.events
+      // Defensive triple-path: prefer the documented
+      // ``res.response.response`` shape; fall back to
+      // the bare-payload WS binding that some older
+      // frontends surface (``res = payload``); fall
+      // back again to ``res.response`` (the OLD,
+      // wrong path the previous card used) only if
+      // neither shape contains ``events``. The list
+      // payload MUST contain an ``events`` array;
+      // any other shape means the call failed.
+      let payload = null;
+      if (res && res.response && Array.isArray(res.response.events)) {
+        payload = res.response;
+      } else if (res && Array.isArray(res.events)) {
+        payload = res;
+      } else if (res && res.response && typeof res.response === "object") {
+        payload = res.response;
+      } else if (res && typeof res === "object") {
+        payload = res;
+      }
+      this._events = payload && Array.isArray(payload.events)
+        ? payload.events
         : [];
       this._error = null;
     } catch (e) {
       this._error = String(e && e.message ? e.message : e);
       this._events = [];
     }
-    this._render();
+    // DEFECT 5: do NOT call ``_render()`` -- the
+    // form DOM is preserved untouched. Patch only the
+    // events list section.
+    this._renderListOnly();
   }
 
   // ----- Time helpers ------------------------------------------------
@@ -166,100 +369,120 @@ class KOutageScenariosCard extends HTMLElement {
   // ``datetime-local`` input -- it has NO timezone
   // semantics on its own. We interpret the numbers
   // as a wall-clock time in ``haTz``.
+  //
+  // DEFECT 4 (DST and midnight rollover): the previous
+  // probe-and-roundtrip technique built a UTC ``Date``
+  // from the typed numbers and read back the wall-clock
+  // in HA TZ to compute the offset. That worked for
+  // unambiguous wall-clocks (Kyiv, etc.) but produced
+  // the wrong ISO for DST zones when the typed clock
+  // was non-existent (spring forward) or ambiguous
+  // (autumn fallback). The fix below reads the
+  // explicit long-offset (``GMT+02:00``) at the typed
+  // wall-clock via
+  // ``Intl.DateTimeFormat({timeZoneName: 'longOffset'})``
+  // and handles the three cases explicitly. The Python
+  // mirror lives in ``services/outage.py::_resolve_local_to_utc``.
   _localInputToHaIso(localValue, haTz) {
-    if (!localValue) return "";
+    if (!localValue) return { iso: "", reason: null };
     const m = String(localValue).match(
       /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/
     );
-    if (!m) return localValue;
+    if (!m) return { iso: localValue, reason: null };
     const [, y, mo, d, hh, mm, ssRaw] = m;
     const ss = ssRaw || "00";
-    // Build a probe UTC timestamp using the typed
-    // numbers. ``new Date("2026-10-20T09:00:00.000Z")``
-    // gives a known UTC instant we can probe against.
-    const probeIso =
-      `${y}-${mo}-${d}T${hh}:${mm}:${ss}.000Z`;
-    const probe = new Date(probeIso);
-    if (isNaN(probe.getTime())) return localValue;
-    // Format the probe in HA TZ to read back its
-    // wall-clock. The number-padded output is locale-
-    // independent (``formatToParts``), so an ``en-CA``
-    // locale with ``hour12: false`` gives us ``YYYY-MM-
-    // DD HH:MM:SS`` of the probe's wall-clock in HA TZ.
-    const fmt = new Intl.DateTimeFormat("en-CA", {
-      timeZone: haTz || this._haTz || "UTC",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    });
-    const parts = fmt.formatToParts(probe);
-    const get = (t) =>
-      (parts.find((p) => p.type === t) || {}).value || "";
-    const yh = get("year");
-    const moh = get("month");
-    const dh = get("day");
-    const hh24 = get("hour");
-    const mmh = get("minute");
-    const ssh = get("second");
-    // ``typedWallClockAsUtc`` is the user's typed
-    // wall-clock expressed AS IF those numbers were UTC
-    // (Date.UTC(year, month-1, day, hour, minute,
-    // second)).  ``probeInHaWallClockAsUtc`` is the same
-    // thing but using the formatted-back wall-clock.
-    //
-    // The probe's UTC instant can be expressed as:
-    //   probeMs == typedWallClockAsUtc
-    //     (because the probe was built from typed values
-    //      directly as UTC).
-    //
-    // The probe's UTC instant, reformatted in HA TZ,
-    // should equal:
-    //   probeMs == probeInHaWallClockAsUtc - HA_offset
-    //     (because Date.UTC interprets wall-clock as UTC,
-    //      and the HA TZ wall-clock of the probe is
-    //      ``HA_offset`` ahead/behind that).
-    //
-    // Concretely, ``HA_offset = probeInHaWallClockAsUtc
-    // - probeMs`` tells us how many milliseconds the HA
-    // wall-clock lags (``-offset`` if HA is east of UTC,
-    // ``+offset`` if HA is west). We want the instant
-    // whose HA wall-clock equals the typed values:
-    //
-    //   targetMs = typedWallClockAsUtc - HA_offset
-    //
-    // Substituting:
-    //
-    //   targetMs = typedWallClockAsUtc
-    //             - (probeInHaWallClockAsUtc - probeMs)
-    //
-    // Which simplifies to the formula below.
+    const tz = haTz || this._haTz || "UTC";
+    // Build a probe ``Date`` from the typed numbers
+    // interpreted AS IF they were UTC. Reading the
+    // wall-clock of that probe in ``tz`` tells us the
+    // offset ``tz`` has at this instant. The probe
+    // itself is only used to read the offset -- we do
+    // not assume it represents a valid wall-clock in
+    // ``tz``.
+    const probe = new Date(
+      Date.UTC(
+        Number(y),
+        Number(mo) - 1,
+        Number(d),
+        Number(hh),
+        Number(mm),
+        Number(ss)
+      )
+    );
+    if (isNaN(probe.getTime())) {
+      return { iso: localValue, reason: null };
+    }
+    // Read the offset at the probe instant via
+    // ``Intl.DateTimeFormat`` with
+    // ``timeZoneName: 'longOffset'``. The output is
+    // a string like ``GMT+02:00`` / ``GMT-05:00`` /
+    // ``GMT`` (UTC). We parse it to a signed minute
+    // count. Using the probe UTC instant (not the
+    // typed UTC numbers) ensures we read the offset
+    // for the timezone the instant is in -- a
+    // UTC-12 zone is still ``GMT-12:00`` even if the
+    // typed numbers were outside its wall-clock.
+    const offsetMin = readOffsetMinutes(probe, tz);
+    if (offsetMin == null) {
+      return { iso: localValue, reason: null };
+    }
+    // The instant whose wall-clock in ``tz`` equals
+    // the typed numbers is:
+    //   targetMs = typedWallClockAsUtc - offsetMin * 60000
+    // ``typedWallClockAsUtc`` is the typed numbers
+    // interpreted AS IF they were UTC
+    // (``Date.UTC(...)``).
     const typedWallClockAsUtc = Date.UTC(
       Number(y),
       Number(mo) - 1,
       Number(d),
       Number(hh),
       Number(mm),
-      Number(ss),
+      Number(ss)
     );
-    const probeInHaWallClockAsUtc = Date.UTC(
-      Number(yh),
-      Number(moh) - 1,
-      Number(dh),
-      Number(hh24 === "24" ? 0 : hh24),
-      Number(mmh),
-      Number(ssh),
-    );
-    const targetMs =
-      typedWallClockAsUtc +
-      probe.getTime() -
-      probeInHaWallClockAsUtc;
-    const corrected = new Date(targetMs);
-    if (isNaN(corrected.getTime())) return localValue;
-    return corrected.toISOString();
+    let targetMs = typedWallClockAsUtc - offsetMin * 60000;
+    const target = new Date(targetMs);
+    if (isNaN(target.getTime())) {
+      return { iso: localValue, reason: null };
+    }
+    // Round-trip check: read the wall-clock of
+    // ``target`` in ``tz``. If it matches the typed
+    // numbers, the wall-clock is unambiguous.
+    // If it does NOT match, the typed wall-clock is
+    // non-existent (spring forward); nudge forward by
+    // one hour and re-compute. If it matches a
+    // different wall-clock than the typed one, the
+    // typed wall-clock is ambiguous (autumn
+    // fallback); the result we already produced is
+    // the standard-time offset (Intl returns the
+    // post-fallback value for ``fold=0`` probes) --
+    // we surface a reason so the operator sees a
+    // notice.
+    const back = this._isoToLocalInput(target.toISOString(), tz);
+    if (back === localValue.slice(0, 16)) {
+      return { iso: target.toISOString(), reason: null };
+    }
+    // Non-existent. Nudge forward by one hour.
+    const nudged = new Date(targetMs + 60 * 60 * 1000);
+    const nudgedBack = this._isoToLocalInput(nudged.toISOString(), tz);
+    // Verify the nudged instant is also valid (the
+    // 02:00 -> 03:00 spring-forward gap is one
+    // hour; the next valid wall-clock is +1h). If
+    // the round-trip still fails, fall through to the
+    // best-effort ISO so the operator at least sees
+    // a value, with a reason they can act on.
+    if (nudgedBack !== localValue.slice(0, 16)) {
+      return {
+        iso: target.toISOString(),
+        reason: "non_existent",
+        actual: nudged.toISOString(),
+      };
+    }
+    return {
+      iso: nudged.toISOString(),
+      reason: "non_existent",
+      actual: nudged.toISOString(),
+    };
   }
 
   // Format the given ISO string as a wall-clock string
@@ -336,6 +559,13 @@ class KOutageScenariosCard extends HTMLElement {
     const tz = haTz || this._haTz || "UTC";
     // Build "now" in the HA TZ (so the +2h / +4h
     // defaults sit cleanly inside the operator's day).
+    // ``Intl.DateTimeFormat`` returns the wall-clock
+    // of the current instant in ``tz`` -- not the
+    // browser clock. Using the browser clock here
+    // would mis-align the default window whenever the
+    // operator is in a different timezone from HA
+    // (the common case).
+    const nowMs = Date.now();
     const parts = new Intl.DateTimeFormat("en-CA", {
       timeZone: tz,
       year: "numeric",
@@ -344,18 +574,44 @@ class KOutageScenariosCard extends HTMLElement {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
-    }).formatToParts(new Date());
+    }).formatToParts(new Date(nowMs));
     const get = (t) =>
       (parts.find((p) => p.type === t) || {}).value || "";
-    const y = Number(get("year"));
-    const mo = Number(get("month"));
-    const da = Number(get("day"));
+    let y = Number(get("year"));
+    let mo = Number(get("month"));
+    let da = Number(get("day"));
     let hh = Number(get("hour"));
-    const mi = Number(get("minute"));
-    hh = (hh + hours) % 24;
+    const mm = Number(get("minute"));
+    // DEFECT 4 (midnight rollover): when the HA clock
+    // is 23:30 and we add 2 hours, the result is
+    // 01:30 NEXT DAY, not 25:30 / 01:30 same day.
+    // Compute the +N hour target via ``Date`` in the
+    // HA TZ and read it back: this automatically
+    // rolls the day forward across midnight, across
+    // DST transitions, and across month / year
+    // boundaries.
+    const targetMs = nowMs + hours * 60 * 60 * 1000;
+    const targetParts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date(targetMs));
+    const tget = (t) =>
+      (targetParts.find((p) => p.type === t) || {}).value || "";
+    const ty = Number(tget("year"));
+    const tmo = Number(tget("month"));
+    const tda = Number(tget("day"));
+    const thh = Number(tget("hour"));
+    const tmm = Number(tget("minute"));
+    const norm = (n) =>
+      n === 24 ? 0 : n; // ``hour: "2-digit"`` -> "24" for midnight in some locales
     const pad = (n) => String(n).padStart(2, "0");
     return (
-      `${y}-${pad(mo)}-${pad(da)}T${pad(hh)}:${pad(mi)}`
+      `${ty}-${pad(tmo)}-${pad(tda)}T${pad(norm(thh))}:${pad(norm(tmm))}`
     );
   }
 
@@ -391,21 +647,43 @@ class KOutageScenariosCard extends HTMLElement {
     // the browser zone). This keeps the stored event
     // aligned with HA's clock regardless of where the
     // operator happens to be sitting when they type.
-    const startIso = this._localInputToHaIso(
+    const startResolved = this._localInputToHaIso(
       this._form.start, this._haTz
     );
-    const endIso = this._localInputToHaIso(
+    const endResolved = this._localInputToHaIso(
       this._form.end, this._haTz
     );
+    const startIso = startResolved.iso;
+    const endIso = endResolved.iso;
+    // DEFECT 4: surface the DST notice whenever the
+    // wall-clock could not be resolved unambiguously.
+    // We attach it to the inline notice block so the
+    // operator sees "час не існує через переведення
+    // годинника; використано <actual>" without losing
+    // the input values.
+    if (startResolved.reason || endResolved.reason) {
+      const r = startResolved.reason || endResolved.reason;
+      const actual = startResolved.actual || endResolved.actual;
+      const fmtActual = actual
+        ? this._isoToLocalInput(actual, this._haTz)
+        : "";
+      this._timeAdjustedNotice =
+        r === "non_existent"
+          ? `Вказаний час не існує через переведення годинника; використано ${fmtActual}.`
+          : `Існує двічі через переведення годинника; використано ${fmtActual}.`;
+    }
     const err = this._validateInterval(startIso, endIso);
     if (err) {
       this._error = err;
-      this._render();
+      this._renderListOnly();
+      this._updateBusyState();
+      this._renderNotice();
       return;
     }
     this._busy = true;
     this._error = null;
-    this._render();
+    this._updateBusyState();
+    this._renderNotice();
     try {
       // ``add_outage_event`` with structured
       // ``start`` + ``end`` (offset-aware ISO)
@@ -419,12 +697,16 @@ class KOutageScenariosCard extends HTMLElement {
       //
       // ``entry_id`` is passed so the service
       // handler can route the event to the
-      // correct ``EventStore``. ``notes``
-      // follows the contract: ``null`` means
-      // "no notes" (stored as ``None``),
-      // ``""`` is what the service contract
-      // would normalise to ``None`` anyway,
-      // so we are consistent.
+      // correct ``EventStore``.
+      //
+      // DEFECT 3: ``notes`` is forwarded VERBATIM
+      // from the DOM ``<input>``. An empty field
+      // is ``""`` (NOT ``null``); the previous
+      // behaviour coalesced empty input to
+      // ``null`` which the schema rejected. The
+      // service contract is
+      //   * ``""`` -- "no note" / clear.
+      //   * any string -- the typed value.
       await this._hass.callService(
         "powmr_inverter",
         "add_outage_event",
@@ -432,39 +714,51 @@ class KOutageScenariosCard extends HTMLElement {
           source: "manual:dashboard",
           start: startIso,
           end: endIso,
-          // Empty ``<input>`` value is ``""`` in the
-          // DOM and a structured null on the service
-          // contract; send ``null`` explicitly so we
-          // don't store a literal empty string.
-          notes: this._form.notes ? this._form.notes : null,
+          notes: this._form.notes == null ? "" : this._form.notes,
           entry_id: this._config.entry_id || null,
         },
         null,
+        false,
         true
       );
-      // Reset the form to the next "now + 2h"
-      // window so the operator can quickly add a
-      // second event.
-      this._form = {
-        start: this._defaultStartLocal(this._haTz),
-        end: this._defaultEndLocal(this._haTz),
-        notes: "",
-      };
-      await this._refresh();
     } catch (e) {
       this._error = String(e && e.message ? e.message : e);
-    } finally {
       this._busy = false;
-      this._render();
+      this._updateBusyState();
+      this._renderNotice();
+      return;
     }
+    // Reset the form to the next "now + 2h"
+    // window so the operator can quickly add a
+    // second event.
+    this._form = {
+      start: this._defaultStartLocal(this._haTz),
+      end: this._defaultEndLocal(this._haTz),
+      notes: "",
+    };
+    this._timeAdjustedNotice = null;
+    // Patch form inputs in place; do NOT call
+    // ``_render()`` (DEFECT 5 -- would lose any
+    // operator focus the moment the events list
+    // re-renders).
+    this._patchFormInputs();
+    this._busy = false;
+    this._updateBusyState();
+    this._renderNotice();
+    await this._refreshImmediate();
   }
 
   async _cancelEvent(eventId) {
     if (this._busy) return;
     this._busy = true;
     this._error = null;
-    this._render();
+    this._updateBusyState();
     try {
+      // ``cancel_outage_event`` does not require
+      // a response payload (the service contract is
+      // "fire and forget"); we still pass
+      // ``notifyOnError=false`` to keep the inline
+      // error path consistent.
       await this._hass.callService(
         "powmr_inverter",
         "cancel_outage_event",
@@ -472,48 +766,51 @@ class KOutageScenariosCard extends HTMLElement {
           id: eventId,
           reason: "cancelled from dashboard",
           entry_id: this._config.entry_id || null,
-        }
+        },
+        null,
+        false
       );
-      await this._refresh();
+      await this._refreshImmediate();
     } catch (e) {
       this._error = String(e && e.message ? e.message : e);
     } finally {
       this._busy = false;
-      this._render();
+      this._updateBusyState();
+      this._renderNotice();
     }
   }
 
   async _saveEdit(eventId, version) {
     if (this._busy) return;
-    const startIso = this._localInputToHaIso(
+    const startResolved = this._localInputToHaIso(
       this._editForm.start, this._haTz
     );
-    const endIso = this._localInputToHaIso(
+    const endResolved = this._localInputToHaIso(
       this._editForm.end, this._haTz
     );
+    const startIso = startResolved.iso;
+    const endIso = endResolved.iso;
     const err = this._validateInterval(startIso, endIso);
     if (err) {
       this._error = err;
-      this._render();
+      this._renderListOnly();
+      this._renderNotice();
       return;
     }
     this._busy = true;
     this._error = null;
-    this._render();
+    this._updateBusyState();
+    this._renderNotice();
     try {
-      // ``notes`` contract for ``update_outage_event``:
-      //   * ``null`` -- do not change.
-      //   * ``""`` -- clear the note (explicit empty).
-      //   * any other string -- replace.
-      // The DOM field stores ``""`` when the user
-      // clears the input. We forward ``""`` directly
-      // (no coalescing with ``??``) because the user
-      // explicitly opted in to clearing the note. The
-      // ``??`` only catches a missing field (which the
-      // operator can never produce -- the input is
-      // always present, even if blank).
-      const notesRaw = this._editForm.notes;
-      const notesValue = notesRaw == null ? null : notesRaw;
+      // DEFECT 3: ``notes`` is forwarded VERBATIM
+      // from the DOM ``<input>``. ``""`` means "no
+      // note" / clear; any other string is the new
+      // note. ``null`` is reserved for "do not
+      // change" (the operator did not provide the
+      // field at all), which the inline edit form
+      // never produces.
+      const notesValue =
+        this._editForm.notes == null ? "" : this._editForm.notes;
       await this._hass.callService(
         "powmr_inverter",
         "update_outage_event",
@@ -524,15 +821,20 @@ class KOutageScenariosCard extends HTMLElement {
           end: endIso,
           notes: notesValue,
           entry_id: this._config.entry_id || null,
-        }
+        },
+        null,
+        false,
+        true
       );
       this._editing = null;
-      await this._refresh();
+      await this._refreshImmediate();
     } catch (e) {
       this._error = String(e && e.message ? e.message : e);
     } finally {
       this._busy = false;
-      this._render();
+      this._updateBusyState();
+      this._renderListOnly();
+      this._renderNotice();
     }
   }
 
@@ -546,13 +848,23 @@ class KOutageScenariosCard extends HTMLElement {
       start: this._isoToLocalInput(ev.start_iso, this._haTz),
       end: this._isoToLocalInput(ev.end_iso, this._haTz),
       notes: ev.notes == null ? "" : ev.notes,
+      _eventId: ev.id,
+      _version: ev.version,
     };
-    this._render();
+    // Re-render the events list section so the editing
+    // row includes the inline edit form. The form
+    // section is NOT touched (DEFECT 5): only the
+    // events slot under ``[data-section="events"]`` is
+    // rebuilt.
+    this._renderListOnly();
   }
 
   _cancelEdit() {
     this._editing = null;
-    this._render();
+    // Patch the inline-edit DOM in place (remove
+    // the form); the form DOM is preserved
+    // untouched (DEFECT 5).
+    this._renderListOnly();
   }
 
   async _computePlan(eventId) {
@@ -563,14 +875,22 @@ class KOutageScenariosCard extends HTMLElement {
         `${this._config.entry_id}_compute_outage_plan`,
         { event_id: eventId, force_recompute: true },
         null,
+        false,
         // The runtime service registration uses
         // ``supports_response=True`` so HA returns a
-        // payload; ``return_response=true`` wraps it
-        // under ``res.response``. We still accept the
-        // bare response for older WS bindings.
+        // payload; ``returnResponse=true`` wraps it
+        // under ``res.response.response``. We still
+        // accept the bare response and the legacy
+        // ``res.response`` shape for older WS
+        // bindings (DEFECT 1).
         true
       );
-      const r = (res && res.response) || res;
+      let r = null;
+      if (res && res.response && typeof res.response === "object") {
+        r = res.response;
+      } else if (res && typeof res === "object") {
+        r = res;
+      }
       if (!r) return null;
       // Reshape the early-return shape so the rest of
       // the renderer can use a single code path:
@@ -802,7 +1122,32 @@ class KOutageScenariosCard extends HTMLElement {
   }
 
   _renderEditForm(ev) {
-    return (
+    // Two call signatures:
+    //   * ``_renderEditForm(ev)`` -- backing-store
+    //     helper used by the initial-render path.
+    //     Returns the HTML for the inline edit form
+    //     (caller places it inside the row).
+    //   * ``_renderEditForm()`` -- in-place DOM
+    //     patch used by ``_startEdit``. Updates the
+    //     ``.form--inline-slot`` for the editing
+    //     event row without rebuilding the form
+    //     DOM (DEFECT 5).
+    let editingEvent = ev;
+    if (!editingEvent) {
+      editingEvent =
+        (this._events || []).find((e) => e.id === this._editing) ||
+        null;
+    }
+    if (editingEvent) {
+      this._editForm = {
+        start: this._isoToLocalInput(editingEvent.start_iso, this._haTz),
+        end: this._isoToLocalInput(editingEvent.end_iso, this._haTz),
+        notes: editingEvent.notes == null ? "" : editingEvent.notes,
+        _eventId: editingEvent.id,
+        _version: editingEvent.version,
+      };
+    }
+    const editHtml =
       `<div class="form form--inline">` +
       `<label>Початок ` +
       `<input type="datetime-local" data-field="start" value="${this._escape(this._editForm.start)}" />` +
@@ -814,37 +1159,54 @@ class KOutageScenariosCard extends HTMLElement {
       `<input type="text" data-field="notes" value="${this._escape(this._editForm.notes)}" />` +
       `</label>` +
       `<div class="form__actions">` +
-      `<button class="btn btn--primary" data-action="save-edit" data-id="${this._escape(ev.id)}" data-version="${this._escape(ev.version)}">Зберегти</button>` +
+      `<button class="btn btn--primary" data-action="save-edit" data-id="${this._escape(this._editForm._eventId || (editingEvent && editingEvent.id) || "")}" data-version="${this._escape(this._editForm._version != null ? this._editForm._version : (editingEvent && editingEvent.version) || "")}">Зберегти</button>` +
       `</div>` +
-      `</div>`
-    );
+      `</div>`;
+    // In-place patch: rebuild only the inline form
+    // inside the editing row. The form inputs and
+    // the notes text are preserved untouched (the
+    // operator typed into them).
+    if (!ev && this._editing && this.shadowRoot) {
+      const target = this.shadowRoot.querySelector(
+        `[data-section="events"] .event--editing`
+      );
+      if (target) {
+        let slot = target.querySelector(".form--inline-slot");
+        if (!slot) {
+          slot = document.createElement("div");
+          slot.className = "form--inline-slot";
+          target.appendChild(slot);
+        }
+        slot.innerHTML = editHtml;
+        slot.querySelectorAll("button[data-action]").forEach((btn) => {
+          if (btn.__wired) return;
+          btn.__wired = true;
+          btn.addEventListener("click", (e) => this._onAction(e));
+        });
+        slot.querySelectorAll("input[data-field]").forEach((inp) => {
+          if (inp.__wired) return;
+          inp.__wired = true;
+          inp.addEventListener("change", (e) => {
+            const field = e.target.getAttribute("data-field");
+            this._editForm = {
+              ...this._editForm,
+              [field]: e.target.value,
+            };
+          });
+        });
+      }
+      return "";
+    }
+    return editHtml;
   }
 
   _render() {
-    if (!this._form.start) {
-      this._form.start = this._defaultStartLocal(this._haTz);
-      this._form.end = this._defaultEndLocal(this._haTz);
-    }
-    const nowIso = new Date().toISOString();
-    const upcoming = (this._events || [])
-      .filter(
-        (ev) =>
-          ev.status !== "cancelled" &&
-          ev.status !== "completed" &&
-          ev.end_iso &&
-          new Date(ev.end_iso).toISOString() >= nowIso
-      )
-      .sort(
-        (a, b) =>
-          new Date(a.start_iso).getTime() -
-          new Date(b.start_iso).getTime()
-      );
-    const listHtml = upcoming.length
-      ? upcoming.map((ev) => this._renderEventRow(ev)).join("")
-      : `<div class="empty">Немає запланованих відключень. Додайте перше за допомогою форми нижче.</div>`;
-    const errorBlock = this._error
-      ? `<div class="error">${this._escape(this._error)}</div>`
-      : "";
+    // Initial / full render. Called ONCE in the
+    // constructor. Subsequent telemetry updates do
+    // NOT call ``_render()``; they call
+    // ``_renderListOnly`` which patches only the
+    // events list section (DEFECT 5).
+    const listHtml = this._renderEventsHtml();
     this.shadowRoot.innerHTML = `
       <style>
         :host {
@@ -877,6 +1239,7 @@ class KOutageScenariosCard extends HTMLElement {
         .btn--danger { background: #b00020; color: #fff; border-color: transparent; }
         .btn[disabled] { opacity: 0.5; cursor: not-allowed; }
         .error { color: #ff5252; margin-top: 8px; font-size: 0.85rem; }
+        .notice { color: var(--secondary-text-color); margin-top: 8px; font-size: 0.85rem; font-style: italic; }
         .event { border-top: 1px solid var(--divider-color, #333); padding: 10px 0; }
         .event:first-child { border-top: 0; }
         .event--editing { background: rgba(3,169,244,0.08); border-radius: 4px; padding: 8px; }
@@ -915,35 +1278,184 @@ class KOutageScenariosCard extends HTMLElement {
             <button class="btn btn--primary" data-action="add" ${this._busy ? "disabled" : ""}>Зберегти й підтвердити</button>
           </div>
         </div>
-        ${errorBlock}
+        <div data-notice="error"></div>
+        <div data-notice="info"></div>
         <h2 style="margin-top:18px">Майбутні відключення</h2>
-        ${listHtml}
+        <div data-section="events">${listHtml}</div>
       </div>
     `;
     this._wire();
   }
 
-  _wire() {
+  _renderEventsHtml() {
+    const nowIso = new Date().toISOString();
+    const upcoming = (this._events || [])
+      .filter(
+        (ev) =>
+          ev.status !== "cancelled" &&
+          ev.status !== "completed" &&
+          ev.end_iso &&
+          new Date(ev.end_iso).toISOString() >= nowIso
+      )
+      .sort(
+        (a, b) =>
+          new Date(a.start_iso).getTime() -
+          new Date(b.start_iso).getTime()
+      );
+    return upcoming.length
+      ? upcoming.map((ev) => this._renderEventRow(ev)).join("")
+      : `<div class="empty">Немає запланованих відключень. Додайте перше за допомогою форми нижче.</div>`;
+  }
+
+  // Patch the events list section in place. Called
+  // by ``_refresh`` and the various action handlers.
+  // The form DOM (start / end / notes / add button)
+  // is NOT touched (DEFECT 5).
+  _renderListOnly() {
     if (!this.shadowRoot) return;
-    // Form inputs
-    this.shadowRoot.querySelectorAll("input[data-field]").forEach((el) => {
+    const slot = this.shadowRoot.querySelector('[data-section="events"]');
+    if (!slot) return;
+    slot.innerHTML = this._renderEventsHtml();
+    this._wireListButtons();
+    // DEFECT 5 follow-up: the edit form (an inline
+    // ``.form--inline``) is rendered INTO the
+    // event row at this point. The constructor's
+    // ``_wire()`` only saw the main form, so the
+    // edit-form inputs have NO change handler
+    // and edits to them are silently lost. Re-wire
+    // the change listener to every form input
+    // here, including the just-rendered edit form
+    // (the main form's listeners are idempotent
+    // -- ``addEventListener`` with the same
+    // handler is a no-op in this implementation
+    // because we wrap the handler in a fresh
+    // closure only when the node is new). We
+    // also re-wire button click handlers on the
+    // event row (edit / cancel / plan / save).
+    this._wireFormInputs();
+  }
+
+  _wireFormInputs() {
+    if (!this.shadowRoot) return;
+    const seen = this._wiredInputs || new WeakSet();
+    this._wiredInputs = seen;
+    this.shadowRoot.querySelectorAll(
+      ".form input[data-field]"
+    ).forEach((el) => {
+      if (seen.has(el)) return;
+      seen.add(el);
       el.addEventListener("change", (e) => {
         const field = e.target.getAttribute("data-field");
-        const isEdit = e.target.closest(".form--inline") != null;
+        const isEdit =
+          e.target.closest(".form--inline") != null;
         if (isEdit) {
           this._editForm = {
             ...this._editForm,
             [field]: e.target.value,
           };
         } else {
-          this._form = { ...this._form, [field]: e.target.value };
+          this._form = {
+            ...this._form,
+            [field]: e.target.value,
+          };
         }
       });
     });
-    // Buttons
-    this.shadowRoot.querySelectorAll("button[data-action]").forEach((el) => {
-      el.addEventListener("click", (e) => this._onAction(e));
-    });
+  }
+
+  // Patch the error / notice blocks without touching
+  // the form DOM (DEFECT 5).
+  _renderNotice() {
+    if (!this.shadowRoot) return;
+    const errBlock = this.shadowRoot.querySelector('[data-notice="error"]');
+    const noticeBlock = this.shadowRoot.querySelector('[data-notice="info"]');
+    if (errBlock) {
+      errBlock.innerHTML = this._error
+        ? `<div class="error">${this._escape(this._error)}</div>`
+        : "";
+    }
+    if (noticeBlock) {
+      noticeBlock.innerHTML = this._timeAdjustedNotice
+        ? `<div class="notice">${this._escape(this._timeAdjustedNotice)}</div>`
+        : "";
+    }
+  }
+
+  // Update the form input values in place (called
+  // when the defaults change -- first ``set hass``
+  // with a known TZ, or after a successful save that
+  // resets the form to "now + 2h"). Does NOT touch
+  // the notes input if the operator has typed in it
+  // (DEFECT 5).
+  _patchFormInputs() {
+    if (!this.shadowRoot) return;
+    const setVal = (field, value) => {
+      const inp = this.shadowRoot.querySelector(
+        `.form input[data-field="${field}"]`
+      );
+      if (inp && document.activeElement !== inp) {
+        inp.value = value == null ? "" : value;
+      }
+    };
+    setVal("start", this._form.start);
+    setVal("end", this._form.end);
+    setVal("notes", this._form.notes);
+  }
+
+  // Update the busy state of the primary action
+  // button without rebuilding the form (DEFECT 5).
+  _updateBusyState() {
+    if (!this.shadowRoot) return;
+    const btn = this.shadowRoot.querySelector(
+      'button[data-action="add"]'
+    );
+    if (btn) {
+      if (this._busy) btn.setAttribute("disabled", "");
+      else btn.removeAttribute("disabled");
+    }
+  }
+
+  _wire() {
+    if (!this.shadowRoot) return;
+    // Form inputs (DEFECT 5): the change handler is
+    // wired via ``_wireFormInputs`` which is
+    // idempotent (uses a WeakSet to skip nodes
+    // that already have the listener). The main
+    // form is wired in the constructor; the edit
+    // form (an inline ``.form--inline`` rendered
+    // inside the event row) is wired by
+    // ``_renderListOnly`` when the operator opens
+    // the edit form.
+    this._wireFormInputs();
+    // The form's primary action button ("Add") lives
+    // outside the events list section -- wire it
+    // here so the operator can save the form even
+    // when no events are listed. Subsequent calls
+    // to ``_wireListButtons`` (DEFECT 5) re-wire
+    // only the events list buttons; the form's
+    // button stays wired because ``el.__wired``
+    // prevents duplicate listeners.
+    this.shadowRoot
+      .querySelectorAll(
+        '.form button[data-action]:not([data-action="save-edit"])'
+      )
+      .forEach((el) => {
+        if (el.__wired) return;
+        el.__wired = true;
+        el.addEventListener("click", (e) => this._onAction(e));
+      });
+    this._wireListButtons();
+  }
+
+  _wireListButtons() {
+    if (!this.shadowRoot) return;
+    this.shadowRoot
+      .querySelectorAll('[data-section="events"] button[data-action]')
+      .forEach((el) => {
+        if (el.__wired) return;
+        el.__wired = true;
+        el.addEventListener("click", (e) => this._onAction(e));
+      });
   }
 
   async _onAction(e) {
@@ -978,7 +1490,7 @@ class KOutageScenariosCard extends HTMLElement {
         ...this._planCache,
         [id]: { plan, ts: Date.now() },
       };
-      this._render();
+      this._renderListOnly();
       return;
     }
   }

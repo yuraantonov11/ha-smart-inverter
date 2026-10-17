@@ -425,6 +425,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # existing dashboard always records the binding.
         await _ensure_dashboard_binding(hass, entry)
 
+        # DEFECT 6: idempotent patch that adds the
+        # "Відключення" view to the operator's
+        # existing dashboard without disturbing
+        # the other 5 views. On first install the
+        # ``_auto_install_dashboard`` branch above
+        # already includes the view, so this hook
+        # is a no-op there. On a custom dashboard
+        # the patch makes a timestamped backup,
+        # parses the JSON, appends the view ONLY
+        # if it isn't already there, and writes
+        # the JSON back. A parse failure is logged
+        # and skipped (the operator's data is
+        # never clobbered).
+        await _ensure_outages_view(hass, entry)
+
         return True
 
     except Exception:
@@ -2572,6 +2587,166 @@ async def _ensure_dashboard_binding(hass, entry):
         },
     )
 
+
+# -----------------------------------------------------------------------
+# DEFECT 6: idempotent dashboard-view patcher.
+# -----------------------------------------------------------------------
+# The "Відключення" view is part of the
+# _auto_install_dashboard() output. On a FRESH
+# install, _auto_install_dashboard runs and
+# includes the view -- this hook is a no-op.
+# On an EXISTING custom dashboard, the operator
+# already has 5 (or N) views. We append the
+# "Відключення" view without disturbing the
+# others.
+#
+# Idempotency contract:
+# * On every entry setup, read the JSON.
+# * If the "Відключення" view is already present
+#   (by path or title) -- no-op.
+# * If parsing fails -- log warning, no-op (do
+#   NOT clobber a bad file).
+# * If the file does not exist -- no-op (the
+#   first-install path will create it).
+# * If the file exists and the view is missing
+#   -- make a timestamped backup, append the
+#   view, write back. The view is a fixed dict
+#   (does not depend on telemetry or other
+#   dynamic state).
+# -----------------------------------------------------------------------
+import json as _json
+import shutil as _shutil
+from datetime import datetime as _datetime, timezone as _timezone
+
+
+_OUTAGES_VIEW_DICT: dict = {
+    "title": "Відключення",
+    "path": "powmr-outages",
+    "icon": "mdi:calendar-alert",
+    "type": "sections",
+    "max_columns": 2,
+    "sections": [
+        {
+            "type": "grid",
+            "cards": [
+                {
+                    "type": "custom:k-outage-scenarios-card",
+                    # ``entry_id`` is filled in by
+                    # ``_ensure_outages_view`` at
+                    # call time so the patch matches
+                    # the operator's entry.
+                    "entry_id": None,
+                }
+            ],
+        }
+    ],
+}
+
+
+async def _ensure_outages_view(hass, entry) -> None:
+    """DEFECT 6: append the Відключення view to
+    the operator's existing dashboard if it is
+    not already there. Backup-then-write; never
+    clobber on parse failure.
+    """
+    storage_dir = os.path.join(
+        hass.config.config_dir, ".storage"
+    )
+    dashboard_path = os.path.join(
+        storage_dir, "lovelace.powmr_energy"
+    )
+    if not os.path.exists(dashboard_path):
+        # First-install path: ``_auto_install_dashboard``
+        # will create the file with the view
+        # already present. No-op here.
+        return
+    # Read existing JSON. Wrap the parse in a
+    # broad try/except so a malformed file does
+    # not get clobbered.
+    try:
+        with open(
+            dashboard_path, "r", encoding="utf-8"
+        ) as f:
+            data = _json.load(f)
+    except (OSError, ValueError) as exc:
+        _LOGGER.warning(
+            "DEFECT 6: dashboard JSON unreadable "
+            "(%s); leaving the Відключення patch "
+            "for a later setup",
+            exc,
+        )
+        return
+    if not isinstance(data, dict):
+        return
+    config = data.get("data") or {}
+    if not isinstance(config, dict):
+        return
+    views = config.get("views")
+    if not isinstance(views, list):
+        return
+    # Idempotency: if any view already has the
+    # right path or title, no-op. Do NOT
+    # reorder or duplicate.
+    for v in views:
+        if not isinstance(v, dict):
+            continue
+        if v.get("path") == "powmr-outages":
+            return
+        if v.get("title") == "Відключення":
+            return
+    # Make a timestamped backup of the file
+    # BEFORE writing. The operator can restore
+    # the snapshot if anything goes wrong.
+    backup_path = "{}.bak.{}".format(
+        dashboard_path,
+        _datetime.now(_timezone.utc).strftime(
+            "%Y%m%dT%H%M%SZ"
+        ),
+    )
+    try:
+        _shutil.copy2(dashboard_path, backup_path)
+    except OSError as exc:
+        _LOGGER.warning(
+            "DEFECT 6: could not back up dashboard "
+            "JSON to %s (%s); skipping the "
+            "Відключення patch to avoid clobbering "
+            "the operator's edits",
+            backup_path,
+            exc,
+        )
+        return
+    # Append the view. Fill in the per-entry
+    # ``entry_id`` so the card talks to the
+    # operator's config entry.
+    view_to_add = _json.loads(_json.dumps(_OUTAGES_VIEW_DICT))
+    view_to_add["sections"][0]["cards"][0]["entry_id"] = (
+        entry.entry_id
+    )
+    views.append(view_to_add)
+    config["views"] = views
+    data["data"] = config
+    # Write back. Use a write-then-rename via a
+    # temp file to avoid partial-write corruption.
+    tmp_path = dashboard_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            _json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, dashboard_path)
+    except OSError as exc:
+        _LOGGER.warning(
+            "DEFECT 6: failed to write dashboard "
+            "JSON with the Відключення view (%s); "
+            "the backup is at %s",
+            exc,
+            backup_path,
+        )
+        return
+    _LOGGER.info(
+        "DEFECT 6: appended the Відключення view "
+        "to %s (backup: %s)",
+        dashboard_path,
+        backup_path,
+    )
 
 
 def _is_dashboard_owned_by_other(
