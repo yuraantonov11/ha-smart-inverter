@@ -440,48 +440,78 @@ class KOutageScenariosCard extends HTMLElement {
       Number(mm),
       Number(ss)
     );
-    let targetMs = typedWallClockAsUtc - offsetMin * 60000;
-    const target = new Date(targetMs);
-    if (isNaN(target.getTime())) {
-      return { iso: localValue, reason: null };
+    // DST handling (DEFECT 4 round 4): build
+    // candidate UTC instants for every
+    // plausible offset in 15-minute steps
+    // (``-12:00`` to ``+14:00``), then check
+    // which one round-trips to the typed
+    // wall-clock in ``tz``. The set of matches
+    // tells us:
+    //   * 0 matches → the typed wall-clock is
+    //     non-existent (DST spring forward).
+    //     The previous round silently nudged
+    //     to the next hour, which the operator
+    //     rejected. We now return the typed
+    //     wall-clock verbatim and a
+    //     ``non_existent`` reason so the form
+    //     surfaces the error.
+    //   * 1 match → unambiguous; use that
+    //     offset.
+    //   * 2+ matches → ambiguous (DST autumn
+    //     fallback). Pick the LATER offset
+    //     (standard time, the conservative
+    //     choice for event scheduling) and
+    //     surface ``ambiguous``.
+    const offsets = [];
+    for (let hh = -12; hh <= 14; hh++) {
+      for (const mm of [0, 15, 30, 45]) {
+        offsets.push(hh * 60 + mm);
+      }
     }
-    // Round-trip check: read the wall-clock of
-    // ``target`` in ``tz``. If it matches the typed
-    // numbers, the wall-clock is unambiguous.
-    // If it does NOT match, the typed wall-clock is
-    // non-existent (spring forward); nudge forward by
-    // one hour and re-compute. If it matches a
-    // different wall-clock than the typed one, the
-    // typed wall-clock is ambiguous (autumn
-    // fallback); the result we already produced is
-    // the standard-time offset (Intl returns the
-    // post-fallback value for ``fold=0`` probes) --
-    // we surface a reason so the operator sees a
-    // notice.
-    const back = this._isoToLocalInput(target.toISOString(), tz);
-    if (back === localValue.slice(0, 16)) {
-      return { iso: target.toISOString(), reason: null };
+    const sliceLocal = localValue.slice(0, 16);
+    const matches = [];
+    for (const off of offsets) {
+      const ms = typedWallClockAsUtc - off * 60000;
+      const cand = new Date(ms);
+      if (isNaN(cand.getTime())) continue;
+      const back = this._isoToLocalInput(
+        cand.toISOString(),
+        tz
+      );
+      if (back === sliceLocal) {
+        matches.push({ off, cand });
+      }
     }
-    // Non-existent. Nudge forward by one hour.
-    const nudged = new Date(targetMs + 60 * 60 * 1000);
-    const nudgedBack = this._isoToLocalInput(nudged.toISOString(), tz);
-    // Verify the nudged instant is also valid (the
-    // 02:00 -> 03:00 spring-forward gap is one
-    // hour; the next valid wall-clock is +1h). If
-    // the round-trip still fails, fall through to the
-    // best-effort ISO so the operator at least sees
-    // a value, with a reason they can act on.
-    if (nudgedBack !== localValue.slice(0, 16)) {
+    if (matches.length === 0) {
+      // Non-existent. Per operator requirement:
+      // do NOT silently save a different hour.
+      // The form's interval validator surfaces
+      // the error.
+      return { iso: localValue, reason: "non_existent" };
+    }
+    if (matches.length === 1) {
+      // Unambiguous. Use the single match.
+      const cand = matches[0].cand;
       return {
-        iso: target.toISOString(),
-        reason: "non_existent",
-        actual: nudged.toISOString(),
+        iso: cand.toISOString(),
+        reason: null,
       };
     }
+    // 2+ matches: ambiguous. Pick the candidate
+    // that corresponds to the LATER UTC
+    // instant. For autumn DST, this is the
+    // SMALLER offset (standard time, e.g. CET
+    // for Berlin) because the post-transition
+    // wall-clock happens LATER in UTC than the
+    // pre-transition one. For spring, ambiguous
+    // does not apply (the wall-clock is
+    // non-existent there).
+    matches.sort((a, b) => b.cand.getTime() - a.cand.getTime());
+    const chosen = matches[0];
     return {
-      iso: nudged.toISOString(),
-      reason: "non_existent",
-      actual: nudged.toISOString(),
+      iso: chosen.cand.toISOString(),
+      reason: "ambiguous",
+      preferred_offset_min: chosen.off,
     };
   }
 
@@ -1315,26 +1345,97 @@ class KOutageScenariosCard extends HTMLElement {
     if (!this.shadowRoot) return;
     const slot = this.shadowRoot.querySelector('[data-section="events"]');
     if (!slot) return;
+    // DEFECT 5 round 4: when the operator has the
+    // edit form open, the in-progress values and
+    // the focus position live ONLY in the DOM
+    // (the user is typing). The previous round
+    // replaced ``slot.innerHTML`` unconditionally
+    // which discarded the in-progress input. We
+    // snapshot the open edit form (values +
+    // focused field) before the replace, then
+    // re-apply it after the replace. The list
+    // section is still rebuilt in full so plan
+    // results and status pills update.
+    let editSnapshot = null;
+    if (this._editing) {
+      const editRoot = slot.querySelector(
+        ".event--editing .form--inline"
+      );
+      if (editRoot) {
+        const focused =
+          editRoot.querySelector(":focus");
+        editSnapshot = {
+          values: {},
+          focusedField: focused
+            ? focused.getAttribute("data-field")
+            : null,
+          focusedSelectionStart: focused
+            ? focused.selectionStart
+            : null,
+          focusedSelectionEnd: focused
+            ? focused.selectionEnd
+            : null,
+        };
+        editRoot
+          .querySelectorAll("input[data-field]")
+          .forEach((el) => {
+            editSnapshot.values[
+              el.getAttribute("data-field")
+            ] = el.value;
+          });
+      }
+    }
     slot.innerHTML = this._renderEventsHtml();
     this._wireListButtons();
-    // DEFECT 5 follow-up: the edit form (an inline
-    // ``.form--inline``) is rendered INTO the
-    // event row at this point. The constructor's
-    // ``_wire()`` only saw the main form, so the
-    // edit-form inputs have NO change handler
-    // and edits to them are silently lost. Re-wire
-    // the change listener to every form input
-    // here, including the just-rendered edit form
-    // (the main form's listeners are idempotent
-    // -- ``addEventListener`` with the same
-    // handler is a no-op in this implementation
-    // because we wrap the handler in a fresh
-    // closure only when the node is new). We
-    // also re-wire button click handlers on the
-    // event row (edit / cancel / plan / save).
+    // Re-apply the snapshot: fill the inputs
+    // with the values the operator had typed,
+    // and re-focus the field that was focused
+    // (with its caret position). ``_wireFormInputs``
+    // wires the change handler on the freshly
+    // created input nodes so further edits
+    // continue to flow into ``_editForm``.
     this._wireFormInputs();
+    if (editSnapshot) {
+      const newEditRoot = slot.querySelector(
+        ".event--editing .form--inline"
+      );
+      if (newEditRoot) {
+        Object.entries(editSnapshot.values).forEach(
+          ([field, value]) => {
+            const inp = newEditRoot.querySelector(
+              `input[data-field="${field}"]`
+            );
+            if (inp) inp.value = value;
+          }
+        );
+        if (editSnapshot.focusedField) {
+          const focused = newEditRoot.querySelector(
+            `input[data-field="${editSnapshot.focusedField}"]`
+          );
+          if (focused) {
+            focused.focus();
+            if (
+              editSnapshot.focusedSelectionStart !=
+                null &&
+              typeof focused.setSelectionRange ===
+                "function"
+            ) {
+              try {
+                focused.setSelectionRange(
+                  editSnapshot.focusedSelectionStart,
+                  editSnapshot.focusedSelectionEnd
+                );
+              } catch (_) {
+                // Some input types (e.g. datetime-local)
+                // do not support setSelectionRange;
+                // ignore.
+              }
+            }
+          }
+        }
+      }
+    }
   }
-
   _wireFormInputs() {
     if (!this.shadowRoot) return;
     const seen = this._wiredInputs || new WeakSet();
