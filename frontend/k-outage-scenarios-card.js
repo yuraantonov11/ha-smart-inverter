@@ -209,6 +209,20 @@ class KOutageScenariosCard extends HTMLElement {
     if (hass && hass.config && typeof hass.config.time_zone === "string" && hass.config.time_zone) {
       const tzChanged = hass.config.time_zone !== this._haTz;
       this._haTz = hass.config.time_zone;
+      // The "Час — у часовому поясі HA: <b>...</b>"
+      // label was rendered in the constructor
+      // with the safe default ("UTC"). When the
+      // first ``set hass`` lands with the real
+      // ``hass.config.time_zone``, the label
+      // MUST reflect it; otherwise the operator
+      // sees a stale UTC string. We patch the
+      // label in place -- never call
+      // ``_render()`` here (it would clobber
+      // the in-progress form edits and lose
+      // focus).
+      if (tzChanged) {
+        this._updateTzLabel();
+      }
       // DEFECT 4: seed the form defaults the first time
       // we know the HA TZ so a missing hass at
       // construction time does not produce stale
@@ -1347,7 +1361,7 @@ class KOutageScenariosCard extends HTMLElement {
       </style>
       <div class="card">
         <h2>Сценарії відключень</h2>
-        <div class="subtitle">Ручне внесення запланованих відключень. Час — у часовому поясі HA: <b>${this._escape(this._haTz)}</b>.</div>
+        <div class="subtitle">Ручне внесення запланованих відключень. Час — у часовому поясі HA: <b data-tz-label>${this._escape(this._haTz)}</b>.</div>
         <div class="form">
           <label>Початок
             <input type="datetime-local" data-field="start" value="${this._escape(this._form.start)}" />
@@ -1555,6 +1569,34 @@ class KOutageScenariosCard extends HTMLElement {
     setVal("start", this._form.start);
     setVal("end", this._form.end);
     setVal("notes", this._form.notes);
+  }
+
+  // Update the "Час — у часовому поясі HA: <b>...</b>"
+  // label. The label is a static part of the
+  // initial ``_render()`` HTML, but the
+  // ``this._haTz`` value comes from
+  // ``hass.config.time_zone`` which the
+  // constructor cannot read (no hass yet). On
+  // the first ``set hass`` the value flips from
+  // ``"UTC"`` (the safe constructor default) to
+  // the real ``hass.config.time_zone``; the
+  // label must reflect that change WITHOUT
+  // rebuilding the form / losing focus.
+  //
+  // Defect: the previous round left the
+  // label stuck on the constructor default
+  // because the rendering function was the only
+  // place that wrote the value, and rendering
+  // only runs on the first mount. We now patch
+  // the label in place whenever ``_haTz``
+  // changes.
+  _updateTzLabel() {
+    if (!this.shadowRoot) return;
+    const label = this.shadowRoot.querySelector(
+      "[data-tz-label]"
+    );
+    if (!label) return;
+    label.textContent = this._haTz || "UTC";
   }
 
   // Update the busy state of the primary action

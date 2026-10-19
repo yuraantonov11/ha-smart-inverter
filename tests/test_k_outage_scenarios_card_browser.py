@@ -1397,6 +1397,206 @@ class KOutageScenariosCardBrowserTests(unittest.TestCase):
         )
 
     # -----------------------------------------------------------------
+    # 8c. TZ label reactivity (Defect 8)
+    # -----------------------------------------------------------------
+    def test_tz_label_reactive_to_set_hass(self) -> None:
+        """The constructor seeds ``_haTz = "UTC"``
+        because the hass object is not available
+        yet. The "Час — у часовію HA: <b>...</b>"
+        label is rendered into the DOM at that
+        moment with the literal ``"UTC"``. When
+        the first ``set hass`` lands with the
+        real ``hass.config.time_zone``, the
+        label MUST reflect the new value -- not
+        stay stuck on ``"UTC"``.
+
+        Reproduce:
+          1. Construct the card BEFORE ``hass``
+             is set (the way HA does it for
+             cards that mount ahead of the
+             first state change).
+          2. ``set hass`` with
+             ``config.time_zone = "Europe/Kyiv"``.
+          3. The label must say "Europe/Kyiv",
+             not "UTC".
+          4. Re-run ``set hass`` with a new TZ
+             (``"America/New_York"``). The label
+             must follow.
+          5. The form's in-progress input and
+             the focused field must NOT be
+             clobbered by the label update.
+        """
+        page, ctx, errors = self._fx.new_page()
+        self.addCleanup(ctx.close)
+        page.goto(self._fx.harness_url, wait_until="load")
+        _wait_for_card(page)
+        # STEP 1: ``set hass`` with
+        # ``config.time_zone = "Europe/Kyiv"`` --
+        # the constructor defaulted to ``"UTC"``
+        # and the first ``set hass`` flips it.
+        page.evaluate(
+            """() => {
+                window.__harness.timeZone = 'Europe/Kyiv';
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                card.hass = window.__harness.makeHass();
+            }"""
+        )
+        page.wait_for_timeout(150)
+        label_text = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const b = card.shadowRoot.querySelector(
+                    '[data-tz-label]');
+                return b ? b.textContent : null;
+            }"""
+        )
+        self.assertEqual(
+            label_text, "Europe/Kyiv",
+            f"after first set hass with "
+            f"time_zone='Europe/Kyiv', the label "
+            f"must read 'Europe/Kyiv'; got "
+            f"{label_text!r} (the constructor "
+            f"default 'UTC' would mean the label "
+            f"was not patched on the first hass)",
+        )
+        # STEP 2 + 3 + 4 + 5 in ONE ``page.evaluate``
+        # so the focus state is preserved across
+        # the tz flip. We type into the notes
+        # field, then call ``set hass`` again
+        # with a new TZ, then read back the
+        # label, the notes value, the focused
+        # element, and the caret position. All
+        # of this must agree: label flipped,
+        # text intact, focus intact, caret
+        # intact.
+        #
+        # NOTE: ``document.activeElement`` for a
+        # shadow-DOM input always points to the
+        # shadow host. The actually-focused
+        # input is at
+        # ``card.shadowRoot.activeElement``.
+        result = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const notes = card.shadowRoot.querySelector(
+                    'input[data-field="notes"]');
+                // Type into notes; focus the
+                // field; remember caret
+                // position.
+                notes.value = 'частина тексту';
+                notes.focus();
+                notes.setSelectionRange(7, 7);
+                notes.dispatchEvent(
+                    new Event('input', {bubbles: true}));
+                // Now flip the TZ via a fresh
+                // ``set hass`` call -- the same
+                // setter path the operator's
+                // browser would take when the
+                // HA profile changes.
+                window.__harness.timeZone = 'America/New_York';
+                card.hass = window.__harness.makeHass();
+                // Read back everything in the
+                // SAME tick so the focus is
+                // still on ``notes`` (it
+                // doesn't get a chance to
+                // blur).
+                const b = card.shadowRoot.querySelector(
+                    '[data-tz-label]');
+                return {
+                    label: b ? b.textContent : null,
+                    notesValue: notes.value,
+                    focusedField:
+                        card.shadowRoot.activeElement
+                            ? card.shadowRoot.activeElement
+                                .getAttribute('data-field')
+                            : null,
+                    selStart: notes.selectionStart,
+                    selEnd: notes.selectionEnd,
+                };
+            }"""
+        )
+        self.assertEqual(
+            result["label"], "America/New_York",
+            f"after second set hass with "
+            f"time_zone='America/New_York', the "
+            f"label must read 'America/New_York'; "
+            f"got {result['label']!r}",
+        )
+        self.assertEqual(
+            result["notesValue"], "частина тексту",
+            f"the notes text was clobbered by the "
+            f"tz label update; got "
+            f"{result['notesValue']!r}",
+        )
+        self.assertEqual(
+            result["focusedField"], "notes",
+            f"the notes field lost focus during "
+            f"the tz label update; active field "
+            f"is {result['focusedField']!r}",
+        )
+        self.assertEqual(
+            result["selStart"], 7,
+            f"the caret position was lost during "
+            f"the tz label update; got "
+            f"selStart={result['selStart']}",
+        )
+
+    def test_tz_label_starts_utc_without_hass(self) -> None:
+        """Until the first ``set hass`` lands, the
+        card was constructed with the safe
+        default ``"UTC"``. The label MUST show
+        ``"UTC"`` -- not blank, not the
+        browser's ``Intl.DateTimeFormat().resolvedOptions().timeZone``,
+        not undefined. The previous round
+        sometimes seeded it with the browser
+        TZ, which the operator rejected (HA
+        is the canonical source, not the
+        browser).
+        """
+        page, ctx, errors = self._fx.new_page()
+        self.addCleanup(ctx.close)
+        page.goto(self._fx.harness_url, wait_until="load")
+        _wait_for_card(page)
+        # The harness sets ``__harness.timeZone``
+        # to ``Europe/Kyiv`` by default and
+        # ``set hass`` is NOT called in the
+        # initial flow. We clear the timezone
+        # and re-render the card fresh.
+        page.evaluate(
+            """() => {
+                window.__harness.timeZone = null;
+                // Force a brand-new card instance
+                // so the constructor runs again
+                // with no hass yet.
+                const oldCard = document.querySelector(
+                    'k-outage-scenarios-card');
+                if (oldCard) oldCard.remove();
+                const card = document.createElement(
+                    'k-outage-scenarios-card');
+                document.body.appendChild(card);
+            }"""
+        )
+        page.wait_for_timeout(200)
+        label_text = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const b = card.shadowRoot.querySelector(
+                    '[data-tz-label]');
+                return b ? b.textContent : null;
+            }"""
+        )
+        self.assertEqual(
+            label_text, "UTC",
+            f"before set hass, the label must read "
+            f"the constructor default 'UTC'; got "
+            f"{label_text!r}",
+        )
+
+    # -----------------------------------------------------------------
     # 9. Input persistence across set hass (Defect 5)
     # -----------------------------------------------------------------
     def test_input_persistence_across_set_hass(self) -> None:
