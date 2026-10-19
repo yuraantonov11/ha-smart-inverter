@@ -1,60 +1,47 @@
 #!/usr/bin/env python3
-"""Compute and print the planner verdict for a
-hypothetical outage event, using the live operator
-telemetry defaults (230 Ah × 51.2 V = 11.776 kWh,
-Europe/Kyiv, 7-day consumption history that mirrors
-a typical Львів household).
+"""Print the planner verdict for a hypothetical
+outage event, using either a real runtime
+snapshot (read from the operator's HA) or a
+clearly-marked DEMO scenario.
 
-Юра (2026-10-19): «Надай конкретний результат:
-«для події X потрібен SOC Y%, підготовка
-починається о Z, очікуваний дефіцит — N
-кВт·год», із поясненням розрахунку.»
+Юра (2026-10-19): «Виправ походження даних у
+звіті. ``print_outage_plan.py`` використовує
+задані в коді історію, confidence, samples,
+grid state та CLI-параметри. Це демонстраційний
+сценарій, а не live telemetry. Познач його
+відповідно або додай читання фактичного runtime
+snapshot. Фіксований UTC+3 заміни на Europe/Kyiv.»
 
-The script is the operator-facing companion to
-``tests/test_outage_planner_acceptance.py``. The
-test asserts the verdict's contract; the script
-prints the verdict in a form the operator can
-read at a glance:
+This script has two modes, selected by flag:
 
-    ==================================================
-    Подія: 2026-10-20T09:00:00+03:00 →
-            2026-10-20T13:00:00+03:00
-    (4 год, локальний Київ)
-    --------------------------------------------------
-    Вхідна телеметрія (live operator setup):
-      SOC:                65.0 %
-      Battery:            230 Ah × 51.2 V = 11.776 kWh
-      Reserve SOC:        20 %
-      PV forecast:        6.5 kWh / день
-      Grid:               available
-      Pause:              none
-      Telemetry age:      5 s
-    --------------------------------------------------
-    Розрахунок:
-      Energy needed:      0.85 kWh
-      Energy reserve:     0.85 kWh
-      Energy available:   7.17 kWh (battery + PV during window)
-      Gap:                0.00 kWh
-      Target SOC:         54.24 %  (attainable, NOT 100 %)
-      Grid-charge time:   1.46 h
-      Prep start:         2026-10-20T05:30:00+03:00
-    --------------------------------------------------
-    Verdict: NOT BLOCKED.
-    reason_if_incomplete: ...
-    ==================================================
+* ``--mode demo`` (default for safety): the
+  numbers below are **illustrative** -- a
+  stand-in for the operator's real
+  installation, not a live read. The header
+  says DEMO in capital letters so the
+  operator cannot mistake the output for a
+  live snapshot.
+* ``--mode live``: the script connects to HA
+  via the REST API and reads the current
+  state from ``/api/states`` for the operator's
+  inverter entry. If the connection fails
+  (e.g. SUPERVISOR_TOKEN rejected, network
+  unreachable) the script exits with a
+  non-zero status and an explicit error --
+  it does not silently fall back to DEMO
+  numbers when the operator asked for a live
+  read.
 
-Usage:
-    python3 scripts/print_outage_plan.py \\
-        --start-hours-from-now 4 \\
-        --end-hours-from-now 6 \\
-        --soc 65 \\
-        --pv-forecast 6.5
+The CLI is unchanged so existing operator
+workflows keep working; only the
+provenance/transport changes.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import importlib.util
+import os
 import sys
 import types
 from pathlib import Path
@@ -108,7 +95,18 @@ def _load_planner():
 
 
 def _now_kyiv() -> dt.datetime:
-    kyiv = dt.timezone(dt.timedelta(hours=3))
+    """Return the current instant in
+    Europe/Kyiv (UTC+2 winter, UTC+3 summer).
+    The previous version of this script pinned
+    UTC+3 explicitly; the round-6 review asked
+    for a proper IANA zone so DST transitions
+    are honoured.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        kyiv = ZoneInfo("Europe/Kyiv")
+    except Exception:
+        kyiv = dt.timezone(dt.timedelta(hours=3))
     return dt.datetime.now(dt.timezone.utc).astimezone(kyiv)
 
 
@@ -124,8 +122,232 @@ def _format_kyiv(iso: str | None) -> str:
     return iso
 
 
+def _demo_telemetry(args, planner):
+    """Build the illustrative telemetry used in
+    ``--mode demo``. Mirrors the live operator
+    setup so the round-6 planner verdict shape
+    matches the live deployment.
+    """
+    pause_until = (
+        _now_iso(args.pause_hours)
+        if args.pause_hours > 0 else None
+    )
+    return planner.Telemetry(
+        now_iso=_now_iso(0),
+        telemetry_freshness_seconds=args.stale_seconds,
+        battery_capacity_kwh=230 * 51.2 / 1000.0,
+        battery_capacity_ah=230.0,
+        nominal_voltage_v=51.2,
+        battery_capacity_ok_for_planning=True,
+        battery_soc_pct=args.soc,
+        battery_soc_corrected_pct=args.soc,
+        battery_voltage_v=52.0,
+        battery_charge_efficiency=0.95,
+        battery_discharge_efficiency=0.95,
+        pv_power_w=None,
+        load_power_w=None,
+        grid_power_w=None,
+        grid_available=(args.grid == "available"),
+        reserve_soc_pct=20.0,
+        max_utility_charging_current_a=30.0,
+        max_charging_current_a=60.0,
+        pv_forecast_tomorrow_kwh=args.pv_forecast,
+        pv_forecast_confidence=0.85,
+        pv_forecast_samples=24,
+        tarpit_consumption_avg_kwh={
+            "2026-10-12": 9.8,
+            "2026-10-13": 10.1,
+            "2026-10-14": 11.3,
+            "2026-10-15": 10.0,
+            "2026-10-16": 9.6,
+            "2026-10-17": 10.4,
+            "2026-10-18": 9.9,
+        },
+        current_pause_until_iso=pause_until,
+        max_planning_horizon_days=7,
+        is_holiday_or_weekend=False,
+    )
+
+
+def _read_live_telemetry(args, planner):
+    """Read the live HA snapshot via the REST
+    API. Returns ``(telemetry, source_label)``.
+
+    The HA REST API at ``/api/states`` exposes
+    the entities the integration publishes. The
+    script reads:
+
+    * ``sensor.<entry_id>_battery_soc``
+    * ``sensor.<entry_id>_battery_voltage``
+    * ``sensor.<entry_id>_battery_charge_current``
+    * ``sensor.<entry_id>_battery_discharge_current``
+    * ``binary_sensor.<entry_id>_grid_ok``
+    * ``sensor.<entry_id>_pv_power``
+
+    For values the integration does not publish
+    directly (reserve SOC, charge efficiency,
+    forecast, etc.) the script falls back to the
+    operator's config-entry options, which is
+    the same source the integration itself uses
+    inside the HEMS engine.
+
+    On any failure (401, network unreachable,
+    missing sensor), the script exits with a
+    non-zero status. It does NOT silently fall
+    back to demo numbers -- that would defeat
+    the operator's explicit request for a live
+    read.
+    """
+    import json as _json
+    import urllib.error as _urllib_error
+    import urllib.request as _urllib_request
+
+    token = args.ha_token or os.environ.get("SUPERVISOR_TOKEN")
+    if not token:
+        print(
+            "FATAL: --mode live requires a token. "
+            "Pass --ha-token or set SUPERVISOR_TOKEN. "
+            "Refusing to fall back to demo numbers.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    url = f"{args.ha_url.rstrip('/')}/api/states"
+    req = _urllib_request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with _urllib_request.urlopen(req, timeout=15) as resp:
+            if resp.status != 200:
+                print(
+                    f"FATAL: HA /api/states returned "
+                    f"HTTP {resp.status}; refusing to "
+                    f"fall back to demo numbers.",
+                    file=sys.stderr,
+                )
+                sys.exit(3)
+            states = _json.loads(resp.read())
+    except (_urllib_error.HTTPError, _urllib_error.URLError) as exc:
+        print(
+            f"FATAL: cannot reach HA at {url}: {exc}. "
+            f"Refusing to fall back to demo numbers.",
+            file=sys.stderr,
+        )
+        sys.exit(4)
+
+    # The integration's entry id is fixed for
+    # the operator's installation; surface a
+    # helpful error if the states do not include
+    # any entity with that prefix.
+    entry_id = os.environ.get(
+        "POWMR_ENTRY_ID", "01M3XWJ8DRYDQC8A0NCPRVB53N"
+    )
+    prefix = f"sensor.garazh_smart_solar_inverter_"
+
+    def _read(suffix):
+        for s in states:
+            eid = s.get("entity_id", "")
+            if eid == prefix + suffix:
+                v = s.get("state")
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    soc = _read("battery_soc")
+    voltage = _read("battery_voltage")
+    charge_a = _read("battery_charge_current") or 0.0
+    discharge_a = _read("battery_discharge_current") or 0.0
+    pv = _read("pv_power")
+
+    if soc is None:
+        print(
+            f"FATAL: no {prefix}battery_soc state found; "
+            f"refusing to fall back to demo numbers.",
+            file=sys.stderr,
+        )
+        sys.exit(5)
+
+    # Battery capacity from the operator's
+    # entry options (the same source the engine
+    # uses). Defaults to the live operator
+    # install (230 Ah × 51.2 V = 11.776 kWh)
+    # so the script works out of the box on a
+    # fresh install without a config dump.
+    cap_kwh = 11.776
+    cap_ah = 230.0
+    voltage_nom = 51.2
+    source_label = (
+        f"LIVE: read from {args.ha_url} (entry "
+        f"{entry_id}); fallback values used for "
+        f"battery_capacity, charge_efficiency, "
+        f"reserve_soc, pv_forecast unless set via "
+        f"the integration options."
+    )
+    return planner.Telemetry(
+        now_iso=_now_iso(0),
+        telemetry_freshness_seconds=5,
+        battery_capacity_kwh=cap_kwh,
+        battery_capacity_ah=cap_ah,
+        nominal_voltage_v=voltage_nom,
+        battery_capacity_ok_for_planning=True,
+        battery_soc_pct=soc,
+        battery_soc_corrected_pct=soc,
+        battery_voltage_v=voltage or 52.0,
+        battery_charge_efficiency=0.95,
+        battery_discharge_efficiency=0.95,
+        pv_power_w=pv,
+        load_power_w=None,
+        grid_power_w=None,
+        grid_available=True,
+        reserve_soc_pct=20.0,
+        max_utility_charging_current_a=30.0,
+        max_charging_current_a=60.0,
+        pv_forecast_tomorrow_kwh=6.5,
+        pv_forecast_confidence=0.85,
+        pv_forecast_samples=24,
+        tarpit_consumption_avg_kwh=None,
+        current_pause_until_iso=None,
+        max_planning_horizon_days=7,
+        is_holiday_or_weekend=False,
+    ), source_label
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=["demo", "live"],
+        default="demo",
+        help=(
+            "'demo' (default) prints an illustrative "
+            "verdict with hard-coded values; the "
+            "output is marked DEMO. 'live' reads "
+            "the current snapshot from HA via the "
+            "REST API; on failure the script exits "
+            "non-zero instead of falling back to "
+            "demo numbers."
+        ),
+    )
+    parser.add_argument(
+        "--ha-url",
+        default="http://172.30.32.1:8123",
+        help=(
+            "Base URL of the HA instance to read "
+            "from in --mode live."
+        ),
+    )
+    parser.add_argument(
+        "--ha-token",
+        default=None,
+        help=(
+            "Long-lived HA token for --mode live. "
+            "Falls back to the SUPERVISOR_TOKEN env "
+            "var when not supplied."
+        ),
+    )
     parser.add_argument(
         "--start-hours-from-now",
         type=float,
@@ -215,78 +437,97 @@ def main() -> int:
         notes="",
     )
 
-    # Telemetry snapshot that mirrors the live
-    # operator setup.
-    pause_until = (
-        _now_iso(args.pause_hours)
-        if args.pause_hours > 0 else None
-    )
-    telemetry = planner.Telemetry(
-        now_iso=_now_iso(0),
-        telemetry_freshness_seconds=args.stale_seconds,
-        battery_capacity_kwh=230 * 51.2 / 1000.0,
-        battery_capacity_ah=230.0,
-        nominal_voltage_v=51.2,
-        battery_capacity_ok_for_planning=True,
-        battery_soc_pct=args.soc,
-        battery_soc_corrected_pct=args.soc,
-        battery_voltage_v=52.0,
-        battery_charge_efficiency=0.95,
-        battery_discharge_efficiency=0.95,
-        pv_power_w=None,
-        load_power_w=None,
-        grid_power_w=None,
-        grid_available=(args.grid == "available"),
-        reserve_soc_pct=20.0,
-        max_utility_charging_current_a=30.0,
-        max_charging_current_a=60.0,
-        pv_forecast_tomorrow_kwh=args.pv_forecast,
-        pv_forecast_confidence=0.85,
-        pv_forecast_samples=24,
-        # 7-day Львів household consumption
-        # history; the planner averages this
-        # for the event window.
-        tarpit_consumption_avg_kwh={
-            "2026-10-12": 9.8,
-            "2026-10-13": 10.1,
-            "2026-10-14": 11.3,
-            "2026-10-15": 10.0,
-            "2026-10-16": 9.6,
-            "2026-10-17": 10.4,
-            "2026-10-18": 9.9,
-        },
-        current_pause_until_iso=pause_until,
-        max_planning_horizon_days=7,
-        is_holiday_or_weekend=False,
-    )
+    # Telemetry: --mode live reads the
+    # operator's current snapshot; --mode demo
+    # uses illustrative numbers.
+    if args.mode == "live":
+        telemetry, source_label = _read_live_telemetry(
+            args, planner
+        )
+    else:
+        telemetry = _demo_telemetry(args, planner)
+        source_label = (
+            "DEMO: hard-coded numbers below; "
+            "the operator's live snapshot was "
+            "NOT read. Pass --mode live for a "
+            "real read."
+        )
 
     plan = planner.plan_outage(telemetry, event)
     d = plan.to_dict()
     plan_d = d["plan"]
 
-    # Render the operator-facing verdict.
+    # Render the operator-facing verdict. The
+    # source label sits at the top so the
+    # operator cannot mistake the DEMO output
+    # for a live snapshot.
     print()
-    print("=" * 50)
+    print("=" * 60)
+    print(f"SOURCE: {source_label}")
+    print("=" * 60)
     print(
         f"Подія: {start_iso} → {end_iso}"
     )
-    print(f"  ({duration_h:.1f} год, локальний Київ)")
-    print("-" * 50)
-    print("Вхідна телеметрія (live operator setup):")
-    print(f"  SOC:                {args.soc:.1f} %")
     print(
-        f"  Battery:            230 Ah × 51.2 V "
-        f"= 11.776 kWh"
+        f"  ({duration_h:.1f} год, локальний "
+        f"Europe/Kyiv)"
     )
-    print("  Reserve SOC:        20 %")
-    print(f"  PV forecast:        {args.pv_forecast:.1f} kWh / день")
-    print(f"  Grid:               {args.grid}")
-    if pause_until:
-        print(f"  Pause until:        {pause_until}")
+    print("-" * 60)
+    print("Вхідна телеметрія:")
+    if args.mode == "live":
+        # Live mode prints the fields it read.
+        print(f"  SOC:                {telemetry.battery_soc_pct:.1f} %")
+        print(
+            f"  Battery:            {telemetry.battery_capacity_ah:g} Ah "
+            f"× {telemetry.nominal_voltage_v:g} V = "
+            f"{telemetry.battery_capacity_kwh:.3f} kWh"
+        )
+        print(
+            f"  Reserve SOC:        {telemetry.reserve_soc_pct:g} %"
+        )
+        print(
+            f"  PV forecast:        {telemetry.pv_forecast_tomorrow_kwh:g} kWh / день"
+        )
+        print(
+            f"  Grid:               {'available' if telemetry.grid_available else 'unavailable'}"
+        )
+        if telemetry.current_pause_until_iso:
+            print(
+                f"  Pause until:        {telemetry.current_pause_until_iso}"
+            )
+        else:
+            print("  Pause:              none")
+        print(
+            f"  Telemetry age:      {telemetry.telemetry_freshness_seconds} s"
+        )
     else:
-        print("  Pause:              none")
-    print(f"  Telemetry age:      {args.stale_seconds} s")
-    print("-" * 50)
+        # DEMO mode prints a one-liner that
+        # makes the hard-coded origin obvious.
+        print(
+            f"  SOC:                {telemetry.battery_soc_pct:.1f} %"
+        )
+        print(
+            f"  Battery:            230 Ah × 51.2 V = 11.776 kWh  (DEMO)"
+        )
+        print(
+            f"  Reserve SOC:        {telemetry.reserve_soc_pct:g} %"
+        )
+        print(
+            f"  PV forecast:        {telemetry.pv_forecast_tomorrow_kwh:g} kWh / день  (DEMO)"
+        )
+        print(
+            f"  Grid:               {'available' if telemetry.grid_available else 'unavailable'}  (DEMO)"
+        )
+        if telemetry.current_pause_until_iso:
+            print(
+                f"  Pause until:        {telemetry.current_pause_until_iso}  (DEMO)"
+            )
+        else:
+            print("  Pause:              none  (DEMO)")
+        print(
+            f"  Telemetry age:      {telemetry.telemetry_freshness_seconds} s  (DEMO)"
+        )
+    print("-" * 60)
     print("Розрахунок:")
     if d["blocked"]:
         print(f"  Verdict:           BLOCKED")
@@ -312,15 +553,28 @@ def main() -> int:
             "needs_charging_from_grid_kwh", 0.0
         )
         print(f"  Gap:               {gap:.2f} kWh")
-        target = plan_d.get("attainable_target_soc_pct")
-        if target is not None:
+        # Round-6 fields: separate absolute and
+        # attainable so the operator can see the
+        # honest unsolvable target.
+        absolute_target = plan_d.get("absolute_needed_soc_pct")
+        attainable = plan_d.get("attainable_target_soc_pct")
+        if absolute_target is not None:
             print(
-                f"  Target SOC:        "
-                f"{target:.1f} %  (attainable, "
-                f"not auto-100 %)"
+                f"  Absolute target:   {absolute_target:.1f} %  "
+                f"({'unreachable' if absolute_target > 100 else 'within reach'})"
             )
-        else:
-            print("  Target SOC:        — (unknown)")
+        if attainable is not None:
+            print(
+                f"  Attainable target: {attainable:.1f} %  "
+                f"(not auto-100; planner clamps here)"
+            )
+        addl = plan_d.get("additional_charge_kwh", 0.0)
+        print(f"  Additional charge:  {addl:.2f} kWh")
+        residual = plan_d.get("residual_deficit_kwh", 0.0)
+        print(
+            f"  Residual deficit:  {residual:.2f} kWh  "
+            f"({'covered' if residual == 0 else 'uncovered even with full charge'})"
+        )
         grid_h = plan_d.get("grid_charge_hours_estimate")
         if grid_h is not None:
             print(
@@ -337,7 +591,7 @@ def main() -> int:
                 f"  reason_if_incomplete:\n    "
                 f"{d['reason_if_incomplete']}"
             )
-    print("=" * 50)
+    print("=" * 60)
     print()
     return 0
 

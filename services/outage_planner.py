@@ -91,6 +91,17 @@ TELEMETRY_STALENESS_LIMIT_SECONDS = 300
 # below its cut-off.
 PV_CONFIDENCE_SAMPLES_MIN = 7
 PV_CONFIDENCE_FACTOR_MIN = 0.5
+# Daylight hours for the operator site (Львів, ~50°N).
+# Used ONLY to scale a daily forecast when hourly data is
+# unavailable; we never invent solar production outside this
+# window. 06:00-19:00 is the conservative daylight envelope
+# across the year (longest day 06:00-21:00 in summer, shortest
+# 08:00-17:00 in winter); the planner takes the intersection
+# with the event window, so a winter 18:00 event gets
+# effectively zero solar contribution even if the daily
+# forecast is 5 kWh.
+DAYLIGHT_START_HOUR = 6
+DAYLIGHT_END_HOUR = 19
 
 # Battery parameter sanity bands -- mirrored from
 # ``coordinator._derive_battery_capacity`` (R04) so the planner can
@@ -183,12 +194,28 @@ class Telemetry:
     reserve_soc_pct: float | None = None
     max_utility_charging_current_a: float | None = None
     max_charging_current_a: float | None = None
+    # Round 7: explicit, operator-set
+    # emergency buffer in kWh. Default 0
+    # (no extra kWh on top of the SOC
+    # reserve and the event consumption).
+    emergency_buffer_kwh: float | None = None
 
     # PV forecast (caller reads ``coordinator.forecast_tomorrow_kwh``
     # + the calibrator metrics)
     pv_forecast_tomorrow_kwh: float | None = None
     pv_forecast_confidence: float | None = None
     pv_forecast_samples: int | None = None
+    # Optional hourly forecast, indexed by hour-of-day (0..23),
+    # each entry is the expected kWh produced in that local hour.
+    # When supplied, the planner sums only the hours that
+    # overlap the event window (no proportional scaling by
+    # duration; the hourly values are already the production
+    # for that hour). When ``None``, the planner falls back to
+    # a daylight-window-only scaling of the daily total -- a
+    # 00:00-02:00 outage then sees zero PV instead of the
+    # ``daily_forecast * 2/24`` round-5 number, which was a
+    # night-time fabrication.
+    pv_forecast_hourly_kwh: list[float] | None = None
 
     # Consumption history (caller reads ``coordinator._hems._consumption_history``
     # / ``coordinator._load_matrix``). The planner accepts a
@@ -371,16 +398,57 @@ def plan_outage(telemetry: Telemetry, event: Any) -> PlannerPlan:
         warnings.append(consumption_warning)
 
     # ---- Reserve -------------------------------------------------------
-    mean_daily_kwh = energy_needed_kwh / max(
-        1e-9, (end_utc - start_utc).total_seconds() / 86400.0
+    # Round 7: ``energy_reserve_kwh`` is now a
+    # **safety-net floor only**, NOT a
+    # "1-day of mean consumption" buffer. The
+    # round-6 product policy
+    # (``max(0.5, mean_daily_kwh * 1.0)``) was
+    # double-counting: it added a 1-day
+    # kWh reserve on top of the SOC reserve
+    # that the operator already configured.
+    # For typical 14-hour events with the
+    # live tarpit mean of 10.16 kWh, the
+    # planner always reported a 7+ kWh
+    # residual -- the operator could never
+    # meet a "1-day" kWh reserve from a
+    # battery that stores 8.95 kWh of
+    # usable headroom.
+    #
+    # Three quantities are now explicit and
+    # non-overlapping:
+    #
+    #   * ``soc_reserve_pct`` -- the operator's
+    #     SOC floor (handled by
+    #     ``battery_remaining_kwh`` below).
+    #   * ``event_consumption_kwh`` -- the
+    #     energy the event will draw
+    #     (``energy_needed_kwh``).
+    #   * ``emergency_buffer_kwh`` -- an
+    #     operator-set kWh buffer (default 0)
+    #     that is added on top of the event
+    #     consumption for unexpected post-event
+    #     load. Read from
+    #     ``entry.options["emergency_buffer_kwh"]``
+    #     with a default of 0.
+    #
+    # The previous "mean_daily_kwh" term is
+    # removed. ``RESERVE_FLOOR_KWH`` remains
+    # as a small numerical guard against
+    # sub-zero rounding.
+    emergency_buffer_kwh = _read_emergency_buffer_kwh(
+        telemetry=telemetry,
     )
-    energy_reserve_kwh = max(RESERVE_FLOOR_KWH, mean_daily_kwh * 1.0)
+    energy_reserve_kwh = max(
+        RESERVE_FLOOR_KWH,
+        emergency_buffer_kwh,
+    )
 
     # ---- PV contribution (rule 1 + rule 2) -----------------------------
     energy_from_pv, pv_warning = _compute_pv_contribution_kwh(
         telemetry=telemetry,
         start_utc=start_utc,
         end_utc=end_utc,
+        event_tz_name=getattr(event, "tz_name", None),
     )
     if pv_warning is not None:
         warnings.append(pv_warning)
@@ -406,13 +474,32 @@ def plan_outage(telemetry: Telemetry, event: Any) -> PlannerPlan:
     # already be at to cover need + reserve WITHOUT further charging.
     # When battery capacity is missing, this is ``None`` -- the planner
     # reports "unknown" rather than guess.
-    attainable_target_soc_pct = _compute_attainable_target_soc_pct(
+    attainable_breakdown = _compute_attainable_target_soc_pct(
         telemetry=telemetry,
         soc_pct=soc_pct,
         energy_available_kwh=energy_available_kwh,
         energy_needed_kwh=energy_needed_kwh,
         energy_reserve_kwh=energy_reserve_kwh,
+        energy_from_pv=energy_from_pv,
     )
+    if attainable_breakdown is None:
+        attainable_target_soc_pct: float | None = None
+        additional_charge_kwh: float = 0.0
+        absolute_needed_soc_pct: float | None = None
+        residual_deficit_kwh: float = 0.0
+    else:
+        attainable_target_soc_pct = float(
+            attainable_breakdown["attainable_soc_pct"]
+        )
+        additional_charge_kwh = float(
+            attainable_breakdown["additional_charge_kwh"]
+        )
+        absolute_needed_soc_pct = float(
+            attainable_breakdown["absolute_needed_soc_pct"]
+        )
+        residual_deficit_kwh = float(
+            attainable_breakdown["residual_deficit_kwh"]
+        )
 
     # ---- Grid-charge rate --------------------------------------------
     (
@@ -450,6 +537,9 @@ def plan_outage(telemetry: Telemetry, event: Any) -> PlannerPlan:
                 prep_start_iso=None,
                 grid_charge_hours_per_hour=grid_charge_hours_per_hour,
                 warnings=warnings,
+                absolute_needed_soc_pct=None,
+                additional_charge_kwh=0.0,
+                residual_deficit_kwh=residual_deficit_kwh,
             ),
             energy_from_pv=energy_from_pv,
             grid_charge_hours_per_hour=grid_charge_hours_per_hour,
@@ -479,6 +569,9 @@ def plan_outage(telemetry: Telemetry, event: Any) -> PlannerPlan:
                         prep_start_iso=None,
                         grid_charge_hours_per_hour=grid_charge_hours_per_hour,
                         warnings=warnings,
+                        absolute_needed_soc_pct=absolute_needed_soc_pct,
+                        additional_charge_kwh=additional_charge_kwh,
+                        residual_deficit_kwh=residual_deficit_kwh,
                     ),
                     energy_from_pv=energy_from_pv,
                     grid_charge_hours_per_hour=grid_charge_hours_per_hour,
@@ -518,6 +611,9 @@ def plan_outage(telemetry: Telemetry, event: Any) -> PlannerPlan:
                 prep_start_iso=None,
                 grid_charge_hours_per_hour=grid_charge_hours_per_hour,
                 warnings=warnings,
+                absolute_needed_soc_pct=absolute_needed_soc_pct,
+                additional_charge_kwh=additional_charge_kwh,
+                residual_deficit_kwh=residual_deficit_kwh,
             ),
             energy_from_pv=energy_from_pv,
             grid_charge_hours_per_hour=grid_charge_hours_per_hour,
@@ -544,6 +640,9 @@ def plan_outage(telemetry: Telemetry, event: Any) -> PlannerPlan:
                 prep_start_iso=None,
                 grid_charge_hours_per_hour=grid_charge_hours_per_hour,
                 warnings=warnings,
+                absolute_needed_soc_pct=absolute_needed_soc_pct,
+                additional_charge_kwh=additional_charge_kwh,
+                residual_deficit_kwh=residual_deficit_kwh,
             ),
             energy_from_pv=energy_from_pv,
             grid_charge_hours_per_hour=grid_charge_hours_per_hour,
@@ -589,6 +688,9 @@ def plan_outage(telemetry: Telemetry, event: Any) -> PlannerPlan:
         prep_start_iso=prep_start_iso,
         grid_charge_hours_per_hour=grid_charge_hours_per_hour,
         warnings=warnings,
+        absolute_needed_soc_pct=absolute_needed_soc_pct,
+        additional_charge_kwh=additional_charge_kwh,
+        residual_deficit_kwh=residual_deficit_kwh,
     )
 
     return PlannerPlan(
@@ -689,6 +791,7 @@ def _compute_pv_contribution_kwh(
     telemetry: Telemetry,
     start_utc: datetime,
     end_utc: datetime,
+    event_tz_name: str | None = None,
 ) -> tuple[float, str | None]:
     """kWh the PV is expected to deliver over the event window.
 
@@ -696,6 +799,22 @@ def _compute_pv_contribution_kwh(
     ``pv_forecast_samples < 7`` or ``pv_forecast_confidence < 0.5``,
     the contribution is collapsed to zero with a warning. Per rule 1:
     the planner never uses ``pv_power_w`` as a hardware ceiling.
+
+    Round 6 (this round) replaces the
+    ``daily_forecast * duration/24`` scaling
+    with a daylight-window scaling. The old
+    formula invented solar production at
+    night: a 00:00-02:00 outage got
+    ``daily_forecast * 2/24`` kWh of fake
+    night-time PV. The new formula honours
+    the 06:00-19:00 daylight envelope and, if
+    ``pv_forecast_hourly_kwh`` is supplied,
+    sums the hourly values for the hours that
+    actually overlap the event window. No bias
+    correction, no cap, no optimistic fill --
+    when the event is entirely at night the
+    function returns 0.0 with an explicit
+    warning.
     """
     samples = telemetry.pv_forecast_samples
     confidence = telemetry.pv_forecast_confidence
@@ -706,9 +825,6 @@ def _compute_pv_contribution_kwh(
         or confidence < PV_CONFIDENCE_FACTOR_MIN
     )
 
-    forecast = telemetry.pv_forecast_tomorrow_kwh
-    duration_hours = (end_utc - start_utc).total_seconds() / 3600.0
-
     if low_confidence:
         return 0.0, (
             "low PV confidence -- assuming zero sun contribution "
@@ -717,22 +833,137 @@ def _compute_pv_contribution_kwh(
             f"and confidence_factor>={PV_CONFIDENCE_FACTOR_MIN})"
         )
 
+    duration_hours = (end_utc - start_utc).total_seconds() / 3600.0
+
+    # Path 1: hourly forecast is available. Sum only the
+    # hours that overlap the event window. The hourly
+    # values are kWh produced **in that local hour**; we
+    # do not scale by the sub-hour fraction because the
+    # forecast is already bucketed per hour.
+    hourly = telemetry.pv_forecast_hourly_kwh
+    if hourly is not None:
+        assert confidence is not None  # see low_confidence guard above
+        if not isinstance(hourly, list) or len(hourly) != 24:
+            return 0.0, (
+                "pv_forecast_hourly_kwh must be a 24-element list; "
+                f"got {type(hourly).__name__} with length "
+                f"{len(hourly) if hasattr(hourly, '__len__') else '?'}"
+            )
+        if any(
+            not isinstance(v, (int, float))
+            or not math.isfinite(float(v))
+            or float(v) < 0.0
+            for v in hourly
+        ):
+            return 0.0, (
+                "pv_forecast_hourly_kwh contains non-finite or "
+                "negative values; assuming zero sun contribution"
+            )
+        # Resolve the local time zone from the event
+        # (not from ``start_utc.tzinfo`` -- that is
+        # always UTC, and hour-of-day in UTC is the
+        # wrong lookup for the operator's wall clock).
+        from zoneinfo import ZoneInfo
+        try:
+            local_tz = ZoneInfo(event_tz_name or "UTC")
+        except Exception:
+            local_tz = timezone.utc
+        # Iterate every local hour covered by the event.
+        # The event may cross midnight; we walk the wall
+        # clock from start_utc to end_utc and add the kWh
+        # for each local hour-of-day.
+        total = 0.0
+        cur = start_utc
+        while cur < end_utc:
+            local = cur.astimezone(local_tz)
+            total += float(hourly[local.hour])
+            cur = cur + timedelta(hours=1)
+        eff_confidence = max(0.0, min(1.0, float(confidence)))
+        return max(0.0, total * eff_confidence), None
+
+    # Path 2: no hourly forecast. Fall back to a
+    # daylight-window-only scaling. The daily
+    # forecast is treated as the total production
+    # across ``DAYLIGHT_START_HOUR..DAYLIGHT_END_HOUR``
+    # (the operator site is ~50°N -- 06:00-19:00 is the
+    # conservative envelope). The fraction of the
+    # event window that overlaps daylight is then
+    # ``overlap_hours / daylight_hours`` -- not
+    # ``event_hours / 24`` as round 5 did. A 00:00-02:00
+    # outage gets zero; a 19:00-22:00 outage gets 0
+    # PV too because 19:00 is the end of daylight.
+    forecast = telemetry.pv_forecast_tomorrow_kwh
     if forecast is None or not math.isfinite(float(forecast)) or forecast <= 0.0:
-        # No forecast to scale, even though confidence says it would
-        # be trustworthy. Be explicit; a warning is still earned.
         return 0.0, (
             "PV forecast confidence is OK but pv_forecast_tomorrow_kwh "
             "is missing or non-positive; assuming zero sun contribution"
         )
-
-    # Scale the per-day forecast to the window duration. Confidence
-    # acts as a multiplier (already in [0, 1]). The earlier branch
-    # returned when confidence was None; the local var is narrowed
-    # here for the type checker.
-    assert confidence is not None  # for type-checkers
     eff_confidence = max(0.0, min(1.0, float(confidence)))
-    energy = float(forecast) * (duration_hours / 24.0) * eff_confidence
+    daylight_hours = float(DAYLIGHT_END_HOUR - DAYLIGHT_START_HOUR)
+    overlap_hours = _daylight_overlap_hours(
+        start_utc, end_utc, DAYLIGHT_START_HOUR, DAYLIGHT_END_HOUR
+    )
+    if overlap_hours <= 0.0:
+        return 0.0, (
+            "event window has no overlap with the daylight "
+            f"envelope ({DAYLIGHT_START_HOUR:02d}:00-"
+            f"{DAYLIGHT_END_HOUR:02d}:00); PV contribution is 0 kWh "
+            "without an hourly forecast"
+        )
+    # The daily forecast is the total across the daylight
+    # envelope. Per-hour average is forecast / daylight_hours.
+    # Event contribution is that per-hour rate times the
+    # overlap_hours.
+    energy = (
+        float(forecast)
+        * (overlap_hours / daylight_hours)
+        * eff_confidence
+    )
     return max(0.0, energy), None
+
+
+def _daylight_overlap_hours(
+    start_utc: datetime,
+    end_utc: datetime,
+    daylight_start_hour: int,
+    daylight_end_hour: int,
+) -> float:
+    """Hours the event window overlaps the
+    operator-site daylight envelope.
+
+    Walks the event in 1-minute steps and
+    accumulates the minutes that fall inside
+    ``[daylight_start_hour, daylight_end_hour)``
+    (in the event's local time). Returns the
+    total in hours. The boundary hours are
+    exact, not "inside the second" -- a 1-min
+    event at 18:59:30 still gets 0.5 min of
+    daylight, the rest night. This avoids the
+    bias of rounding one direction.
+    """
+    if end_utc <= start_utc:
+        return 0.0
+    total_minutes = 0.0
+    cur = start_utc
+    step = timedelta(minutes=1)
+    while cur < end_utc:
+        # Local hour-of-day for the wall clock
+        # the event spans. ``cur`` carries its
+        # tzinfo (we plumbed offset-aware ISO
+        # through ``_require_offset_aware_iso``);
+        # astimezone with the same tzinfo gives
+        # the local hour, which is what the
+        # operator's daylight envelope refers to.
+        local = cur.astimezone(cur.tzinfo) if cur.tzinfo else cur
+        next_cur = cur + step
+        # Cap the last step at end_utc.
+        if next_cur > end_utc:
+            next_cur = end_utc
+        elapsed = (next_cur - cur).total_seconds() / 60.0
+        if daylight_start_hour <= local.hour < daylight_end_hour:
+            total_minutes += elapsed
+        cur = next_cur
+    return total_minutes / 60.0
 
 
 def _compute_battery_remaining_kwh(
@@ -795,23 +1026,65 @@ def _compute_attainable_target_soc_pct(
     energy_available_kwh: float,
     energy_needed_kwh: float,
     energy_reserve_kwh: float,
-) -> float | None:
-    """SOC % the operator should aim for BEFORE the prep window opens.
+    energy_from_pv: float = 0.0,
+) -> dict | None:
+    """Decompose the SOC requirement into four
+    numbers so the dashboard can show the
+    operator the actual gap, not a clamped
+    value.
 
-    Definition: the SOC at which the battery already covers
-    ``need + reserve`` without further charging, computed by inverting
-    the discharge equation:
+    Returns a dict with the following keys (in
+    the same shape the operator sees on the
+    card):
 
-        headroom_kwh = (target_soc - reserve_soc) / 100 * cap * eff
-        target_soc = (need + reserve - pv) / (cap * eff) * 100 + reserve_soc
+        ``absolute_needed_soc_pct``
+            The SOC the operator would have to
+            reach to cover ``need + reserve``
+            **without** any further charging.
+            This can be ``> 100`` when the
+            outage plus reserve exceed the
+            battery's usable headroom even
+            from a full charge -- i.e. the
+            outage is longer than the battery
+            can cover on its own. The planner
+            reports it as-is and flags the gap
+            in ``residual_deficit_kwh``; the
+            operator sees that no SOC setting
+            will help and decides to reduce
+            load or shorten the event.
+        ``attainable_soc_pct``
+            The SOC the battery can reach by
+            the start of the event assuming
+            the operator tops it up from the
+            grid at the configured rate.
+            ``min(absolute_needed_soc_pct, 100)``.
+            This is the value the dispatcher
+            actually targets.
+        ``additional_charge_kwh``
+            Energy that has to flow from the
+            grid to reach ``attainable_soc_pct``
+            from the current SOC. ``0`` when
+            the current SOC already covers
+            the need.
+        ``residual_deficit_kwh``
+            The energy gap that even a full
+            charge plus the on-event PV cannot
+            close. ``0`` when the outage is
+            covered; ``> 0`` means the
+            operator must reduce load or
+            accept a brown-out.
+        ``reserve_soc_pct``
+            The configured SOC floor (read
+            from the telemetry).
+        ``soc_pct``
+            The current SOC (the planner does
+            not assume -- it surfaces whatever
+            the operator sees).
 
-    Clamped to [0, 100]. Returns ``None`` when ``battery_capacity_kwh``
-    is missing -- the planner refuses to guess the target.
-
-    NOTE: the formula assumes the planner is allowed to read the
-    corrected/raw SOC into ``soc_pct`` -- the returned value is the
-    **target** (not the current state), so callers should distinguish
-    between the two in the dashboard.
+    Returns ``None`` when the battery capacity
+    is missing or the planner refuses to
+    guess; the caller surfaces the ``None`` as
+    "невідомо" in the dashboard.
     """
     if (
         telemetry.battery_capacity_kwh is None
@@ -829,11 +1102,104 @@ def _compute_attainable_target_soc_pct(
     cap = float(telemetry.battery_capacity_kwh)
 
     # Net energy still missing AFTER factoring in PV.
-    net_needed_kwh = max(0.0, energy_needed_kwh + energy_reserve_kwh - energy_available_kwh)
-    target_soc_pct = reserve_pct + (net_needed_kwh / (cap * discharge_eff)) * 100.0
-    target_soc_pct = max(0.0, min(100.0, target_soc_pct))
-    # Round to 2 decimals so JSON output is stable across runs.
-    return round(target_soc_pct, 2)
+    net_needed_kwh = max(
+        0.0, energy_needed_kwh + energy_reserve_kwh - energy_available_kwh
+    )
+
+    # SOC the operator would need at the start
+    # of the event to cover need+reserve from
+    # the battery alone (no further grid charge
+    # AND no on-event PV). NOT clamped -- the
+    # planner surfaces the impossible target
+    # so the operator can see it, plus the
+    # residual deficit. Юра's round-6
+    # reproduction: 11.776 kWh, 20 % reserve,
+    # 0.95 eff, need 0.85 kWh, reserve 10.16
+    # kWh -> absolute = 20 + ((0.85+10.16) /
+    # (11.776*0.95)) * 100 = 20 + 98.4 = 118.4 %.
+    # Note: this is the SOC the operator would
+    # need WITHOUT any on-event PV; with PV
+    # during the event the actual target is
+    # the attainable (clamped) value plus
+    # whatever PV arrives. The on-event PV
+    # contribution is reported separately in
+    # ``energy_available_kwh`` so the operator
+    # can see both numbers.
+    absolute_needed_soc_pct = round(
+        reserve_pct
+        + (
+            (energy_needed_kwh + energy_reserve_kwh)
+            / (cap * discharge_eff)
+        ) * 100.0,
+        2,
+    )
+    attainable_soc_pct = round(
+        min(100.0, max(reserve_pct, absolute_needed_soc_pct)), 2
+    )
+
+    # Energy the operator must add to the
+    # battery to reach ``attainable_soc_pct``
+    # from the current SOC. Computed on the
+    # attainable (clamped) target so the
+    # charge figure never pretends more is
+    # achievable than the battery can store.
+    current_soc_pct = (
+        float(soc_pct)
+        if soc_pct is not None and math.isfinite(float(soc_pct))
+        else reserve_pct
+    )
+    delta_soc = max(0.0, attainable_soc_pct - max(current_soc_pct, reserve_pct))
+    additional_charge_kwh = round(
+        (delta_soc / 100.0) * cap * discharge_eff, 4
+    )
+
+    # Residual deficit: the energy gap that
+    # survives even a full charge plus the
+    # on-event PV. Computed from the *absolute*
+    # target so an unreachable required SOC
+    # shows up as a real kWh number rather
+    # than disappearing into the clamp.
+    if absolute_needed_soc_pct <= 100.0:
+        # Battery can cover the need if
+        # topped up to attainable_soc_pct. No
+        # residual; the energy budget closes.
+        residual_deficit_kwh = 0.0
+    else:
+        # absolute_needed_soc_pct > 100: even
+        # a full charge cannot cover need+reserve.
+        # The shortfall is the energy still
+        # missing after a full charge plus
+        # the on-event PV. NOTE: we do NOT add
+        # ``energy_available_kwh`` here because
+        # that already includes the battery
+        # remaining; what we want to know is
+        # whether need+reserve can be served
+        # from a fresh full charge + the
+        # on-event PV.
+        full_charge_kwh = (
+            (1.0 - reserve_pct / 100.0)
+            * cap
+            * discharge_eff
+        )
+        residual_deficit_kwh = round(
+            max(
+                0.0,
+                energy_needed_kwh
+                + energy_reserve_kwh
+                - full_charge_kwh
+                - max(0.0, energy_from_pv),
+            ),
+            4,
+        )
+
+    return {
+        "absolute_needed_soc_pct": absolute_needed_soc_pct,
+        "attainable_soc_pct": attainable_soc_pct,
+        "additional_charge_kwh": additional_charge_kwh,
+        "residual_deficit_kwh": residual_deficit_kwh,
+        "reserve_soc_pct": round(reserve_pct, 2),
+        "soc_pct": round(current_soc_pct, 2),
+    }
 
 
 def _compute_grid_charge_rate_kwh_per_h(
@@ -879,8 +1245,43 @@ def _baseline_plan_dict(
     prep_start_iso: str | None,
     grid_charge_hours_per_hour: float | None,
     warnings: list[str],
+    absolute_needed_soc_pct: float | None = None,
+    additional_charge_kwh: float = 0.0,
+    residual_deficit_kwh: float = 0.0,
 ) -> dict[str, Any]:
-    """Build the ``plan`` dict that the dashboard / persistence sees."""
+    """Build the ``plan`` dict that the dashboard / persistence sees.
+
+    Round 6 (this round) widens the plan with
+    three new fields that the operator asked
+    for explicitly:
+
+    * ``absolute_needed_soc_pct`` -- the SOC
+      that would cover need + reserve without
+      any further charging. **Not clamped to
+      100**: a value of 110 % means the outage
+      is longer than the battery can cover
+      even from a full charge, regardless of
+      how much the operator tops up.
+    * ``additional_charge_kwh`` -- the kWh
+      the operator must add to the battery
+      between now and the start of the event
+      to reach ``attainable_soc_pct`` (the
+      clamped target).
+    * ``residual_deficit_kwh`` -- the kWh gap
+      that survives even a full charge plus
+      the on-event PV. ``0`` when the outage
+      is covered; ``> 0`` means the operator
+      must reduce load or shorten the event
+      window. The dashboard surfaces this
+      next to the charge figure so the
+      operator can tell the two apart.
+
+    The legacy field
+    ``attainable_target_soc_pct`` is kept for
+    back-compat with the round-5 card and the
+    integration's existing dashboard, and
+    matches ``min(absolute_needed_soc_pct, 100)``.
+    """
     return {
         "energy_needed_kwh": round(float(energy_needed_kwh), 3),
         "energy_reserve_kwh": round(float(energy_reserve_kwh), 3),
@@ -890,6 +1291,13 @@ def _baseline_plan_dict(
             if attainable_target_soc_pct is not None
             else None
         ),
+        "absolute_needed_soc_pct": (
+            float(absolute_needed_soc_pct)
+            if absolute_needed_soc_pct is not None
+            else None
+        ),
+        "additional_charge_kwh": round(float(additional_charge_kwh), 3),
+        "residual_deficit_kwh": round(float(residual_deficit_kwh), 3),
         "needs_charging_from_grid_kwh": round(
             float(needs_charging_from_grid_kwh), 3
         ),
@@ -965,6 +1373,40 @@ def _require_offset_aware_iso(label: str, value: Any) -> datetime:
             "naive datetimes are not allowed"
         )
     return dt
+
+
+def _read_emergency_buffer_kwh(*, telemetry: "Telemetry") -> float:
+    """Read the operator-configured emergency
+    buffer in kWh.
+
+    The buffer is sourced from the same
+    Telemetry object the planner already
+    carries. The caller (coordinator) packs
+    the option into the Telemetry via the
+    ``emergency_buffer_kwh`` field. The
+    default is 0 (no buffer beyond the SOC
+    reserve and the event consumption).
+
+    This is the **only** place the
+    "extra kWh reserve" is read -- it is
+    NOT derived from any per-day mean
+    consumption figure. The product policy
+    "1 day of mean consumption as buffer"
+    was retired in round 7 because it
+    double-counted with the SOC reserve and
+    was never satisfiable from a battery of
+    the operator's size.
+    """
+    raw = getattr(telemetry, "emergency_buffer_kwh", None)
+    if raw is None:
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return max(0.0, value)
 
 
 def _utc_instant(iso_str: Any, label: str) -> datetime:

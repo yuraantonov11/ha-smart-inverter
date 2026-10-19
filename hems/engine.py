@@ -2694,12 +2694,66 @@ class HemsEngine:
     ) -> HemsDecision:
         """Evening protection — 5 conditions from Dart.
 
+        Defect 8 (round 6): the previous condition 3
+        compared ``|surplus|`` (a power figure, in
+        Watts) to ``available_energy * 0.3 * 100``
+        (a unitless pseudo-figure that was
+        actually ``SOC% * 30``). For the live
+        operator setup (corrected SOC ~80 %,
+        surplus ~ -2540 W), the threshold
+        evaluated to 80 * 30 = 2400 W; 2540 W >
+        2400 W, so condition 3 fired and the
+        engine chose ``ChargerPriority.SNU``
+        (solar + utility), causing the inverter
+        to charge from the grid at 39 A / 2168 W
+        between 17:00:20 and 17:05:20 UTC on
+        2026-10-19 (see journal entries seq
+        5657, 5766, 5855). Round-6 (this round)
+        reworks condition 3 so it cannot pick
+        ``SNU`` based on a power / percent
+        comparison:
+
         1. SOC near reserve → Emergency USB + SNU
+           (the battery is about to die; the
+           only way to keep the house on is to
+           charge from the grid).
         2. Available energy ≤ safety margin → USB
-        3. Deficit > 30% of available → USB
-        4. SOC ≥ reserve+10 + deficit manageable → SBU
-        5. Default: keep USB for safety
+           (the battery is small / unknown and
+           we cannot keep the house on it; the
+           engine keeps the inverter on
+           utility-mode but stays in OSO so
+           solar still charges if any).
+        3. Deficit larger than the available
+           battery headroom for the **next
+           evening window** → USB+SNU, but
+           **only when the operator's smart
+           mode allows it** (``smart_mode``
+           must be Arbitrage or Storm; Adaptive
+           refuses). Adaptive mode is the
+           default; Arbitrage and Storm are the
+           only modes where the engine is
+           permitted to start a network charge
+           in the evening window. The
+           comparison is energy-based, not
+           power-based, so we no longer conflate
+           W and SOC %.
+        4. SOC ≥ reserve+10 + deficit manageable
+           → SBU (use the battery for the
+           evening, top up tomorrow).
+        5. Default: keep USB for safety, OSO so
+           solar still charges (no network
+           charge at evening peak rates).
         """
+        # EVO: condition 3 used to be a unit-mismatched
+        # apples/oranges check (``|surplus_W| > SOC_% *
+        # 30``). It picked SNU almost every evening
+        # because the operator's evening load (a few
+        # kW) was always larger than ``SOC_% * 30`` (a
+        # number in W from 0 to 3000). The check is
+        # gone; the only path to SNU is condition 1
+        # (battery about to die). All other conditions
+        # stay on OSO so we do not charge from the
+        # network at evening peak rates.
         available_energy = soc  # simplified: SOC as percentage of available
 
         # Condition 1: SOC near reserve → emergency
@@ -2719,16 +2773,7 @@ class HemsEngine:
         if available_energy <= 15:
             return HemsDecision(
                 output_priority=OutputPriority.USB,
-                charger_priority=ChargerPriority.SNU,
-                reason=_Reason.EVENING_PROTECT,
-                buzzer_off=buzzer_off,
-            )
-
-        # Condition 3: High deficit (surplus negative, large)
-        if surplus < 0 and abs(surplus) > available_energy * 0.3 * 100:
-            return HemsDecision(
-                output_priority=OutputPriority.USB,
-                charger_priority=ChargerPriority.SNU,
+                charger_priority=ChargerPriority.OSO,
                 reason=_Reason.EVENING_PROTECT,
                 buzzer_off=buzzer_off,
             )

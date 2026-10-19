@@ -318,6 +318,14 @@ class PlannerBlockConditionTests(unittest.TestCase):
             reserve_soc_pct=20.0,
             battery_capacity_kwh=5.0,
             battery_capacity_ah=98.0,
+            # No PV: the planner must
+            # require grid charging to
+            # cover the event so the
+            # grid-unavailable guard
+            # fires.
+            pv_forecast_tomorrow_kwh=0.0,
+            pv_forecast_confidence=0.0,
+            pv_forecast_samples=0,
         )
         # Long enough window that need > available even at 21 % SOC.
         event = _evt(
@@ -352,13 +360,26 @@ class PlannerBlockConditionTests(unittest.TestCase):
             battery_soc_corrected_pct=21.0,
             battery_capacity_kwh=5.0,
             battery_capacity_ah=98.0,
+            # No PV: the event must require
+            # grid charging for the
+            # staleness guard to fire.
+            pv_forecast_tomorrow_kwh=0.0,
+            pv_forecast_confidence=0.0,
+            pv_forecast_samples=0,
         )
         event = _evt(
             start=NOW + timedelta(hours=1),
             end=NOW + timedelta(hours=8),
         )
         result = planner.plan_outage(tel, event)
-        self.assertTrue(result.blocked)
+        self.assertTrue(
+            result.blocked,
+            f"planner must block when grid "
+            f"charging is required under "
+            f"stale telemetry; got "
+            f"blocked={result.blocked} "
+            f"reason={result.reason_if_blocked!r}",
+        )
         self.assertIsNotNone(result.reason_if_blocked)
         # The reason mentions "stale" or "freshness".
         reason_lower = result.reason_if_blocked.lower()
