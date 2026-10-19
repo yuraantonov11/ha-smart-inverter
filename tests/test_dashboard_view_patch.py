@@ -808,6 +808,89 @@ class DashboardViewPatchTests(unittest.TestCase):
             f"expected 6 (no duplicate)",
         )
 
+    def test_async_load_returns_dict(self) -> None:
+        """``LovelaceStorage.async_load(False)``
+        returns the GUI config dict (the dict
+        the operator edits in the GUI) -- NOT
+        the dashboard metadata. The
+        ``default_dashboard.config`` attribute
+        is the metadata (with ``title``,
+        ``url_path``, ``id``, ``mode``) and
+        does NOT have a ``views`` key. Reading
+        from there gives ``views=None`` and
+        the patch silently no-ops.
+
+        This is the live-observed bug: the
+        cached ``.config`` is the metadata,
+        the GUI config is only available via
+        ``async_load``. The patcher MUST use
+        ``async_load`` to read.
+        """
+        existing = self._existing_views()
+        metadata = {
+            "id": "powmr_energy",
+            "url_path": "powmr-energy",
+            "title": "Smart Solar Енергопанель",
+            "mode": "storage",
+            "require_admin": False,
+            "show_in_sidebar": True,
+            "icon": "mdi:flash",
+        }
+
+        class _FakePanel:
+            def __init__(self, metadata, gui_config):
+                # ``.config`` is the metadata
+                # (no ``views`` key). Reading
+                # from it returns the wrong
+                # thing.
+                self.config = metadata
+                # ``async_load`` returns the
+                # GUI config -- the dict the
+                # operator edits.
+                self._gui_config = gui_config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self._gui_config
+
+            async def async_save(self, config):
+                self._gui_config = config
+                self._saved.append(config)
+
+        powmr_energy = _FakePanel(
+            metadata,
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)},
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
+        _setup_storage_with_views(self.tmp, existing)
+        _run(_ensure_outages_view(hass, _FakeEntry()))
+        self.assertEqual(
+            len(powmr_energy._saved), 1,
+            f"patcher did not call async_save; "
+            f"expected 1, got {len(powmr_energy._saved)}",
+        )
+        saved = powmr_energy._saved[0]
+        self.assertEqual(
+            len(saved["views"]), 6,
+            f"async_load path: expected 5+1=6 views; "
+            f"got {len(saved['views'])}",
+        )
+        self.assertEqual(
+            saved["views"][-1]["path"], "powmr-outages",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
