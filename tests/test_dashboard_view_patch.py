@@ -196,17 +196,78 @@ class DashboardViewPatchTests(unittest.TestCase):
         ``views``.
         """
         existing = self._existing_views()
-        hass = _make_hass(self.tmp, existing)
+        # Round 5: the patcher targets the named
+        # ``powmr-energy`` panel. The default
+        # dashboard is a separate object; the
+        # patcher must NOT touch it.
+        class _FakePanel:
+            def __init__(self, config):
+                self.config = config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        powmr_energy = _FakePanel(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)}
+        )
+        # Default dashboard: a separate panel
+        # that the patcher MUST NOT touch. If the
+        # patcher ever routed to it, the test
+        # would fail (we'd see a save on
+        # ``default``).
+        class _DefaultPanel:
+            def __init__(self):
+                self.config = {
+                    "title": "Lovelace",
+                    "views": [],
+                }
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        default = _DefaultPanel()
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        None: default,
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
         _setup_storage_with_views(self.tmp, existing)
         _run(_ensure_outages_view(hass, _FakeEntry()))
         # The patcher called ``async_save`` exactly
-        # once.
+        # once, and on the NAMED panel.
         self.assertEqual(
-            len(hass._saved), 1,
-            f"async_save was not called exactly "
-            f"once; called {len(hass._saved)} times",
+            len(powmr_energy._saved), 1,
+            f"named panel was not saved exactly "
+            f"once; saved {len(powmr_energy._saved)} "
+            f"times",
         )
-        saved = hass._saved[0]
+        self.assertEqual(
+            len(default._saved), 0,
+            f"the default dashboard was touched "
+            f"{len(default._saved)} times; expected 0 "
+            f"(the patcher MUST target the named "
+            f"'powmr-energy' panel, not the default)",
+        )
+        saved = powmr_energy._saved[0]
         self.assertIn("views", saved)
         views = saved["views"]
         # The new view is the LAST entry.
@@ -250,15 +311,43 @@ class DashboardViewPatchTests(unittest.TestCase):
                 "type": "sections",
             }
         )
-        hass = _make_hass(self.tmp, existing)
+
+        class _FakePanel:
+            def __init__(self, config):
+                self.config = config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        powmr_energy = _FakePanel(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)}
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
         _setup_storage_with_views(self.tmp, existing)
         _run(_ensure_outages_view(hass, _FakeEntry()))
         # No save -- the view is already there.
         self.assertEqual(
-            hass._saved, [],
+            len(powmr_energy._saved), 0,
             f"async_save was called when the view "
             f"was already present; called "
-            f"{len(hass._saved)} times",
+            f"{len(powmr_energy._saved)} times",
         )
 
     def test_preserves_five_existing_views_verbatim(self):
@@ -269,10 +358,38 @@ class DashboardViewPatchTests(unittest.TestCase):
         the input.
         """
         existing = self._existing_views()
-        hass = _make_hass(self.tmp, existing)
+
+        class _FakePanel:
+            def __init__(self, config):
+                self.config = config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        powmr_energy = _FakePanel(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)}
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
         _setup_storage_with_views(self.tmp, existing)
         _run(_ensure_outages_view(hass, _FakeEntry()))
-        saved = hass._saved[0]
+        saved = powmr_energy._saved[0]
         # Compare JSON serialisation (the patcher
         # round-trips through ``async_save`` which
         # may re-serialise the dict; but the
@@ -289,14 +406,53 @@ class DashboardViewPatchTests(unittest.TestCase):
         backup of the on-disk JSON is created.
         The operator can roll back via the
         backup.
+
+        Round 5: the patcher targets the named
+        ``powmr-energy`` panel, which is
+        backed by ``/config/.storage/lovelace.powmr_energy``
+        on disk. The backup is created from that
+        file.
         """
         existing = self._existing_views()
-        hass = _make_hass(self.tmp, existing)
+
+        class _FakePanel:
+            def __init__(self, config):
+                self.config = config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        powmr_energy = _FakePanel(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)}
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
+        # Set up the on-disk JSON for the named
+        # panel. The patcher reads it as a backup
+        # source; the saved config goes back into
+        # the LovelaceStorage instance (NOT the
+        # on-disk file).
         on_disk_path = _setup_storage_with_views(
             self.tmp, existing
         )
         _run(_ensure_outages_view(hass, _FakeEntry()))
-        # Find the backup.
+        # A backup file was created.
         storage_dir = os.path.dirname(on_disk_path)
         backups = [
             f
@@ -332,27 +488,67 @@ class DashboardViewPatchTests(unittest.TestCase):
         present.
         """
         existing = self._existing_views()
-        hass = _make_hass(self.tmp, existing)
+
+        class _FakePanel:
+            def __init__(self, config):
+                self.config = config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        # Pre-seed a matching view so the
+        # patcher is a no-op.
+        existing_with_view = list(existing) + [
+            {
+                "title": "Відключення",
+                "path": "powmr-outages",
+            }
+        ]
+        powmr_energy = _FakePanel(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing_with_view)}
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
         on_disk_path = _setup_storage_with_views(
             self.tmp, existing
         )
         with open(on_disk_path, "rb") as f:
             before = f.read()
-        # No-op case: the view is already present
-        # -- pre-seed a matching view.
-        existing.append(
-            {
-                "title": "Відключення",
-                "path": "powmr-outages",
-            }
-        )
         _run(_ensure_outages_view(hass, _FakeEntry()))
         with open(on_disk_path, "rb") as f:
             after = f.read()
+        # Round 5: in the no-op case the
+        # patcher is a no-op -- it doesn't even
+        # read the on-disk file. The on-disk file
+        # is unchanged.
         self.assertEqual(
             before, after,
             "on-disk JSON was modified even though "
             "the view was already present",
+        )
+        # The patcher did NOT call ``async_save``
+        # (no-op idempotent).
+        self.assertEqual(
+            len(powmr_energy._saved), 0,
+            f"async_save was called "
+            f"{len(powmr_energy._saved)} times in the "
+            f"no-op case; expected 0",
         )
 
     def test_no_lovelace_data_is_noop(self):
@@ -374,6 +570,242 @@ class DashboardViewPatchTests(unittest.TestCase):
             hass._saved, [],
             "patcher called save when lovelace "
             "data was missing",
+        )
+
+    def test_powmr_energy_panel_is_the_target(self):
+        """The patcher MUST target the named
+        ``powmr-energy`` panel, NOT the default
+        (key ``None``) dashboard. On the live
+        system the default dashboard is
+        ``config_not_found`` (it has no
+        ``config`` key), so the patcher must
+        resolve the named panel.
+
+        Scenario: a fresh system where the
+        default dashboard has no config; the
+        named ``powmr-energy`` panel has 5
+        existing views. The patcher appends the
+        new view to the NAMED panel and leaves
+        the DEFAULT untouched.
+        """
+        # ``default_dashboard`` -- the
+        # unnamed ``url_path=None`` panel. On
+        # live this is the one that returns
+        # ``config_not_found``. We model that
+        # as ``config = None`` plus an
+        # ``async_load`` that raises (the HA
+        # behaviour).
+        class _DefaultDashboard:
+            def __init__(self):
+                self.config = None
+
+            async def async_load(self, force):
+                from homeassistant.exceptions import (
+                    HomeAssistantError,
+                )
+                raise HomeAssistantError(
+                    "Config not found"
+                )
+
+            async def async_save(self, config):
+                raise AssertionError(
+                    "patcher MUST NOT touch the "
+                    "default dashboard"
+                )
+
+        # The named ``powmr-energy`` panel --
+        # this is the target. It has the
+        # operator's 5 existing views.
+        class _PowmrEnergyDashboard:
+            def __init__(self, config):
+                self.config = config
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved = getattr(
+                    self, "_saved", []
+                )
+                self._saved.append(config)
+
+        existing = self._existing_views()
+        powmr_energy = _PowmrEnergyDashboard(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)}
+        )
+        default = _DefaultDashboard()
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        None: default,
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
+        _setup_storage_with_views(self.tmp, existing)
+        _run(_ensure_outages_view(hass, _FakeEntry()))
+        # The patcher called ``async_save`` exactly
+        # once, and on the NAMED panel, not the
+        # default.
+        self.assertEqual(
+            len(powmr_energy._saved), 1,
+            f"the named 'powmr-energy' panel "
+            f"received {len(powmr_energy._saved)} "
+            f"saves; expected exactly 1",
+        )
+        saved = powmr_energy._saved[0]
+        self.assertEqual(
+            len(saved["views"]), 6,
+            f"the named panel now has "
+            f"{len(saved['views'])} views; "
+            f"expected 5+1=6",
+        )
+        self.assertEqual(
+            saved["views"][-1]["path"],
+            "powmr-outages",
+            "the new view is the LAST entry",
+        )
+
+    def test_other_panels_unchanged(self):
+        """Patcher MUST NOT touch other panels
+        (e.g. the sidecar
+        ``powmr-b3401a3c4784131b``). Only the
+        named ``powmr-energy`` panel is the
+        target.
+        """
+        existing = self._existing_views()
+
+        class _FakePanel:
+            def __init__(self, config):
+                self.config = config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        powmr_energy = _FakePanel(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)}
+        )
+        # Sidecar: also has 5 views. The
+        # patcher MUST NOT touch this panel.
+        sidecar = _FakePanel(
+            {"title": "Smart Solar · Solar Inverter",
+             "views": list(existing)}
+        )
+        # The unnamed default (this is the one
+        # the previous round wrongly targeted).
+        default = _FakePanel(
+            {"title": "Lovelace", "views": []}
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        None: default,
+                        "powmr-energy": powmr_energy,
+                        "powmr-b3401a3c4784131b": sidecar,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
+        _setup_storage_with_views(self.tmp, existing)
+        _run(_ensure_outages_view(hass, _FakeEntry()))
+        # Only the named panel was patched.
+        self.assertEqual(
+            len(powmr_energy._saved), 1,
+            f"named panel saved {len(powmr_energy._saved)} "
+            f"times; expected 1",
+        )
+        self.assertEqual(
+            len(sidecar._saved), 0,
+            f"sidecar was patched "
+            f"{len(sidecar._saved)} times; expected 0 "
+            f"(the patcher MUST NOT touch other panels)",
+        )
+        self.assertEqual(
+            len(default._saved), 0,
+            f"default was patched "
+            f"{len(default._saved)} times; expected 0",
+        )
+
+    def test_idempotent_repeated_run_no_dup(self):
+        """Running the patcher twice in a row MUST
+        NOT add the view twice. The second run
+        sees the view already there and is a
+        no-op.
+        """
+        existing = self._existing_views()
+
+        class _FakePanel:
+            def __init__(self, config):
+                self.config = config
+                self._saved = []
+
+            async def async_load(self, force):
+                return self.config
+
+            async def async_save(self, config):
+                self.config = config
+                self._saved.append(config)
+
+        powmr_energy = _FakePanel(
+            {"title": "Smart Solar Енергопанель",
+             "views": list(existing)}
+        )
+        hass = types.SimpleNamespace(
+            data={
+                "lovelace": {
+                    "dashboards": {
+                        "powmr-energy": powmr_energy,
+                    },
+                },
+            },
+        )
+        hass.config = types.SimpleNamespace(
+            config_dir=self.tmp,
+        )
+        _setup_storage_with_views(self.tmp, existing)
+        # First run: appends.
+        _run(_ensure_outages_view(hass, _FakeEntry()))
+        self.assertEqual(
+            len(powmr_energy._saved), 1,
+            f"first run saved {len(powmr_energy._saved)} "
+            f"times; expected 1",
+        )
+        self.assertEqual(
+            len(powmr_energy.config["views"]), 6,
+            f"after first run, "
+            f"{len(powmr_energy.config['views'])} views; "
+            f"expected 5+1=6",
+        )
+        # Second run: no-op.
+        _run(_ensure_outages_view(hass, _FakeEntry()))
+        self.assertEqual(
+            len(powmr_energy._saved), 1,
+            f"second run saved "
+            f"{len(powmr_energy._saved)} times; expected 1 "
+            f"(no-op on existing view)",
+        )
+        self.assertEqual(
+            len(powmr_energy.config["views"]), 6,
+            f"after second run, "
+            f"{len(powmr_energy.config['views'])} views; "
+            f"expected 6 (no duplicate)",
         )
 
 

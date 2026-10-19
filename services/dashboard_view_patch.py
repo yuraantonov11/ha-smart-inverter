@@ -104,11 +104,26 @@ async def _ensure_outages_view(hass, entry) -> None:
             "not available; skipping the patch"
         )
         return
-    default_dashboard = dashboards.get(None)
+    # The visible operator panel is
+    # ``dashboards["powmr-energy"]`` -- this is
+    # the standalone Smart Solar dashboard the
+    # operator sees in the sidebar. Other panels
+    # in ``dashboards`` (e.g. ``powmr-b3401a3c4784131b``
+    # -- a per-entry sidecar that the operator
+    # does not interact with) MUST stay unchanged.
+    # The default dashboard (key ``None``) is
+    # ``config_not_found`` on this live system
+    # because HA's storage mode keeps the
+    # operator's content in a named storage
+    # file (``lovelace.powmr_energy``), not the
+    # unnamed default. The patcher must resolve
+    # the named panel, not the default.
+    default_dashboard = dashboards.get("powmr-energy")
     if default_dashboard is None:
         _LOGGER.debug(
-            "dashboard patcher: no default dashboard; "
-            "skipping the patch"
+            "dashboard patcher: no 'powmr-energy' "
+            "panel registered; skipping the patch "
+            "(the operator may have renamed it)"
         )
         return
     # YAML-mode dashboards do not support
@@ -122,18 +137,36 @@ async def _ensure_outages_view(hass, entry) -> None:
             "async_save (likely YAML mode); skipping"
         )
         return
-    # Read the current config. ``async_load``
-    # returns the ``data.config`` payload (the
-    # views list lives there in the live file).
-    try:
-        current_config = await default_dashboard.async_load(False)
-    except Exception as exc:  # noqa: BLE001
-        _LOGGER.debug(
-            "dashboard patcher: dashboard.async_load "
-            "failed (%s); skipping the patch",
-            exc,
-        )
-        return
+    # Read the current config. The
+    # ``LovelaceStorage`` instance caches the
+    # parsed config in its ``.config`` attribute
+    # (set by ``__init__``); ``async_load`` is
+    # only needed on a fresh read. We prefer the
+    # cached ``.config`` because it bypasses the
+    # ``ConfigNotFound`` exception path that
+    # ``async_load`` raises when the config dict
+    # is ``None`` (e.g. in auto-gen mode on a
+    # fresh install).
+    current_config = getattr(
+        default_dashboard, "config", None
+    )
+    if current_config is None:
+        try:
+            current_config = await default_dashboard.async_load(False)
+        except Exception as exc:  # noqa: BLE001
+            # ``LovelaceStorage.async_load`` raises
+            # ``ConfigNotFound`` when the storage
+            # has no ``config`` key. The exception
+            # string is empty (``str(exc) == ""``)
+            # on this HA version -- log the
+            # exception class name as a fallback.
+            _LOGGER.debug(
+                "dashboard patcher: "
+                "dashboard.async_load failed (%r); "
+                "skipping the patch",
+                exc,
+            )
+            return
     if not isinstance(current_config, dict):
         return
     views = current_config.get("views")

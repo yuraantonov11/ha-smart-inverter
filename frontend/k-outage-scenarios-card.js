@@ -685,22 +685,45 @@ class KOutageScenariosCard extends HTMLElement {
     );
     const startIso = startResolved.iso;
     const endIso = endResolved.iso;
-    // DEFECT 4: surface the DST notice whenever the
-    // wall-clock could not be resolved unambiguously.
-    // We attach it to the inline notice block so the
-    // operator sees "час не існує через переведення
-    // годинника; використано <actual>" without losing
-    // the input values.
+    // DEFECT 4 (round 5): a wall-clock that
+    // does not exist in the HA timezone (DST
+    // spring forward) MUST be rejected before
+    // the service is called. The previous
+    // round surfaced a notice ("використано
+    // <actual>") and continued with a
+    // silently-nudged ISO. The operator
+    // rejected that: we must NOT save a
+    // different hour than the operator typed.
+    // We surface a clear inline error and
+    // return without calling the service.
+    const nonExistent = (
+      (startResolved.reason === "non_existent") ||
+      (endResolved.reason === "non_existent")
+    );
+    if (nonExistent) {
+      const which = (
+        startResolved.reason === "non_existent"
+      )
+        ? "початку"
+        : "кінця";
+      this._error =
+        `Вказаний час ${which} не існує в часовому поясі HA ` +
+        `(${this._haTz}); оберіть інший час.`;
+      this._timeAdjustedNotice = null;
+      this._renderListOnly();
+      this._updateBusyState();
+      this._renderNotice();
+      return;
+    }
+    // Ambiguous wall-clock: pick the LATER
+    // (standard-time) offset automatically --
+    // the operator doesn't need to act.
     if (startResolved.reason || endResolved.reason) {
-      const r = startResolved.reason || endResolved.reason;
-      const actual = startResolved.actual || endResolved.actual;
-      const fmtActual = actual
-        ? this._isoToLocalInput(actual, this._haTz)
-        : "";
       this._timeAdjustedNotice =
-        r === "non_existent"
-          ? `Вказаний час не існує через переведення годинника; використано ${fmtActual}.`
-          : `Існує двічі через переведення годинника; використано ${fmtActual}.`;
+        `Час існує двічі через переведення годинника; ` +
+        `збережено з пізнішим (зимовим) зміщенням.`;
+    } else {
+      this._timeAdjustedNotice = null;
     }
     const err = this._validateInterval(startIso, endIso);
     if (err) {
@@ -820,6 +843,37 @@ class KOutageScenariosCard extends HTMLElement {
     );
     const startIso = startResolved.iso;
     const endIso = endResolved.iso;
+    // DEFECT 4 (round 5): block the update
+    // when the typed wall-clock is non-existent
+    // in the HA timezone (DST spring forward).
+    // The previous round surfaced a notice and
+    // saved the silently-nudged ISO; the
+    // operator rejected that.
+    const nonExistent = (
+      (startResolved.reason === "non_existent") ||
+      (endResolved.reason === "non_existent")
+    );
+    if (nonExistent) {
+      const which = (
+        startResolved.reason === "non_existent"
+      )
+        ? "початку"
+        : "кінця";
+      this._error =
+        `Вказаний час ${which} не існує в часовому поясі HA ` +
+        `(${this._haTz}); оберіть інший час.`;
+      this._timeAdjustedNotice = null;
+      this._renderListOnly();
+      this._renderNotice();
+      return;
+    }
+    if (startResolved.reason || endResolved.reason) {
+      this._timeAdjustedNotice =
+        `Час існує двічі через переведення годинника; ` +
+        `збережено з пізнішим (зимовим) зміщенням.`;
+    } else {
+      this._timeAdjustedNotice = null;
+    }
     const err = this._validateInterval(startIso, endIso);
     if (err) {
       this._error = err;

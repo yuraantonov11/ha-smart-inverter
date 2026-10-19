@@ -1201,10 +1201,199 @@ class KOutageScenariosCardBrowserTests(unittest.TestCase):
             f"or undefined; got "
             f"{list_call['notifyOnError']!r}",
         )
-        self.assertTrue(
-            list_call["returnResponse"],
+        self.assertIs(
+            list_call["returnResponse"], True,
             f"6th arg (returnResponse) must be True; "
             f"got {list_call['returnResponse']!r}",
+        )
+
+    # -----------------------------------------------------------------
+    # 8b. Non-existent wall-clock blocks the save
+    #     (Defect 4 round 5).
+    # -----------------------------------------------------------------
+    def test_dst_blocks_save_kyiv(self) -> None:
+        """A non-existent wall-clock in
+        Europe/Kyiv (no DST since 2014, but the
+        round 4 helper still flags it) MUST
+        block the add_outage_event call. The
+        card must surface an inline error and
+        NOT call the service.
+
+        We drive the form with a wall-clock
+        that the round 4 helper would mark
+        ``non_existent`` in a TZ with DST. For
+        Kyiv (no DST) the helper is permissive,
+        so we use a TZ with active DST for the
+        non-existent test; this test asserts
+        that when ``reason === 'non_existent'``
+        the save is blocked regardless of the
+        host TZ. The test sets
+        ``hass.config.time_zone = 'Europe/Berlin'``
+        to exercise the DST path.
+        """
+        page, ctx, errors = self._fx.new_page()
+        self.addCleanup(ctx.close)
+        page.goto(self._fx.harness_url, wait_until="load")
+        _wait_for_card(page)
+        # Override the harness TZ to Europe/Berlin
+        # (DST active). The card reads
+        # ``hass.config.time_zone`` on first
+        # ``set hass``.
+        page.evaluate(
+            """() => {
+                window.__harness.timeZone = 'Europe/Berlin';
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                card.hass = window.__harness.makeHass();
+            }"""
+        )
+        page.wait_for_timeout(300)
+        # Type a non-existent wall-clock. Berlin
+        # spring forward 2026-03-29: 02:00 -> 03:00,
+        # so 02:30 does not exist.
+        page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const start = card.shadowRoot.querySelector(
+                    'input[data-field="start"]');
+                const end = card.shadowRoot.querySelector(
+                    'input[data-field="end"]');
+                start.value = '2026-03-29T02:30';
+                end.value = '2026-03-29T05:00';
+                start.dispatchEvent(new Event('change', {bubbles: true}));
+                end.dispatchEvent(new Event('change', {bubbles: true}));
+                window.__harness.calls.length = 0;
+            }"""
+        )
+        # Click the Add button.
+        page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const btn = card.shadowRoot.querySelector(
+                    'button[data-action="add"]');
+                btn.click();
+            }"""
+        )
+        page.wait_for_timeout(500)
+        # The card MUST NOT have called the
+        # service. ``add_outage_event`` is the
+        # service under test.
+        calls = page.evaluate(
+            "() => window.__harness.calls.filter("
+            "c => c.service === 'add_outage_event'"
+            ")"
+        )
+        self.assertEqual(
+            len(calls), 0,
+            f"DEFECT 4 round 5: the card called "
+            f"add_outage_event for a non-existent "
+            f"wall-clock; {len(calls)} calls recorded",
+        )
+        # The card MUST surface an inline error
+        # that mentions "не існує" (the
+        # operator-facing text).
+        err_text = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const errBlock = card.shadowRoot.querySelector(
+                    '[data-notice="error"]');
+                return errBlock ? errBlock.textContent : '';
+            }"""
+        )
+        self.assertIn(
+            "не існує", err_text,
+            f"inline error must mention 'не існує' "
+            f"for a non-existent wall-clock; got "
+            f"{err_text!r}",
+        )
+
+    def test_dst_does_not_block_save_utc(self) -> None:
+        """In UTC (no DST), the helper always
+        returns a valid ISO and the save is
+        NOT blocked. We drive the form with a
+        wall-clock that the round 4 helper
+        flags as ``reason: 'ambiguous'`` -- in
+        UTC there is no DST so all wall-clocks
+        are unambiguous and the save is
+        allowed.
+        """
+        page, ctx, errors = self._fx.new_page()
+        self.addCleanup(ctx.close)
+        page.goto(self._fx.harness_url, wait_until="load")
+        _wait_for_card(page)
+        # Override the harness TZ to UTC.
+        page.evaluate(
+            """() => {
+                window.__harness.timeZone = 'UTC';
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                card.hass = window.__harness.makeHass();
+            }"""
+        )
+        page.wait_for_timeout(300)
+        # Type a wall-clock that the helper
+        # accepts as valid. UTC has no DST, so
+        # ``reason`` is always ``null``.
+        page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const start = card.shadowRoot.querySelector(
+                    'input[data-field="start"]');
+                const end = card.shadowRoot.querySelector(
+                    'input[data-field="end"]');
+                start.value = '2026-10-25T14:30';
+                end.value = '2026-10-25T16:00';
+                start.dispatchEvent(new Event('change', {bubbles: true}));
+                end.dispatchEvent(new Event('change', {bubbles: true}));
+                window.__harness.calls.length = 0;
+            }"""
+        )
+        page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const btn = card.shadowRoot.querySelector(
+                    'button[data-action="add"]');
+                btn.click();
+            }"""
+        )
+        # Wait for the add call to be recorded.
+        page.wait_for_function(
+            """() => window.__harness.calls.some(
+                c => c.service === 'add_outage_event'
+            )""",
+            timeout=4000,
+        )
+        calls = page.evaluate(
+            "() => window.__harness.calls.filter("
+            "c => c.service === 'add_outage_event'"
+            ")"
+        )
+        self.assertEqual(
+            len(calls), 1,
+            f"UTC must not block valid wall-clocks; "
+            f"got {len(calls)} add_outage_event calls",
+        )
+        # The inline error block MUST be empty
+        # (no ``reason: 'non_existent'`` error).
+        err_text = page.evaluate(
+            """() => {
+                const card = document.querySelector(
+                    'k-outage-scenarios-card');
+                const errBlock = card.shadowRoot.querySelector(
+                    '[data-notice="error"]');
+                return errBlock ? errBlock.textContent : '';
+            }"""
+        )
+        self.assertNotIn(
+            "не існує", err_text,
+            f"UTC must not surface a 'non-existent' "
+            f"error for a valid wall-clock; got "
+            f"{err_text!r}",
         )
 
     # -----------------------------------------------------------------
