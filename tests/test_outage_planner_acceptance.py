@@ -2448,6 +2448,146 @@ class EnergyBalanceAccountingTests(unittest.IsolatedAsyncioTestCase):
             f"got {full_d['energy_from_pv_during_outage_kwh']}",
         )
 
+    def test_dispatcher_gate_blocks_stale_with_no_charge_needed(
+        self,
+    ) -> None:
+        """Round 7 follow-up (Юра): the
+        *dispatcher* (not the planner) must
+        refuse automatic execution when
+        telemetry is stale, EVEN WHEN the
+        planner verdict shows
+        ``needs_charging_from_grid_kwh=0``.
+
+        The planner computes a
+        *recommendation*; the dispatcher
+        gate ``is_automatic_allowed``
+        returns a separate *permission*.
+        The two are different concerns.
+
+        The canonical example: 2-hour
+        event at SOC 65 % (round 7, no
+        1-day mean buffer), 0 PV. The
+        planner says "battery can cover
+        it, no grid charging needed". But
+        if the coordinator's
+        ``api.last_realtime_success_received_at``
+        is None or older than
+        ``TELEMETRY_STALENESS_LIMIT_SECONDS``,
+        the dispatcher MUST refuse, because
+        "battery can cover" is a claim
+        about a stale reading of the
+        battery state.
+
+        This test calls
+        ``is_automatic_allowed(coordinator, plan)``
+        directly, bypassing the planner's
+        own staleness guard (which only
+        fires when grid charging is on the
+        table). The dispatcher gate is
+        unconditional.
+        """
+        from datetime import datetime, timezone, timedelta
+        # Build a "no grid charging needed"
+        # scenario: 2-hour event, SOC 65 %,
+        # 0 PV. The planner verdict will
+        # show ``needs_charging_from_grid_kwh=0``.
+        event = self.outage.OutageEvent(
+            id="eb_no_charge", source="manual:dashboard",
+            raw_text=None,
+            start_iso="2026-10-21T20:00:00+03:00",
+            end_iso="2026-10-21T22:00:00+03:00",
+            tz_name="Europe/Kyiv",
+            received_at="2026-10-21T19:55:00+00:00",
+            status="confirmed",
+            needs_confirmation=False,
+            ambiguity_reason=None,
+            version=1,
+            updated_at="2026-10-21T19:55:00+00:00",
+            notes="",
+        )
+        tel = self._build_telemetry(
+            soc=65.0, pv_kwh=0.0,
+        )
+        plan = self.planner.plan_outage(tel, event)
+        d = plan.to_dict()["plan"]
+        # Sanity: the planner says no grid
+        # charging needed.
+        self.assertEqual(
+            d["needs_charging_from_grid_kwh"], 0.0,
+            f"test premise: planner must report "
+            f"no grid charging for SOC 65 %, "
+            f"0 PV, 2-hour event; got "
+            f"{d['needs_charging_from_grid_kwh']}",
+        )
+        # Build a coordinator with stale
+        # telemetry (``api.last_realtime_success_received_at``
+        # is None -> runtime returns
+        # ``_FRESHNESS_REFUSE``).
+        from types import SimpleNamespace
+        coordinator = SimpleNamespace(
+            data={"gridAvailable": True},
+            _entry=SimpleNamespace(
+                options={
+                    "outage_mode": "automatic",
+                    "reserve_soc": 20.0,
+                    "smart_mode": 0,
+                    "battery_capacity_ah": 230.0,
+                    "nominal_voltage_v": 51.2,
+                }
+            ),
+            api=SimpleNamespace(
+                last_realtime_success_received_at=None,
+            ),
+        )
+        allowed, reason = (
+            self.runtime.is_automatic_allowed(
+                coordinator, plan
+            )
+        )
+        self.assertFalse(
+            allowed,
+            f"dispatcher gate MUST refuse "
+            f"stale telemetry even when the "
+            f"planner recommends no grid "
+            f"charging; got allowed={allowed}, "
+            f"reason={reason!r}",
+        )
+        self.assertIn(
+            "stale", reason.lower(),
+            f"reason must mention staleness; "
+            f"got {reason!r}",
+        )
+        # Sanity: with FRESH telemetry the
+        # gate would pass (modulo the other
+        # safety guards). We use a recent
+        # timestamp.
+        coordinator.api = SimpleNamespace(
+            last_realtime_success_received_at=(
+                datetime.now(timezone.utc)
+                - timedelta(seconds=5)
+            ),
+        )
+        allowed_fresh, reason_fresh = (
+            self.runtime.is_automatic_allowed(
+                coordinator, plan
+            )
+        )
+        # The fresh gate may still be False
+        # for OTHER reasons (safety guards,
+        # etc.); we accept either. The
+        # important thing is the reason
+        # must NOT mention staleness.
+        if allowed_fresh:
+            # OK -- nothing to assert.
+            pass
+        else:
+            self.assertNotIn(
+                "stale", reason_fresh.lower(),
+                f"with fresh telemetry, gate "
+                f"refusal must NOT be due to "
+                f"staleness; got {reason_fresh!r}",
+            )
+
     def test_past_event_is_blocked(self) -> None:
         """Past events are blocked with a
         specific reason. Sanity check for the
