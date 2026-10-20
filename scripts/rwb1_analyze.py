@@ -156,9 +156,12 @@ def reassemble_all(pcap_files: list[Path], adapter_ip: str) -> tuple[
             aggregated.setdefault(key, []).extend(chunks)
             ports[key] = (sp, dp)
     streams: dict[tuple, TcpStream] = {}
-    for direction, chunks in aggregated.items():
-        key = (direction, *ports[direction])
-        stream = TcpStream(key=key, src_port=ports[direction][0], dst_port=ports[direction][1])
+    for key, chunks in aggregated.items():
+        # ``key`` is already (direction, src_port, dst_port). Iterating it
+        # as (direction, chunks) produced a NESTED tuple as the stream key,
+        # which silently broke every caller that inspected key[0].
+        direction, sp, dp = key
+        stream = TcpStream(key=key, src_port=sp, dst_port=dp)
         for seq, payload, ptime in chunks:
             stream.add(seq, payload, "<merged>", ptime)
         streams[key] = stream
