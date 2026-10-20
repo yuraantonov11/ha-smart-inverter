@@ -1,0 +1,82 @@
+{
+ "_note": "Sanitized PS4Z frames + matching cloud fields. No device SN, session, topic, broker or MAC.",
+ "profile": "rwb1-ps4z-le-8field-verified",
+ "verified_device": "PowMr HVM6.2M-48V (single unit)",
+ "cases": [
+  {
+   "cap_utc": "2026-10-20T11:18:18.896455+00:00",
+   "cloud_delta_s": 2.39,
+   "ps4z_b64": "BQMqBAABCfMBlwMtABMCWAAAAAAAAQnzAc0BdwEHAAcAAAC4AfMcAAACADgYaoo=",
+   "words": {
+    "1": 2305,
+    "3": 919,
+    "4": 45,
+    "5": 531,
+    "6": 88,
+    "11": 461,
+    "12": 375,
+    "13": 7
+   },
+   "cloud": {
+    "acInputVoltage": 230.5,
+    "pvInputVoltage": 91.9,
+    "pvInputPower": 45.0,
+    "batteryVoltage": 53.1,
+    "batteryCapacity": 88.0,
+    "outputApparentPower": 461.0,
+    "acOutputActivePower": 0.375,
+    "loadPercentage": 7.0
+   }
+  },
+  {
+   "cap_utc": "2026-10-20T11:23:19.174038+00:00",
+   "cloud_delta_s": 4.17,
+   "ps4z_b64": "BQMqBAD+CPQBbwMqABYCXAAAAAAA/gj0AT8CFQIJAAkAAAC4AfMcAAACADgYyPs=",
+   "words": {
+    "1": 2302,
+    "3": 879,
+    "4": 42,
+    "5": 534,
+    "6": 92,
+    "11": 575,
+    "12": 533,
+    "13": 9
+   },
+   "cloud": {
+    "acInputVoltage": 230.2,
+    "pvInputVoltage": 87.9,
+    "pvInputPower": 42.0,
+    "batteryVoltage": 53.4,
+    "batteryCapacity": 92.0,
+    "outputApparentPower": 575.0,
+    "acOutputActivePower": 0.533,
+    "loadPercentage": 9.0
+   }
+  },
+  {
+   "cap_utc": "2026-10-20T11:28:19.304174+00:00",
+   "cloud_delta_s": 6.18,
+   "ps4z_b64": "BQMqBAABCfQBZwMjABQCWgAAAAAAAQn0AW4CtAEKAAoAAAC4AfMcAAACADgYKOg=",
+   "words": {
+    "1": 2305,
+    "3": 871,
+    "4": 35,
+    "5": 532,
+    "6": 90,
+    "11": 622,
+    "12": 436,
+    "13": 10
+   },
+   "cloud": {
+    "acInputVoltage": 230.5,
+    "pvInputVoltage": 87.1,
+    "pvInputPower": 35.0,
+    "batteryVoltage": 53.2,
+    "batteryCapacity": 90.0,
+    "outputApparentPower": 622.0,
+    "acOutputActivePower": 0.436,
+    "loadPercentage": 10.0
+   }
+  }
+ ]
+}
