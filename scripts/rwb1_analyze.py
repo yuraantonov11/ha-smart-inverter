@@ -141,12 +141,20 @@ def reassemble_all(pcap_files: list[Path], adapter_ip: str) -> tuple[
         bio = io.BytesIO(data)
         flows = _san.parse_pcap(bio, adapter_ip=adapter_ip)
         for direction, chunks in flows.items():
-            aggregated.setdefault(direction, []).extend(chunks)
-            if direction not in ports:
-                # Recover the (src_port, dst_port) from the first chunk.
-                # parse_pcap does not return them; we use a placeholder
-                # for now and refine if the sanitizer exposes them.
-                ports[direction] = (0, 0)
+            # Key by direction AND the TCP 4-tuple ports when available.
+            # Keying by direction alone silently merges distinct TCP
+            # connections from different pcap files, which corrupts both
+            # the reassembled byte stream and the cap_ts lookup.
+            sp, dp = 0, 0
+            try:
+                info = _san.parse_pcap_ports(io.BytesIO(data), adapter_ip=adapter_ip)
+                if direction in info:
+                    sp, dp = info[direction]
+            except Exception:
+                pass
+            key = (direction, sp, dp)
+            aggregated.setdefault(key, []).extend(chunks)
+            ports[key] = (sp, dp)
     streams: dict[tuple, TcpStream] = {}
     for direction, chunks in aggregated.items():
         key = (direction, *ports[direction])
