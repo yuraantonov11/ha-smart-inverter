@@ -1208,7 +1208,7 @@ class InverterApiClient:
         output_apparent_power = _val("outputApparentPower")
         output_frequency = _val("outputFrequency")
 
-        return {
+        state = {
             "pvPower": pv_power,
             "gridPower": grid_power,
             "batteryPower": battery_power,
@@ -1247,6 +1247,19 @@ class InverterApiClient:
             "rawFields": raw_fields,
             "payload": payload,
         }
+
+        # TEMPORARY diagnostic observer for RWB1 block-mapping research.
+        # Pure observer: runs after the response is already parsed, so the
+        # polling interval and inverter control are untouched. It writes a
+        # bounded allow-list of numeric fields (see field_diagnostics.py)
+        # and nothing else — no credentials, no device identity.
+        try:
+            from . import field_diagnostics
+            field_diagnostics.record(raw_fields)
+        except Exception:  # never let diagnostics break polling
+            pass
+
+        return state
 
     async def set_mode(self, mode: int) -> bool:
         """Set inverter operating mode (0=USB, 2=SBU, etc.)."""
