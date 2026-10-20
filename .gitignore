@@ -97,3 +97,14 @@ hems/**/real_forecast_pairs.json.tmp
 # to function. Do NOT commit.
 tests/.harness/
 tests/__pycache__/
+
+# RWB1 passive capture (RWB1 hybrid telemetry,
+# stage A). A pcap of the inverter's outbound
+# MQTT flow can contain device topics,
+# broker addresses and payload values.
+# Captures are sanitized by
+# ``scripts/inspect_rwb1_mqtt_capture.py``
+# and must never be committed.
+*.pcap
+*.pcapng
+tests/_captures/
