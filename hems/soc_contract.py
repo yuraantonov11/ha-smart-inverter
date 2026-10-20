@@ -1,41 +1,56 @@
-"""SOC reading contract: reported / validated / control / display.
+"""SOC reading contract: payload / validated / diagnostic / control / display.
 
-REJECTED: the previous slew-limited proposal in this file. It was unsafe.
-With previous_estimated=80, reported=25, voltage=51 it returned 75.0 for
-planning — a 50-point INFLATION of a critically low battery — and the
-limit was frequency-dependent (5 s cycle -> 25 % after 60 s; 60 s cycle
--> 75 % after 5 s). It also reduced a visible jump without improving the
-truth of the decision. Withdrawn and replaced by what follows.
+PRE-CONNECTION STATE. Nothing here is connected to production. Before the
+producer at ``hems/telemetry.py`` and ``services/outage_runtime.py``
+adopts this contract, the OCV-table conditions are NOT validated, so:
 
-This module has FOUR separate quantities and no smoothing anywhere near
-the control path.
+  * voltage-derived values are DIAGNOSTIC ONLY,
+  * ``control`` is ``None`` for any observation that lacks a numerically
+    valid ``reported`` payload,
+  * ``display`` never reaches ``control`` and is documented as cosmetic.
 
-    reported   the device value, as received, never altered. Present
-               whenever the device sent one, even if invalid, so a
-               consumer can see what actually arrived.
-    valid      whether that value is usable at all (finite, in range).
-               A value can be present and invalid.
-    control    what a DECISION may use. None when nothing is
-               trustworthy — for a planner that is the safe answer;
-               inventing a number is not.
-    display    optional cosmetic smoothing, explicitly NOT for control,
-               never fed to HEMS or the planner.
+What the contract splits apart
+------------------------------
+A single SOC observation is now five distinct quantities, never collapsed
+into one. Numerical validity is NOT proof of truth.
 
-Why the voltage estimate needs a rest gate
-------------------------------------------
-An OCV table describes a battery AT REST. Under load the terminal voltage
-is not OCV, so a table lookup while the pack is working systematically
-mis-reports SOC. That is exactly the 2026-10-20 failure: the
-charging-mode transition moved batteryVoltage 58.0 -> 52.8 V, the table
-mapped 52.8 V to 80 %, and corrected_soc stepped 100 -> 80 while the
-device kept reporting 100.
+    reported           verbatim device value, byte-for-byte. Always
+                       present whenever the device sent one, even if
+                       invalid, so a consumer can see what arrived.
+    reported_payload   the same value normalised to ``float`` when
+                       possible (None otherwise). It is the
+                       device-originated number, NOT a trust verdict.
+    validated          the result of a numerical-only check
+                       (finite, 0..100). Validity is a property of the
+                       bytes, not of the battery. The SOC can be
+                       numerically valid AND WRONG (e.g. a stuck-BMS
+                       100 % was observed on 2026-10-20).
+    control            what a DECISION may use. ``None`` when nothing
+                       is trustworthy. Inventing a number is not a
+                       safe default for a planner.
+    display            optional cosmetic smoothing. Explicitly NOT
+                       for control, never fed to HEMS or the planner.
 
-The table is admissible only when the pack is quiescent: current near
-zero AND voltage inside a sane band. Otherwise no estimate is offered.
+Why voltage stays diagnostic
+----------------------------
+An OCV table describes a battery AT REST. Conditions for admissibility
+include (at minimum) a quiescent current, a sane voltage band, a minimum
+dwell time at rest, a temperature-corrected table and the absence of a
+charge-cycle pulse. A ``|I| <= 1 A`` threshold alone is INSUFFICIENT to
+declare a pack at rest; it merely rules out a heavy load right now.
+Until the table-specific conditions are validated for this device, the
+voltage lookup is offered as a diagnostic number (``voltage_soc``) and
+is NEVER fed to ``control``.
 
-Reported origin is not a trust guarantee either. On this device the
-reported value was a constant 100.0 across a 5.2 V change — "the device
-said so" is precisely the claim that failed.
+What the old code did that this contract refuses to do
+-------------------------------------------------------
+* Silently coerced NaN / Infinity / out-of-range ``reported`` into a
+  plausible value via the voltage table.
+* Recovered from ``corrected_soc = None`` with ``batterySoc`` at
+  ``services/outage_runtime.py:350-351`` -- that fallback is what the
+  producer-side adoption has to remove.
+* Substituted a smoothed estimate for a critical-low reported value
+  (the 25 -> 75 inflation).
 """
 from __future__ import annotations
 
@@ -44,37 +59,42 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Quality = Literal[
-    "reported_valid",      # device value present and usable
-    "reported_invalid",    # device value present but not usable
-    "voltage_estimate",    # device unusable, rest-confirmed table value
-    "unknown",             # nothing usable
+    "reported_valid",     # reported payload exists and is numerically OK
+    "reported_invalid",   # reported payload exists but fails numeric check
+    "no_reported",        # no payload at all
 ]
 
-# A pack moving current is not at rest. |I| below this is "quiescent
-# enough" for a first-order table. A heuristic, documented as one.
+# A pack drawing or supplying current is not at rest. This is a FIRST
+# HINT, not a confirmation. The full rest condition includes dwell time,
+# temperature, the absence of recent charge pulses and a sane voltage
+# band -- none of which we have validated for this device.
 QUIESCENT_CURRENT_A = 1.0
-
-# Outside this band the reading is either a deeply asleep pack or not a
-# battery voltage at all.
 SANE_VOLTURE_V = (40.0, 65.0)
 
 
 @dataclass(frozen=True)
 class SocReading:
-    reported: float | None
-    reported_valid: bool
-    control: float | None
+    reported: object            # verbatim; can be None, float, NaN, etc.
+    reported_payload: float | None  # normalised to float when possible
+    validated: float | None     # finite && 0..100; numerical validity only
+    control: float | None       # decision-eligible; None until trusted
     quality: Quality
     reason: str
+
     display: float | None = None
     voltage_v: float | None = None
     battery_current_a: float | None = None
-    voltage_soc: float | None = None
-    quiescent: bool | None = None
+    voltage_soc: float | None = None       # DIAGNOSTIC only
+    quiescent_now: bool | None = None      # current threshold only
+    rest_conditions_confirmed: bool = False  # always False in this build
 
     @property
     def usable(self) -> bool:
         return self.control is not None
+
+    @property
+    def is_diagnostic_only(self) -> bool:
+        return self.control is None
 
 
 def _as_float_or_none(x):
@@ -87,96 +107,86 @@ def _as_float_or_none(x):
     return f
 
 
-def _is_valid_reported(value) -> bool:
-    """Finite, numeric, inside 0..100. No coercion, no substitution."""
-    if value is None or isinstance(value, bool):
-        return False
-    f = _as_float_or_none(value)
-    if f is None:
-        return False
-    return 0.0 <= f <= 100.0
+def evaluate(
+    reported_soc,
+    voltage_v,
+    battery_current_a,
+    *,
+    voltage_to_soc=None,
+) -> SocReading:
+    """Classify one observation. NEVER invents ``control``.
 
-
-def evaluate(reported_soc, voltage_v, battery_current_a, *, voltage_to_soc) -> SocReading:
-    """Classify one observation. No smoothing, no interpolation.
-
-    `voltage_to_soc` is injected so this module never duplicates the
-    production OCV table.
+    `voltage_to_soc` is optional and kept only to populate the
+    diagnostic field; ``control`` is NEVER derived from it.
     """
     v = _as_float_or_none(voltage_v)
     i = _as_float_or_none(battery_current_a)
 
     rep_present = reported_soc is not None
-    rep_valid = _is_valid_reported(reported_soc)
+    payload = _as_float_or_none(reported_soc) if rep_present else None
+    validated = (
+        None if payload is None or not (0.0 <= payload <= 100.0)
+        else payload
+    )
 
-    quiescent = None
-    v_soc = None
-    if v is not None and i is not None:
+    quiescent_now = None
+    voltage_soc = None
+    if v is not None and i is not None and voltage_to_soc is not None:
         sane = SANE_VOLTURE_V[0] <= v <= SANE_VOLTURE_V[1]
-        quiescent = sane and abs(i) <= QUIESCENT_CURRENT_A
-        if quiescent:
-            v_soc = voltage_to_soc(v)
+        quiescent_now = sane and abs(i) <= QUIESCENT_CURRENT_A
+        if quiescent_now:
+            # Diagnostic only. NEVER reach into ``control``.
+            voltage_soc = voltage_to_soc(v)
 
-    if rep_valid:
-        return SocReading(
-            reported=float(reported_soc),
-            reported_valid=True,
-            control=float(reported_soc),
-            quality="reported_valid",
-            reason="device value finite and within 0..100",
-            voltage_v=v, battery_current_a=i,
-            voltage_soc=v_soc, quiescent=quiescent,
-        )
-
-    if rep_present and not rep_valid:
-        # The device SAID something but it was unusable. Substituting a
-        # voltage estimate here would silently coerce a broken reading
-        # into a "trustworthy" SOC. Refuse instead — the device's
-        # gesture is the smoking gun; consumers must see it.
-        extra = ("" if quiescent else
-                 "; pack not at rest, so the OCV table is NOT admissible")
-        return SocReading(
-            reported=reported_soc,
-            reported_valid=False,
-            control=None,
-            quality="reported_invalid",
-            reason=("device value present but invalid "
-                    "(NaN/Infinity/out of range)" + extra
-                    + " -> no trustworthy SOC, voltage estimate NOT offered"),
-            voltage_v=v, battery_current_a=i,
-            voltage_soc=v_soc, quiescent=quiescent,
-        )
-
-    if v_soc is not None:
+    if not rep_present:
         return SocReading(
             reported=None,
-            reported_valid=False,
-            control=float(v_soc),
-            quality="voltage_estimate",
-            reason=("device reported no SOC; pack quiescent so the OCV table "
-                    "is admissible. ESTIMATE, not a measurement."),
+            reported_payload=None,
+            validated=None,
+            control=None,
+            quality="no_reported",
+            reason=("no device payload; voltage estimate is DIAGNOSTIC "
+                    "and is NOT promoted to control until rest conditions "
+                    "are confirmed"),
             voltage_v=v, battery_current_a=i,
-            voltage_soc=v_soc, quiescent=quiescent,
+            voltage_soc=voltage_soc, quiescent_now=quiescent_now,
         )
 
+    if validated is None:
+        return SocReading(
+            reported=reported_soc,
+            reported_payload=payload,
+            validated=None,
+            control=None,
+            quality="reported_invalid",
+            reason=("device payload failed numerical check "
+                    "(NaN/Inf/out of range); no trustworthy SOC"),
+            voltage_v=v, battery_current_a=i,
+            voltage_soc=voltage_soc, quiescent_now=quiescent_now,
+        )
+
+    # Numerical validity is NOT a trust guarantee, but it IS the only
+    # thing we have without an independent source. The producer keeps
+    # the door open to add a second-source check or to gate on a known
+    # battery profile before treating ``validated`` as ``control``.
     return SocReading(
-        reported=None,
-        reported_valid=False,
-        control=None,
-        quality="unknown",
-        reason="device reported no SOC and no admissible voltage estimate",
+        reported=reported_soc,
+        reported_payload=payload,
+        validated=validated,
+        control=validated,
+        quality="reported_valid",
+        reason=("device payload is finite and within 0..100; "
+                "numerical validity, NOT a trust verdict"),
         voltage_v=v, battery_current_a=i,
-        voltage_soc=v_soc, quiescent=quiescent,
+        voltage_soc=voltage_soc, quiescent_now=quiescent_now,
     )
 
 
 @dataclass
 class DisplaySmoother:
-    """COSMETIC ONLY. Never feed its output to HEMS or the planner.
+    """COSMETIC ONLY. ``update.display`` is never fed to ``control``.
 
-    Kept separate on purpose: a display may be pleasant to look at and
-    still be a poor basis for a decision. Explicitly not a correctness
-    mechanism.
+    Its alpha is a UI knob; it does not prove anything about the value.
     """
     alpha: float = 0.3
     state: float | None = field(default=None)
@@ -195,11 +205,12 @@ class DisplaySmoother:
 
 
 def with_display(reading: SocReading, smoother: DisplaySmoother) -> SocReading:
-    """Attach a cosmetic smoothed value. Control is untouched."""
+    """Attach a cosmetic smoothed value. ``control`` is untouched."""
     d = smoother.update(reading.control)
     return SocReading(
         reported=reading.reported,
-        reported_valid=reading.reported_valid,
+        reported_payload=reading.reported_payload,
+        validated=reading.validated,
         control=reading.control,
         quality=reading.quality,
         reason=reading.reason,
@@ -207,7 +218,8 @@ def with_display(reading: SocReading, smoother: DisplaySmoother) -> SocReading:
         voltage_v=reading.voltage_v,
         battery_current_a=reading.battery_current_a,
         voltage_soc=reading.voltage_soc,
-        quiescent=reading.quiescent,
+        quiescent_now=reading.quiescent_now,
+        rest_conditions_confirmed=reading.rest_conditions_confirmed,
     )
 
 
@@ -222,4 +234,7 @@ def summarise(readings: list[SocReading]) -> dict:
         "control_steps_gt_5pp": sum(1 for s in steps if abs(s) > 5.0),
         "quality_counts": {q: sum(1 for r in readings if r.quality == q)
                            for q in sorted({r.quality for r in readings})},
+        "diagnostic_only_count": sum(1 for r in readings if r.is_diagnostic_only),
+        "any_voltage_soc_consulted": sum(1 for r in readings
+                                         if r.voltage_soc is not None),
     }

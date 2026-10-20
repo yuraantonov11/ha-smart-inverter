@@ -2806,3 +2806,90 @@ OCV-таблиця прийнятна **тільки в спокої** — це 
 - Live-керування, режими, dispatcher — **не змінював**.
 - Старий файл `tests/test_soc_contract_behaviour.py` (slew-based)
   видалено — він закривав на небезпеку.
+
+
+## 54. SOC — v3 (перед підключенням): payload / validated / control / display
+
+### Відгук на вимоги Юри
+
+| вимога | як реалізовано |
+|---|---|
+| Voltage estimate — діагностичний, не control | `voltage_soc` ніколи не пишеться в `control` |
+| Контроль `None`, якщо немає валідного reported | `no_reported` і `reported_invalid` обидва дають `control=None` |
+| `|I|≤1 А` недостатній для rest | `quiescent_now` — підказка; `rest_conditions_confirmed` — завжди False |
+| Розділити payload та нормалізоване число | `reported` (verbatim), `reported_payload` (float), `validated` (числова валідність) |
+| Числова валідність ≠ довірена достовірність | `reason` мiстить "numerical validity, NOT a trust verdict" |
+
+### Фактичний SHA
+
+`hems/soc_contract.py` на диску: **`fb52e9f803fd9efeed5ff30f143ac6fc6f821385`**.
+Це НЕ тимчасовий стан — файл модифікований, але ще не комітнутий.
+
+### Структура `SocReading`
+
+| поле | тип | що містить |
+|---|---|---|
+| `reported` | `object` | байт-у-байт, може бути `None`, `float(NaN)`, рядком, тощо |
+| `reported_payload` | `float \| None` | `float(reported)` коли можливо, інакше `None` |
+| `validated` | `float \| None` | `finite && 0..100`. Лише числова валідність |
+| `control` | `float \| None` | для **рішень**. `None` = немає довіреного числа |
+| `quality` | enum | `reported_valid` / `reported_invalid` / `no_reported` |
+| `reason` | `str` | словами, чому саме така якість |
+| `display` | `float \| None` | косметика, `DisplaySmoother`, НЕ для control |
+| `voltage_soc` | `float \| None` | таблиця. **ДІАГНОСТИЧНА**, ніколи не control |
+| `quiescent_now` | `bool \| None` | поточна підказка (`|I|≤1` і sane V) |
+| `rest_conditions_confirmed` | `bool = False` | повна умова rest **не підтверджена**, тому False |
+
+### Тести (структура відповідає вимозі Юри)
+
+Юра попросив **назвати AST-тест формули тестом формули, а не
+повним шляхом HEMS**. Реалізовано три окремі файли:
+
+| файл | що тестує | реалізація через |
+|---|---|---|
+| `tests/test_soc_contract_formula.py` | чисту формулу `evaluate()` | прямий виклик, без копій |
+| `tests/test_soc_hems_builder.py` | **реальний** `build_planner_inputs` | `from hems.telemetry import build_planner_inputs` |
+| `tests/test_soc_outage_runtime.py` | **реальний** runtime + planner | через `importlib.util` із фейковим `services` package, без локальних копій формули енергії |
+
+**38/38 PASS** на трьох файлах.
+
+### Що саме тести перевіряють через справжній HEMS + runtime
+
+- Відсутній `batterySoc` → builder `soc_unknown=True, soc=None`.
+- `NaN`, `Inf`, out-of-range → так само.
+- `batterySoc=25` + `batteryVoltage=51` → `pi.soc=25`, **не 75, не 100**.
+- `corrected_soc=150` → planner correctly drops to `unknown=True,
+  soc=reserve_floor` через власний range-check.
+- Display ніколи не потрапляє в `build_planner_inputs` (у тому
+  взагалі немає `display` поля).
+- DisplaySmoother з prior state 80 + новий control 25 → display лагає
+  (≈62.5), control залишається 25.
+
+### Зафіксовано pinned legacy багу (для видалення в наступному кроці)
+
+`services/outage_runtime.py:350-351`:
+```python
+if battery_soc_corrected_pct is None:
+    battery_soc_corrected_pct = battery_soc_pct
+```
+**Це тихий fallback**, який саме Юра вимагає прибрати. Тест
+`test_runtime_recovers_from_missing_corrected_with_raw` його **фiксує
+як відомий**, щоб при controlled connection можна було точно бачити,
+що змінено.
+
+### Що НЕ змінено
+
+- `soc_correction.py` — без змін.
+- `coordinator.py`, `hems/telemetry.py`, `services/outage_runtime.py`,
+  `services/outage_planner.py` — без змін.
+- `soc_contract` **не підключений** до виробничих споживачів.
+- Live-керування, режими, dispatcher — без змін.
+- Старий файл `tests/test_soc_real_planner.py` видалено.
+
+### Готовність до controlled connection
+
+Готово до контрольованого підключення:
+1. Передати `control` замість `corrected_soc` у `build_planner_inputs`.
+2. Видалити legacy fallback `outage_runtime.py:350-351`.
+3. Зробити `pi.soc` `control`-ом (не `validated`-ом).
+4. Залишити окремий `display_soc` для UI.
