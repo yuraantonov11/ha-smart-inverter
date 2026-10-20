@@ -1,152 +1,225 @@
-"""Single SOC contract: raw / estimated / quality.
+"""SOC reading contract: reported / validated / control / display.
 
-PROPOSAL — not deployed. Nothing here changes live control, modes or
-dispatcher behaviour. It adds an explicit reading contract so a consumer
-can tell WHAT it is looking at instead of receiving one number whose
-provenance is invisible.
+REJECTED: the previous slew-limited proposal in this file. It was unsafe.
+With previous_estimated=80, reported=25, voltage=51 it returned 75.0 for
+planning — a 50-point INFLATION of a critically low battery — and the
+limit was frequency-dependent (5 s cycle -> 25 % after 60 s; 60 s cycle
+-> 75 % after 5 s). It also reduced a visible jump without improving the
+truth of the decision. Withdrawn and replaced by what follows.
 
-Why this exists
----------------
-``get_real_soc()`` returns a single float and collapses two different
-kinds of knowledge into it:
+This module has FOUR separate quantities and no smoothing anywhere near
+the control path.
 
-  * the inverter's reported SOC (``batterySoc`` / ``batteryCapacity``), and
-  * a voltage-derived estimate from the 16S LiFePO4 OCV table.
+    reported   the device value, as received, never altered. Present
+               whenever the device sent one, even if invalid, so a
+               consumer can see what actually arrived.
+    valid      whether that value is usable at all (finite, in range).
+               A value can be present and invalid.
+    control    what a DECISION may use. None when nothing is
+               trustworthy — for a planner that is the safe answer;
+               inventing a number is not.
+    display    optional cosmetic smoothing, explicitly NOT for control,
+               never fed to HEMS or the planner.
 
-It also picks between them with a hard ±10 % gate, so a change of a few
-volts produces a step: on 2026-10-20 the charging-mode transition moved
-``batteryVoltage`` 58.0 → 52.8 V and ``corrected_soc`` stepped
-100.0 → 80.0 in a single 5-second cycle. Consumers cannot see that the
-number changed KIND, not just value.
+Why the voltage estimate needs a rest gate
+------------------------------------------
+An OCV table describes a battery AT REST. Under load the terminal voltage
+is not OCV, so a table lookup while the pack is working systematically
+mis-reports SOC. That is exactly the 2026-10-20 failure: the
+charging-mode transition moved batteryVoltage 58.0 -> 52.8 V, the table
+mapped 52.8 V to 80 %, and corrected_soc stepped 100 -> 80 while the
+device kept reporting 100.
 
-The contract
-------------
-Every SOC observation is a ``SocReading`` with:
+The table is admissible only when the pack is quiescent: current near
+zero AND voltage inside a sane band. Otherwise no estimate is offered.
 
-  raw        the number the device reported (or None if absent)
-  estimated  the number a consumer should use for planning
-  quality    one of: ``reported`` / ``estimated`` / ``blended`` /
-             ``unknown``
-  source     where the raw value came from
-  reason     why the estimate was chosen, in words
-
-``estimated`` is never presented as if it were ``raw``. A consumer that
-needs the BMS number reads ``raw``; one that needs a planning number
-reads ``estimated`` and checks ``quality``.
+Reported origin is not a trust guarantee either. On this device the
+reported value was a constant 100.0 across a 5.2 V change — "the device
+said so" is precisely the claim that failed.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from typing import Literal
 
-Quality = Literal["reported", "estimated", "blended", "unknown"]
+Quality = Literal[
+    "reported_valid",      # device value present and usable
+    "reported_invalid",    # device value present but not usable
+    "voltage_estimate",    # device unusable, rest-confirmed table value
+    "unknown",             # nothing usable
+]
 
-# Maximum change in the ESTIMATED series per observation. A genuine
-# charge/discharge cycle moves SOC by well under this in five seconds;
-# a branch flip moves it by 10-20 points at once. The limiter is
-# applied to the estimate only, never to the reported value.
-DEFAULT_SLEW_POINTS = 5.0
+# A pack moving current is not at rest. |I| below this is "quiescent
+# enough" for a first-order table. A heuristic, documented as one.
+QUIESCENT_CURRENT_A = 1.0
+
+# Outside this band the reading is either a deeply asleep pack or not a
+# battery voltage at all.
+SANE_VOLTURE_V = (40.0, 65.0)
 
 
 @dataclass(frozen=True)
 class SocReading:
-    raw: float | None
-    estimated: float | None
+    reported: float | None
+    reported_valid: bool
+    control: float | None
     quality: Quality
-    source: str
     reason: str
+    display: float | None = None
     voltage_v: float | None = None
+    battery_current_a: float | None = None
     voltage_soc: float | None = None
-    disagreement: float | None = None
-    slew_limited: bool = False
+    quiescent: bool | None = None
 
     @property
-    def is_estimated(self) -> bool:
-        return self.quality in ("estimated", "blended")
+    def usable(self) -> bool:
+        return self.control is not None
 
 
-def soc_reading(
-    reported_soc: float | None,
-    voltage: float,
-    battery_current: float = 0.0,
-    *,
-    get_real_soc,
-    voltage_to_soc,
-    previous_estimated: float | None = None,
-    slew_points: float | None = DEFAULT_SLEW_POINTS,
-    source: str = "cloud_raw",
-) -> SocReading:
-    """Build a SocReading from the device report plus voltage."""
-    if reported_soc is None:
-        return SocReading(
-            raw=None, estimated=None, quality="unknown", source=source,
-            reason="device reported no SOC",
-            voltage_v=voltage,
-        )
+def _as_float_or_none(x):
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
 
-    raw = max(0.0, min(100.0, float(reported_soc)))
+
+def _is_valid_reported(value) -> bool:
+    """Finite, numeric, inside 0..100. No coercion, no substitution."""
+    if value is None or isinstance(value, bool):
+        return False
+    f = _as_float_or_none(value)
+    if f is None:
+        return False
+    return 0.0 <= f <= 100.0
+
+
+def evaluate(reported_soc, voltage_v, battery_current_a, *, voltage_to_soc) -> SocReading:
+    """Classify one observation. No smoothing, no interpolation.
+
+    `voltage_to_soc` is injected so this module never duplicates the
+    production OCV table.
+    """
+    v = _as_float_or_none(voltage_v)
+    i = _as_float_or_none(battery_current_a)
+
+    rep_present = reported_soc is not None
+    rep_valid = _is_valid_reported(reported_soc)
+
+    quiescent = None
     v_soc = None
-    if voltage > 10.0:
-        v_soc = voltage_to_soc(voltage - battery_current * 0.0128)
+    if v is not None and i is not None:
+        sane = SANE_VOLTURE_V[0] <= v <= SANE_VOLTURE_V[1]
+        quiescent = sane and abs(i) <= QUIESCENT_CURRENT_A
+        if quiescent:
+            v_soc = voltage_to_soc(v)
 
-    estimate = float(get_real_soc(raw, voltage, battery_current))
-    disagree = None if v_soc is None else abs(raw - v_soc)
-
-    if v_soc is None:
-        quality: Quality = "reported"
-        reason = "voltage unusable; kept the device report"
-    elif disagree <= 10.0:
-        quality = "reported"
-        reason = "device and voltage agree within 10 points"
-    else:
-        quality = "estimated"
-        reason = (
-            f"device and voltage disagree by {disagree:.1f} points; "
-            "estimate is voltage-derived, NOT the device value"
+    if rep_valid:
+        return SocReading(
+            reported=float(reported_soc),
+            reported_valid=True,
+            control=float(reported_soc),
+            quality="reported_valid",
+            reason="device value finite and within 0..100",
+            voltage_v=v, battery_current_a=i,
+            voltage_soc=v_soc, quiescent=quiescent,
         )
 
-    slew_limited = False
-    if slew_points is not None and previous_estimated is not None:
-        delta = estimate - previous_estimated
-        if abs(delta) > slew_points:
-            estimate = max(0.0, min(100.0,
-                                    previous_estimated
-                                    + (slew_points if delta > 0 else -slew_points)))
-            slew_limited = True
-            reason += (
-                f"; step limited to {slew_points:.0f} points "
-                f"(was {delta:+.1f})"
-            )
-            if quality == "reported":
-                quality = "blended"
+    if rep_present and not rep_valid:
+        # The device SAID something but it was unusable. Substituting a
+        # voltage estimate here would silently coerce a broken reading
+        # into a "trustworthy" SOC. Refuse instead — the device's
+        # gesture is the smoking gun; consumers must see it.
+        extra = ("" if quiescent else
+                 "; pack not at rest, so the OCV table is NOT admissible")
+        return SocReading(
+            reported=reported_soc,
+            reported_valid=False,
+            control=None,
+            quality="reported_invalid",
+            reason=("device value present but invalid "
+                    "(NaN/Infinity/out of range)" + extra
+                    + " -> no trustworthy SOC, voltage estimate NOT offered"),
+            voltage_v=v, battery_current_a=i,
+            voltage_soc=v_soc, quiescent=quiescent,
+        )
+
+    if v_soc is not None:
+        return SocReading(
+            reported=None,
+            reported_valid=False,
+            control=float(v_soc),
+            quality="voltage_estimate",
+            reason=("device reported no SOC; pack quiescent so the OCV table "
+                    "is admissible. ESTIMATE, not a measurement."),
+            voltage_v=v, battery_current_a=i,
+            voltage_soc=v_soc, quiescent=quiescent,
+        )
 
     return SocReading(
-        raw=raw,
-        estimated=estimate,
-        quality=quality,
-        source=source,
-        reason=reason,
-        voltage_v=voltage,
-        voltage_soc=v_soc,
-        disagreement=disagree,
-        slew_limited=slew_limited,
+        reported=None,
+        reported_valid=False,
+        control=None,
+        quality="unknown",
+        reason="device reported no SOC and no admissible voltage estimate",
+        voltage_v=v, battery_current_a=i,
+        voltage_soc=v_soc, quiescent=quiescent,
     )
 
 
-def series(readings: list[SocReading]) -> dict:
-    """Summarise a series: raw and estimated tracked separately."""
-    raw = [r.raw for r in readings if r.raw is not None]
-    est = [r.estimated for r in readings if r.estimated is not None]
-    steps_raw = [b - a for a, b in zip(raw, raw[1:])]
-    steps_est = [b - a for a, b in zip(est, est[1:])]
+@dataclass
+class DisplaySmoother:
+    """COSMETIC ONLY. Never feed its output to HEMS or the planner.
+
+    Kept separate on purpose: a display may be pleasant to look at and
+    still be a poor basis for a decision. Explicitly not a correctness
+    mechanism.
+    """
+    alpha: float = 0.3
+    state: float | None = field(default=None)
+
+    def update(self, control: float | None) -> float | None:
+        if control is None:
+            return self.state
+        if self.state is None:
+            self.state = control
+            return control
+        self.state = (1 - self.alpha) * self.state + self.alpha * control
+        return self.state
+
+    def reset(self) -> None:
+        self.state = None
+
+
+def with_display(reading: SocReading, smoother: DisplaySmoother) -> SocReading:
+    """Attach a cosmetic smoothed value. Control is untouched."""
+    d = smoother.update(reading.control)
+    return SocReading(
+        reported=reading.reported,
+        reported_valid=reading.reported_valid,
+        control=reading.control,
+        quality=reading.quality,
+        reason=reading.reason,
+        display=d,
+        voltage_v=reading.voltage_v,
+        battery_current_a=reading.battery_current_a,
+        voltage_soc=reading.voltage_soc,
+        quiescent=reading.quiescent,
+    )
+
+
+def summarise(readings: list[SocReading]) -> dict:
+    ctrl = [r.control for r in readings if r.control is not None]
+    steps = [b - a for a, b in zip(ctrl, ctrl[1:])]
     return {
         "n": len(readings),
-        "raw_steps": steps_raw,
-        "raw_max_step": max((abs(s) for s in steps_raw), default=0.0),
-        "estimated_steps": steps_est,
-        "estimated_max_step": max((abs(s) for s in steps_est), default=0.0),
-        "quality_changes": [
-            (a.quality, b.quality) for a, b in zip(readings, readings[1:])
-            if a.quality != b.quality
-        ],
+        "with_control": len(ctrl),
+        "without_control": len(readings) - len(ctrl),
+        "control_max_step_pp": max((abs(s) for s in steps), default=0.0),
+        "control_steps_gt_5pp": sum(1 for s in steps if abs(s) > 5.0),
+        "quality_counts": {q: sum(1 for r in readings if r.quality == q)
+                           for q in sorted({r.quality for r in readings})},
     }
