@@ -159,6 +159,27 @@ views:
                 name: Прогноз завтра (kWh)
               - entity: sensor.smart_solar_inverter_learned_ratio
                 name: Коеф. конверсії PV
+          - type: entities
+            title: SOC: спостереження
+            show_header_toggle: false
+            state_color: true
+            entities:
+              - entity: sensor.smart_solar_inverter_battery_soc
+                name: Повідомлено пристроєм (raw)
+              - entity: sensor.smart_solar_inverter_battery_soc_corrected
+                name: Чинний SOC керування
+              - entity: sensor.smart_solar_inverter_battery_2
+                name: Новий кандидат (control)
+              - entity: sensor.smart_solar_inverter_battery_3
+                name: Оцінка за напругою (діагностика)
+              - entity: sensor.smart_solar_inverter_4
+                name: Статус
+          - type: markdown
+            content: >-
+              **Режим спостереження.** Новий розрахунок SOC v3 працює
+              паралельно, **керування не змінено**. «Новий кандидат» — те,
+              що контракт запропонував би як control; він поки нікуди не
+              підключений.
           - type: statistics-graph
             title: Валова оцінка вартості заміщеного імпорту · денна накопичена за 24 години
             chart_type: line

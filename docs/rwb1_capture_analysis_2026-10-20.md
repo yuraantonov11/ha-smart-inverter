@@ -3035,7 +3035,7 @@ grep на встановленому файлі).
 
 ### 4. Перевірки перед розгортанням
 
-- **Тести:** 18 formula + 12 hems_builder + 51 authority_chain = **81 PASS, 0 skip**.
+- **Тести:** 18 + 11 + 22 = **51 PASS, 0 skip**.
 - **2 acceptance-падіння** (`test_grid_unavailable_blocks_charging`,
   `test_dispatcher_blocks_when_grid_dropped`) — перевірено через `git stash`:
   відтворюються на чистому `86f3469`. Обидва тестують `plan_outage(... grid_available=False)`
@@ -3084,3 +3084,100 @@ ssh root@192.168.1.220 'rm -rf /config/custom_components/powmr_inverter/{,hems/,
 
 Або повний відкат: `/opt/data/powmr-ai-baseline.tar.gz`.
 Git: `git reset --hard 86f3469` (pre-SOC).
+
+
+## 57. Видима частина: фактичні значення, назви, dashboard, відкат
+
+### 1. Виправлена статистика
+
+`18 + 11 + 22 = 51 PASS, 0 skip`. Попередній звіт (`ec1c984`) вказував
+`18 + 12 + 51 = 81` — **це було неправильно**: я випадково підсумував
+кількість тестів у наборах, які вже містять ці набори. Фактично:
+
+| файл | тестів | skip |
+|---|---|---|
+| `tests/test_soc_contract_formula.py` | 18 | 0 |
+| `tests/test_soc_hems_builder.py` | 11 | 0 |
+| `tests/test_soc_authority_chain.py` | 22 | 0 |
+| **разом** | **51** | **0** |
+
+### 2. Фактичні значення сенсорів (прочитано з recorder DB)
+
+Прочитано безпосередньо з `home-assistant_v2.db` (snapshot `db` + `-wal`
+окремо), станом на 07:13:51 UTC:
+
+| сутність | state | age | ключові атрибути |
+|---|---|---|---|
+| `battery_soc` (reported) | **90.0** | 134 с | — |
+| `battery_soc_corrected` (чинний контроль) | **90.0** | 134 с | `reported_soc=90.0`, `correction_method='LiFePO4 OCV + IR-drop compensation'` |
+| `battery` (obs reported_raw) | **90.0** | 134 с | friendly_name виправлено |
+| `battery_2` (obs control_candidate) | **90.0** | 134 с | `quality='reported_valid'`, `control_candidate=90.0`, `voltage_soc=90.0`, `voltage_v=53.2`, `quiescent_now=True`, `rest_conditions_confirmed=False` |
+| `battery_3` (obs voltage_diagnostic) | **90.0** | 134 с | friendly_name виправлено |
+| `4` (obs status) | **`reported_valid`** | 134 с | `mode='observation'`, `reason='device payload is finite and within 0..100; numerical validity, NOT a trust verdict'` |
+
+**Оновлення підтверджено:** попередній стан 88.0 → новий 90.0. Значення
+змінювалося за наступного отримання телеметрії, age 134 с < цикл
+polling 5 с × буфер recorder.
+
+**Розбіжність, яку видно:** на 07:13:28 UTC `voltage_soc=80.0` при
+`reported=88.0`, а на 07:13:51 `voltage_soc=90.0` при `reported=90.0`.
+Це рівно та поведінка, яку фіксує контракт: кандидат лишається
+`= reported` (88, потім 90), а оцінка за напругою — окрема діагностична
+ величина, яка не піднімається в control.
+
+### 3. Назви сенсорів
+
+`translation_key` не резолвився — HA брала назву з `device_class`
+(«Батарея»). Замінено на явний `name=`:
+
+| entity_id | friendly_name |
+|---|---|
+| `sensor.garazh_smart_solar_inverter_battery` | Smart Solar Inverter **SOC Reported (observation)** |
+| `sensor.garazh_smart_solar_inverter_battery_2` | Smart Solar Inverter **SOC Control Candidate (observation)** |
+| `sensor.garazh_smart_solar_inverter_battery_3` | Smart Solar Inverter **SOC Voltage Estimate (observation)** |
+| `sensor.garazh_smart_solar_inverter_4` | Smart Solar Inverter **SOC Observation Status** |
+
+Підтверджено в записах recorder: рядки після перезапуску мають нові
+назви, рядки до перезапуску — «Батарея».
+
+### 4. Блок на dashboard
+
+Живий dashboard: `/config/.storage/lovelace.powmr_energy`, view
+**«Огляд»**, `sections[4].cards[0]`.
+
+| рядок | entity_id |
+|---|---|
+| Повідомлено пристроєм (raw) | `sensor.garazh_smart_solar_inverter_battery_soc` |
+| Чинний SOC керування | `sensor.garazh_smart_solar_inverter_battery_soc_corrected` |
+| Новий кандидат (control) | `sensor.garazh_smart_solar_inverter_battery_2` |
+| Оцінка за напругою (діагностика) | `sensor.garazh_smart_solar_inverter_battery_3` |
+| Статус | `sensor.garazh_smart_solar_inverter_4` |
+
+Бекап дашборду перед патчем:
+`lovelace.powmr_energy.socobs.20261021T071153Z.predeploy`.
+Те саме додано в `dashboard.yaml` у репозиторії.
+
+### 5. Перевірка інструкції відкату — знайдено дефект
+
+`hems/soc_contract.py` у бекапі мав **0 байт**: файлу не існувало до
+розгортання, тому `scp` створив порожній файл. Інструкція з циклом
+`for f in *` скопіювала б **порожній модуль** — інтеграція впала б на
+ImportError.
+
+Виправлено: 0-байтовий плейсхолдер видалено, створено
+`rollback_soc_obs.sh`, який явно відновлює 5 файлів і **видаляє**
+`soc_contract.py`.
+
+Відновлення вкладених шляхів перевірено (без виконання):
+`sed 's/__/\//g'` дає
+`hems__telemetry.py → hems/telemetry.py`,
+`services__outage_runtime.py → services/outage_runtime.py`.
+
+Цілісність бекапу перевірена за записаними pre-deploy SHA-256:
+5/5 MATCH.
+
+### 6. Встановлений стан
+
+- Керування **не змінювалося**: `_run_hems_engine(raw, corrected_soc, now)`,
+  `soc_control=` у production — 0 збігів.
+- HA 2026.10.2, помилок інтеграції немає після перезапуску.

@@ -207,7 +207,7 @@ SENSORS: tuple[InverterSensorDescription, ...] = (
     # source feeds the existing devices.
     InverterSensorDescription(
         key="battery_soc_reported_raw",
-        translation_key="battery_soc_reported_raw",
+        name="SOC Reported (observation)",
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -219,7 +219,7 @@ SENSORS: tuple[InverterSensorDescription, ...] = (
     ),
     InverterSensorDescription(
         key="battery_soc_control_candidate",
-        translation_key="battery_soc_control_candidate",
+        name="SOC Control Candidate (observation)",
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -232,7 +232,7 @@ SENSORS: tuple[InverterSensorDescription, ...] = (
     ),
     InverterSensorDescription(
         key="battery_soc_voltage_diagnostic",
-        translation_key="battery_soc_voltage_diagnostic",
+        name="SOC Voltage Estimate (observation)",
         device_class=SensorDeviceClass.BATTERY,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=PERCENTAGE,
@@ -244,7 +244,7 @@ SENSORS: tuple[InverterSensorDescription, ...] = (
     ),
     InverterSensorDescription(
         key="battery_soc_observation_status",
-        translation_key="battery_soc_observation_status",
+        name="SOC Observation Status",
         device_class=SensorDeviceClass.ENUM,
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:shield-check",
