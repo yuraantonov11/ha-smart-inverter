@@ -2974,3 +2974,113 @@ Display ніколи не потрапляє в control (окремий `Display
 | тести: end-to-end raw→control→planner | ГОТОВО |
 | `coordinator.py` публікує `soc_control` | НЕ зроблено (live) |
 | deployment на HA VM | НЕ зроблено |
+
+
+## 56. SOC v3 — виправлення 82bc59d + розгортання в режимі спостереження
+
+### 1. Виправлення знайдені в 82bc59d
+
+**(а) `soc_control=25` скасовував `soc_unknown=True`.**
+Причина: `soc_unknown = soc_control is None` перезаписував явне
+значення викликача. Виправлено — `soc_unknown` визначається з контракту
+лише коли викликач його не задав:
+```python
+if soc_unknown is None:
+    soc_unknown = soc_control is None
+```
+Додатково розділено дві гілки в builder: `soc_unknown and soc_value is None`
+→ `soc=None`; `soc_unknown` із дійсним числом → число зберігається, guard лишається.
+
+**(б) `_NOT_ADOPTED` у тестах.** Замінено: тести передають `reading.control`
+напряму, включно з `None`.
+
+**(в) predictive-controller.** Був `skipTest` на будь-якій помилці.
+Тепер реальна `plan_night_charge(pi, target_morning=...)` з
+`hems/predictive.py`; помилки дають FAILURE. Skip-ів немає.
+
+### 2. Львівобленерго в SOC-коміті — знайдено
+
+`git show --name-only 82bc59d` показав:
+```
+services/lvivoblenergo_poller.py
+services/lvivoblenergo_source.py
+```
+Ці файли ніколи не були в tracked history (`git log --all --diff-filter=A`
+→ порожньо). Вони потрапили через `git add -A services/`.
+
+**Дія:** `git reset --mixed 86f3469`, потім явний `git add` лише потрібних
+файлів. `git ls-tree -r HEAD | grep lvivoblergo` → порожньо.
+`telemetry_sources/` — також untracked, не доданий.
+
+Коміт `6bee84d295a5f2db3c8b23f30e538c1b20866363` (force-with-lease).
+
+### 3. Спостереження в HA
+
+`coordinator.py`: `soc_evaluate(...)` виконується **паралельно** з
+`get_real_soc(...)`; результат публікується як `data["socObservation"]`.
+`_run_hems_engine(raw, corrected_soc, now)` — **не змінено** (перевірено
+grep на встановленому файлі).
+
+4 нові сутності, усі `entity_category=diagnostic`:
+
+| translation_key | entity_id | що показує |
+|---|---|---|
+| `battery_soc_reported_raw` | `sensor.garazh_smart_solar_inverter_battery` | нормалізований payload |
+| `battery_soc_control_candidate` | `sensor.garazh_smart_solar_inverter_battery_2` | кандидат control |
+| `battery_soc_voltage_diagnostic` | `sensor.garazh_smart_solar_inverter_battery_3` | діагностика за напругою |
+| `battery_soc_observation_status` | `sensor.garazh_smart_solar_inverter_4` | quality + reason + attrs |
+
+Атрибути status-сенсора: `reason`, `quiescent_now`,
+`rest_conditions_confirmed`, `voltage_v`, `battery_current_a`, `mode="observation"`.
+
+### 4. Перевірки перед розгортанням
+
+- **Тести:** 18 formula + 12 hems_builder + 51 authority_chain = **81 PASS, 0 skip**.
+- **2 acceptance-падіння** (`test_grid_unavailable_blocks_charging`,
+  `test_dispatcher_blocks_when_grid_dropped`) — перевірено через `git stash`:
+  відтворюються на чистому `86f3469`. Обидва тестують `plan_outage(... grid_available=False)`
+  — SOC через цей шлях не проходить. **Вплив на цей етап: нульовий.**
+
+### 5. Розгортання
+
+| крок | результат |
+|---|---|
+| backup | `/opt/data/cache/scratch/soc-rollback-2026-10-21/` (5 файлів) |
+| baseline | `/opt/data/powmr-ai-baseline.tar.gz` (1.2 MB) |
+| `ha core check` | **Command completed successfully** |
+| scp 6 файлів | rc=0 для всіх |
+| `__pycache__` очищено | rc=0 |
+| SHA-256 local vs HA | **6/6 MATCH** |
+| `ha core restart` | rc=0, HA 2026.10.2 |
+| помилки інтеграції | **немає** (фільтр: pychromecast, localtuya — сторонні) |
+| entity registry | усі 4 `translation_key` присутні, `entity_category=diagnostic` |
+| `soc_control=` у coordinator.py | **0 збігів** → керування не переведено |
+
+### 6. Що НЕ змінено
+
+- `_run_hems_engine(raw, corrected_soc, now)` — старий шлях.
+- Режими: Adaptive / Shadow / observation збережено.
+- `soc_control` ніде не передається у production → контракт лише спостерігає.
+- RWB1, автоматизації, тарифне планування — без змін.
+- `services/lvivoblenergo_*.py`, `telemetry_sources/` — не розгорнуто.
+
+### 7. Відкат
+
+```bash
+# 1) відкат 5 файлів із бекапу
+for f in hems__telemetry.py services__outage_runtime.py coordinator.py sensor.py strings.json; do
+  case "$f" in
+    hems__telemetry.py)        dst=hems/telemetry.py ;;
+    services__outage_runtime.py) dst=services/outage_runtime.py ;;
+    *) dst=$f ;;
+  esac
+  scp /opt/data/cache/scratch/soc-rollback-2026-10-21/$f root@192.168.1.220:/config/custom_components/powmr_inverter/$dst
+done
+# 2) видалити доданий файл
+ssh root@192.168.1.220 rm /config/custom_components/powmr_inverter/hems/soc_contract.py
+# 3) очистити кеш і перезапустити
+ssh root@192.168.1.220 'rm -rf /config/custom_components/powmr_inverter/{,hems/,services/}__pycache__; ha core restart'
+```
+
+Або повний відкат: `/opt/data/powmr-ai-baseline.tar.gz`.
+Git: `git reset --hard 86f3469` (pre-SOC).
