@@ -27,7 +27,8 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .api import InverterApiClient, InverterOfflineError, TokenExpiredError
 from .const import DOMAIN, HISTORY_POLL_INTERVAL_SEC
 from .hems.forecast import ForecastService
-from .hems.soc_correction import get_real_soc
+from .hems.soc_correction import get_real_soc, voltage_to_soc
+from .hems.soc_contract import evaluate as soc_evaluate
 from .hems.engine import (
     HemsEngine,
     SmartMode,
@@ -1037,6 +1038,30 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         else:
             corrected_soc = get_real_soc(reported_soc, voltage, current)
 
+        # ── Observation path (SOC v3) ──────────────────────────────────
+        # Computed in parallel to the existing ``corrected_soc``; the
+        # result is published ONLY through diagnostic observation
+        # sensors. The value DOES NOT influence the engine, the
+        # outage planner, or any existing automation. The control
+        # path remains ``corrected_soc`` until a separate approval.
+        soc_reading = soc_evaluate(
+            reported_soc, float(voltage), float(current),
+            voltage_to_soc=voltage_to_soc,
+        )
+        observation = {
+            "reported_payload": soc_reading.reported_payload,
+            "validated": soc_reading.validated,
+            "control_candidate": soc_reading.control,
+            "voltage_soc": soc_reading.voltage_soc,
+            "voltage_v": soc_reading.voltage_v,
+            "battery_current_a": soc_reading.battery_current_a,
+            "quality": soc_reading.quality,
+            "reason": soc_reading.reason,
+            "quiescent_now": soc_reading.quiescent_now,
+            "rest_conditions_confirmed":
+                soc_reading.rest_conditions_confirmed,
+        }
+
         # ── Grid outage detection ────────────────────────────────────
         grid_v = raw.get("gridVoltage", 230.0)
         grid_available, grid_transition = self._evaluate_grid(grid_v)
@@ -1192,6 +1217,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         result = {
             **raw,
             "correctedSoc": corrected_soc,
+            "socObservation": observation,
             "gridAvailable": grid_available,
             "gridTransition": grid_transition,
             "online": True,

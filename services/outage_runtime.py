@@ -104,6 +104,22 @@ MIN_TICK_INTERVAL_SECONDS = 10
 # operator-ratified "4 hours" buffer used in earlier drafts.
 PREP_BACKSTOP_HOURS = 4
 
+
+# Sentinel for ``soc_control`` parameter. Distinguishes "the caller
+# did not adopt the contract" from "the contract adopted and control is
+# None". Production callers must pass the contract's ``control`` value.
+class _NotAdopted:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "_NOT_ADOPTED"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_NOT_ADOPTED = _NotAdopted()
+
 # Output-source priority values for the protected dispatcher. We pass
 # the EXACT strings the protected dispatcher's
 # ``self.api.set_output_priority`` (api.py) accepts. The canonical
@@ -216,6 +232,7 @@ def snapshot_telemetry(
     hass: Any = None,
     *,
     entry_id: str | None = None,
+    soc_control: float | None | object = _NOT_ADOPTED,
 ) -> Telemetry:
     """Build a fresh ``Telemetry`` from a live ``InverterCoordinator``.
 
@@ -226,6 +243,14 @@ def snapshot_telemetry(
     default) when the underlying coordinator attribute is missing.
     The planner treats ``None`` as "unknown" and produces a
     meaningful plan in either case.
+
+    ``soc_control`` (contract-authoritative, optional): when supplied
+    (float), it IS ``battery_soc_corrected_pct`` -- there is no
+    fallback to ``batterySoc``. When ``None``, no authoritative
+    control was published and the snapshot records
+    ``battery_soc_corrected_pct=None``; the legacy
+    ``coordinator.data["correctedSoc"]`` path remains for callers
+    that have not adopted the contract.
     """
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
@@ -344,11 +369,27 @@ def snapshot_telemetry(
 
     # ---- Battery telemetry (live readings from ``coordinator.data``)
     battery_soc_pct = _as_float(_safe_dict_get(data, "batterySoc"))
-    battery_soc_corrected_pct = _as_float(
-        _safe_dict_get(data, "correctedSoc")
-    )
-    if battery_soc_corrected_pct is None:
-        battery_soc_corrected_pct = battery_soc_pct
+    if soc_control is not _NOT_ADOPTED:
+        # Contract is authoritative. Legacy recovery is BYPASSED.
+        # ``soc_control=None`` means the contract published unknown;
+        # an explicit float is the trustworthy SOC.
+        battery_soc_corrected_pct = (
+            float(soc_control) if soc_control is not None else None
+        )
+        # When the contract publishes None explicitly, do NOT surface
+        # the raw ``batterySoc`` either -- otherwise the planner's
+        # ``_compute_battery_remaining_kwh`` would substitute it and
+        # the "explicit unknown" would be silently recovered.
+        battery_soc_pct = None if soc_control is None else battery_soc_pct
+    else:
+        battery_soc_corrected_pct = _as_float(
+            _safe_dict_get(data, "correctedSoc")
+        )
+        # Legacy fallback path. Preserved ONLY for callers that have
+        # not yet adopted the contract; the contract adoption removes
+        # this branch in the next deployment step.
+        if battery_soc_corrected_pct is None:
+            battery_soc_corrected_pct = battery_soc_pct
     battery_voltage_v = _as_float(_safe_dict_get(data, "batteryVoltage"))
 
     # ---- Efficiency: explicit options first, then the planner default

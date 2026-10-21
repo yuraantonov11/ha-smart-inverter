@@ -123,9 +123,15 @@ def evaluate(
     i = _as_float_or_none(battery_current_a)
 
     rep_present = reported_soc is not None
-    payload = _as_float_or_none(reported_soc) if rep_present else None
+    # Explicit rejection of ``bool``. Python converts ``True`` to 1.0
+    # and ``False`` to 0.0 -- both numerically in-range, but neither
+    # is a device measurement. A 1 % SOC and a 0 % SOC must never
+    # come from a truthy/falsy flag in the codebase.
+    is_bool = isinstance(reported_soc, bool)
+    payload = (None if (not rep_present or is_bool)
+               else _as_float_or_none(reported_soc))
     validated = (
-        None if payload is None or not (0.0 <= payload <= 100.0)
+        None if is_bool or payload is None or not (0.0 <= payload <= 100.0)
         else payload
     )
 

@@ -18,6 +18,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.const import (
     PERCENTAGE,
     UnitOfApparentPower,
@@ -195,6 +196,72 @@ SENSORS: tuple[InverterSensorDescription, ...] = (
         attr_fn=lambda d: {
             "reported_soc": d.get("batterySoc"),
             "correction_method": "LiFePO4 OCV + IR-drop compensation",
+        },
+    ),
+    # ── SOC v3 observation sensors (diagnostic) ──────────────────────
+    # These sensors are observation-only; the value they carry has
+    # NO EFFECT on the engine, the outage planner, or any existing
+    # automation. They exist so the candidate control SOC, the
+    # voltage-diagnostic number, the quality reason, and the build
+    # marker are visible to a reviewer without changing which SOC
+    # source feeds the existing devices.
+    InverterSensorDescription(
+        key="battery_soc_reported_raw",
+        translation_key="battery_soc_reported_raw",
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=0,
+        icon="mdi:battery",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: (d.get("socObservation") or {}).get(
+            "reported_payload"),
+    ),
+    InverterSensorDescription(
+        key="battery_soc_control_candidate",
+        translation_key="battery_soc_control_candidate",
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=0,
+        icon="mdi:battery-sync",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: (d.get("socObservation") or {}).get(
+            "control_candidate"),
+        attr_fn=lambda d: (d.get("socObservation") or {}),
+    ),
+    InverterSensorDescription(
+        key="battery_soc_voltage_diagnostic",
+        translation_key="battery_soc_voltage_diagnostic",
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        suggested_display_precision=0,
+        icon="mdi:lightning-bolt",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        value_fn=lambda d: (d.get("socObservation") or {}).get(
+            "voltage_soc"),
+    ),
+    InverterSensorDescription(
+        key="battery_soc_observation_status",
+        translation_key="battery_soc_observation_status",
+        device_class=SensorDeviceClass.ENUM,
+        state_class=SensorStateClass.MEASUREMENT,
+        icon="mdi:shield-check",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        options=["reported_valid", "reported_invalid", "no_reported"],
+        value_fn=lambda d: (d.get("socObservation") or {}).get(
+            "quality"),
+        attr_fn=lambda d: {
+            "reason": (d.get("socObservation") or {}).get("reason"),
+            "quiescent_now": (d.get("socObservation") or {}).get(
+                "quiescent_now"),
+            "rest_conditions_confirmed": (d.get("socObservation") or {}).get(
+                "rest_conditions_confirmed"),
+            "voltage_v": (d.get("socObservation") or {}).get("voltage_v"),
+            "battery_current_a": (d.get("socObservation") or {}).get(
+                "battery_current_a"),
+            "mode": "observation",
         },
     ),
     # Energy/CO2 are exposed by dedicated API-backed sensors below to avoid duplicates.

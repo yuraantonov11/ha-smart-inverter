@@ -34,6 +34,24 @@ _SOC_MIN = 0.0
 _SOC_MAX = 100.0
 
 
+# Sentinel for ``soc_control`` parameter. Distinguishes "the caller
+# did not adopt the contract at all" (legacy path) from "the caller
+# adopted the contract and the control is None" (authoritative
+# unknown). The legacy path is preserved ONLY for callers that have
+# not yet wired the contract; production adoption removes it.
+class _NotAdopted:
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "_NOT_ADOPTED"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+_NOT_ADOPTED = _NotAdopted()
+
+
 @dataclass(slots=True, frozen=True)
 class TelemetrySource:
     """Where each PlannerInputs field came from.
@@ -217,6 +235,7 @@ def build_planner_inputs(
     now: datetime | None = None,
     smart_mode: int = int(SmartMode.ADAPTIVE),
     corrected_soc: float | None = None,
+    soc_control: float | None | _NotAdopted = _NOT_ADOPTED,
     forecast_tomorrow_kwh: float | None = None,
     forecast_today_kwh: float | None = None,
     hourly_pv: list[float] | None = None,
@@ -265,6 +284,14 @@ def build_planner_inputs(
         corrected_soc: pre-corrected SOC (after voltage compensation).
             If None, ``raw.get("batterySoc")`` is used with provenance
             marked as ``api`` (uncorrected).
+        soc_control: AUTHORITATIVE value produced by the SOC contract.
+            When supplied (float), it is the soc that ``PlannerInputs``
+            records regardless of what ``corrected_soc`` or
+            ``raw["batterySoc"]`` carry. When ``None``, the builder
+            sees ``soc_unknown=True`` and ``soc=None`` -- there is no
+            legacy recovery from raw, corrected, or display fallbacks.
+            This is the wire that makes the contract authoritative for
+            all connected consumers.
         grid_available: from coordinator's grid-outage detector.
         max_age_sec: how old a raw sample can be before it counts as
             stale (we cannot really tell here without a timestamp, so
@@ -335,19 +362,39 @@ def build_planner_inputs(
     # T01 hardening: distinguish a real SOC reading from a missing or
     # invalid one. The previous code path always fell back to 100%,
     # which both made a critically-empty battery look full and
-    # leaked a fabricated value into the engine — including any
+    # leaked a fabricated value into the engine \u2014 including any
     # decision to switch charger / output priority. We now mark
     # ``soc_unknown=True`` so the coordinator can refuse to send
     # commands while the meter is unreadable.
-    soc_value: Any
-    if soc_unknown is None:
-        soc_unknown = False
-    if corrected_soc is not None:
-        soc_value = float(corrected_soc)
-        soc_origin = "api"
+    #
+    # Wire-in (controlled): the SOC contract is authoritative when
+    # the producer passes ``soc_control``. The legacy fallback to
+    # ``raw["batterySoc"]`` only fires when BOTH ``soc_control`` and
+    # ``corrected_soc`` are None -- for callers that have not yet
+    # adopted the contract path.
+    if soc_control is not _NOT_ADOPTED:
+        soc_value: Any = float(soc_control) if soc_control is not None else None
+        soc_origin = "contract"
+        # Honour explicit ``soc_unknown`` from the caller. An
+        # explicit ``soc_unknown=True`` with a numeric
+        # ``soc_control`` documents "readable but the engine
+        # MUST NOT use it"; without this guard the contract
+        # value alone would silently cancel the explicit
+        # unknown. We only derive ``soc_unknown`` from the
+        # contract when the caller did not set it
+        # (``soc_unknown=None``).
+        if soc_unknown is None:
+            soc_unknown = soc_control is None
     else:
-        soc_value = raw.get("batterySoc")
-        soc_origin = "api"
+        soc_value: Any
+        if soc_unknown is None:
+            soc_unknown = False
+        if corrected_soc is not None:
+            soc_value = float(corrected_soc)
+            soc_origin = "api"
+        else:
+            soc_value = raw.get("batterySoc")
+            soc_origin = "api"
 
     if soc_value is None:
         soc_unknown = True
@@ -370,18 +417,25 @@ def build_planner_inputs(
                 # explicitly marked unknown.
                 soc_value = None
 
-    if soc_unknown:
+    if soc_unknown and soc_value is None:
         # T01 follow-up: do NOT pretend a missing SOC is 100 %. The
         # previous code path used 100 % as a display-only fallback
         # for the engine, but the predictive planner read the same
         # field and treated it as a fully-charged battery. That
         # diagnostic leak is what the audit calls out: planner
         # must see ``soc is None`` whenever the meter is unreadable.
-        # The engine is told not to dispatch any command through a
-        # separate ``soc_unknown`` flag on PlannerInputs; legacy
-        # fields that need a numeric value fall back to 100 below.
+        # The engine is told not to dispatch any command through the
+        # separate ``soc_unknown`` flag on PlannerInputs.
         soc = None
         soc_fallback = True
+    elif soc_unknown:
+        # Guard-only case (Юра corridor 1.1): the contract
+        # published a real number -- ``soc_control=25`` -- and the
+        # caller explicitly set ``soc_unknown=True``. The number
+        # is preserved for display / diagnostic surfaces; the guard
+        # carries the engine-side semantics.
+        soc = float(soc_value)
+        soc_fallback = (soc_origin == "fallback")
     else:
         soc, soc_fallback = _clamp(soc_value, _SOC_MIN, _SOC_MAX, fallback=100.0)
 

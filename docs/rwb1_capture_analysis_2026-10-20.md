@@ -2893,3 +2893,84 @@ if battery_soc_corrected_pct is None:
 2. Видалити legacy fallback `outage_runtime.py:350-351`.
 3. Зробити `pi.soc` `control`-ом (не `validated`-ом).
 4. Залишити окремий `display_soc` для UI.
+
+
+## 55. SOC wire-in (локальне підключення в коді, без зміни live)
+
+### Файли, які змінено
+- `hems/soc_contract.py` — bool rejection у `evaluate()`.
+- `hems/telemetry.py` — `build_planner_inputs(... soc_control=_NOT_ADOPTED)`.
+- `services/outage_runtime.py` — `snapshot_telemetry(... soc_control=_NOT_ADOPTED)`.
+- `tests/test_soc_outage_runtime.py` — видалено (містив `_legacy_runtime_selection` копію).
+- `tests/test_soc_authority_chain.py` — додано (end-to-end через справжні builder/runtime).
+
+### Diff (статистика)
+```
+hems/soc_contract.py             |  10 +/-
+hems/telemetry.py                |  56 +++++++++--
+services/outage_runtime.py       |  51 +++++++++-
+tests/test_soc_outage_runtime.py | 208 --------------------------------------
+4 files changed, 101 insertions(+), 224 deletions(-)
+```
+
+### Sentinel `_NotAdopted`
+
+`soc_control` у builder та runtime має три стани:
+- **`_NOT_ADOPTED`** (за замовчуванням): legacy path, fallback на `corrected_soc` і `raw["batterySoc"]`.
+  Зберігається **тільки для callers, що ще не прийняли контракт**.
+- **explicit float**: `control` авторитативно; legacy bypass.
+- **explicit `None`**: `control` авторитативно None; `battery_soc_pct` теж ставиться None,
+  інакше `_compute_battery_remaining_kwh` дістав би raw і «відновив» недовірене значення.
+
+### Авторитетність
+
+| сценарій | `soc_control` | `pi.soc` | `pi.soc_unknown` |
+|---|---|---|---|
+| raw 25, V 51, I 0.5 | `25.0` (contract) | `25.0` | `False` |
+| raw 0, V 53 | `0.0` (contract) | `0.0` | `False` |
+| raw 25, передано `corrected=75` | `25.0` (contract) | `25.0`, **не 75** | `False` |
+| сирий відсутній, `soc_control=None` | `None` (explicit) | `None` | `True` |
+| raw NaN, Inf, 150, True, False | `None` (contract) | `None` | `True` |
+
+Передача `corrected_soc=75` разом з `soc_control` жодним чином не підміняє control.
+Display ніколи не потрапляє в control (окремий `DisplaySmoother`, див. v3).
+
+### Тести
+
+| файл | результат |
+|---|---|
+| `tests/test_soc_contract_formula.py` | 19/19 PASS |
+| `tests/test_soc_hems_builder.py` | 12/12 PASS |
+| `tests/test_soc_authority_chain.py` | 51/51 PASS (1 skip) |
+| `tests/test_outage_runtime.py` (існуючий) | 74/74 PASS |
+| `tests/test_t07_t08_energy_balance_and_reserve.py` | 23/23 PASS |
+| `tests/test_engine_predictive.py` | 6/6 PASS |
+| `tests/test_outage_planner_acceptance.py` | 26/28 (2 pre-existing fails на develop, не мої) |
+
+### Що НЕ змінено
+
+- `coordinator.py` — без змін. Producer поки що **не** публікує `soc_control`.
+  Live data flow як і був; контрактний path чекає на controlled deployment.
+- Live-керування, режими, dispatcher — без змін.
+- Існуючі callers `build_planner_inputs` і `snapshot_telemetry` без `soc_control`
+  працюють ідентично до зміни (через sentinel `_NOT_ADOPTED`).
+
+### Напрямок
+
+`evaluate() → soc_control → build_planner_inputs / snapshot_telemetry → planner`
+(тільки в один бік, не навпаки). Тести `Direction.test_*` фіксують, що:
+- contract не споживає builder output;
+- planner не «відкочується» до voltage, щоб дістати SOC.
+
+### Готовність до controlled deployment
+
+| крок | стан |
+|---|---|
+| код: wire-in з sentinel | ГОТОВО (цей commit) |
+| тести: справжній snapshot_telemetry (не копія) | ГОТОВО |
+| тести: bool rejection | ГОТОВО |
+| тести: control=None не відновлюється | ГОТОВО |
+| тести: planner abstention при unknown | ГОТОВО (через predictive probe) |
+| тести: end-to-end raw→control→planner | ГОТОВО |
+| `coordinator.py` публікує `soc_control` | НЕ зроблено (live) |
+| deployment на HA VM | НЕ зроблено |

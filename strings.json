@@ -86,6 +86,18 @@
       "hems_last_charger_cmd": {
         "name": "HEMS Charger Command"
       },
+      "battery_soc_reported_raw": {
+        "name": "[Observation] SOC Reported Raw"
+      },
+      "battery_soc_control_candidate": {
+        "name": "[Observation] SOC Control Candidate"
+      },
+      "battery_soc_voltage_diagnostic": {
+        "name": "[Observation] SOC Voltage Diagnostic"
+      },
+      "battery_soc_observation_status": {
+        "name": "[Observation] SOC Status"
+      },
       "history_daily_power": {
         "name": "Today Hourly Power (kW)"
       },
