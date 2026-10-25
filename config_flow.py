@@ -780,7 +780,33 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             data_schema=vol.Schema(
                 {
+                    # RWB1 BLE diagnostics: opt-in, read-only, observation-only.
+                    # Disabled unless this box is ticked (or the marker file
+                    # exists). Nothing here feeds the engine or the planner.
                     vol.Optional(
+                        "ble_diagnostic",
+                        default=current.get("ble_diagnostic", False),
+                    ): bool,
+                    vol.Optional(
+                        "ble_dtu_id",
+                        description=(
+                            "RWB1 DTU identifier used to derive the BLE key. "
+                            "Leave empty to keep polling off."
+                        ),
+                        default=current.get("ble_dtu_id", ""),
+                    ): str,
+                    # The floor matches the transport's own floor
+                    # (telemetry_sources.rwb1_ble.DEFAULT_MIN_INTERVAL); the
+                    # 300 s that was here earlier was an operator requirement
+                    # of the time, later relaxed and measured.
+                    vol.Optional(
+                        "ble_read_interval",
+                        default=current.get("ble_read_interval", 10),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(min=5, max=86400),
+                    ),
+vol.Optional(
                         "hems_enabled",
                         default=current.get("hems_enabled", DEFAULT_HEMS_ENABLED),
                     ): bool,

@@ -97,6 +97,18 @@ homeassistant>=2024.1.0
 # tzdata as a sibling to
 # ``zoneinfo``.
 tzdata>=2024.1
+# RWB1 BLE (2026-10): ``telemetry_sources/rwb1_ble.py`` imports
+# ``bleak_retry_connector.BleakClientWithServiceCache`` lazily for
+# network-attached Bluetooth adapters -- the configuration recommended
+# for the Xiaomi Gateway 3 proxy. It is a development dependency only:
+# the package exists for the BLE tests and for the
+# ``tests/test_rwb1_ble_bleak_runtime.py`` module that exercises the
+# lazy import path. Production ``manifest.json`` is unchanged, so the
+# HA Core never installs it on the user's host. ``bleak`` is a
+# transitive runtime dependency of ``bleak-retry-connector``; it is
+# pinned so the smoke-test sees a deterministic class location.
+bleak-retry-connector>=4.0,<5.0
+bleak>=1.0,<4.0
 # R06 browser-path coverage
 # (``test_r06_browser_playwright.py`` including
 # ``TestR06ControlFailure``, and

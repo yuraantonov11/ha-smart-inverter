@@ -487,6 +487,18 @@ async def async_setup_entry(
 
     async_add_entities(entities)
 
+    # RWB1 BLE diagnostic entities: diagnostic-only, appended to the same
+    # platform. They read the runner in hass.data and never the coordinator.
+    try:
+        from .ble_sensor import async_add_ble_diagnostic_entities
+
+        await async_add_ble_diagnostic_entities(hass, entry, async_add_entities)
+    except Exception:  # noqa: BLE001 - BLE entities must never break sensors
+        _LOGGER.exception(
+            "RWB1 BLE diagnostic sensors failed to register; "
+            "all other sensors are unaffected"
+        )
+
 
 class InverterSensor(CoordinatorEntity, SensorEntity):
     """Base sensor for Inverter inverter data."""

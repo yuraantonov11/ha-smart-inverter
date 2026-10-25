@@ -16,7 +16,9 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-REPO = Path("/opt/data/powmr-ai-work/powmr_inverter")
+# Resolve ``source_contracts`` relative to the test file so the test works
+# from any checkout or extracted review package -- no hardcoded paths.
+REPO = Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location(
     "source_contracts_under_test", REPO / "source_contracts.py"
 )

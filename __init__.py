@@ -322,6 +322,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # ValueError/KeyError: no matching device found
             _LOGGER.debug("Legacy HACS device check: %s", exc)
 
+        # RWB1 BLE diagnostics: opt-in, read-only, and observation-only. The
+        # runner lives in hass.data next to the coordinator and is published
+        # only as diagnostic entities; it never writes into coordinator.data, so
+        # cloud stays the primary source for every selected field. Disabled
+        # unless the operator set the marker file or the config-entry option.
+        from .ble_diagnostic import BleDiagnosticRunner
+
+        ble_runner = BleDiagnosticRunner(hass, entry)
+        bundle = hass.data.setdefault(DOMAIN, {}).setdefault(
+            entry.entry_id, {}
+        )
+        bundle["ble_diagnostic"] = ble_runner
+        try:
+            await ble_runner.async_start()
+        except Exception:  # noqa: BLE001 - BLE must never break setup
+            _LOGGER.exception(
+                "RWB1 BLE diagnostics failed to start; cloud unaffected"
+            )
+
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
         # Register services
@@ -543,6 +562,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug(
                     "api.close() failed during unload: %s", err
                 )
+        # Stop the BLE diagnostic runner before the entry data goes away,
+        # so an in-flight session is released rather than orphaned.
+        try:
+            from .ble_diagnostic import runner_for
+
+            _ble = runner_for(hass, entry)
+            if _ble is not None:
+                await _ble.async_stop()
+        except Exception:  # noqa: BLE001 - unload must not fail
+            _LOGGER.debug("BLE diagnostic unload failed", exc_info=True)
+
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
         # T18 audit: tear down the
