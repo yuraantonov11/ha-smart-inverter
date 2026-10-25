@@ -316,7 +316,10 @@ class BleDiagnosticRunner:
             "interval_s": self.interval,
             "cycle": 0,
             "counters_started_at": counters_started_at,
-            "response_timeout_s": None,
+            # The two operational settings are published from the start, not
+            # only after a successful read: a device that cannot be reached
+            # would otherwise report the timeout as "unknown" forever.
+            "response_timeout_s": self.response_timeout,
             "interval_change": None,
             "skipped_cycles": 0,
             # Cumulative counters. ``last_error`` alone cannot be read as
@@ -601,6 +604,9 @@ class BleDiagnosticRunner:
         budget = ble_response_timeout(self.entry, conf.get("response_timeout"))
         if budget != self.response_timeout:
             self.response_timeout = budget
+            # Publish the new budget right away: the change is visible even if
+            # the next read never succeeds.
+            self.state["response_timeout_s"] = budget
             provider = self._provider
             if provider is not None:
                 provider._response_timeout = budget
@@ -729,6 +735,12 @@ class BleDiagnosticRunner:
         while not self._stop.is_set():
             try:
                 self.state["status"] = STATUS_RUNNING
+                # Publish the operational settings every cycle, before the read.
+                # They used to be written only on success, so a runner whose
+                # device is unreachable reported the applied timeout as
+                # "unknown" -- exactly when it matters most.
+                self.state["interval_s"] = self.interval
+                self.state["response_timeout_s"] = self.response_timeout
                 # Exactly one request in flight: read_once holds self._lock, and
                 # the provider holds its own lock around the transaction.
                 await self.read_once()

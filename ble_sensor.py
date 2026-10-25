@@ -169,6 +169,10 @@ async def async_add_ble_diagnostic_entities(
                 "reads_ok": s.get("reads_ok"),
                 "reads_failed": s.get("reads_failed"),
                 "reconnects": s.get("reconnects"),
+                # When the counting started. Without it a reset to zero after a
+                # restart is indistinguishable from "nothing ever happened".
+                "counters_started_at": s.get("counters_started_at"),
+                "sessions_dropped": s.get("sessions_dropped"),
                 "rescheduled_delay_s": s.get("rescheduled_delay_s"),
                 "seconds_since_previous_success": s.get(
                     "seconds_since_previous_success"
