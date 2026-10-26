@@ -217,6 +217,32 @@ class ReleaseBudgetTests(unittest.TestCase):
         budget.reset()
         self.assertTrue(budget.may_attempt(now + timedelta(seconds=1)))
 
+    def test_the_lifetime_count_is_separate_from_the_budget(self):
+        """The budget resets; the total number of releases does not."""
+        now = datetime(2026, 10, 26, 7, 0, tzinfo=timezone.utc)
+        budget = ble_recovery.ReleaseBudget(max_attempts=3, cooldown_s=300.0)
+        budget.record(now)
+        budget.note_release()
+
+        budget.reset()
+
+        self.assertEqual(budget.attempts, 0, "the budget of the episode resets")
+        self.assertEqual(
+            budget.releases_total, 1, "the lifetime count of releases must not"
+        )
+
+    def test_the_lifetime_count_survives_a_restart(self):
+        now = datetime(2026, 10, 26, 7, 0, tzinfo=timezone.utc)
+        budget = ble_recovery.ReleaseBudget(max_attempts=3, cooldown_s=300.0)
+        budget.record(now)
+        budget.note_release()
+        budget.note_release()
+
+        restored = ble_recovery.ReleaseBudget.from_dict(budget.as_dict())
+
+        self.assertEqual(restored.releases_total, 2)
+        self.assertEqual(restored.attempts, 1)
+
     def test_a_persisted_budget_keeps_its_attempts(self):
         """A restart must not hand out a fresh series of attempts."""
         now = datetime(2026, 10, 26, 7, 0, tzinfo=timezone.utc)
@@ -489,6 +515,20 @@ class RecoveryCoordinationTests(unittest.IsolatedAsyncioTestCase):
         ble_recovery.GatewayConnectionReleaser = FakeReleaser
         self.addCleanup(setattr, ble_recovery, "GatewayConnectionReleaser", original)
         return calls
+
+    async def test_the_recovery_publishes_budget_and_total_apart(self):
+        runner = make_runner()
+        runner._consecutive_failures = 5
+        runner._last_success_at = NOW_UTC - timedelta(seconds=300)
+        self._patch_releaser()
+
+        await runner._maybe_recover()
+
+        recovery = runner.state["recovery"]
+        self.assertEqual(recovery["budget"]["attempts"], 1)
+        self.assertEqual(recovery["budget"]["max_attempts"], 3)
+        self.assertEqual(recovery["releases_total"], 1)
+        self.assertIn("last_attempt_at", recovery["budget"])
 
     async def test_a_fault_triggers_exactly_one_release(self):
         runner = make_runner()

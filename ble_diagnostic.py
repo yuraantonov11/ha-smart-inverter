@@ -569,6 +569,29 @@ class BleDiagnosticRunner:
             }
         )
 
+    def _publish_recovery_state(self) -> None:
+        """Publish the budget and the lifetime count as two separate things.
+
+        The budget belongs to the current fault episode and is reset by a
+        successful read; the lifetime count of address-targeted releases is
+        not. Reporting them under one number would hide how often the
+        recovery had to act.
+        """
+        budget = self._release_budget
+        recovery = self.state.setdefault("recovery", {})
+        recovery["enabled"] = self._recovery_enabled
+        recovery["state"] = recovery.get("state", "idle")
+        recovery["budget"] = {
+            "attempts": budget.attempts if budget else 0,
+            "max_attempts": self._recovery_max_attempts,
+            "cooldown_s": self._recovery_cooldown_s,
+            "last_attempt_at": (
+                None if budget is None or budget.last_attempt_at is None
+                else budget.last_attempt_at.isoformat()
+            ),
+        }
+        recovery["releases_total"] = budget.releases_total if budget else 0
+
     def _recovery_state_path(self) -> Path | None:
         """Where the attempt budget is persisted, if it can be written."""
         config = getattr(self.hass, "config", None)
@@ -752,6 +775,7 @@ class BleDiagnosticRunner:
         if self._release_budget is not None:
             self._release_budget.reset()
             self._persist_recovery_budget()
+            self._publish_recovery_state()
         return self.state
 
     def _build_provider(self, device: Any, client_class: type) -> Any:
@@ -1090,6 +1114,11 @@ class BleDiagnosticRunner:
             self.state["recovery"]["provider_closed"] = True
             # 4. only now the address-targeted release.
             outcome = await releaser.release(target_address)
+            if outcome.attempted:
+                # The lifetime count of releases, separate from the budget
+                # of the current episode.
+                self._release_budget.note_release()
+                self._persist_recovery_budget()
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001 - the outcome is the deliverable
@@ -1102,6 +1131,7 @@ class BleDiagnosticRunner:
         self.state["recovery"]["last_result"] = outcome.as_dict()
         self.state["recovery"]["at"] = _utcnow().isoformat()
         self.state["recovery"]["state"] = "released" if outcome.ok else "failed"
+        self._publish_recovery_state()
         if not outcome.ok:
             _LOGGER.error(
                 "RWB1 BLE recovery: the release did not work: %s", outcome.detail

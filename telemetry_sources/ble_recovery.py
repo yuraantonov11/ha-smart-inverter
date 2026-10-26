@@ -123,8 +123,12 @@ class ReleaseBudget:
 
     max_attempts: int = DEFAULT_MAX_RELEASE_ATTEMPTS
     cooldown_s: float = DEFAULT_RELEASE_COOLDOWN_S
+    #: Attempts in the CURRENT fault episode. Reset by a successful read.
     attempts: int = 0
     last_attempt_at: datetime | None = None
+    #: Address-targeted releases ever made. Never reset -- this is the
+    #: lifetime count, separate from the budget of the current episode.
+    releases_total: int = 0
 
     def may_attempt(self, now: datetime) -> bool:
         """True when an attempt is allowed right now."""
@@ -141,9 +145,18 @@ class ReleaseBudget:
         self.last_attempt_at = now
 
     def reset(self) -> None:
-        """A successful read ends the fault episode."""
+        """A successful read ends the fault episode.
+
+        The lifetime count of releases is NOT touched: the budget of the
+        current episode and the total number of releases are two different
+        things and must stay readable apart.
+        """
         self.attempts = 0
         self.last_attempt_at = None
+
+    def note_release(self) -> None:
+        """Count one address-targeted release."""
+        self.releases_total += 1
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -154,6 +167,7 @@ class ReleaseBudget:
                 None if self.last_attempt_at is None
                 else self.last_attempt_at.isoformat()
             ),
+            "releases_total": self.releases_total,
         }
 
     @classmethod
@@ -183,6 +197,12 @@ class ReleaseBudget:
             )
         except (TypeError, ValueError):
             budget.cooldown_s = DEFAULT_RELEASE_COOLDOWN_S
+        try:
+            budget.releases_total = max(
+                0, int(data.get("releases_total", 0) or 0)
+            )
+        except (TypeError, ValueError):
+            budget.releases_total = 0
         raw = data.get("last_attempt_at")
         if raw:
             try:
