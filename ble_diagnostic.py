@@ -211,7 +211,9 @@ def ble_link_state(
             local_success = None
 
     attributes = {
-        "source": "Bluetooth (BLE) · діагностично, керування лишається на cloud",
+        # Not "source": the sensor base class uses that key for its own
+        # marker, and would overwrite it.
+        "data_source": "Bluetooth (BLE) · діагностично, керування лишається на cloud",
         "last_success": last_success,
         "last_success_local": local_success,
         "last_success_kyiv": local_success,
@@ -1029,6 +1031,10 @@ class BleDiagnosticRunner:
             incomplete,
             reason or "none",
         )
+        # The record is written right here, not only in the shutdown's
+        # ``finally``: Home Assistant can end the process between the close
+        # and that block, and then the reason would be lost.
+        self._persist_teardown_record()
 
     def _skip(self, reason: str) -> dict[str, Any]:
         """Record a locally skipped cycle without touching the last error."""

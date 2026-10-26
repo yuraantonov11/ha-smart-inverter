@@ -536,7 +536,10 @@ class LinkStateTests(unittest.TestCase):
     def test_the_source_is_named(self):
         link, attrs = bd.ble_link_state({"interval_s": 10.0}, NOW_UTC)
         self.assertIn("Bluetooth", link)
-        self.assertIn("Bluetooth", attrs["source"])
+        # The key is "data_source": the sensor base class uses "source" for
+        # its own marker and would overwrite it.
+        self.assertIn("Bluetooth", attrs["data_source"])
+        self.assertNotIn("source", attrs)
 
 
 class RecoveryCoordinationTests(unittest.IsolatedAsyncioTestCase):
