@@ -27,7 +27,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .ble_diagnostic import PUBLISHED_FIELDS, runner_for
+from .ble_diagnostic import PUBLISHED_FIELDS, ble_link_state, runner_for
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ class _BleDiagSensor(SensorEntity):
         attrs_fn: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
         unit: str | None = None,
         device_class: SensorDeviceClass | None = None,
+        diagnostic: bool = True,
     ) -> None:
         self._entry = entry
         self._key = key
@@ -76,6 +77,10 @@ class _BleDiagSensor(SensorEntity):
         self._attrs_fn = attrs_fn
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
+        if not diagnostic:
+            # The live block on the dashboard is not a diagnostic entity: it
+            # is what the operator reads.
+            self._attr_entity_category = None
         # Voltages are published with one decimal: the raw register has 0.1 V
         # resolution, and HA would otherwise round the display to whole volts.
         if device_class is SensorDeviceClass.VOLTAGE:
@@ -188,6 +193,17 @@ async def async_add_ble_diagnostic_entities(
                     "cloud remains the primary source for every field."
                 ),
             },
+        )
+    )
+
+    entities.append(
+        _BleDiagSensor(
+            entry,
+            "link_state",
+            "RWB1 BLE data source",
+            lambda s: ble_link_state(s)[0],
+            attrs_fn=lambda s: ble_link_state(s)[1],
+            diagnostic=False,
         )
     )
 

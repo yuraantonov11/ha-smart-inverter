@@ -154,6 +154,80 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+#: How many missed intervals make a reading stale.
+BLE_FRESHNESS_MULTIPLIER = 3
+#: Lower bound for the freshness window, in seconds.
+BLE_FRESHNESS_MIN_S = 30.0
+
+#: The states of the user-facing "where do these numbers come from" sensor.
+LINK_STATE_FRESH = "Bluetooth"
+LINK_STATE_STALE = "Bluetooth · застаріло"
+LINK_STATE_NO_DATA = "Bluetooth · немає даних"
+
+
+def ble_link_state(
+    state: dict[str, Any], now: datetime | None = None
+) -> tuple[str, dict[str, Any]]:
+    """Name the source of the displayed BLE values and say whether they are fresh.
+
+    The values on the dashboard keep their last reading when the link dies,
+    so without this marker a reader cannot tell live data from a leftover.
+    The freshness window is three missed read intervals: past that, the
+    numbers are explicitly marked stale.
+    """
+    moment = now or _utcnow()
+    interval = float(state.get("interval_s") or 0.0)
+    window = max(BLE_FRESHNESS_MIN_S, interval * BLE_FRESHNESS_MULTIPLIER)
+    last_success = state.get("last_success")
+
+    age: float | None = None
+    if last_success:
+        try:
+            parsed = datetime.fromisoformat(str(last_success))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            age = max(0.0, (moment - parsed).total_seconds())
+        except (TypeError, ValueError):
+            age = None
+
+    if age is None:
+        link = LINK_STATE_NO_DATA
+    elif age <= window:
+        link = LINK_STATE_FRESH
+    else:
+        link = LINK_STATE_STALE
+
+    local_success = None
+    if last_success:
+        try:
+            parsed_local = datetime.fromisoformat(str(last_success))
+            if parsed_local.tzinfo is None:
+                parsed_local = parsed_local.replace(tzinfo=timezone.utc)
+            # Kyiv is UTC+2 year round.
+            local_success = parsed_local.astimezone(
+                timezone(timedelta(hours=2))
+            ).strftime("%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            local_success = None
+
+    attributes = {
+        "source": "Bluetooth (BLE) · діагностично, керування лишається на cloud",
+        "last_success": last_success,
+        "last_success_local": local_success,
+        "last_success_kyiv": local_success,
+        "last_success_age_s": None if age is None else round(age, 1),
+        "freshness_window_s": round(window, 1),
+        "values_window": (
+            f"останні {int(window)} с"
+            if window < 3600
+            else f"останні {round(window / 3600, 1)} год"
+        ),
+        "read_interval_s": interval or None,
+        "fresh": link == LINK_STATE_FRESH,
+    }
+    return link, attributes
+
+
 def _conf_float(
     conf: dict[str, str], key: str, default: float, *, minimum: float | None = None
 ) -> float:

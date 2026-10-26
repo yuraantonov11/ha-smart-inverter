@@ -492,6 +492,53 @@ class OnlyTheConfiguredDeviceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["D4:27:87:E4:F9:4F"])
 
 
+class LinkStateTests(unittest.TestCase):
+    """The dashboard needs to say where the numbers come from and if they are fresh."""
+
+    def test_a_fresh_read_is_labelled_bluetooth(self):
+        now = NOW_UTC
+        state = {
+            "interval_s": 10.0,
+            "last_success": (now - timedelta(seconds=5)).isoformat(),
+        }
+        link, attrs = bd.ble_link_state(state, now)
+        self.assertEqual(link, bd.LINK_STATE_FRESH)
+        self.assertTrue(attrs["fresh"])
+        self.assertEqual(attrs["last_success_age_s"], 5.0)
+        self.assertEqual(attrs["freshness_window_s"], 30.0)
+
+    def test_a_lost_link_is_marked_stale(self):
+        now = NOW_UTC
+        state = {
+            "interval_s": 10.0,
+            "last_success": (now - timedelta(seconds=600)).isoformat(),
+        }
+        link, attrs = bd.ble_link_state(state, now)
+        self.assertEqual(link, bd.LINK_STATE_STALE)
+        self.assertFalse(attrs["fresh"])
+        self.assertIn("застаріло", link)
+
+    def test_without_a_read_the_state_says_so(self):
+        link, attrs = bd.ble_link_state({"interval_s": 10.0}, NOW_UTC)
+        self.assertEqual(link, bd.LINK_STATE_NO_DATA)
+        self.assertIsNone(attrs["last_success_age_s"])
+
+    def test_the_window_follows_the_interval(self):
+        now = NOW_UTC
+        state = {
+            "interval_s": 60.0,
+            "last_success": (now - timedelta(seconds=100)).isoformat(),
+        }
+        link, attrs = bd.ble_link_state(state, now)
+        self.assertEqual(attrs["freshness_window_s"], 180.0)
+        self.assertEqual(link, bd.LINK_STATE_FRESH)
+
+    def test_the_source_is_named(self):
+        link, attrs = bd.ble_link_state({"interval_s": 10.0}, NOW_UTC)
+        self.assertIn("Bluetooth", link)
+        self.assertIn("Bluetooth", attrs["source"])
+
+
 class RecoveryCoordinationTests(unittest.IsolatedAsyncioTestCase):
     """Pause -> release -> resume, with the guards in place."""
 
