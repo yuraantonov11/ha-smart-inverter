@@ -679,18 +679,24 @@ class BleDiagnosticRunner:
         # The provider reports an incomplete teardown when a backend step did
         # not answer inside its deadline; that is the interesting case.
         incomplete = bool(getattr(provider, "teardown_incomplete", False))
+        reason = getattr(provider, "teardown_incomplete", None)
         elapsed = (_utcnow() - started).total_seconds()
         self.state["last_disconnect"] = {
             "ok": not incomplete,
             "teardown_incomplete": incomplete,
+            # Which step was left unfinished, and why. Without this the
+            # operator only learns that "something" did not complete, which
+            # is exactly the gap that let a stranded proxy slot go unnoticed.
+            "teardown_reason": reason,
             "seconds": round(elapsed, 3),
             "at": _utcnow().isoformat(),
         }
         _LOGGER.info(
-            "RWB1 BLE session disconnected: ok=%s teardown_incomplete=%s in %.3fs",
+            "RWB1 BLE session disconnected: ok=%s teardown_incomplete=%s in %.3fs%s",
             not incomplete,
             incomplete,
             elapsed,
+            f" reason={reason}" if reason else "",
         )
 
     def _skip(self, reason: str) -> dict[str, Any]:

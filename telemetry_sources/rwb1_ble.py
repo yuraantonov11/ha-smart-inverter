@@ -337,17 +337,27 @@ async def _teardown_client(
     if notifying:
         stop = getattr(client, "stop_notify", None)
         if stop is not None:
-            await _await_cleanup(stop, INDICATE_UUID, timeout=step_timeout)
+            completed, error = await _await_cleanup(
+                stop, INDICATE_UUID, timeout=step_timeout
+            )
+            if not completed:
+                # An open indication subscription also pins the backend slot,
+                # so it is reported -- but the disconnect below is the step
+                # that actually frees it.
+                failed.append(f"stop_notify{f': {error}' if error else ''}")
     disconnect = getattr(client, "disconnect", None)
     if disconnect is not None:
         # The step that actually frees the backend slot. If it does not
         # complete, the caller must be told: clearing the flags is not a release.
-        if not await _await_cleanup(disconnect, timeout=step_timeout):
-            failed.append("disconnect")
+        completed, error = await _await_cleanup(disconnect, timeout=step_timeout)
+        if not completed:
+            failed.append(f"disconnect{f': {error}' if error else ''}")
     return failed
 
 
-async def _await_cleanup(coro_factory: Callable[..., Any], *args: Any, timeout: float) -> None:
+async def _await_cleanup(
+    coro_factory: Callable[..., Any], *args: Any, timeout: float
+) -> tuple[bool, str | None]:
     """Run one cleanup step to its deadline, then always move to the next.
 
     Used by :func:`_teardown_client`, which runs as a tracked task the caller
@@ -360,16 +370,25 @@ async def _await_cleanup(coro_factory: Callable[..., Any], *args: Any, timeout: 
     aborts the steps that follow. ``task.uncancel()`` keeps the enclosing
     task's cancellation bookkeeping consistent when we absorbed one.
 
-    Returns ``True`` only if the step actually completed.
+    Returns ``(completed, error)``: ``completed`` is ``True`` only if the
+    step actually finished, and ``error`` describes why it did not -- the
+    exception text for a step that raised, or ``"deadline"`` for one that
+    ran out of time. The caller reports it, so the operator learns *which*
+    step was left unfinished and why, instead of only that something was.
     """
     try:
         await asyncio.wait_for(coro_factory(*args), timeout=timeout)
-    except BaseException:  # noqa: BLE001 - teardown must always move on.
+    except asyncio.TimeoutError:
         task = asyncio.current_task()
         if task is not None and task.cancelling() > 0:
             task.uncancel()
-        return False
-    return True
+        return False, "deadline"
+    except BaseException as err:  # noqa: BLE001 - teardown must always move on.
+        task = asyncio.current_task()
+        if task is not None and task.cancelling() > 0:
+            task.uncancel()
+        return False, f"{type(err).__name__}: {err}"
+    return True, None
 
 
 
@@ -622,9 +641,8 @@ class Rwb1BleTelemetryProvider:
                 )
                 if failed:
                     self._teardown_incomplete = (
-                        f"teardown step(s) {', '.join(failed)} did not finish "
-                        "within their deadline; the backend proxy slot may "
-                        "still be held"
+                        f"teardown step(s) {', '.join(failed)} did not complete; "
+                        "the backend proxy slot may still be held"
                     )
             finally:
                 # Only now is the client reference allowed to go: until teardown
