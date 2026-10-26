@@ -506,6 +506,21 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id)
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
+    # The BLE session is released FIRST, before the coordinator, the journal
+    # drain and the API close. Those steps can take seconds, and Home
+    # Assistant's shutdown budget is short: if the release comes last, the
+    # process may be gone before the session is closed, and the gateway keeps
+    # the proxy slot -- the device then stops being reachable.
+    if unload_ok:
+        try:
+            from .ble_diagnostic import runner_for
+
+            _ble = runner_for(hass, entry)
+            if _ble is not None:
+                await _ble.async_stop()
+        except Exception:  # noqa: BLE001 - unload must not fail
+            _LOGGER.debug("BLE diagnostic unload failed", exc_info=True)
+
     if unload_ok and entry_data is not None:
         # T17 audit: order is critical.
         # 1. Stop the coordinator and its
@@ -562,17 +577,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _LOGGER.debug(
                     "api.close() failed during unload: %s", err
                 )
-        # Stop the BLE diagnostic runner before the entry data goes away,
-        # so an in-flight session is released rather than orphaned.
-        try:
-            from .ble_diagnostic import runner_for
-
-            _ble = runner_for(hass, entry)
-            if _ble is not None:
-                await _ble.async_stop()
-        except Exception:  # noqa: BLE001 - unload must not fail
-            _LOGGER.debug("BLE diagnostic unload failed", exc_info=True)
-
+        # The BLE session was already released at the top of this function,
+        # before the coordinator and the journal drain: the release is what
+        # must not be starved of the shutdown budget.
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
         # T18 audit: tear down the

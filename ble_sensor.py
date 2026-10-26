@@ -173,6 +173,11 @@ async def async_add_ble_diagnostic_entities(
                 # restart is indistinguishable from "nothing ever happened".
                 "counters_started_at": s.get("counters_started_at"),
                 "sessions_dropped": s.get("sessions_dropped"),
+                # Fault and recovery: what the reads proved, and what the
+                # runner did about it.
+                "consecutive_failures": s.get("consecutive_failures"),
+                "last_fault": s.get("last_fault"),
+                "recovery": s.get("recovery"),
                 "rescheduled_delay_s": s.get("rescheduled_delay_s"),
                 "seconds_since_previous_success": s.get(
                     "seconds_since_previous_success"

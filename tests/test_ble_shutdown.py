@@ -78,6 +78,13 @@ def make_runner(client):
     runner._task = None
     runner._stop = asyncio.Event()
     runner._client_class = lambda *a, **k: None
+    runner._stopping = False
+    runner._paused = False
+    runner._consecutive_failures = 0
+    runner._last_success_at = None
+    runner._release_budget = None
+    runner._entities = []
+    runner._shutdown_read_grace_s = 5.0
     runner.state = {
         "cycle": 0,
         "counters_started_at": "2026-10-24T00:00:00+00:00",
@@ -153,7 +160,11 @@ class ShutdownPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runner.state["last_disconnect"]["ok"])
 
     async def test_the_loop_task_is_stopped_before_the_session_is_released(self):
-        """No read may be in flight while the session is being torn down."""
+        """No read may be in flight while the session is being torn down.
+
+        The loop task is stopped first -- either it finishes on its own or it
+        is cancelled -- and only then is the session released.
+        """
         order = []
 
         class OrderedClient(RecordingClient):
@@ -168,13 +179,12 @@ class ShutdownPathTests(unittest.IsolatedAsyncioTestCase):
 
         async def loop():
             try:
-                await asyncio.sleep(10)
-            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)
+            finally:
                 order.append("loop-stopped")
-                raise
 
         runner._task = asyncio.ensure_future(loop())
-        # Let the loop task actually start, so its cancellation handler runs.
+        # Let the loop task actually start.
         await asyncio.sleep(0)
         await runner.async_stop()
         self.assertEqual(order, ["loop-stopped", "disconnect"])

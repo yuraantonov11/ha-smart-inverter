@@ -34,6 +34,7 @@ config entry -- not instantly.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import logging
 from datetime import datetime, timedelta, timezone
@@ -64,6 +65,23 @@ OPT_RESPONSE_TIMEOUT = "response_timeout"
 MARKER_FILENAME = "powmr_ble_diagnostic.enabled"
 #: Optional key=value file for the opt-in and the DTU id.
 CONF_FILENAME = "powmr_ble_diagnostic.conf"
+#: Upper bound for the grace period the shutdown gives to the read in
+#: flight. It is deliberately short: the release of the session is the point
+#: of the shutdown, and Home Assistant's own shutdown budget is a few
+#: seconds -- a long grace would starve the close and leave the proxy slot
+#: stranded, which is the very failure this path exists to prevent.
+SHUTDOWN_READ_GRACE_MAX_S = 5.0
+#: Default grace: long enough for a normal read (~1.1 s), short enough to
+#: leave room for the teardown.
+SHUTDOWN_READ_GRACE_DEFAULT_S = 2.0
+#: Durable state of the recovery attempt budget. It survives a restart of
+#: Home Assistant, so a restart in the middle of a fault episode does not
+#: silently grant a fresh series of attempts.
+RECOVERY_FILENAME = "powmr_ble_recovery.json"
+#: Durable record of the last teardown. It survives a restart of Home
+#: Assistant, so the reason a session could not be released is still there
+#: after the fact -- the entity state alone dies with the process.
+TEARDOWN_FILENAME = "powmr_ble_teardown.json"
 
 DEFAULT_ADDRESS = "D4:27:87:E4:F9:4F"
 
@@ -88,6 +106,10 @@ STATUS_DEVICE_UNKNOWN = "device_not_known_to_home_assistant"
 #: interval had not elapsed. Not a device failure, not an error.
 STATUS_SKIPPED = "skipped_local_rate_limit"
 STATUS_NO_CLIENT = "ble_client_class_unavailable"
+#: The runner is shutting down: no new read is started.
+STATUS_STOPPING = "stopping"
+#: A recovery release is in progress: reads are paused on purpose.
+STATUS_RECOVERY = "recovery_in_progress"
 
 #: Failure kinds that mean the LINK is gone. Only these discard the provider so
 #: the next cycle rebuilds the session. A "no complete response" failure does
@@ -130,6 +152,34 @@ def is_connection_level(kind: str | None) -> bool:
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _conf_float(
+    conf: dict[str, str], key: str, default: float, *, minimum: float | None = None
+) -> float:
+    """Read one float from the key=value file, clamped to a sane floor."""
+    try:
+        value = float(conf.get(key, "") or default)
+    except (TypeError, ValueError):
+        value = default
+    if value != value:  # NaN never compares equal to itself
+        value = default
+    if minimum is not None and value < minimum:
+        value = minimum
+    return value
+
+
+def _conf_int(
+    conf: dict[str, str], key: str, default: int, *, minimum: int | None = None
+) -> int:
+    """Read one integer from the key=value file, clamped to a sane floor."""
+    try:
+        value = int(float(conf.get(key, "") or default))
+    except (TypeError, ValueError):
+        value = default
+    if minimum is not None and value < minimum:
+        value = minimum
+    return value
 
 
 def ble_conf_path(hass: HomeAssistant) -> Path:
@@ -284,6 +334,9 @@ class BleDiagnosticRunner:
         # sleep itself. Production uses the provider's monotonic clock.
         self._clock = time.monotonic
         self._sleeper = asyncio.sleep
+        # Wall clock as a seam: the recovery budget is compared against it
+        # and has to survive a restart, so a monotonic clock cannot be used.
+        self._now = _utcnow
         self.enabled = ble_is_enabled(hass, entry) or conf.get("enabled") in (
             "1", "true", "yes", "on"
         )
@@ -296,7 +349,38 @@ class BleDiagnosticRunner:
         self._dropped_sessions = 0
         self._lock = asyncio.Lock()
         self._task: asyncio.Task[None] | None = None
+        # The teardown task, kept here so a cancellation of the shutdown
+        # cannot lose it.
+        self._close_task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
+        # Shutdown: no new read may start. Recovery: reads are paused on
+        # purpose while a stranded connection is released.
+        self._stopping = False
+        self._paused = False
+        # Fault detection for the recovery: the age of the last successful
+        # read and the number of consecutive failures. The proxy's allocation
+        # list is deliberately NOT used -- it also lists a healthy session.
+        self._consecutive_failures = 0
+        self._last_success_at: datetime | None = None
+        self._release_budget: Any = None
+        self._recovery_enabled = True
+        # Recovery thresholds. The fault is decided by the reads: how long
+        # ago a read succeeded and how many have failed since.
+        self._recovery_max_success_age_s = 90.0
+        self._recovery_min_failures = 5
+        self._recovery_max_attempts = 3
+        self._recovery_cooldown_s = 300.0
+        # How long the read in flight may still take during a shutdown before
+        # it is cancelled. It has to cover the response budget, otherwise a
+        # healthy read would always be cut short -- and it is capped, so the
+        # whole shutdown (grace + teardown) stays inside a sane budget.
+        self._shutdown_read_grace_s = min(
+            SHUTDOWN_READ_GRACE_MAX_S,
+            _conf_float(
+                conf, "shutdown_read_grace_s", SHUTDOWN_READ_GRACE_DEFAULT_S,
+                minimum=0.5,
+            ),
+        )
         # Diagnostic entities attach here and are pushed a state write at
         # the end of every cycle. They have no coordinator, so without this
         # they would be written once at setup and never again.
@@ -322,6 +406,18 @@ class BleDiagnosticRunner:
             "response_timeout_s": self.response_timeout,
             "interval_change": None,
             "skipped_cycles": 0,
+            # Fault and recovery bookkeeping, published so the operator can
+            # see WHY a release was attempted and what it did.
+            "consecutive_failures": 0,
+            "last_fault": None,
+            "recovery": {
+                "enabled": True,
+                "state": "idle",
+                "attempts": 0,
+                "max_attempts": 0,
+                "last_result": None,
+                "at": None,
+            },
             # Cumulative counters. ``last_error`` alone cannot be read as
             # "no errors ever": it only shows the most recent attempt.
             "reads_ok": 0,
@@ -345,6 +441,13 @@ class BleDiagnosticRunner:
             "received_at": None,
             "profile_id": None,
         }
+        # The recovery settings are applied after the state exists: they are
+        # published in it. The attempt budget is restored from disk FIRST, so
+        # that the operator's limits are applied on top of the restored
+        # counters -- a restart does not silently grant a new series of
+        # attempts, and a reload does not reset them either.
+        self._load_recovery_budget()
+        self._apply_recovery_settings(conf)
 
     def attach(self, entity: Any) -> None:
         """Register a diagnostic entity for push updates."""
@@ -420,9 +523,107 @@ class BleDiagnosticRunner:
                     self.state["adapter_for_device"] = source
         return device
 
+    def _apply_recovery_settings(self, conf: dict[str, str]) -> None:
+        """Apply the recovery knobs from the operator's key=value file.
+
+        The automatic release is **off by default**: it acts on the gateway's
+        proxy, so it has to be switched on deliberately with
+        ``recovery_enabled=1``. The attempt budget is not reset by this
+        call -- a reload must not hand out a new series of attempts.
+        """
+        from .telemetry_sources import ble_recovery
+
+        enabled = str(conf.get("recovery_enabled", "0")).strip().lower()
+        self._recovery_enabled = enabled in ("1", "true", "yes", "on")
+        self._recovery_max_success_age_s = _conf_float(
+            conf, "recovery_max_success_age_s",
+            ble_recovery.DEFAULT_MAX_SUCCESS_AGE_S, minimum=5.0,
+        )
+        self._recovery_min_failures = _conf_int(
+            conf, "recovery_min_failures",
+            ble_recovery.DEFAULT_MIN_CONSECUTIVE_FAILURES, minimum=1,
+        )
+        self._recovery_max_attempts = _conf_int(
+            conf, "recovery_max_attempts",
+            ble_recovery.DEFAULT_MAX_RELEASE_ATTEMPTS, minimum=1,
+        )
+        self._recovery_cooldown_s = _conf_float(
+            conf, "recovery_cooldown_s",
+            ble_recovery.DEFAULT_RELEASE_COOLDOWN_S, minimum=10.0,
+        )
+        if self._release_budget is None:
+            self._release_budget = ble_recovery.ReleaseBudget()
+        else:
+            self._release_budget.max_attempts = self._recovery_max_attempts
+            self._release_budget.cooldown_s = self._recovery_cooldown_s
+        self.state["recovery"].update(
+            {
+                "enabled": self._recovery_enabled,
+                "max_attempts": self._recovery_max_attempts,
+                "cooldown_s": self._recovery_cooldown_s,
+                "max_success_age_s": self._recovery_max_success_age_s,
+                "min_consecutive_failures": self._recovery_min_failures,
+            }
+        )
+
+    def _recovery_state_path(self) -> Path | None:
+        """Where the attempt budget is persisted, if it can be written."""
+        config = getattr(self.hass, "config", None)
+        if config is None:
+            return None
+        return Path(config.config_dir) / RECOVERY_FILENAME
+
+    def _load_recovery_budget(self) -> None:
+        """Restore the attempt budget from disk.
+
+        A missing or unreadable file leaves the budget at zero attempts --
+        that is the start of a fault episode, not a continuation of one.
+        """
+        from .telemetry_sources import ble_recovery
+
+        path = self._recovery_state_path()
+        if path is None:
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        self._release_budget = ble_recovery.ReleaseBudget.from_dict(
+            raw.get("budget") if isinstance(raw, dict) else None
+        )
+
+    def _persist_recovery_budget(self) -> None:
+        """Write the attempt budget to disk."""
+        if self._release_budget is None:
+            return
+        path = self._recovery_state_path()
+        if path is None:
+            return
+        payload = {
+            "budget": self._release_budget.as_dict(),
+            "updated_at": _utcnow().isoformat(),
+        }
+        try:
+            path.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError:
+            _LOGGER.debug("could not persist the BLE recovery budget", exc_info=True)
+
     # ------------------------------------------------------------------- read
     async def read_once(self) -> dict[str, Any]:
         """One read cycle. Never raises; records the exact reason on failure."""
+        if self._stopping:
+            # Shutdown has begun: starting a read now would race the teardown
+            # and could leave a second session behind on the proxy.
+            self.state["status"] = STATUS_STOPPING
+            return self.state
+        if self._paused:
+            # A recovery release is in flight. Reads are paused on purpose,
+            # so this is not a failure and must not count as one.
+            self._skip("recovery in progress")
+            self.state["status"] = STATUS_RECOVERY
+            return self.state
         if self._lock.locked():  # pragma: no cover - defensive, serialised above
             self.state["status"] = STATUS_ERROR
             self.state["error_kind"] = "session_already_running"
@@ -539,6 +740,15 @@ class BleDiagnosticRunner:
         self.state["last_success"] = now.isoformat()
         self.state["reads_ok"] = int(self.state.get("reads_ok") or 0) + 1
         self.state["status"] = STATUS_OK
+        # A success ends the fault episode: the age of the last successful
+        # read is what the recovery decides on, and the attempt budget is
+        # released for the next episode.
+        self._last_success_at = now
+        self._consecutive_failures = 0
+        self.state["consecutive_failures"] = 0
+        if self._release_budget is not None:
+            self._release_budget.reset()
+            self._persist_recovery_budget()
         return self.state
 
     def _build_provider(self, device: Any, client_class: type) -> Any:
@@ -601,12 +811,20 @@ class BleDiagnosticRunner:
             provider = self._provider
             if provider is not None:
                 await self._reschedule(provider, interval)
+        self._apply_recovery_settings(conf)
         budget = ble_response_timeout(self.entry, conf.get("response_timeout"))
         if budget != self.response_timeout:
             self.response_timeout = budget
             # Publish the new budget right away: the change is visible even if
             # the next read never succeeds.
             self.state["response_timeout_s"] = budget
+            self._shutdown_read_grace_s = min(
+                SHUTDOWN_READ_GRACE_MAX_S,
+                _conf_float(
+                    conf, "shutdown_read_grace_s",
+                    SHUTDOWN_READ_GRACE_DEFAULT_S, minimum=0.5,
+                ),
+            )
             provider = self._provider
             if provider is not None:
                 provider._response_timeout = budget
@@ -711,6 +929,10 @@ class BleDiagnosticRunner:
         # One place to count a failed cycle, so the device failures and the
         # configuration failures are counted exactly once each.
         self.state["reads_failed"] = int(self.state.get("reads_failed") or 0) + 1
+        # Consecutive failures are what the recovery decides on. A skipped
+        # cycle never reaches this method, so it never counts as a failure.
+        self._consecutive_failures += 1
+        self.state["consecutive_failures"] = self._consecutive_failures
         self.state["status"] = STATUS_ERROR if kind == "error" else kind
         if self.state["status"] == STATUS_ERROR:
             self.state["status"] = STATUS_ERROR
@@ -750,6 +972,9 @@ class BleDiagnosticRunner:
                 # Exactly one request in flight: read_once holds self._lock, and
                 # the provider holds its own lock around the transaction.
                 await self.read_once()
+                # A stranded connection is only released when the reads prove
+                # the link is gone -- never on the first failure.
+                await self._maybe_recover()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the loop must survive anything
@@ -763,33 +988,186 @@ class BleDiagnosticRunner:
             except asyncio.CancelledError:
                 raise
 
+    # -------------------------------------------------------------- recovery
+    async def _maybe_recover(self) -> None:
+        """Release a stranded connection when the reads prove the link is gone.
+
+        The decision is made from the reads alone: the age of the last
+        successful read and the number of consecutive failures. The proxy's
+        allocation list is not consulted, because it also lists a healthy
+        session. A live session is never torn down -- the runner holds no
+        provider at all when the release may run.
+        """
+        if not self._recovery_enabled or self._stopping or self._paused:
+            return
+
+        from .telemetry_sources import ble_recovery
+
+        if self._release_budget is None:
+            self._release_budget = ble_recovery.ReleaseBudget()
+        signal = ble_recovery.detect_fault(
+            last_success_at=self._last_success_at,
+            consecutive_failures=self._consecutive_failures,
+            now=self._now(),
+            max_success_age_s=self._recovery_max_success_age_s,
+            min_consecutive_failures=self._recovery_min_failures,
+        )
+        if signal is None:
+            return
+
+        self.state["last_fault"] = signal.as_dict()
+        now = self._now()
+        if not self._release_budget.may_attempt(now):
+            self.state["recovery"]["state"] = "budget_exhausted"
+            self.state["recovery"]["attempts"] = self._release_budget.attempts
+            return
+
+        source = self.state.get("adapter_for_device") or self.state.get("source")
+        releaser = ble_recovery.GatewayConnectionReleaser(self.hass, source)
+        self._release_budget.record(now)
+        self._persist_recovery_budget()
+        # 1. pause: no new read starts while the release runs.
+        self._paused = True
+        self.state["recovery"]["state"] = "releasing"
+        self.state["recovery"]["attempts"] = self._release_budget.attempts
+        self.state["status"] = STATUS_RECOVERY
+        _LOGGER.warning(
+            "RWB1 BLE recovery: %s -- releasing the connection for %s",
+            signal.reason,
+            self.address,
+        )
+        try:
+            # 2. the read in flight has finished: this runs right after a
+            #    cycle, so nothing is in flight.
+            # 3. the provider is closed FIRST. A provider that is still
+            #    around must not block the recovery forever -- a stuck client
+            #    is exactly what leaves a slot stranded -- but it must not be
+            #    released while it is still live either, so it is closed
+            #    before the address-targeted release.
+            await self._drop_session()
+            self.state["recovery"]["provider_closed"] = True
+            # 4. only now the address-targeted release.
+            outcome = await releaser.release(self.address)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 - the outcome is the deliverable
+            outcome = ble_recovery.ReleaseOutcome(
+                ok=False, detail=f"{type(err).__name__}: {err}"
+            )
+        finally:
+            self._paused = False
+
+        self.state["recovery"]["last_result"] = outcome.as_dict()
+        self.state["recovery"]["at"] = _utcnow().isoformat()
+        self.state["recovery"]["state"] = "released" if outcome.ok else "failed"
+        if not outcome.ok:
+            _LOGGER.error(
+                "RWB1 BLE recovery: the release did not work: %s", outcome.detail
+            )
+        await self._push()
+
     async def async_stop(self) -> None:
         """Stop the loop and release the BLE session.
 
-        The disconnect has to reach the backend even when Home Assistant
-        cancels the shutdown: a proxy slot that is never released stays held by
-        the gateway, and the device then stops being reachable. So the close is
-        run as its own task and awaited to the end, whatever the caller does.
+        The order matters and is fixed:
+
+        1. no new read may start -- ``_stopping`` makes ``read_once`` refuse;
+        2. the read in flight is given a moment to finish, and is cancelled
+           only if it does not, so a half-written transaction cannot overlap
+           the teardown;
+        3. ``provider.close()`` is awaited to the end, even when Home
+           Assistant cancels the shutdown: a proxy slot that is never
+           released stays held by the gateway and the device then stops being
+           reachable;
+        4. the teardown result is persisted, so the reason survives the
+           restart instead of dying with the process.
         """
+        # 1. forbid new reads
+        self._stopping = True
         self._stop.set()
         task, self._task = self._task, None
         if task is not None:
-            task.cancel()
+            # 2. let the read in flight finish, then cancel it if it does not
             try:
-                await task
+                await asyncio.wait_for(
+                    asyncio.shield(task), timeout=self._shutdown_read_grace_s
+                )
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "RWB1 BLE: the read in flight did not finish within %.1fs; "
+                    "cancelling it before the teardown",
+                    self._shutdown_read_grace_s,
+                )
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        # 3. wait for provider.close()
+        #    The task is kept on the runner, so a cancellation of the caller
+        #    cannot lose it: it is awaited to the end, and the teardown result
+        #    is written even if the close itself failed.
         close_task = asyncio.ensure_future(self._drop_session())
-        while True:
-            try:
-                await asyncio.shield(close_task)
-                break
-            except asyncio.CancelledError:
-                # Cancelled while disconnecting. Keep waiting: the release is
-                # the point of this call.
-                if close_task.done():
-                    raise
-                continue
+        self._close_task = close_task
+        cancelled: asyncio.CancelledError | None = None
+        try:
+            while True:
+                try:
+                    await asyncio.shield(close_task)
+                    break
+                except asyncio.CancelledError as err:
+                    # Cancelled while disconnecting. The release is the point
+                    # of this call, so the close is awaited to the end -- but
+                    # the cancellation is remembered and re-raised afterwards,
+                    # so the caller still learns that it was cancelled.
+                    cancelled = err
+                    if close_task.done():
+                        break
+                    continue
+        finally:
+            # 4. persist the teardown result -- also when the close raised or
+            #    the caller cancelled.
+            self._persist_teardown_record()
+            self._close_task = None
+        if cancelled is not None:
+            raise cancelled
+
+    def _persist_teardown_record(self) -> None:
+        """Write the teardown result to disk so it survives a restart.
+
+        Synchronous on purpose: it runs in the ``finally`` of the shutdown,
+        where an await could be cut short by the very cancellation that made
+        the shutdown necessary. The write is a few hundred bytes.
+        """
+        record = {
+            "at": _utcnow().isoformat(),
+            "address": self.address,
+            "last_disconnect": self.state.get("last_disconnect"),
+            "sessions_dropped": self.state.get("sessions_dropped"),
+            "reads_ok": self.state.get("reads_ok"),
+            "reads_failed": self.state.get("reads_failed"),
+            "reconnects": self.state.get("reconnects"),
+            "last_success": self.state.get("last_success"),
+            "counters_started_at": self.state.get("counters_started_at"),
+        }
+        try:
+            config_dir = getattr(self.hass, "config", None)
+            if config_dir is None:
+                return
+            path = Path(config_dir.config_dir) / TEARDOWN_FILENAME
+            path.write_text(
+                json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception:  # noqa: BLE001 - persisting must never break a shutdown
+            _LOGGER.debug("could not persist the BLE teardown record", exc_info=True)
+            return
+        _LOGGER.info(
+            "RWB1 BLE teardown recorded in %s: ok=%s",
+            TEARDOWN_FILENAME,
+            (record.get("last_disconnect") or {}).get("ok"),
+        )
 
 
 def runner_for(hass: HomeAssistant, entry: ConfigEntry) -> BleDiagnosticRunner | None:

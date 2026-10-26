@@ -115,6 +115,18 @@ def build(hass, tmpdir):
     runner._lock = asyncio.Lock()
     runner._task = None
     runner._stop = asyncio.Event()
+    runner._stopping = False
+    runner._paused = False
+    runner._consecutive_failures = 0
+    runner._last_success_at = None
+    runner._release_budget = None
+    runner._recovery_enabled = True
+    runner._recovery_max_success_age_s = 90.0
+    runner._recovery_min_failures = 5
+    runner._recovery_max_attempts = 3
+    runner._recovery_cooldown_s = 300.0
+    runner._shutdown_read_grace_s = 14.0
+    runner._entities = []
     runner.state = {
         "cycle": 0,
         "session_built": 0,
@@ -127,6 +139,16 @@ def build(hass, tmpdir):
         "skipped_cycles": 0,
         "rescheduled_delay_s": None,
         "last_disconnect": None,
+        "consecutive_failures": 0,
+        "last_fault": None,
+        "recovery": {
+            "enabled": True,
+            "state": "idle",
+            "attempts": 0,
+            "max_attempts": 3,
+            "last_result": None,
+            "at": None,
+        },
     }
     runner._resolve_device = lambda: object()
     runner._proxy_info = lambda: {}
