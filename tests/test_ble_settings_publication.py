@@ -30,16 +30,18 @@ if "powmr_inverter" not in sys.modules:
     sys.modules["powmr_inverter"] = _pkg
 
 import powmr_inverter.ble_diagnostic as bd  # noqa: E402
+try:  # the tests directory may or may not be on sys.path
+    from tests.ble_test_hass import FakeHass
+except ImportError:  # pragma: no cover - direct execution
+    from ble_test_hass import FakeHass
+
 import powmr_inverter.ble_sensor as bs  # noqa: E402
 
 CONF = "enabled=1\ninterval=10\nresponse_timeout=12\n"
 
 
 def hass_for(tmpdir):
-    return types.SimpleNamespace(
-        config=types.SimpleNamespace(config_dir=str(tmpdir)),
-        data={},
-    )
+    return FakeHass(tmpdir)
 
 
 def entry_for():

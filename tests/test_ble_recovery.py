@@ -33,6 +33,11 @@ if "powmr_inverter" not in sys.modules:
     sys.modules["powmr_inverter"] = _pkg
 
 import powmr_inverter.ble_diagnostic as bd  # noqa: E402
+try:  # the tests directory may or may not be on sys.path
+    from tests.ble_test_hass import FakeHass
+except ImportError:  # pragma: no cover - direct execution
+    from ble_test_hass import FakeHass
+
 from powmr_inverter.telemetry_sources import ble_recovery  # noqa: E402
 
 NOW = [1000.0]
@@ -46,9 +51,7 @@ def make_runner(tmpdir=None):
         # tests must not share that file.
         tmpdir = tempfile.mkdtemp(prefix="ble-recovery-test-")
     runner = object.__new__(bd.BleDiagnosticRunner)
-    runner.hass = types.SimpleNamespace(
-        config=types.SimpleNamespace(config_dir=str(tmpdir)),
-    )
+    runner.hass = FakeHass(tmpdir)
     runner.entry = types.SimpleNamespace(options={}, data={}, entry_id="t")
     runner.address = "D4:27:87:E4:F9:4F"
     runner._configured_device_address = "D4:27:87:E4:F9:4F"
@@ -696,7 +699,7 @@ class RecoveryBudgetPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 max_attempts=3, cooldown_s=300.0
             )
             first._release_budget.record(NOW_UTC)
-            first._persist_recovery_budget()
+            await first._persist_recovery_budget()
 
             # A fresh runner -- as after a restart -- restores the budget.
             second = make_runner(td)
@@ -704,6 +707,37 @@ class RecoveryBudgetPersistenceTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(second._release_budget.attempts, 1)
             self.assertEqual(second._release_budget.max_attempts, 3)
+
+    async def test_the_budget_is_written_off_the_event_loop(self):
+        """A blocking file write inside the loop is a real defect.
+
+        Home Assistant reports it as a blocking-call warning with a full
+        traceback dump, once per write. The write has to go through
+        ``hass.async_add_executor_job``.
+        """
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as td:
+            conf = Path(td) / "powmr_ble_diagnostic.conf"
+            conf.write_text("enabled=1\ninterval=10\nresponse_timeout=12\n")
+
+            runner = make_runner(td)
+            runner._release_budget = ble_recovery.ReleaseBudget(
+                max_attempts=3, cooldown_s=300.0
+            )
+            runner._release_budget.record(NOW_UTC)
+
+            await runner._persist_recovery_budget()
+
+            self.assertIn(
+                bd._write_json_file,
+                runner.hass.executor_calls,
+                "the budget must be written through the executor job",
+            )
+            path = Path(td) / "powmr_ble_recovery.json"
+            self.assertTrue(path.exists(), "the budget must reach the disk")
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["budget"]["attempts"], 1)
 
     async def test_a_reload_does_not_reset_the_attempts(self):
         import tempfile
@@ -772,9 +806,7 @@ class ShutdownSequenceTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as td:
             conf = Path(td) / "powmr_ble_diagnostic.conf"
             conf.write_text("enabled=1\ninterval=10\nresponse_timeout=12\n")
-            hass = types.SimpleNamespace(
-                config=types.SimpleNamespace(config_dir=str(td)),
-            )
+            hass = FakeHass(td)
             entry = types.SimpleNamespace(options={}, data={}, entry_id="t")
             runner = bd.BleDiagnosticRunner(hass, entry)
             self.assertLessEqual(runner._shutdown_read_grace_s, 3.0)

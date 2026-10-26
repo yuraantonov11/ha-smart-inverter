@@ -230,6 +230,13 @@ def ble_link_state(
     return link, attributes
 
 
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    """Write a JSON file. Always called through an executor job."""
+    path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
 def _conf_float(
     conf: dict[str, str], key: str, default: float, *, minimum: float | None = None
 ) -> float:
@@ -256,6 +263,11 @@ def _conf_int(
     if minimum is not None and value < minimum:
         value = minimum
     return value
+
+
+async def read_ble_conf_async(hass: HomeAssistant) -> dict[str, str]:
+    """Read the operator's key=value file without blocking the event loop."""
+    return await hass.async_add_executor_job(read_ble_conf, hass)
 
 
 def ble_conf_path(hass: HomeAssistant) -> Path:
@@ -694,8 +706,13 @@ class BleDiagnosticRunner:
             raw.get("budget") if isinstance(raw, dict) else None
         )
 
-    def _persist_recovery_budget(self) -> None:
-        """Write the attempt budget to disk."""
+    async def _persist_recovery_budget(self) -> None:
+        """Write the attempt budget to disk.
+
+        The write goes through an executor job: a blocking file write inside
+        the event loop makes Home Assistant log a blocking-call warning with
+        a full traceback dump on every write.
+        """
         if self._release_budget is None:
             return
         path = self._recovery_state_path()
@@ -706,11 +723,13 @@ class BleDiagnosticRunner:
             "updated_at": _utcnow().isoformat(),
         }
         try:
-            path.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            await self.hass.async_add_executor_job(_write_json_file, path, payload)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - persisting must never break a cycle
+            _LOGGER.debug(
+                "could not persist the BLE recovery budget", exc_info=True
             )
-        except OSError:
-            _LOGGER.debug("could not persist the BLE recovery budget", exc_info=True)
 
     # ------------------------------------------------------------------- read
     async def read_once(self) -> dict[str, Any]:
@@ -850,7 +869,7 @@ class BleDiagnosticRunner:
         self.state["consecutive_failures"] = 0
         if self._release_budget is not None:
             self._release_budget.reset()
-            self._persist_recovery_budget()
+            await self._persist_recovery_budget()
             self._publish_recovery_state()
         return self.state
 
@@ -891,7 +910,7 @@ class BleDiagnosticRunner:
         failure to read the file is swallowed and the running values stand.
         """
         try:
-            conf = read_ble_conf(self.hass)
+            conf = await read_ble_conf_async(self.hass)
         except Exception:  # noqa: BLE001 - reload is best effort by design
             _LOGGER.debug("BLE settings reload skipped", exc_info=True)
             return
@@ -1034,7 +1053,7 @@ class BleDiagnosticRunner:
         # The record is written right here, not only in the shutdown's
         # ``finally``: Home Assistant can end the process between the close
         # and that block, and then the reason would be lost.
-        self._persist_teardown_record()
+        await self._persist_teardown_record()
 
     def _skip(self, reason: str) -> dict[str, Any]:
         """Record a locally skipped cycle without touching the last error."""
@@ -1171,7 +1190,7 @@ class BleDiagnosticRunner:
         source = self.state.get("adapter_for_device") or self.state.get("source")
         releaser = ble_recovery.GatewayConnectionReleaser(self.hass, source)
         self._release_budget.record(now)
-        self._persist_recovery_budget()
+        await self._persist_recovery_budget()
         # 1. pause: no new read starts while the release runs.
         self._paused = True
         self.state["recovery"]["state"] = "releasing"
@@ -1198,7 +1217,7 @@ class BleDiagnosticRunner:
                 # The lifetime count of releases, separate from the budget
                 # of the current episode.
                 self._release_budget.note_release()
-                self._persist_recovery_budget()
+                await self._persist_recovery_budget()
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001 - the outcome is the deliverable
@@ -1288,8 +1307,18 @@ class BleDiagnosticRunner:
                     continue
         finally:
             # 4. persist the teardown result -- also when the close raised or
-            #    the caller cancelled.
-            self._persist_teardown_record()
+            #    the caller cancelled. The write is shielded and the task is
+            #    kept on the runner, so the cancellation that caused the
+            #    shutdown does not cancel the write itself.
+            write_task = self.hass.async_create_task(
+                self._persist_teardown_record()
+            )
+            self._teardown_write_task = write_task
+            try:
+                await asyncio.shield(write_task)
+            except asyncio.CancelledError:
+                # The write keeps running in the background.
+                pass
             self._close_task = None
         _LOGGER.info(
             "RWB1 BLE stop: end (teardown record written, cancelled=%s)",
@@ -1298,12 +1327,13 @@ class BleDiagnosticRunner:
         if cancelled is not None:
             raise cancelled
 
-    def _persist_teardown_record(self) -> None:
+    async def _persist_teardown_record(self) -> None:
         """Write the teardown result to disk so it survives a restart.
 
-        Synchronous on purpose: it runs in the ``finally`` of the shutdown,
-        where an await could be cut short by the very cancellation that made
-        the shutdown necessary. The write is a few hundred bytes.
+        The write goes through an executor job, so the event loop is not
+        blocked. In the shutdown path it is awaited through a shield: the
+        cancellation that caused the shutdown must not cancel the write, and
+        the task is kept on the runner so it is not garbage collected.
         """
         record = {
             "at": _utcnow().isoformat(),
@@ -1321,9 +1351,11 @@ class BleDiagnosticRunner:
             if config_dir is None:
                 return
             path = Path(config_dir.config_dir) / TEARDOWN_FILENAME
-            path.write_text(
-                json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8"
+            await self.hass.async_add_executor_job(
+                _write_json_file, path, record
             )
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001 - persisting must never break a shutdown
             _LOGGER.debug("could not persist the BLE teardown record", exc_info=True)
             return

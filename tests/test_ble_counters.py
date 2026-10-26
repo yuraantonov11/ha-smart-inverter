@@ -11,6 +11,7 @@ Two defects are pinned here:
 import asyncio
 import datetime
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -28,11 +29,16 @@ if "powmr_inverter" not in sys.modules:
     sys.modules["powmr_inverter"] = _pkg
 
 import powmr_inverter.ble_diagnostic as bd  # noqa: E402
+try:  # the tests directory may or may not be on sys.path
+    from tests.ble_test_hass import FakeHass
+except ImportError:  # pragma: no cover - direct execution
+    from ble_test_hass import FakeHass
+
 
 
 def build_runner():
     runner = object.__new__(bd.BleDiagnosticRunner)
-    runner.hass = None
+    runner.hass = FakeHass(tempfile.mkdtemp(prefix="ble-test-"))
     runner.entry = types.SimpleNamespace(options={}, data={}, entry_id="t")
     runner.address = "D4:27:87:E4:F9:4F"
     runner.dtu_id = "1"
