@@ -197,15 +197,56 @@ class ReleaseBudget:
 
 
 @dataclass(frozen=True, slots=True)
+class ProxyIdentity:
+    """Which proxy was actually used.
+
+    "released on proxy None" is not verifiable: the identity of the proxy
+    that carried out the release has to be recorded, so the action can be
+    checked afterwards.
+    """
+
+    entry_id: str | None = None
+    title: str | None = None
+    mac: str | None = None
+    host: str | None = None
+    port: int | None = None
+
+    def describe(self) -> str:
+        """A single line that names the proxy unambiguously."""
+        parts = [p for p in (self.mac, self.title, self.host) if p]
+        if self.port:
+            parts.append(f"port {self.port}")
+        if self.entry_id:
+            parts.append(f"entry {self.entry_id}")
+        return " / ".join(parts) if parts else "unknown proxy"
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "entry_id": self.entry_id,
+            "title": self.title,
+            "mac": self.mac,
+            "host": self.host,
+            "port": self.port,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ReleaseOutcome:
-    """What the release attempt did."""
+    """What the release attempt did, and on which proxy."""
 
     ok: bool
     detail: str
     attempted: bool = True
+    proxy: ProxyIdentity | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {"ok": self.ok, "detail": self.detail, "attempted": self.attempted}
+        return {
+            "ok": self.ok,
+            "detail": self.detail,
+            "attempted": self.attempted,
+            "proxy": self.proxy.as_dict() if self.proxy else None,
+            "proxy_description": self.proxy.describe() if self.proxy else None,
+        }
 
 
 class GatewayConnectionReleaser:
@@ -303,6 +344,23 @@ class GatewayConnectionReleaser:
         return client, True
 
     # -- the release ----------------------------------------------------
+    @staticmethod
+    def _identity(entry: Any) -> ProxyIdentity:
+        """Name the proxy that will carry out the release."""
+        data = getattr(entry, "data", None) or {}
+        port = data.get("port")
+        try:
+            port = int(port) if port else None
+        except (TypeError, ValueError):
+            port = None
+        return ProxyIdentity(
+            entry_id=getattr(entry, "entry_id", None),
+            title=getattr(entry, "title", None),
+            mac=str(data.get("bluetooth_mac_address") or "").upper() or None,
+            host=data.get("host") or None,
+            port=port,
+        )
+
     async def release(self, address: str) -> ReleaseOutcome:
         """Release the connection for ``address`` on the proxy."""
         entry = self._esphome_entry()
@@ -314,6 +372,7 @@ class GatewayConnectionReleaser:
                 ),
                 attempted=False,
             )
+        proxy = self._identity(entry)
 
         client = None
         owned = False
@@ -326,8 +385,19 @@ class GatewayConnectionReleaser:
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001 - the outcome is reported
+            _LOGGER.error(
+                "RWB1 BLE recovery: the release of %s on the proxy %s failed: "
+                "%s: %s",
+                address,
+                proxy.describe(),
+                type(err).__name__,
+                err,
+            )
             return ReleaseOutcome(
-                ok=False, detail=f"{type(err).__name__}: {err}", attempted=True
+                ok=False,
+                detail=f"{type(err).__name__}: {err}",
+                attempted=True,
+                proxy=proxy,
             )
         finally:
             if owned and client is not None:
@@ -341,10 +411,13 @@ class GatewayConnectionReleaser:
             "RWB1 BLE recovery: released the stranded connection for %s on the "
             "proxy %s",
             address,
-            self.source,
+            proxy.describe(),
         )
         return ReleaseOutcome(
-            ok=True, detail=f"released {address} on proxy {self.source}", attempted=True
+            ok=True,
+            detail=f"released {address} on the proxy {proxy.describe()}",
+            attempted=True,
+            proxy=proxy,
         )
 
 

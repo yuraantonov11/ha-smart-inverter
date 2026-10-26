@@ -315,6 +315,9 @@ class BleDiagnosticRunner:
         self.address = str(
             entry_option(entry, OPT_ADDRESS) or conf.get("address") or DEFAULT_ADDRESS
         )
+        # The address the operator configured, kept separately: only it may
+        # ever be released on the shared proxy.
+        self._configured_device_address = str(self.address).upper()
         self.dtu_id = (
             str(entry_option(entry, OPT_DTU_ID) or "").strip()
             or (conf.get("dtu_id") or "").strip()
@@ -881,6 +884,7 @@ class BleDiagnosticRunner:
             self.state.get("sessions_dropped") or 0
         ) + 1
         started = _utcnow()
+        _LOGGER.info("RWB1 BLE stop: provider.close() start")
         try:
             await provider.close()
         except Exception:  # noqa: BLE001 - teardown is best effort
@@ -893,6 +897,10 @@ class BleDiagnosticRunner:
                 "reason": "close raised",
                 "at": _utcnow().isoformat(),
             }
+            _LOGGER.info(
+                "RWB1 BLE stop: provider.close() end -- raised, the slot may be "
+                "stranded"
+            )
             return
         # The provider reports an incomplete teardown when a backend step did
         # not answer inside its deadline; that is the interesting case.
@@ -915,6 +923,13 @@ class BleDiagnosticRunner:
             incomplete,
             elapsed,
             f" reason={reason}" if reason else "",
+        )
+        _LOGGER.info(
+            "RWB1 BLE stop: provider.close() end -- ok=%s teardown_incomplete=%s "
+            "reason=%s",
+            not incomplete,
+            incomplete,
+            reason or "none",
         )
 
     def _skip(self, reason: str) -> dict[str, Any]:
@@ -989,6 +1004,16 @@ class BleDiagnosticRunner:
                 raise
 
     # -------------------------------------------------------------- recovery
+    def _configured_address(self) -> str:
+        """The BLE address the runner is configured for.
+
+        Only this address may ever be released on the proxy: the proxy is
+        shared by every BLE device in the house.
+        """
+        return str(
+            getattr(self, "_configured_device_address", "") or self.address or ""
+        ).upper()
+
     async def _maybe_recover(self) -> None:
         """Release a stranded connection when the reads prove the link is gone.
 
@@ -1022,6 +1047,23 @@ class BleDiagnosticRunner:
             self.state["recovery"]["attempts"] = self._release_budget.attempts
             return
 
+        # The release is address-targeted and touches exactly one connection:
+        # the configured device. The address is checked against the
+        # configured one, so a wrong value can never release another device's
+        # connection on the shared proxy.
+        target_address = str(self.address or "").upper()
+        if not target_address:
+            return
+        if target_address != self._configured_address():
+            _LOGGER.error(
+                "RWB1 BLE recovery: refusing to release %s -- it is not the "
+                "configured device (%s)",
+                target_address,
+                self._configured_address(),
+            )
+            self.state["recovery"]["state"] = "refused_wrong_address"
+            return
+
         source = self.state.get("adapter_for_device") or self.state.get("source")
         releaser = ble_recovery.GatewayConnectionReleaser(self.hass, source)
         self._release_budget.record(now)
@@ -1047,7 +1089,7 @@ class BleDiagnosticRunner:
             await self._drop_session()
             self.state["recovery"]["provider_closed"] = True
             # 4. only now the address-targeted release.
-            outcome = await releaser.release(self.address)
+            outcome = await releaser.release(target_address)
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001 - the outcome is the deliverable
@@ -1083,6 +1125,14 @@ class BleDiagnosticRunner:
            restart instead of dying with the process.
         """
         # 1. forbid new reads
+        _LOGGER.info(
+            "RWB1 BLE stop: start (session=%s, reads_ok=%s, reads_failed=%s, "
+            "last_success=%s)",
+            "held" if self._provider is not None else "none",
+            self.state.get("reads_ok"),
+            self.state.get("reads_failed"),
+            self.state.get("last_success"),
+        )
         self._stopping = True
         self._stop.set()
         task, self._task = self._task, None
@@ -1131,6 +1181,10 @@ class BleDiagnosticRunner:
             #    the caller cancelled.
             self._persist_teardown_record()
             self._close_task = None
+        _LOGGER.info(
+            "RWB1 BLE stop: end (teardown record written, cancelled=%s)",
+            cancelled is not None,
+        )
         if cancelled is not None:
             raise cancelled
 

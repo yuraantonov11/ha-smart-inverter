@@ -51,6 +51,7 @@ def make_runner(tmpdir=None):
     )
     runner.entry = types.SimpleNamespace(options={}, data={}, entry_id="t")
     runner.address = "D4:27:87:E4:F9:4F"
+    runner._configured_device_address = "D4:27:87:E4:F9:4F"
     runner.dtu_id = "50659432846709074818"
     runner.interval = 10.0
     runner.response_timeout = 12.0
@@ -368,6 +369,101 @@ class ReleaserTests(unittest.IsolatedAsyncioTestCase):
         outcome = await releaser.release("D4:27:87:E4:F9:4F")
         self.assertTrue(outcome.ok, outcome.detail)
         self.assertEqual(client.calls, [0xD42787E4F94F])
+
+
+class ProxyIdentityTests(unittest.IsolatedAsyncioTestCase):
+    """The outcome must name the proxy that was actually used."""
+
+    async def test_the_outcome_names_the_proxy(self):
+        client = FakeAPIClient()
+        hass = fake_hass(
+            [esphome_entry("e2", host="192.168.1.146", client=client)]
+        )
+        releaser = ble_recovery.GatewayConnectionReleaser(hass, "54:EF:44:CF:32:16")
+
+        outcome = await releaser.release("D4:27:87:E4:F9:4F")
+
+        self.assertTrue(outcome.ok, outcome.detail)
+        self.assertIsNotNone(outcome.proxy)
+        self.assertEqual(outcome.proxy.mac, "54:EF:44:CF:32:16")
+        self.assertEqual(outcome.proxy.entry_id, "e2")
+        self.assertEqual(outcome.proxy.host, "192.168.1.146")
+        self.assertEqual(outcome.proxy.port, 6053)
+        self.assertIn("54:EF:44:CF:32:16", outcome.detail)
+        self.assertNotIn("proxy None", outcome.detail)
+
+    async def test_the_result_dict_carries_the_proxy(self):
+        client = FakeAPIClient()
+        hass = fake_hass([esphome_entry("e2", client=client)])
+        releaser = ble_recovery.GatewayConnectionReleaser(hass, "54:EF:44:CF:32:16")
+        outcome = await releaser.release("D4:27:87:E4:F9:4F")
+        data = outcome.as_dict()
+        self.assertEqual(data["proxy"]["mac"], "54:EF:44:CF:32:16")
+        self.assertIn("54:EF:44:CF:32:16", data["proxy_description"])
+
+    async def test_a_failed_release_also_names_the_proxy(self):
+        client = FakeAPIClient()
+        client.fail = RuntimeError("proxy said no")
+        hass = fake_hass([esphome_entry("e2", client=client)])
+        releaser = ble_recovery.GatewayConnectionReleaser(hass, "54:EF:44:CF:32:16")
+        outcome = await releaser.release("D4:27:87:E4:F9:4F")
+        self.assertFalse(outcome.ok)
+        self.assertIsNotNone(outcome.proxy)
+        self.assertEqual(outcome.proxy.mac, "54:EF:44:CF:32:16")
+
+
+class OnlyTheConfiguredDeviceTests(unittest.IsolatedAsyncioTestCase):
+    """The proxy is shared: only the configured device may be released."""
+
+    async def test_a_foreign_address_is_refused(self):
+        runner = make_runner()
+        runner._consecutive_failures = 5
+        runner._last_success_at = NOW_UTC - timedelta(seconds=300)
+        # The address was changed after the configuration -- the release must
+        # not follow it.
+        runner.address = "AA:BB:CC:DD:EE:FF"
+        calls = []
+
+        class FakeReleaser:
+            def __init__(self, hass, source):
+                pass
+
+            async def release(self, address):
+                calls.append(address)
+                return ble_recovery.ReleaseOutcome(ok=True, detail="released")
+
+        original = ble_recovery.GatewayConnectionReleaser
+        ble_recovery.GatewayConnectionReleaser = FakeReleaser
+        self.addCleanup(setattr, ble_recovery, "GatewayConnectionReleaser", original)
+
+        await runner._maybe_recover()
+
+        self.assertEqual(calls, [], "a foreign address must not be released")
+        self.assertEqual(
+            runner.state["recovery"]["state"], "refused_wrong_address"
+        )
+
+    async def test_the_configured_address_is_released(self):
+        runner = make_runner()
+        runner._consecutive_failures = 5
+        runner._last_success_at = NOW_UTC - timedelta(seconds=300)
+        calls = []
+
+        class FakeReleaser:
+            def __init__(self, hass, source):
+                pass
+
+            async def release(self, address):
+                calls.append(address)
+                return ble_recovery.ReleaseOutcome(ok=True, detail="released")
+
+        original = ble_recovery.GatewayConnectionReleaser
+        ble_recovery.GatewayConnectionReleaser = FakeReleaser
+        self.addCleanup(setattr, ble_recovery, "GatewayConnectionReleaser", original)
+
+        await runner._maybe_recover()
+
+        self.assertEqual(calls, ["D4:27:87:E4:F9:4F"])
 
 
 class RecoveryCoordinationTests(unittest.IsolatedAsyncioTestCase):
