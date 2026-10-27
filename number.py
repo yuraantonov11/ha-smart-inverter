@@ -52,7 +52,7 @@ def _fresh_charging_current(coordinator, *keys) -> float | None:
     received_at = getattr(coordinator, "_device_settings_received_at", None)
     if not settings_readback_fresh(received_at, datetime.now(timezone.utc)):
         return None
-    return read_charge_current((coordinator.data or {}).get("deviceSettings", {}), *keys)
+    return read_charge_current(getattr(coordinator, "_device_settings_snapshot", {}), *keys)
 
 
 async def async_setup_entry(

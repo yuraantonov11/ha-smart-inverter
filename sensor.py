@@ -1643,7 +1643,7 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
             "read_from_bms": False,
         }
         from .hems.battery_limits import read_charge_current, settings_readback_fresh
-        settings = (self.coordinator.data or {}).get("deviceSettings", {})
+        settings = getattr(self.coordinator, "_device_settings_snapshot", {})
         received_at = getattr(self.coordinator, "_device_settings_received_at", None)
         attributes["battery_limits_diagnostic"] = {
             "total_charge_a": read_charge_current(settings, "setMaxChargingCurrent", "maxChargingCurrent"),

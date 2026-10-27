@@ -489,6 +489,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._grid_initialized: bool = False
         self._last_config_fetch_at: datetime | None = None
         self._device_settings_received_at: datetime | None = None
+        self._device_settings_snapshot: dict[str, Any] = {}
 
         # Battery tracker state
         self._battery_in_low: bool = False
@@ -1430,7 +1431,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         settings_fresh = settings_readback_fresh(settings_received_at, datetime.now(timezone.utc))
         self._hems._battery_power_limits = resolve_battery_power_limits(
             self._entry.options,
-            (self.data or {}).get("deviceSettings", {}) if settings_fresh else {},
+            getattr(self, "_device_settings_snapshot", {}) if settings_fresh else {},
             getattr(self, "_nominal_voltage_v", None),
         )
         self._hems.predictive_min_confidence = parse_predictive_options({**self._entry.data, **self._entry.options})["predictive_min_confidence_for_assist"]

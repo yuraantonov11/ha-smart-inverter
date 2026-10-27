@@ -47,10 +47,10 @@ def number_module(monkeypatch):
                                      ("InverterMaxUtilityChargingCurrent", "setUtilityMaxChargingCurrent")])
 def test_entities_only_display_recent_device_values(number_module, klass, key):
     api = types.SimpleNamespace(device_sn="device", last_device_configs_received_at=None)
-    coord = types.SimpleNamespace(api=api, data={"deviceSettings": {}}, _device_settings_received_at=None)
+    coord = types.SimpleNamespace(api=api, data={"deviceSettings": {}}, _device_settings_snapshot={}, _device_settings_received_at=None)
     entity = getattr(number_module, klass)(coord)
     assert entity.native_value is None
-    coord.data["deviceSettings"][key] = {"value": 40, "unit": "A"}
+    coord._device_settings_snapshot[key] = {"value": 40, "unit": "A"}
     coord._device_settings_received_at = datetime.now(timezone.utc)
     assert entity.native_value == 40
     coord._device_settings_received_at -= timedelta(minutes=4)
@@ -59,7 +59,7 @@ def test_entities_only_display_recent_device_values(number_module, klass, key):
 def test_successful_write_requests_readback_instead_of_assuming_it(number_module):
     api = types.SimpleNamespace(device_sn="device", last_device_configs_received_at=None,
                                 set_max_charging_current=AsyncMock(return_value=True))
-    coord = types.SimpleNamespace(api=api, data={"deviceSettings": {}}, _device_settings_received_at=None, async_request_refresh=AsyncMock())
+    coord = types.SimpleNamespace(api=api, data={"deviceSettings": {}}, _device_settings_snapshot={}, _device_settings_received_at=None, async_request_refresh=AsyncMock())
     entity = number_module.InverterMaxChargingCurrent(coord)
     asyncio.run(entity.async_set_native_value(40))
     api.set_max_charging_current.assert_awaited_once_with(40)
