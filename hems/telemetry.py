@@ -135,6 +135,11 @@ class PlannerInputs:
     charge_efficiency: float = 0.85
     discharge_efficiency: float = 0.90
 
+    # Battery-side DC W; unknown limits block predictive control adoption.
+    max_charge_power_w: float | None = None
+    max_grid_charge_power_w: float | None = None
+    max_discharge_power_w: float | None = None
+
     # Historical consumption (most-recent day last; length <= 30).
     consumption_history: list = field(default_factory=list)
     night_charge_window: tuple[int, int] = (23, 7)
@@ -266,6 +271,9 @@ def build_planner_inputs(
     # R05: day/night rate fallbacks for the planner.
     tariff_day_fallback: float = 4.32,
     tariff_night_fallback: float = 2.16,
+    max_charge_power_w: float | None = None,
+    max_grid_charge_power_w: float | None = None,
+    max_discharge_power_w: float | None = None,
 ) -> PlannerInputs:
     """Build a ``PlannerInputs`` from raw API + already-corrected values.
 
@@ -570,6 +578,17 @@ def build_planner_inputs(
             # all-history.
             consumption.append((None, clean_day, False))
 
+    from .battery_limits import nonnegative_number
+
+    power_limits = {}
+    for key, value in (("max_charge_power_w", max_charge_power_w),
+                       ("max_grid_charge_power_w", max_grid_charge_power_w),
+                       ("max_discharge_power_w", max_discharge_power_w)):
+        checked = nonnegative_number(value)
+        if value is not None and checked is None:
+            raise ValueError(f"Invalid {key}: expected finite non-negative DC watts")
+        power_limits[key] = checked
+
     return PlannerInputs(
         now=now,
         soc=soc,
@@ -601,6 +620,7 @@ def build_planner_inputs(
         reserve_soc=reserve_soc_value,
         charge_efficiency=charge_eff,
         discharge_efficiency=discharge_eff,
+        **power_limits,
         # R05: day/night fallbacks. The planner uses
         # them when ``tariff_schedule`` is empty (the
         # validator rejected every value in the list).

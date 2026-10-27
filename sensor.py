@@ -1637,6 +1637,10 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
             "kwh": cap_kwh,
             "warning": cap_warn,
             "ok_for_planning": cap_warn is None,
+            "source": ("entry_options" if "battery_capacity_ah" in
+                       getattr(getattr(self.coordinator, "_entry", None), "options", {})
+                       else "legacy_default"),
+            "read_from_bms": False,
         }
         return attributes
 

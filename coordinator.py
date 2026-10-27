@@ -1423,6 +1423,12 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._configure_night_window()
 
         controller = self._hems._predictive_controller
+        from .hems.battery_limits import resolve_battery_power_limits
+        self._hems._battery_power_limits = resolve_battery_power_limits(
+            self._entry.options,
+            (self.data or {}).get("deviceSettings", {}),
+            getattr(self, "_nominal_voltage_v", None),
+        )
         self._hems.predictive_min_confidence = parse_predictive_options({**self._entry.data, **self._entry.options})["predictive_min_confidence_for_assist"]
         controller.calibrated_storm_alert = calibrated_storm_risk(self._pv_calibrator)
         self._hems.predictive_storm_allowed = bool(self._entry.options.get("auto_storm_by_forecast", False))

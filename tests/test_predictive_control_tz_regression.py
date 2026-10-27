@@ -149,10 +149,12 @@ class PredictiveControlEngineTzTests(unittest.TestCase):
         eng = self._engine()
         # The default hold is 5 minutes. Set it to a time
         # in the past on Europe/Kyiv.
-        past = datetime(2026, 10, 14, 11, 0, 0, tzinfo=timezone.utc)
+        naive_local_now = datetime(2026, 10, 14, 11, 1, 0)
+        # The deadline is one minute before the same local instant, not
+        # 11:00 UTC (which is still in the future at 11:01 Kyiv).
+        past = naive_local_now.astimezone(timezone.utc) - timedelta(minutes=1)
         eng._manual_override_until = past
         eng._predictive_user_target_soc = 75
-        naive_local_now = datetime(2026, 10, 14, 11, 1, 0)  # 1 min later
         eng.evaluate(
             smart_mode=SmartMode.ARBITRAGE,
             hems_auto=True,
