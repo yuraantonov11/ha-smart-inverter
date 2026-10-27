@@ -1158,7 +1158,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 self._last_config_fetch_at = now
                 if isinstance(fetched, dict) and fetched:
                     device_settings = fetched
-                    self._device_settings_received_at = getattr(self, "_device_settings_received_at", None)
+                    from .hems.battery_limits import record_settings_snapshot
+                    record_settings_snapshot(self, fetched, getattr(self.api, "last_device_configs_received_at", None))
                     settings_refreshed = True
                     _LOGGER.info("Device settings loaded: %d keys", len(fetched))
                 else:
@@ -1427,7 +1428,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
 
         controller = self._hems._predictive_controller
         from .hems.battery_limits import resolve_battery_power_limits, settings_readback_fresh
-        settings_received_at = getattr(self.api, "last_device_configs_received_at", None)
+        settings_received_at = getattr(self, "_device_settings_received_at", None)
         settings_fresh = settings_readback_fresh(settings_received_at, datetime.now(timezone.utc))
         self._hems._battery_power_limits = resolve_battery_power_limits(
             self._entry.options,

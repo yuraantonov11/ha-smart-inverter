@@ -312,6 +312,37 @@ def test_expired_or_undated_config_readback_cannot_supply_a_charge_limit():
     assert resolve_battery_power_limits({}, {}, 51.2)["max_charge_power_w"] is None
 
 
+def test_real_coordinator_accepts_a_snapshot_and_preserves_it_on_empty_response():
+    import ast
+    import logging
+    from datetime import timezone
+    from pathlib import Path
+    from hems.battery_limits import record_settings_snapshot, read_charge_current
+    source = (Path(__file__).resolve().parents[1] / "coordinator.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "InverterCoordinator")
+    fn = next(n for n in cls.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "_async_update_data")
+    branch = next(n for n in ast.walk(fn) if isinstance(n, ast.If)
+                  and ast.unparse(n.test) == "isinstance(fetched, dict) and fetched")
+    # Execute the actual branch body. Resolve its relative import from this test's package.
+    branch.body = [n for n in branch.body if not isinstance(n, ast.ImportFrom)]
+    code = compile(ast.fix_missing_locations(ast.Module(body=[branch], type_ignores=[])), source[:0] or "coordinator.py", "exec")
+    now = datetime.now(timezone.utc)
+    owner = SimpleNamespace(api=SimpleNamespace(last_device_configs_received_at=now),
+                            _device_settings_snapshot={}, _device_settings_received_at=None)
+    settings = {"setMaxChargingCurrent": {"value": 50, "unit": "A"}}
+    namespace = {"self": owner, "fetched": settings, "_LOGGER": logging.getLogger(__name__),
+                 "record_settings_snapshot": record_settings_snapshot}
+    exec(code, namespace)
+    assert read_charge_current(owner._device_settings_snapshot, "setMaxChargingCurrent") == 50
+    assert owner._device_settings_received_at == now
+    namespace["fetched"] = {}
+    owner.api.last_device_configs_received_at = now + timedelta(minutes=1)
+    exec(code, namespace)
+    assert owner._device_settings_received_at == now
+    assert read_charge_current(owner._device_settings_snapshot, "setMaxChargingCurrent") == 50
+
+
 if __name__ == "__main__":
     import sys
     from pathlib import Path

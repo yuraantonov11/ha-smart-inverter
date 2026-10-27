@@ -40,6 +40,15 @@ def read_charge_current(settings, *keys):
     return None
 
 
+def record_settings_snapshot(owner, settings, received_at):
+    """Keep the last non-empty response and its own receipt timestamp together."""
+    if not isinstance(settings, Mapping) or not settings:
+        return False
+    owner._device_settings_snapshot = dict(settings)
+    owner._device_settings_received_at = received_at if isinstance(received_at, datetime) else None
+    return True
+
+
 def settings_readback_fresh(received_at, now, max_age_s=180):
     """Never adopt an unidentifiable, future-dated or expired config snapshot."""
     if not isinstance(received_at, datetime) or not isinstance(now, datetime):
