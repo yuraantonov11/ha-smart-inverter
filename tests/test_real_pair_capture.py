@@ -36,9 +36,10 @@ async def exercise(check):
     now = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
     with tempfile.TemporaryDirectory() as directory:
         c = fixture(directory, now)
+        c.forecast_day_after_kwh = 8.
         await c._save_real_forecast_pair(now)
         rows = list(c._real_pairs_store.pairs.values())
-        check(len(rows) == 1 and rows[0]['actual_kwh'] is None, 'forecast saved before fact exists')
+        check(len(rows) == 1 and rows[0]['actual_kwh'] is None, 'only tomorrow saved before fact exists even when day-after forecast exists')
         check(rows[0]['date'] == '2026-10-02' and not rows[0]['used'], 'target date and unused marker')
         check(c._real_pairs_path == Path(directory)/'entry'/'real_forecast_pairs.json', 'per-entry path')
         check(c.hass.async_add_executor_job.await_count == 2, 'load and atomic save run in executor')

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from homeassistant.components.number import (
     NumberEntity,
@@ -16,6 +17,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .hems.battery_limits import read_charge_current, settings_readback_fresh
 from .coordinator import InverterCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -44,6 +46,20 @@ def _setting_number(coordinator_data: dict | None, key: str) -> float | None:
         return float(val)
     except (TypeError, ValueError):
         return None
+
+
+def _charging_current(coordinator, *keys) -> float | None:
+    """Display the latest accepted cloud readback, even when it is stale."""
+    return read_charge_current(getattr(coordinator, "_device_settings_snapshot", {}), *keys)
+
+
+def _readback_attributes(coordinator) -> dict:
+    received_at = getattr(coordinator, "_device_settings_received_at", None)
+    return {
+        "source": "cloud_device_settings",
+        "last_confirmed_at": received_at.isoformat() if isinstance(received_at, datetime) else None,
+        "fresh": settings_readback_fresh(received_at, datetime.now(timezone.utc)),
+    }
 
 
 async def async_setup_entry(
@@ -91,14 +107,20 @@ class InverterMaxChargingCurrent(CoordinatorEntity, NumberEntity):
         self._attr_native_min_value = 0
         self._attr_native_max_value = 200
         self._attr_native_step = 5
-        self._attr_native_value = 60  # default
+
+    @property
+    def native_value(self) -> float | None:
+        return _charging_current(self.coordinator, "setMaxChargingCurrent", "maxChargingCurrent")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return _readback_attributes(self.coordinator)
 
     async def async_set_native_value(self, value: float) -> None:
         amps = _normalize_amps(value, 0, 200, 5)
         ok = await self.coordinator.api.set_max_charging_current(amps)
         if ok:
-            self._attr_native_value = float(amps)
-            self.async_write_ha_state()
+            await self.coordinator.async_request_refresh()
 
 
 class InverterMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
@@ -121,14 +143,20 @@ class InverterMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
         self._attr_native_min_value = 0
         self._attr_native_max_value = 200
         self._attr_native_step = 5
-        self._attr_native_value = 30  # default
+
+    @property
+    def native_value(self) -> float | None:
+        return _charging_current(self.coordinator, "setUtilityMaxChargingCurrent", "maxUtilityChargingCurrent")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return _readback_attributes(self.coordinator)
 
     async def async_set_native_value(self, value: float) -> None:
         amps = _normalize_amps(value, 0, 200, 5)
         ok = await self.coordinator.api.set_max_utility_charging_current(amps)
         if ok:
-            self._attr_native_value = float(amps)
-            self.async_write_ha_state()
+            await self.coordinator.async_request_refresh()
 
 
 # ── New voltage / time entities ────────────────────────────────────────────

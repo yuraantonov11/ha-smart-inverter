@@ -529,12 +529,16 @@ class PvLearningState:
             self.calibrator.load_from_list(desired)
 
     def calibration_status(self, today):
+        from .forecast_evaluation import evaluate_daily_forecasts
         m = self.calibrator.metrics()
         pending = [{"date": d, **s, "awaiting": "completed_day" if d >= today else "daily_fact"}
                    for d, s in sorted(self.snapshots.items()) if d not in self.pairs]
         return {"unit": "kWh", "forecast_model": self.calibration_model,
                 "samples": m.sample_count, "confidence": m.confidence_factor,
                 "mae_kwh": m.mae_w, "bias_kwh": m.bias_w,
+                "evaluation": evaluate_daily_forecasts(
+                    self.calibration_pairs(), self.snapshots, self.pairs,
+                    timezone_name=self.identity["timezone"]),
                 "excluded_model_pairs": len(self.pairs)-len(self.calibration_pairs()),
                 "pending_count": len(pending), "pending": pending[-7:],
                 "recent_pairs": [{"date": d, **p,
