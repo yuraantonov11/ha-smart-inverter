@@ -45,7 +45,7 @@ def number_module(monkeypatch):
 
 @pytest.mark.parametrize("klass,key", [("InverterMaxChargingCurrent", "setMaxChargingCurrent"),
                                      ("InverterMaxUtilityChargingCurrent", "setUtilityMaxChargingCurrent")])
-def test_entities_only_display_recent_device_values(number_module, klass, key):
+def test_entities_display_latest_cloud_value_with_accurate_freshness(number_module, klass, key):
     api = types.SimpleNamespace(device_sn="device", last_device_configs_received_at=None)
     coord = types.SimpleNamespace(api=api, data={"deviceSettings": {}}, _device_settings_snapshot={}, _device_settings_received_at=None)
     entity = getattr(number_module, klass)(coord)
@@ -53,8 +53,12 @@ def test_entities_only_display_recent_device_values(number_module, klass, key):
     coord._device_settings_snapshot[key] = {"value": 40, "unit": "A"}
     coord._device_settings_received_at = datetime.now(timezone.utc)
     assert entity.native_value == 40
+    assert entity.extra_state_attributes["fresh"] is True
     coord._device_settings_received_at -= timedelta(minutes=4)
-    assert entity.native_value is None
+    assert entity.native_value == 40
+    assert entity.extra_state_attributes["fresh"] is False
+    assert entity.extra_state_attributes["source"] == "cloud_device_settings"
+    assert entity.extra_state_attributes["last_confirmed_at"] is not None
 
 def test_successful_write_requests_readback_instead_of_assuming_it(number_module):
     api = types.SimpleNamespace(device_sn="device", last_device_configs_received_at=None,

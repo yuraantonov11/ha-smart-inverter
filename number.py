@@ -48,11 +48,18 @@ def _setting_number(coordinator_data: dict | None, key: str) -> float | None:
         return None
 
 
-def _fresh_charging_current(coordinator, *keys) -> float | None:
-    received_at = getattr(coordinator, "_device_settings_received_at", None)
-    if not settings_readback_fresh(received_at, datetime.now(timezone.utc)):
-        return None
+def _charging_current(coordinator, *keys) -> float | None:
+    """Display the latest accepted cloud readback, even when it is stale."""
     return read_charge_current(getattr(coordinator, "_device_settings_snapshot", {}), *keys)
+
+
+def _readback_attributes(coordinator) -> dict:
+    received_at = getattr(coordinator, "_device_settings_received_at", None)
+    return {
+        "source": "cloud_device_settings",
+        "last_confirmed_at": received_at.isoformat() if isinstance(received_at, datetime) else None,
+        "fresh": settings_readback_fresh(received_at, datetime.now(timezone.utc)),
+    }
 
 
 async def async_setup_entry(
@@ -103,7 +110,11 @@ class InverterMaxChargingCurrent(CoordinatorEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        return _fresh_charging_current(self.coordinator, "setMaxChargingCurrent", "maxChargingCurrent")
+        return _charging_current(self.coordinator, "setMaxChargingCurrent", "maxChargingCurrent")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return _readback_attributes(self.coordinator)
 
     async def async_set_native_value(self, value: float) -> None:
         amps = _normalize_amps(value, 0, 200, 5)
@@ -135,7 +146,11 @@ class InverterMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        return _fresh_charging_current(self.coordinator, "setUtilityMaxChargingCurrent", "maxUtilityChargingCurrent")
+        return _charging_current(self.coordinator, "setUtilityMaxChargingCurrent", "maxUtilityChargingCurrent")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return _readback_attributes(self.coordinator)
 
     async def async_set_native_value(self, value: float) -> None:
         amps = _normalize_amps(value, 0, 200, 5)
