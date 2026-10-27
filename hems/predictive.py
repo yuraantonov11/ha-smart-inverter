@@ -79,8 +79,8 @@ class PredictiveHint:
     The active mode (ADAPTIVE/ARBITRAGE/STORM) still decides output/charger.
     ML only says "if you want optimal, here's what I'd target."
     """
-    target_soc_morning: float
-    target_soc_evening: float
+    target_soc_morning: float | None
+    target_soc_evening: float | None
     night_charge_start_hour: int
     night_charge_end_hour: int
     storm_preemption: bool
@@ -716,6 +716,10 @@ def _balance_hour(
     )
 
 
+class PlanningForecastUnavailable(ValueError):
+    """The required dated forecast is absent; control must abstain."""
+
+
 def plan_soc_targets(inputs: PlannerInputs, *, planning_date=None) -> tuple[float, float]:
     """Budget stored energy for the expensive window and its evening tail.
 
@@ -738,7 +742,7 @@ def plan_soc_targets(inputs: PlannerInputs, *, planning_date=None) -> tuple[floa
         raise ValueError("Daily forecast does not cover the planning date")
     pv = inputs.forecast_today_kwh if offset == 0 else inputs.forecast_tomorrow_kwh
     if pv is None or not math.isfinite(pv) or pv < 0:
-        raise ValueError("PV forecast for the planning date is unknown")
+        raise PlanningForecastUnavailable("PV forecast for the planning date is unknown")
     predictor = ConsumptionPredictor(inputs.consumption_history)
     dow = day.weekday()
     expensive_hours = [(end + i) % 24 for i in range((start - end) % 24)]
@@ -1160,7 +1164,15 @@ class PredictiveHemsController:
         if self.night_charge_window is not None:
             inputs.night_charge_window = normalize_night_window(self.night_charge_window)
         # Day-ahead targets
-        target_morning, target_evening = plan_soc_targets(inputs)
+        try:
+            target_morning, target_evening = plan_soc_targets(inputs)
+        except PlanningForecastUnavailable:
+            return PredictiveHint(
+                target_soc_morning=None, target_soc_evening=None,
+                night_charge_start_hour=-1, night_charge_end_hour=-1,
+                storm_preemption=False, storm_reason=None,
+                reason="ML: forecast_unknown; planner abstains", confidence=0.0,
+            )
 
         # Storm preemption check
         storm = check_storm_preemption(inputs)
@@ -1304,16 +1316,30 @@ class PredictiveHemsController:
             return storm, plan
 
         # 2. Plan day-ahead SOC targets
-        target_morning, target_evening = plan_soc_targets(inputs)
+        try:
+            target_morning, target_evening = plan_soc_targets(inputs)
+        except PlanningForecastUnavailable:
+            skip = HemsDecision(reason="[ML] forecast_unknown: planner abstains", skip=True)
+            self.last_decision = skip
+            self.last_plan = self._build_plan(inputs, [], reason=skip.reason)
+            self.last_plan.confidence = 0.0
+            return skip, self.last_plan
 
         # 3. Simulate the station-trained hourly forecast.
-        plans = simulate_24h(
-            inputs,
-            target_morning,
-            target_evening,
-            self.consumption_predictor,
-            calibrator=getattr(self, "calibrator", None),
-        )
+        try:
+            plans = simulate_24h(
+                inputs,
+                target_morning,
+                target_evening,
+                self.consumption_predictor,
+                calibrator=getattr(self, "calibrator", None),
+            )
+        except PlanningForecastUnavailable:
+            skip = HemsDecision(reason="[ML] forecast_unknown: planner abstains", skip=True)
+            self.last_decision = skip
+            self.last_plan = self._build_plan(inputs, [], reason=skip.reason)
+            self.last_plan.confidence = 0.0
+            return skip, self.last_plan
 
         # T01 follow-up: an unreadable SOC means the planner
         # cannot make a per-hour claim. ``simulate_24h`` already

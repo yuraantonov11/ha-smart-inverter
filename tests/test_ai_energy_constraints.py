@@ -270,6 +270,26 @@ def test_learning_status_publishes_scores_without_changing_issued_forecasts():
     assert (state.snapshots, state.pairs) == original
 
 
+@pytest.mark.parametrize("forecast", [None, float("nan"), float("inf"), -1])
+def test_unknown_forecast_abstains_without_inventing_targets(forecast):
+    pi = inputs(forecast_tomorrow_kwh=forecast)
+    controller = PredictiveHemsController()
+    hint = controller.suggest(pi)
+    assert hint.confidence == 0
+    assert hint.target_soc_morning is None and hint.target_soc_evening is None
+    assert hint.night_charge_start_hour == hint.night_charge_end_hour == -1
+    decision, plan = controller.decide(pi)
+    assert decision.skip and "forecast_unknown" in decision.reason
+    assert plan.hourly == [] and plan.confidence == 0
+
+
+def test_missing_next_day_forecast_abstains_during_rollout():
+    pi = inputs(now=datetime(2026, 10, 27, 1), forecast_tomorrow_kwh=None)
+    decision, plan = PredictiveHemsController().decide(pi)
+    assert decision.skip and "forecast_unknown" in decision.reason
+    assert plan.hourly == [] and plan.confidence == 0
+
+
 if __name__ == "__main__":
     import sys
     from pathlib import Path
