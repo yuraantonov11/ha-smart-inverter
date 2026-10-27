@@ -6,6 +6,7 @@ they must not become a guessed inverter rating or an unlimited charger.
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone
 from collections.abc import Mapping
 
 POWER_LIMIT_FIELDS = (
@@ -21,6 +22,32 @@ def nonnegative_number(value):
     except (TypeError, ValueError, OverflowError):
         return None
     return number if math.isfinite(number) and 0 <= number <= 100_000 else None
+
+
+def read_charge_current(settings, *keys):
+    """A configuration readback, never a UI default or instantaneous current."""
+    if not isinstance(settings, Mapping):
+        return None
+    for key in keys:
+        item = settings.get(key)
+        if isinstance(item, Mapping):
+            if item.get("unit") not in (None, "", "A", "a", "Amp", "amp"):
+                continue
+            item = item.get("value")
+        value = nonnegative_number(item)
+        if value is not None and value <= 200:
+            return value
+    return None
+
+
+def settings_readback_fresh(received_at, now, max_age_s=180):
+    """Never adopt an unidentifiable, future-dated or expired config snapshot."""
+    if not isinstance(received_at, datetime) or not isinstance(now, datetime):
+        return False
+    if received_at.tzinfo is None or now.tzinfo is None:
+        return False
+    elapsed = (now.astimezone(timezone.utc) - received_at.astimezone(timezone.utc)).total_seconds()
+    return 0 <= elapsed <= max_age_s
 
 
 def limits_known(inputs) -> bool:

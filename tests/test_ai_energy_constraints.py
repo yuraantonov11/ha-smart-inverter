@@ -290,6 +290,28 @@ def test_missing_next_day_forecast_abstains_during_rollout():
     assert plan.hourly == [] and plan.confidence == 0
 
 
+def test_charge_readbacks_distinguish_missing_invalid_and_recorded_values():
+    from hems.battery_limits import read_charge_current
+    assert read_charge_current({}, "setMaxChargingCurrent") is None
+    assert read_charge_current({"setMaxChargingCurrent": {"value": "50", "unit": "A"}}, "setMaxChargingCurrent") == 50
+    assert read_charge_current({"setMaxChargingCurrent": {"value": "50", "unit": "V"}}, "setMaxChargingCurrent") is None
+    assert read_charge_current({"setMaxChargingCurrent": True}, "setMaxChargingCurrent") is None
+    assert read_charge_current({"setMaxChargingCurrent": "nan"}, "setMaxChargingCurrent") is None
+    assert read_charge_current({"maxChargingCurrent": 0}, "setMaxChargingCurrent", "maxChargingCurrent") == 0
+
+
+def test_expired_or_undated_config_readback_cannot_supply_a_charge_limit():
+    from datetime import timezone
+    from hems.battery_limits import settings_readback_fresh, resolve_battery_power_limits
+    now = datetime(2026, 10, 27, 12, tzinfo=timezone.utc)
+    assert settings_readback_fresh(now - timedelta(seconds=179), now)
+    assert not settings_readback_fresh(now - timedelta(seconds=181), now)
+    assert not settings_readback_fresh(now + timedelta(seconds=1), now)
+    assert not settings_readback_fresh(None, now)
+    assert not settings_readback_fresh(now.replace(tzinfo=None), now)
+    assert resolve_battery_power_limits({}, {}, 51.2)["max_charge_power_w"] is None
+
+
 if __name__ == "__main__":
     import sys
     from pathlib import Path
