@@ -67,7 +67,7 @@ async def exercise():
         _check(c._pv_learning.model['gain'] == 2,'first refresh trains from existing facts and independent archive')
         _check(len(c._pv_calibrator) == 0,'archive backfill never invents forecast pairs')
         _check(c.forecast_tomorrow_kwh == 2 and c.forecast_day_after_kwh == 3,'forecast days selected by date')
-        _check('2026-10-04' in c._pv_learning.snapshots and '2026-10-03' not in c._pv_learning.snapshots,'only future forecasts saved')
+        _check(set(c._pv_learning.snapshots) == {'2026-10-04'},'day-ahead snapshot captured; today and day-after remain unfrozen')
         _check(c._pv_state_path.exists(),'model and forecasts saved through executor')
         c._forecast.set_station_gain.assert_called_with(2.)
         # Instantiate the actual coordinator class with a minimal HA base.
