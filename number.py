@@ -50,11 +50,17 @@ def _setting_number(coordinator_data: dict | None, key: str) -> float | None:
 
 def _charging_current(coordinator, *keys) -> float | None:
     """Display the latest accepted cloud readback, even when it is stale."""
+    history = getattr(coordinator, "_charge_readback_history", None)
+    if history is not None:
+        item = history.get(keys[0])
+        return item[0] if item else None
     return read_charge_current(getattr(coordinator, "_device_settings_snapshot", {}), *keys)
 
 
-def _readback_attributes(coordinator) -> dict:
-    received_at = getattr(coordinator, "_device_settings_received_at", None)
+def _readback_attributes(coordinator, key) -> dict:
+    history = getattr(coordinator, "_charge_readback_history", None)
+    item = history.get(key) if history is not None else None
+    received_at = item[1] if item else (getattr(coordinator, "_device_settings_received_at", None) if history is None else None)
     return {
         "source": "cloud_device_settings",
         "last_confirmed_at": received_at.isoformat() if isinstance(received_at, datetime) else None,
@@ -114,7 +120,7 @@ class InverterMaxChargingCurrent(CoordinatorEntity, NumberEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return _readback_attributes(self.coordinator)
+        return _readback_attributes(self.coordinator, "setMaxChargingCurrent")
 
     async def async_set_native_value(self, value: float) -> None:
         amps = _normalize_amps(value, 0, 200, 5)
@@ -150,7 +156,7 @@ class InverterMaxUtilityChargingCurrent(CoordinatorEntity, NumberEntity):
 
     @property
     def extra_state_attributes(self) -> dict:
-        return _readback_attributes(self.coordinator)
+        return _readback_attributes(self.coordinator, "setUtilityMaxChargingCurrent")
 
     async def async_set_native_value(self, value: float) -> None:
         amps = _normalize_amps(value, 0, 200, 5)

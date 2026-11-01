@@ -69,3 +69,27 @@ def test_successful_write_requests_readback_instead_of_assuming_it(number_module
     api.set_max_charging_current.assert_awaited_once_with(40)
     coord.async_request_refresh.assert_awaited_once()
     assert entity.native_value is None
+
+def test_partial_response_preserves_display_without_refreshing_missing_field(number_module):
+    from hems.battery_limits import record_settings_snapshot, resolve_battery_power_limits
+    now = datetime.now(timezone.utc)
+    coord = types.SimpleNamespace(api=types.SimpleNamespace(device_sn="device"))
+    record_settings_snapshot(coord, {"setMaxChargingCurrent": 50, "setUtilityMaxChargingCurrent": 40}, now - timedelta(minutes=4))
+    record_settings_snapshot(coord, {"setMaxChargingCurrent": 45}, now)
+    entity = number_module.InverterMaxUtilityChargingCurrent(coord)
+    assert entity.native_value == 40
+    assert entity.extra_state_attributes["fresh"] is False
+    assert entity.extra_state_attributes["last_confirmed_at"] == (now - timedelta(minutes=4)).isoformat()
+    limits = resolve_battery_power_limits({}, coord._device_settings_snapshot, 51.2)
+    assert limits["max_grid_charge_power_w"] is None
+
+def test_invalid_or_older_reply_cannot_replace_last_confirmed_display(number_module):
+    from hems.battery_limits import record_settings_snapshot
+    now = datetime.now(timezone.utc)
+    coord = types.SimpleNamespace(api=types.SimpleNamespace(device_sn="device"))
+    entity = number_module.InverterMaxUtilityChargingCurrent(coord)
+    record_settings_snapshot(coord, {"setUtilityMaxChargingCurrent": 40}, now)
+    record_settings_snapshot(coord, {"setUtilityMaxChargingCurrent": 30}, now - timedelta(seconds=1))
+    record_settings_snapshot(coord, {"setUtilityMaxChargingCurrent": float("nan")}, now + timedelta(seconds=1))
+    assert entity.native_value == 40
+    assert entity.extra_state_attributes["last_confirmed_at"] == now.isoformat()

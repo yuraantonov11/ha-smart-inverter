@@ -44,6 +44,17 @@ def record_settings_snapshot(owner, settings, received_at):
     """Keep the last non-empty response and its own receipt timestamp together."""
     if not isinstance(settings, Mapping) or not settings:
         return False
+    # Display history is separate from the latest response used for
+    # decisions: a partial response must not renew another field's timestamp.
+    display = dict(getattr(owner, "_charge_readback_history", {}))
+    for group in (("setMaxChargingCurrent", "maxChargingCurrent"),
+                  ("setUtilityMaxChargingCurrent", "maxUtilityChargingCurrent")):
+        value = read_charge_current(settings, *group)
+        if value is not None and isinstance(received_at, datetime) and received_at.tzinfo is not None:
+            previous = display.get(group[0])
+            if previous is None or received_at >= previous[1]:
+                display[group[0]] = (value, received_at)
+    owner._charge_readback_history = display
     owner._device_settings_snapshot = dict(settings)
     owner._device_settings_received_at = received_at if isinstance(received_at, datetime) else None
     return True
