@@ -59,6 +59,10 @@ remain under the user's control.
 
 ### HEMS
 
+Daily and monthly savings sensors are gross estimates of the value of battery
+discharge at the applicable tariff. They do not subtract charging costs or
+losses and do not establish whether the discharged energy came from solar.
+
 - 🧠 Adaptive mode: weather-aware, tariff-smart, battery-health optimized
 - 🌙 Night Arbitrage: strict time-based cost optimization
 - ⛈️ Storm/Reserve: maximum backup readiness

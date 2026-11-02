@@ -16,7 +16,8 @@ jobs:
       - name: Stage root integration for Hassfest
         run: |
           mkdir -p custom_components/powmr_inverter
-          cp -a ./*.py manifest.json strings.json translations hems services telemetry_sources frontend www custom_components/powmr_inverter/
+          cp -a ./*.py manifest.json services.yaml strings.json translations hems services telemetry_sources frontend www custom_components/powmr_inverter/
+          rm manifest.json
       - uses: home-assistant/actions/hassfest@master
 
   hacs:
