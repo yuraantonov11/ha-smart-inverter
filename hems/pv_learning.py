@@ -10,6 +10,7 @@ import math
 import statistics
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .forecast_calibration import ForecastCalibrator
 
@@ -516,9 +517,24 @@ class PvLearningState:
         self.calibrator = ForecastCalibrator(max_samples=30, unit="kWh")
 
     def calibration_pairs(self):
-        """Only forecasts from the active pipeline may correct that pipeline."""
-        return {d: p for d, p in self.pairs.items()
-                if self.calibration_model is None or p.get("forecast_model") == self.calibration_model}
+        """Train only on the active model's verifiable day-ahead snapshots."""
+        try:
+            zone = ZoneInfo(self.identity["timezone"])
+        except (KeyError, ZoneInfoNotFoundError, ValueError):
+            return {}
+        eligible = {}
+        for day, pair in self.pairs.items():
+            if self.calibration_model is not None and pair.get("forecast_model") != self.calibration_model:
+                continue
+            try:
+                issued = datetime.fromisoformat(self.snapshots[day]["issued_at"])
+                if issued.tzinfo is None or issued.utcoffset() is None:
+                    continue
+                if (date.fromisoformat(day) - issued.astimezone(zone).date()).days == 1:
+                    eligible[day] = pair
+            except (KeyError, TypeError, ValueError, OverflowError):
+                continue
+        return eligible
 
     def set_calibration_model(self, model):
         if model is not None and (not isinstance(model, str) or not model or len(model) > 64):
@@ -533,13 +549,16 @@ class PvLearningState:
         m = self.calibrator.metrics()
         pending = [{"date": d, **s, "awaiting": "completed_day" if d >= today else "daily_fact"}
                    for d, s in sorted(self.snapshots.items()) if d not in self.pairs]
+        model_pairs = {d: p for d, p in self.pairs.items()
+                       if self.calibration_model is None or p.get("forecast_model") == self.calibration_model}
         return {"unit": "kWh", "forecast_model": self.calibration_model,
                 "samples": m.sample_count, "confidence": m.confidence_factor,
                 "mae_kwh": m.mae_w, "bias_kwh": m.bias_w,
                 "evaluation": evaluate_daily_forecasts(
-                    self.calibration_pairs(), self.snapshots, self.pairs,
+                    model_pairs, self.snapshots, self.pairs,
                     timezone_name=self.identity["timezone"]),
-                "excluded_model_pairs": len(self.pairs)-len(self.calibration_pairs()),
+                "excluded_model_pairs": len(self.pairs)-len(model_pairs),
+                "excluded_horizon_pairs": len(model_pairs)-len(self.calibration_pairs()),
                 "pending_count": len(pending), "pending": pending[-7:],
                 "recent_pairs": [{"date": d, **p,
                                   "used_for_current_model": d in self.calibration_pairs()}
@@ -906,7 +925,7 @@ class RealForecastPairs:
 
     def publish(self, state):
         """Keep the old station-state format compatible without a second matcher."""
-        previous_pairs = state.pairs
+        previous_pairs = state.calibration_pairs()
         state.snapshots = {d: {"forecast_kwh": p["forecast_kwh"], "issued_at": p["captured_at"]}
                            for d, p in self.pairs.items()}
         state.pairs = {d: {"forecast_kwh": p["forecast_kwh"], "actual_kwh": p["actual_kwh"], "coverage": 1.0}
@@ -917,8 +936,6 @@ class RealForecastPairs:
                 state.snapshots[d]["forecast_model"] = p["forecast_model"]
                 if d in state.pairs:
                     state.pairs[d]["forecast_model"] = p["forecast_model"]
-        previous_pairs = {d: p for d, p in previous_pairs.items()
-                          if state.calibration_model is None or p.get("forecast_model") == state.calibration_model}
         active_pairs = state.calibration_pairs()
         previous_samples = [[p["forecast_kwh"], p["actual_kwh"]] for p in previous_pairs.values()]
         # Normal completion appends each new date exactly once. Restore/pruning
