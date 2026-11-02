@@ -16,7 +16,7 @@ import sys
 import unittest
 from pathlib import Path
 
-REPO = Path("/opt/data/powmr-ai-work/powmr_inverter")
+REPO = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
     "rwb1_mapping_verdict", REPO / "scripts" / "rwb1_mapping_verdict.py"
 )

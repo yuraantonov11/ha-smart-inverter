@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-REPO_ROOT = Path("/opt/data/powmr-ai-work/powmr_inverter")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 HEMS_ENGINE_PATH = REPO_ROOT / "hems" / "engine.py"
 
 

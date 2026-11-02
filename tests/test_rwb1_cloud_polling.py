@@ -22,7 +22,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-REPO = Path("/opt/data/powmr-ai-work/powmr_inverter")
+REPO = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location(
     "rwb1_cloud_polling", REPO / "scripts" / "rwb1_cloud_polling.py"
 )
