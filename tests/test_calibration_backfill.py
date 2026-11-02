@@ -59,7 +59,8 @@ with tempfile.TemporaryDirectory() as directory:
     _check(fresh.pairs == state.pairs and fresh.model == model,"restore model and dated pairs")
     _check(fresh.match({'2026-10-02':2},after) == 0,"restart deduplication")
     _check(legacy.with_suffix('.json.legacy').exists(),"legacy undated pairs archived")
-    _check(len(fresh.calibrator) == 2,"legacy pairs excluded")
+    _check(len(fresh.calibrator) == 1 and len(fresh.pairs) == 2,
+           "legacy undated and two-day evidence excluded from day-ahead calibration, history retained")
     unrelated = PvLearningState('UTC',0,0)
     # coord-resolution fix: identity
     # mismatch is now a recoverable
@@ -82,5 +83,5 @@ with tempfile.TemporaryDirectory() as directory:
         fresh.load(path)
         _check(False,"wrong unit rejected")
     except ValueError:
-        _check(len(fresh.calibrator) == 2,"invalid reload preserves state")
+        _check(len(fresh.calibrator) == 1 and len(fresh.pairs) == 2,"invalid reload preserves state")
 _check.finish()
