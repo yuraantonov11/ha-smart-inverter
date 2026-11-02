@@ -87,6 +87,23 @@ def build_runner():
 
 
 class CounterTests(unittest.IsolatedAsyncioTestCase):
+    async def test_loop_measures_read_and_recovery_work_separately(self):
+        runner = build_runner()
+        times = iter((100.0, 101.5, 101.5, 101.7))
+        runner._clock = lambda: next(times)
+
+        async def read_once():
+            return runner.state
+
+        async def recover():
+            runner._stop.set()
+
+        runner.read_once = read_once
+        runner._maybe_recover = recover
+        await runner._loop()
+        self.assertEqual(runner.state["last_read_work_s"], 1.5)
+        self.assertEqual(runner.state["last_recovery_work_s"], 0.2)
+
     async def test_the_state_dict_has_no_duplicate_keys(self):
         """A duplicated key silently overrides the earlier value."""
         import ast

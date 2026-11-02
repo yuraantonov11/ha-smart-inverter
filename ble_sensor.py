@@ -184,6 +184,10 @@ async def async_add_ble_diagnostic_entities(
                 "last_fault": s.get("last_fault"),
                 "recovery": s.get("recovery"),
                 "rescheduled_delay_s": s.get("rescheduled_delay_s"),
+                # Last completed loop work; these values appear on the next
+                # state update, since publishing happens inside read_once().
+                "last_read_work_s": s.get("last_read_work_s"),
+                "last_recovery_work_s": s.get("last_recovery_work_s"),
                 "seconds_since_previous_success": s.get(
                     "seconds_since_previous_success"
                 ),
