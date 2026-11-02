@@ -19,7 +19,9 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install 'homeassistant==2026.10.2' pytest 'bleak-retry-connector>=4.0,<5.0'
       - name: Run BLE recovery and lifecycle tests
-        run: python -m pytest -q tests/test_ble_recovery.py tests/test_ble_shutdown.py tests/test_ble_counters.py tests/test_ble_interval_reload.py tests/test_ble_settings_publication.py tests/test_ble_teardown_reason.py
+        run: |
+          cd ..
+          python -c 'import asyncio,pytest,sys; raise SystemExit(pytest.main(sys.argv[1:]))' -q ha-smart-inverter/tests/test_ble_recovery.py ha-smart-inverter/tests/test_ble_shutdown.py ha-smart-inverter/tests/test_ble_counters.py ha-smart-inverter/tests/test_ble_interval_reload.py ha-smart-inverter/tests/test_ble_settings_publication.py ha-smart-inverter/tests/test_ble_teardown_reason.py
 
   hassfest:
     name: Hassfest
