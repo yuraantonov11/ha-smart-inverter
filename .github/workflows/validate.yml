@@ -21,7 +21,7 @@ jobs:
       - name: Run BLE recovery and lifecycle tests
         run: |
           cd ..
-          python -c 'import asyncio,pytest,sys; raise SystemExit(pytest.main(sys.argv[1:]))' -q ha-smart-inverter/tests/test_ble_recovery.py ha-smart-inverter/tests/test_ble_shutdown.py ha-smart-inverter/tests/test_ble_counters.py ha-smart-inverter/tests/test_ble_interval_reload.py ha-smart-inverter/tests/test_ble_settings_publication.py ha-smart-inverter/tests/test_ble_teardown_reason.py
+          python -c 'import asyncio,pytest,sys; raise SystemExit(pytest.main(sys.argv[1:]))' -q --rootdir=ha-smart-inverter/tests --confcutdir=ha-smart-inverter/tests --noconftest --import-mode=importlib ha-smart-inverter/tests/test_ble_recovery.py ha-smart-inverter/tests/test_ble_shutdown.py ha-smart-inverter/tests/test_ble_counters.py ha-smart-inverter/tests/test_ble_interval_reload.py ha-smart-inverter/tests/test_ble_settings_publication.py ha-smart-inverter/tests/test_ble_teardown_reason.py
 
   hassfest:
     name: Hassfest
