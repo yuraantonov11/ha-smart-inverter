@@ -408,10 +408,12 @@ def _run_python_suite(
             verdict = line
             break
     if r.returncode != 0:
+        failure_lines = [line for line in stdout_lines if "FAIL" in line or "ERROR" in line]
         return False, (f"{label}: FAIL exit={r.returncode}; "
-                       f"stdout_tail={stdout_lines[-8:]!r}; stderr_tail={stderr_lines[-8:]!r}")
+                       f"failures={failure_lines[-12:]!r}; stdout_tail={stdout_lines[-8:]!r}; stderr_tail={stderr_lines[-12:]!r}")
     if verdict:
-        return True, f"{label}: PASS"
+        suffix = " (with skips)" if "skipped" in verdict.lower() else ""
+        return True, f"{label}: PASS{suffix}"
     # pytest-only files often exit successfully without running a single test
     # when executed as scripts. Collect them explicitly and require pytest's
     # successful exit code; exit 5 (no tests) must remain a failure.
@@ -431,7 +433,9 @@ def _run_python_suite(
     except subprocess.TimeoutExpired:
         return False, f"{label}: pytest TIMEOUT after 120s"
     if result.returncode == 0:
-        return True, f"{label}: PASS (pytest)"
+        summary = next((line.strip() for line in reversed(result.stdout.splitlines())
+                        if "passed" in line or "skipped" in line), "pytest")
+        return True, f"{label}: PASS (pytest: {summary})"
     return False, (
         f"{label}: FAIL pytest exit={result.returncode}; "
         f"output_tail={(result.stdout + result.stderr).splitlines()[-8:]!r}"

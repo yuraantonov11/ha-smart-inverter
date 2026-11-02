@@ -43,6 +43,7 @@
 
 pyyaml>=6.0,<7.0
 pytest>=8.0,<10.0
+websocket-client>=1.8,<2.0
 # T25 round 4 (Юра): the
 # ``services/__init__.py``
 # module imports

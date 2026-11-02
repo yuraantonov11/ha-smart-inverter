@@ -45,9 +45,10 @@ import ast
 import logging
 import re
 import sys
+import types
 import textwrap
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -311,10 +312,15 @@ class _StubCoordinator:
 
 
 # Extract the body.
+_harness_package = types.ModuleType("_t01_harness_package")
+_harness_package.__path__ = [str(ROOT)]
+sys.modules[_harness_package.__name__] = _harness_package
 ns: dict[str, Any] = {
     "__name__": "_t01_realpath_isolated",
+    "__package__": _harness_package.__name__,
     "_LOGGER": LOG,
     "datetime": datetime,
+    "timezone": timezone,
     "timedelta": __import__("datetime").timedelta,
     "uuid": uuid,
     "SmartMode": SimpleNamespace(ADAPTIVE=0, ARBITRAGE=1, STORM=2),

@@ -3017,6 +3017,10 @@ def _drive_sensor_attrs(engine):
     frontend cannot re-render without
     a full dashboard regeneration.
     """
+    import types
+    package = types.ModuleType("_sensor_harness_package")
+    package.__path__ = [_REPO_ROOT]
+    sys.modules[package.__name__] = package
     ns = _exec_class(
         SENSOR_PY,
         "PredictiveDecisionStateSensor",
@@ -3025,6 +3029,10 @@ def _drive_sensor_attrs(engine):
             "SensorEntity": _StubBaseB,
             "DOMAIN": "powmr_inverter",
             "Any": Any,
+            "__name__": "_sensor_harness_package.sensor",
+            "__package__": package.__name__,
+            "datetime": datetime,
+            "timezone": timezone,
         },
     )
     sensor_cls = ns["PredictiveDecisionStateSensor"]

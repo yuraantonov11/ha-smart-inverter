@@ -74,6 +74,10 @@ class DeployerRegistrySubstitutionRegressionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        required = ("lovelace.powmr_energy.postdeploy", "core.entity_registry")
+        missing = [name for name in required if not (LIVE_SNAPSHOT / name).is_file()]
+        if missing:
+            raise unittest.SkipTest("private live snapshot unavailable: " + ", ".join(missing))
         cls.envelope = json.loads(
             (LIVE_SNAPSHOT / "lovelace.powmr_energy.postdeploy").read_text(
                 encoding="utf-8",
