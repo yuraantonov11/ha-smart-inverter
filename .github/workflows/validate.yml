@@ -13,6 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Stage root integration for Hassfest
+        run: |
+          mkdir -p custom_components/powmr_inverter
+          cp -a ./*.py manifest.json strings.json translations hems services telemetry_sources frontend www custom_components/powmr_inverter/
       - uses: home-assistant/actions/hassfest@master
 
   hacs:

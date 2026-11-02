@@ -180,6 +180,12 @@
       },
       "history_total_energy": {
         "name": "Total Cumulative Energy (kWh)"
+      },
+      "hems_daily_summary": {
+        "name": "HEMS Daily Summary"
+      },
+      "hems_recent_decisions": {
+        "name": "HEMS Recent Decisions"
       }
     },
     "select": {
@@ -294,12 +300,6 @@
       "low_battery": {
         "name": "Low Battery"
       }
-    },
-    "hems_daily_summary": {
-      "name": "HEMS Daily Summary"
-    },
-    "hems_recent_decisions": {
-      "name": "HEMS Recent Decisions"
     }
   },
   "services": {

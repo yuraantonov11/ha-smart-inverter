@@ -180,6 +180,36 @@
       },
       "history_total_energy": {
         "name": "Загальна енергія (кВт·год)"
+      },
+      "battery_power_limit": {
+        "name": "Ліміт потужності батареї"
+      },
+      "buzzer_alarm": {
+        "name": "Звукова сигналізація"
+      },
+      "nominal_ac_voltage": {
+        "name": "Номінальна напруга AC"
+      },
+      "nominal_ac_current": {
+        "name": "Номінальний струм AC"
+      },
+      "rated_active_power": {
+        "name": "Номінальна активна потужність"
+      },
+      "rated_apparent_power": {
+        "name": "Номінальна повна потужність"
+      },
+      "output_apparent_power": {
+        "name": "Повна потужність (вихід)"
+      },
+      "output_frequency": {
+        "name": "Частота на виході"
+      },
+      "hems_daily_summary": {
+        "name": "HEMS Підсумок за день"
+      },
+      "hems_recent_decisions": {
+        "name": "HEMS Останні рішення"
       }
     },
     "select": {
@@ -294,36 +324,6 @@
       "low_battery": {
         "name": "Low Battery"
       }
-    },
-    "battery_power_limit": {
-      "name": "Ліміт потужності батареї"
-    },
-    "buzzer_alarm": {
-      "name": "Звукова сигналізація"
-    },
-    "nominal_ac_voltage": {
-      "name": "Номінальна напруга AC"
-    },
-    "nominal_ac_current": {
-      "name": "Номінальний струм AC"
-    },
-    "rated_active_power": {
-      "name": "Номінальна активна потужність"
-    },
-    "rated_apparent_power": {
-      "name": "Номінальна повна потужність"
-    },
-    "output_apparent_power": {
-      "name": "Повна потужність (вихід)"
-    },
-    "output_frequency": {
-      "name": "Частота на виході"
-    },
-    "hems_daily_summary": {
-      "name": "HEMS Підсумок за день"
-    },
-    "hems_recent_decisions": {
-      "name": "HEMS Останні рішення"
     }
   },
   "services": {

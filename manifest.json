@@ -3,7 +3,9 @@
   "name": "Smart Solar Inverter",
   "after_dependencies": [
     "energy",
-    "lovelace"
+    "lovelace",
+    "bluetooth",
+    "recorder"
   ],
   "codeowners": [
     "@yuraantonov11"
@@ -13,9 +15,6 @@
   "documentation": "https://github.com/yuraantonov11/ha-smart-inverter",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/yuraantonov11/ha-smart-inverter/issues",
-  "requirements": [
-    "aiohttp>=3.9.0",
-    "cryptography"
-  ],
+  "requirements": [],
   "version": "1.9.0"
 }
