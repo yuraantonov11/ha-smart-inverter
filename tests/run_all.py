@@ -408,13 +408,32 @@ def _run_python_suite(
             verdict = line
             break
     if r.returncode != 0:
-        return False, f"{label}: FAIL exit={r.returncode}"
+        return False, f"{label}: FAIL exit={r.returncode}; stderr_tail={stderr_lines[-8:]!r}"
     if verdict:
         return True, f"{label}: PASS"
+    # pytest-only files often exit successfully without running a single test
+    # when executed as scripts. Collect them explicitly and require pytest's
+    # successful exit code; exit 5 (no tests) must remain a failure.
+    pytest_wrapper = (
+        "import asyncio, sys, pytest\n"
+        + "sys.path[:0] = " + repr([str(REPO_ROOT), str(suite_dir)]) + "\n"
+        + "raise SystemExit(pytest.main(" + repr([
+            "-q", "--rootdir=" + str(suite_dir),
+            "--confcutdir=" + str(suite_dir), "--noconftest",
+            "--import-mode=importlib", str(suite_rel),
+        ]) + "))\n"
+    )
+    try:
+        result = subprocess.run([py, "-I", "-X", "utf8", "-c", pytest_wrapper],
+                                capture_output=True, text=True, timeout=120,
+                                cwd=str(suite_dir))
+    except subprocess.TimeoutExpired:
+        return False, f"{label}: pytest TIMEOUT after 120s"
+    if result.returncode == 0:
+        return True, f"{label}: PASS (pytest)"
     return False, (
-        f"{label}: FAIL no verdict; "
-        f"stdout_tail={stdout_lines[-3:]!r}, "
-        f"stderr_tail={stderr_lines[-3:]!r}"
+        f"{label}: FAIL pytest exit={result.returncode}; "
+        f"output_tail={(result.stdout + result.stderr).splitlines()[-8:]!r}"
     )
 
 
