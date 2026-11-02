@@ -103,6 +103,7 @@ class CounterTests(unittest.IsolatedAsyncioTestCase):
         await runner._loop()
         self.assertEqual(runner.state["last_read_work_s"], 1.5)
         self.assertEqual(runner.state["last_recovery_work_s"], 0.2)
+        self.assertEqual(runner.state["last_work_cycle"], runner.state["cycle"])
 
     async def test_the_state_dict_has_no_duplicate_keys(self):
         """A duplicated key silently overrides the earlier value."""

@@ -1117,6 +1117,7 @@ class BleDiagnosticRunner:
                 recovery_started = self._clock()
                 await self._maybe_recover()
                 self.state["last_recovery_work_s"] = round(self._clock() - recovery_started, 3)
+                self.state["last_work_cycle"] = self.state.get("cycle")
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the loop must survive anything

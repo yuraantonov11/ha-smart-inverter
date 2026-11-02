@@ -188,6 +188,7 @@ async def async_add_ble_diagnostic_entities(
                 # state update, since publishing happens inside read_once().
                 "last_read_work_s": s.get("last_read_work_s"),
                 "last_recovery_work_s": s.get("last_recovery_work_s"),
+                "last_work_cycle": s.get("last_work_cycle"),
                 "seconds_since_previous_success": s.get(
                     "seconds_since_previous_success"
                 ),
