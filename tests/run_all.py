@@ -408,7 +408,8 @@ def _run_python_suite(
             verdict = line
             break
     if r.returncode != 0:
-        return False, f"{label}: FAIL exit={r.returncode}; stderr_tail={stderr_lines[-8:]!r}"
+        return False, (f"{label}: FAIL exit={r.returncode}; "
+                       f"stdout_tail={stdout_lines[-8:]!r}; stderr_tail={stderr_lines[-8:]!r}")
     if verdict:
         return True, f"{label}: PASS"
     # pytest-only files often exit successfully without running a single test
