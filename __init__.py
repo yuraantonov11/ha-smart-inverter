@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.9.0"
+__version__ = "1.9.1"
 """Bumped to align with manifest.json (1.9.0).
 
 The HACS-distributed release and the
