@@ -190,6 +190,10 @@ class PredictiveControlEngine(HemsEngine):
             "real_pairs": metrics.sample_count,
             "model_quality": metrics.confidence_factor,
             "readiness": False,
+            "battery_limits_known": False,
+            "planning_limitation": "planner_inputs_unavailable",
+            "evaluated_at": now.isoformat(),
+            "telemetry_online": bool(kwargs.get("is_online", True)),
             "override_pending_until": _override_until_iso,
         }
         decision = super().evaluate(**kwargs)
@@ -303,6 +307,14 @@ class PredictiveControlEngine(HemsEngine):
                 )
                 and samples >= 3
             )
+            from .battery_limits import limits_known
+            planner_inputs = getattr(self, "_last_predictive_inputs", None)
+            known_limits = planner_inputs is not None and limits_known(planner_inputs)
+            self._predictive_ready = self._predictive_ready and known_limits
+            self.predictive_decision_state["battery_limits_known"] = known_limits
+            self.predictive_decision_state["planning_limitation"] = (
+                None if known_limits else "battery_power_limits_unknown"
+            )
         except (AttributeError, TypeError, ValueError):
             confidence, samples = 0.0, 0
             model_quality = 0.0
@@ -336,10 +348,15 @@ class PredictiveControlEngine(HemsEngine):
         self._last_predictive_hint = None
         self._last_predictive_plan = None
         self._last_predictive_inputs = None
+        self._predictive_can_apply = False
+        metrics = self._read_calibrator_metrics_safe()
         self.predictive_decision_state.update(mode=self.predictive_tuning.predictive_mode.title(),
                                              output_priority=None, charger_priority=None,
-                                             confidence=0.0, samples=0, applied=False,
-                                             real_pairs=0, model_quality=0.0, readiness=False,
+                                             confidence=0.0, samples=metrics.sample_count, applied=False,
+                                             real_pairs=metrics.sample_count, model_quality=metrics.confidence_factor, readiness=False,
+                                             battery_limits_known=False,
+                                             planning_limitation="planner_inputs_unavailable",
+                                             telemetry_online=False if reason == "inverter_offline" else None,
                                              reason=reason, execution_reason=reason)
 
     def _finalize_decision(self, decision, now, inputs, entry_id=None):

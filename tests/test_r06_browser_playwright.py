@@ -1776,15 +1776,15 @@ class TestR06ControlFailure(unittest.TestCase):
         self._fx.refresh_card("forecast-card.js")
         cmd = [
             sys.executable,
-            "-m",
-            "unittest",
+            "-I", "-X", "utf8", "-c",
+            "import asyncio,sys,unittest; sys.path.insert(0, " + repr(str(REPO)) + "); unittest.main(module=None)",
             "-v",
             "tests.test_r06_browser_playwright.TestR06BrowserMobileDesktop",
             "tests.test_r06_browser_playwright.TestR06BrowserResizeObserver",
         ]
         result = subprocess.run(
             cmd,
-            cwd=str(REPO),
+            cwd=str(REPO.parent),
             capture_output=True,
             text=True,
             timeout=180,
@@ -1829,12 +1829,12 @@ class TestR06ControlFailure(unittest.TestCase):
             result = subprocess.run(
                 [
                     sys.executable,
-                    "-m",
-                    "unittest",
+                    "-I", "-X", "utf8", "-c",
+                    "import asyncio,sys,unittest; sys.path.insert(0, " + repr(str(REPO)) + "); unittest.main(module=None)",
                     "-v",
                     "tests.test_r06_browser_playwright.TestR06BrowserPowerHistoryRender.test_empty_unknown_missing_entity_then_valid_data_recovers",
                 ],
-                cwd=str(REPO),
+                cwd=str(REPO.parent),
                 capture_output=True,
                 text=True,
                 timeout=180,

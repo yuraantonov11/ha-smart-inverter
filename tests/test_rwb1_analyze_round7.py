@@ -32,7 +32,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-REPO = Path("/opt/data/powmr-ai-work/powmr_inverter").resolve()
+REPO = Path(__file__).resolve().parents[1].resolve()
 SANITIZER = REPO / "scripts" / "inspect_rwb1_mqtt_capture.py"
 sys.path.insert(0, str(REPO / "scripts"))
 

@@ -56,6 +56,9 @@
           "auto_storm_by_forecast": "Auto-Storm by weather forecast",
           "battery_capacity_ah": "Battery capacity (Ah)",
           "nominal_voltage_v": "Номінальна напруга батареї (В)",
+          "max_charge_power_w": "Ліміт заряду батареї (DC Вт; порожньо — невідомий)",
+          "max_grid_charge_power_w": "Ліміт заряду від мережі (DC Вт на боці батареї)",
+          "max_discharge_power_w": "Ліміт розряду батареї (DC Вт; за обмеженнями BMS/інвертора)",
           "pv_total_capacity_w": "Total PV capacity (W)",
           "inverter_max_power_w": "Inverter max power (W)",
           "night_start_hour": "Night start hour (0-23)",
@@ -150,12 +153,10 @@
         "name": "Learned PV Ratio"
       },
       "daily_savings": {
-        "name": "Оцінка вартості заміщеного імпорту (день)",
-        "description": "Валова оцінка вартості (в грн) імпорту з мережі, який замінив розряд батареї сьогодні. Це НЕ чиста економія: не віднімає втрати, не віднімає імпорт з мережі за той самий період і нараховує тариф день/ніч на кожен розряджений kWh незалежно від походження енергії."
+        "name": "Оцінка вартості заміщеного імпорту (день)"
       },
       "monthly_savings": {
-        "name": "Оцінка вартості заміщеного імпорту (місяць)",
-        "description": "Валова оцінка вартості (в грн) імпорту з мережі, який замінив розряд батареї цього місяця. Та сама формула, що й для денної; ті самі обмеження (походження енергії, втрати, імпорт не віднімається). Не чиста економія."
+        "name": "Оцінка вартості заміщеного імпорту (місяць)"
       },
       "hems_last_reason": {
         "name": "HEMS Decision Reason"
@@ -177,6 +178,36 @@
       },
       "history_total_energy": {
         "name": "Загальна енергія (кВт·год)"
+      },
+      "battery_power_limit": {
+        "name": "Ліміт потужності батареї"
+      },
+      "buzzer_alarm": {
+        "name": "Звукова сигналізація"
+      },
+      "nominal_ac_voltage": {
+        "name": "Номінальна напруга AC"
+      },
+      "nominal_ac_current": {
+        "name": "Номінальний струм AC"
+      },
+      "rated_active_power": {
+        "name": "Номінальна активна потужність"
+      },
+      "rated_apparent_power": {
+        "name": "Номінальна повна потужність"
+      },
+      "output_apparent_power": {
+        "name": "Повна потужність (вихід)"
+      },
+      "output_frequency": {
+        "name": "Частота на виході"
+      },
+      "hems_daily_summary": {
+        "name": "HEMS Підсумок за день"
+      },
+      "hems_recent_decisions": {
+        "name": "HEMS Останні рішення"
       }
     },
     "select": {
@@ -291,36 +322,6 @@
       "low_battery": {
         "name": "Low Battery"
       }
-    },
-    "battery_power_limit": {
-      "name": "Ліміт потужності батареї"
-    },
-    "buzzer_alarm": {
-      "name": "Звукова сигналізація"
-    },
-    "nominal_ac_voltage": {
-      "name": "Номінальна напруга AC"
-    },
-    "nominal_ac_current": {
-      "name": "Номінальний струм AC"
-    },
-    "rated_active_power": {
-      "name": "Номінальна активна потужність"
-    },
-    "rated_apparent_power": {
-      "name": "Номінальна повна потужність"
-    },
-    "output_apparent_power": {
-      "name": "Повна потужність (вихід)"
-    },
-    "output_frequency": {
-      "name": "Частота на виході"
-    },
-    "hems_daily_summary": {
-      "name": "HEMS Підсумок за день"
-    },
-    "hems_recent_decisions": {
-      "name": "HEMS Останні рішення"
     }
   },
   "services": {

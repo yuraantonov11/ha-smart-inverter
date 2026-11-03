@@ -56,6 +56,9 @@
           "auto_storm_by_forecast": "Auto-Storm by weather forecast",
           "battery_capacity_ah": "Battery capacity (Ah)",
           "nominal_voltage_v": "Nominal battery voltage (V)",
+          "max_charge_power_w": "Battery charge limit (DC W; blank = unknown)",
+          "max_grid_charge_power_w": "Utility charge limit (battery-side DC W)",
+          "max_discharge_power_w": "Battery discharge limit (DC W; use BMS/inverter limits)",
           "pv_total_capacity_w": "Total PV capacity (W)",
           "inverter_max_power_w": "Inverter max power (W)",
           "night_start_hour": "Night start hour (0-23)",
@@ -150,12 +153,10 @@
         "name": "Learned PV Ratio"
       },
       "daily_savings": {
-        "name": "Gross import-value replaced (daily)",
-        "description": "Gross estimate of the value (in UAH) of grid import that battery discharge replaced today. This is NOT net savings: it does not subtract losses, does not subtract grid import during the same period, and credits every discharged kWh at the day/night tariff regardless of where the energy came from."
+        "name": "Gross import-value replaced (daily)"
       },
       "monthly_savings": {
-        "name": "Gross import-value replaced (monthly)",
-        "description": "Gross estimate of the value (in UAH) of grid import that battery discharge replaced this month. Same formula as the daily one; same limitations apply (energy origin, losses, imports not subtracted). Not net savings."
+        "name": "Gross import-value replaced (monthly)"
       },
       "hems_last_reason": {
         "name": "HEMS Decision Reason"
@@ -177,6 +178,12 @@
       },
       "history_total_energy": {
         "name": "Total Cumulative Energy (kWh)"
+      },
+      "hems_daily_summary": {
+        "name": "HEMS Daily Summary"
+      },
+      "hems_recent_decisions": {
+        "name": "HEMS Recent Decisions"
       }
     },
     "select": {
@@ -291,12 +298,6 @@
       "low_battery": {
         "name": "Low Battery"
       }
-    },
-    "hems_daily_summary": {
-      "name": "HEMS Daily Summary"
-    },
-    "hems_recent_decisions": {
-      "name": "HEMS Recent Decisions"
     }
   },
   "services": {

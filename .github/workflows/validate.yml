@@ -1,0 +1,64 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  full-tests:
+    name: Full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: powmr_inverter
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install test dependencies
+        run: |
+          python -m pip install 'homeassistant==2026.10.2' pytest pyyaml websockets websocket-client playwright 'bleak-retry-connector>=4.0,<5.0'
+          python -m playwright install --with-deps chromium
+      - name: Run full suite
+        run: |
+          python powmr_inverter/tests/run_all.py --json
+
+  ble-tests:
+    name: BLE tests with Home Assistant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - name: Install test dependencies
+        run: python -m pip install 'homeassistant==2026.10.2' pytest 'bleak-retry-connector>=4.0,<5.0'
+      - name: Run BLE recovery and lifecycle tests
+        run: |
+          cd ..
+          python -c 'import asyncio,pytest,sys; raise SystemExit(pytest.main(sys.argv[1:]))' -q --rootdir=ha-smart-inverter/tests --confcutdir=ha-smart-inverter/tests --noconftest --import-mode=importlib ha-smart-inverter/tests/test_ble_recovery.py ha-smart-inverter/tests/test_ble_shutdown.py ha-smart-inverter/tests/test_ble_counters.py ha-smart-inverter/tests/test_ble_interval_reload.py ha-smart-inverter/tests/test_ble_settings_publication.py ha-smart-inverter/tests/test_ble_teardown_reason.py
+
+  hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stage root integration for Hassfest
+        run: |
+          mkdir -p custom_components/powmr_inverter
+          cp -a ./*.py manifest.json services.yaml strings.json translations hems services telemetry_sources frontend www custom_components/powmr_inverter/
+          rm manifest.json
+      - uses: home-assistant/actions/hassfest@master
+
+  hacs:
+    name: HACS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hacs/action@main
+        with:
+          category: integration

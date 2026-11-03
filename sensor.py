@@ -1637,6 +1637,23 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
             "kwh": cap_kwh,
             "warning": cap_warn,
             "ok_for_planning": cap_warn is None,
+            "source": ("entry_options" if "battery_capacity_ah" in
+                       getattr(getattr(self.coordinator, "_entry", None), "options", {})
+                       else "legacy_default"),
+            "read_from_bms": False,
+        }
+        from .hems.battery_limits import read_charge_current, settings_readback_fresh
+        settings = getattr(self.coordinator, "_device_settings_snapshot", {})
+        received_at = getattr(self.coordinator, "_device_settings_received_at", None)
+        attributes["battery_limits_diagnostic"] = {
+            "total_charge_a": read_charge_current(settings, "setMaxChargingCurrent", "maxChargingCurrent"),
+            "utility_charge_a": read_charge_current(settings, "setUtilityMaxChargingCurrent", "maxUtilityChargingCurrent"),
+            "discharge_limit_a": None,
+            "source": "cloud_device_settings",
+            "received_at": received_at.isoformat() if isinstance(received_at, datetime) else None,
+            "fresh": settings_readback_fresh(received_at, datetime.now(timezone.utc)),
+            "dynamic_bms_limit_confirmed": False,
+            "planner_dc_limits_w": getattr(self.coordinator._hems, "_battery_power_limits", {}),
         }
         return attributes
 

@@ -26,7 +26,7 @@ import types
 import unittest
 from pathlib import Path
 
-ROOT = Path("/opt/data/powmr-ai-work/powmr_inverter")
+ROOT = Path(__file__).resolve().parents[1]
 
 # The real ``homeassistant`` package is used on purpose: stubbing it would
 # poison ``sys.modules`` for every other test module in the same process.

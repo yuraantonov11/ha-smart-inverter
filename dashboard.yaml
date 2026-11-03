@@ -160,7 +160,7 @@ views:
               - entity: sensor.smart_solar_inverter_learned_ratio
                 name: Коеф. конверсії PV
           - type: entities
-            title: SOC: спостереження
+            title: "SOC: спостереження"
             show_header_toggle: false
             state_color: true
             entities:

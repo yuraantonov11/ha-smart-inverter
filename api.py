@@ -1038,7 +1038,16 @@ class InverterApiClient:
             self.last_realtime_offline = False
             self.last_realtime_outcome = "fresh_success"
             self.last_realtime_success_received_at = received_at
-            return self._parse_realtime_fields(fields, payload)
+            parsed = self._parse_realtime_fields(fields, payload)
+            # Keep diagnostic file writes off Home Assistant's event loop.
+            # Await each write to preserve order without growing a work queue.
+            try:
+                from . import field_diagnostics
+
+                await asyncio.to_thread(field_diagnostics.record, parsed["rawFields"])
+            except Exception:
+                pass  # Diagnostic capture must not break realtime polling.
+            return parsed
 
         is_offline = code == 71000 or (
             isinstance(message, str) and "offline" in message.lower()
@@ -1247,17 +1256,6 @@ class InverterApiClient:
             "rawFields": raw_fields,
             "payload": payload,
         }
-
-        # TEMPORARY diagnostic observer for RWB1 block-mapping research.
-        # Pure observer: runs after the response is already parsed, so the
-        # polling interval and inverter control are untouched. It writes a
-        # bounded allow-list of numeric fields (see field_diagnostics.py)
-        # and nothing else — no credentials, no device identity.
-        try:
-            from . import field_diagnostics
-            field_diagnostics.record(raw_fields)
-        except Exception:  # never let diagnostics break polling
-            pass
 
         return state
 

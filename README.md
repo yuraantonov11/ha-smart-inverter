@@ -9,7 +9,7 @@ Custom integration for **solar inverters** with battery storage and HEMS control
 Currently supports the `solar.siseli.com` cloud platform (POW-HUB, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
 Architecture is designed to support additional data sources in the future (direct inverter connection, other cloud platforms).
 
-The current integration version is **1.9.0**, matching `manifest.json` and the
+The current integration version is **1.9.1**, matching `manifest.json` and the
 root `__init__.py`. Release tags and GitHub Releases are created manually by the
 maintainer after review; the `develop` branch does not receive an automatic
 `-dev` suffix or release tag.
@@ -58,6 +58,10 @@ remain under the user's control.
 - 🔘 6 switches: HEMS auto, grid charging, feed-in, backup, buzzer, ECO
 
 ### HEMS
+
+Daily and monthly savings sensors are gross estimates of the value of battery
+discharge at the applicable tariff. They do not subtract charging costs or
+losses and do not establish whether the discharged energy came from solar.
 
 - 🧠 Adaptive mode: weather-aware, tariff-smart, battery-health optimized
 - 🌙 Night Arbitrage: strict time-based cost optimization

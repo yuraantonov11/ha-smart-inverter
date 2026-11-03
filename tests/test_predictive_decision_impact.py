@@ -15,6 +15,8 @@ from test_engine_refactor import evaluate, NOW
 
 
 def prime(engine, mode="assist", confidence=0.5, samples=5):
+    engine._battery_power_limits = dict(max_charge_power_w=2500,
+        max_grid_charge_power_w=2000, max_discharge_power_w=4000)
     engine.predictive_tuning.predictive_mode = mode
     engine._last_forecast_today_kwh = 2.
     engine._hourly_pv_forecast = [100.] * 24

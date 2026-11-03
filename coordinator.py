@@ -488,6 +488,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._grid_available: bool = True
         self._grid_initialized: bool = False
         self._last_config_fetch_at: datetime | None = None
+        self._device_settings_received_at: datetime | None = None
+        self._device_settings_snapshot: dict[str, Any] = {}
 
         # Battery tracker state
         self._battery_in_low: bool = False
@@ -1156,6 +1158,8 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
                 self._last_config_fetch_at = now
                 if isinstance(fetched, dict) and fetched:
                     device_settings = fetched
+                    from .hems.battery_limits import record_settings_snapshot
+                    record_settings_snapshot(self, fetched, getattr(self.api, "last_device_configs_received_at", None))
                     settings_refreshed = True
                     _LOGGER.info("Device settings loaded: %d keys", len(fetched))
                 else:
@@ -1423,6 +1427,14 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         self._configure_night_window()
 
         controller = self._hems._predictive_controller
+        from .hems.battery_limits import resolve_battery_power_limits, settings_readback_fresh
+        settings_received_at = getattr(self, "_device_settings_received_at", None)
+        settings_fresh = settings_readback_fresh(settings_received_at, datetime.now(timezone.utc))
+        self._hems._battery_power_limits = resolve_battery_power_limits(
+            self._entry.options,
+            getattr(self, "_device_settings_snapshot", {}) if settings_fresh else {},
+            getattr(self, "_nominal_voltage_v", None),
+        )
         self._hems.predictive_min_confidence = parse_predictive_options({**self._entry.data, **self._entry.options})["predictive_min_confidence_for_assist"]
         controller.calibrated_storm_alert = calibrated_storm_risk(self._pv_calibrator)
         self._hems.predictive_storm_allowed = bool(self._entry.options.get("auto_storm_by_forecast", False))

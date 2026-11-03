@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Calibrate day-ahead solar forecasts only from verifiable day-ahead evidence;
+  preserve historical observations and show separate horizon statistics.
+- Preserve the last confirmed charging-current readbacks separately, with
+  their own freshness timestamps, without making stale values planner inputs.
+- Correct HACS packaging, dashboard YAML and Home Assistant translations.
+
 ### Changed
 - Internal: reorganized to git workflow with branches and hooks
 - Added `.gitignore` to exclude `*.bak`, `__pycache__`, secrets

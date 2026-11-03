@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import math
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -78,8 +79,8 @@ class PredictiveHint:
     The active mode (ADAPTIVE/ARBITRAGE/STORM) still decides output/charger.
     ML only says "if you want optimal, here's what I'd target."
     """
-    target_soc_morning: float
-    target_soc_evening: float
+    target_soc_morning: float | None
+    target_soc_evening: float | None
     night_charge_start_hour: int
     night_charge_end_hour: int
     storm_preemption: bool
@@ -174,6 +175,12 @@ class PlannerInputs:
     # existing constants.
     charge_efficiency: float = 0.85
     discharge_efficiency: float = 0.90
+
+    # Battery-side DC limits in W, not instantaneous measured power.
+    # None means unknown; the control layer must not adopt an unbounded plan.
+    max_charge_power_w: float | None = None
+    max_grid_charge_power_w: float | None = None
+    max_discharge_power_w: float | None = None
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -513,6 +520,10 @@ def _balance_hour(
     battery_capacity_kwh: float,
     charge_efficiency: float,
     discharge_efficiency: float,
+    max_charge_power_w: float | None = None,
+    max_grid_charge_power_w: float | None = None,
+    max_discharge_power_w: float | None = None,
+    charge_target_soc: float = 95.0,
 ) -> tuple[float, float, float]:
     """T07: physical hour-by-hour energy balance.
 
@@ -575,6 +586,19 @@ def _balance_hour(
             OSO but the grid is allowed as a backup
             when the battery is empty.
     """
+    def limit_kwh(value):
+        if value is None:
+            return math.inf  # Compatibility for diagnostic-only legacy callers.
+        if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+            raise ValueError("Battery power limits must be finite non-negative watts")
+        return float(value) / 1000.0
+
+    charge_limit = limit_kwh(max_charge_power_w)
+    grid_charge_limit = limit_kwh(max_grid_charge_power_w)
+    discharge_limit = limit_kwh(max_discharge_power_w)
+    if not math.isfinite(charge_target_soc) or not 0 <= charge_target_soc <= 100:
+        raise ValueError("Invalid charge target SOC")
+
     if battery_capacity_kwh <= 0:
         # Defensive: a zero-capacity battery cannot
         # charge or discharge. Surface the load as
@@ -602,8 +626,9 @@ def _balance_hour(
     # reports the actual energy drawn from the AC source.
     headroom_kwh = max(
         0.0,
-        battery_capacity_kwh * (95.0 - soc_clamped) / 100.0,
+        battery_capacity_kwh * (min(95.0, charge_target_soc) - soc_clamped) / 100.0,
     )
+    headroom_kwh = min(headroom_kwh, charge_limit)
     charge_source_headroom_kwh = (
         headroom_kwh / charge_efficiency
         if charge_efficiency > 0
@@ -621,8 +646,9 @@ def _balance_hour(
         )
         grid_charge_source = 0.0
         if charger == "1" and grid_ok:
-            grid_charge_source = max(
-                0.0, charge_source_headroom_kwh - pv_charge_source
+            grid_charge_source = min(
+                max(0.0, charge_source_headroom_kwh - pv_charge_source),
+                grid_charge_limit / charge_efficiency if charge_efficiency > 0 else 0.0,
             )
         stored_kwh = min(
             headroom_kwh,
@@ -651,6 +677,7 @@ def _balance_hour(
     # delivered to the load after inverter losses.
     battery_supplies_kwh = min(
         load_after_pv,
+        discharge_limit * discharge_efficiency,
         usable_kwh * discharge_efficiency
         if discharge_efficiency > 0
         else usable_kwh,
@@ -689,90 +716,45 @@ def _balance_hour(
     )
 
 
-def plan_soc_targets(inputs: PlannerInputs) -> tuple[float, float]:
-    """Decide optimal SOC targets for morning (07:00) and evening (18:00).
+class PlanningForecastUnavailable(ValueError):
+    """The required dated forecast is absent; control must abstain."""
 
-    Returns:
-        (target_soc_morning, target_soc_evening)
 
-    Logic:
-        1. Compute net energy needed for tomorrow's expected load
-        2. Account for expected PV production
-        3. Decide how much to charge tonight
-        4. Reserve battery for evening if sunny tomorrow
+def plan_soc_targets(inputs: PlannerInputs, *, planning_date=None) -> tuple[float, float]:
+    """Budget stored energy for the expensive window and its evening tail.
+
+    This is an energy-budget heuristic, not a proof of optimal dispatch.
+    In particular, daytime PV cannot erase the energy needed after sunset.
     """
-    tomorrow_pv = inputs.forecast_tomorrow_kwh or 0.0
-    today_pv = inputs.forecast_today_kwh or 0.0
-    battery_kwh = inputs.battery_capacity_kwh
-
-    # Estimate tomorrow's consumption from history
+    capacity = inputs.battery_capacity_kwh
+    if not math.isfinite(capacity) or capacity <= 0:
+        raise ValueError("Battery capacity must be positive")
+    reserve = inputs.reserve_soc
+    if not math.isfinite(reserve) or not 0 <= reserve <= 100:
+        raise ValueError("Invalid reserve SOC")
+    efficiency = inputs.discharge_efficiency
+    if not math.isfinite(efficiency) or not 0 < efficiency <= 1:
+        raise ValueError("Invalid discharge efficiency")
+    start, end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
+    day = planning_date or (inputs.now.date() + timedelta(days=int(inputs.now.hour >= end)))
+    offset = (day - inputs.now.date()).days
+    if offset not in (0, 1):
+        raise ValueError("Daily forecast does not cover the planning date")
+    pv = inputs.forecast_today_kwh if offset == 0 else inputs.forecast_tomorrow_kwh
+    if pv is None or not math.isfinite(pv) or pv < 0:
+        raise PlanningForecastUnavailable("PV forecast for the planning date is unknown")
     predictor = ConsumptionPredictor(inputs.consumption_history)
-    tomorrow_dow = (inputs.now.weekday() + 1) % 7  # tomorrow's day-of-week
-    tomorrow_load_kwh = sum(predictor.predict_day(tomorrow_dow)) / 1000.0
-
-    # Net deficit tomorrow = load - pv (positive = need from battery/grid)
-    net_deficit_kwh = tomorrow_load_kwh - tomorrow_pv
-
-    # T08: the reserve floor comes from the user-configured
-    # ``reserve_soc`` option via ``PlannerInputs``. We still
-    # treat the value as a fraction of ``battery_kwh`` so the
-    # planner math stays in kWh. Out-of-range values are a
-    # configuration error: the planner raises and the
-    # baseline engine stays the source of truth (the
-    # existing T01 SOC-unknown handling at the
-    # ``simulate_24h`` level is the model). We deliberately
-    # do *not* return a default here — silently substituting
-    # 20 % when the user set 60 % is the bug the audit
-    # caught.
-    if not (0.0 <= inputs.reserve_soc <= 100.0):
-        raise ValueError(
-            f"reserve_soc out of range: {inputs.reserve_soc!r}"
-        )
-    reserve_frac = inputs.reserve_soc / 100.0
-    min_soc_kwh = battery_kwh * reserve_frac
-    max_soc_kwh = battery_kwh * 0.95  # never fill to 100% (extends life)
-
-    usable_kwh = max_soc_kwh - min_soc_kwh
-
-    # ── Evening target (at 18:00) ──
-    # We want to enter evening with enough battery to cover evening peak
-    # without buying peak-rate electricity.
-    evening_peak_kwh = sum(predictor.predict(h, tomorrow_dow)[0]
-                           for h in range(18, 23)) / 1000.0
-
-    if evening_peak_kwh > tomorrow_pv:
-        # Need battery for evening — target higher
-        target_evening_soc_kwh = min(evening_peak_kwh + min_soc_kwh,
-                                     max_soc_kwh)
-    else:
-        # PV covers — no need to keep extra
-        target_evening_soc_kwh = min_soc_kwh
-
-    # ── Morning target (at 07:00, end of night charging) ──
-    # Charge enough during night to reach evening target minus
-    # expected PV production during the day.
-    if tomorrow_pv > tomorrow_load_kwh:
-        # Tomorrow is sunny — don't bother charging from grid
-        target_morning_soc_kwh = min_soc_kwh
-    elif tomorrow_pv > tomorrow_load_kwh * 0.5:
-        # Half covered — partial charge from grid
-        needed = target_evening_soc_kwh - (tomorrow_pv * 0.5)
-        target_morning_soc_kwh = max(min_soc_kwh,
-                                     min(needed, max_soc_kwh))
-    else:
-        # Low PV tomorrow — charge fully tonight
-        target_morning_soc_kwh = target_evening_soc_kwh
-
-    target_morning_soc = (target_morning_soc_kwh / battery_kwh) * 100.0
-    target_evening_soc = (target_evening_soc_kwh / battery_kwh) * 100.0
-
-    _LOGGER.info(
-        "SOC planner: tomorrow_pv=%.2fkWh, load=%.2fkWh, "
-        "morning=%.0f%%, evening=%.0f%%",
-        tomorrow_pv, tomorrow_load_kwh,
-        target_morning_soc, target_evening_soc,
-    )
-    return target_morning_soc, target_evening_soc
+    dow = day.weekday()
+    expensive_hours = [(end + i) % 24 for i in range((start - end) % 24)]
+    demand_kwh = sum(predictor.predict(h, dow)[0] for h in expensive_hours) / 1000.0
+    # Evening is the tail from 18:00 to the next cheap window, limited to
+    # expensive hours. No daily PV credit is applied to this post-sunset reserve.
+    evening_hours = [h for h in expensive_hours if (h - 18) % 24 < (start - 18) % 24]
+    evening_kwh = sum(predictor.predict(h, dow)[0] for h in evening_hours) / 1000.0
+    ceiling = max(95.0, reserve)
+    morning = min(ceiling, reserve + 100 * max(0.0, demand_kwh - pv) / efficiency / capacity)
+    evening = min(ceiling, reserve + 100 * evening_kwh / efficiency / capacity)
+    return morning, evening
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -813,8 +795,8 @@ def simulate_24h(
     plans = []
     night_start, night_end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
     night_duration = (night_end - night_start) % 24
-    charge_start, charge_end, charge_reason = plan_night_charge(inputs, target_morning)
-    charge_duration = (charge_end - charge_start) % 24 if charge_start >= 0 else 0
+    first_morning = inputs.now.date() + timedelta(days=int(inputs.now.hour >= night_end))
+    night_windows = {}
 
     for delta in range(24):
         # Decisions and SOC must roll from NOW, never from midnight.
@@ -909,17 +891,30 @@ def simulate_24h(
         # on the actual PV vs. load balance.
         is_night = (h - night_start) % 24 < night_duration
         if is_night:
+            morning = ts.date() + timedelta(days=int(h >= night_end))
+            if morning not in night_windows:
+                target = (target_morning if morning == first_morning
+                          else plan_soc_targets(inputs, planning_date=morning)[0])
+                night_inputs = copy(inputs)
+                night_inputs.now = ts
+                night_inputs.soc = soc
+                if hasattr(night_inputs, "soc_corrected"):
+                    night_inputs.soc_corrected = soc
+                charge_start, charge_end, charge_reason = plan_night_charge(night_inputs, target)
+                night_windows[morning] = (target, charge_start, charge_end, charge_reason)
+            night_target, charge_start, charge_end, charge_reason = night_windows[morning]
+            charge_duration = (charge_end - charge_start) % 24 if charge_start >= 0 else 0
             # Night window — keep the original logic.
-            if soc < target_morning and charge_duration and (h - charge_start) % 24 < charge_duration:
+            if soc < night_target and charge_duration and (h - charge_start) % 24 < charge_duration:
                 # Need to charge
                 output = OutputPriority.USB
                 charger = ChargerPriority.SNU
-                reason = f"night_charge: SOC {soc:.0f}% < target {target_morning:.0f}%"
+                reason = f"night_charge: SOC {soc:.0f}% < target {night_target:.0f}%"
             else:
                 # Target reached
                 output = OutputPriority.USB
                 charger = ChargerPriority.OSO
-                reason = f"night_idle: {charge_reason}" if soc < target_morning else "night_idle: SOC at target"
+                reason = f"night_idle: {charge_reason}" if soc < night_target else "night_idle: SOC at target"
         elif pv_forecast > 0:
             # Daylight hour (positive PV forecast AND not
             # in night window). Use physical balance; do
@@ -982,6 +977,10 @@ def simulate_24h(
             battery_capacity_kwh=battery_kwh,
             charge_efficiency=inputs.charge_efficiency,
             discharge_efficiency=inputs.discharge_efficiency,
+            max_charge_power_w=getattr(inputs, "max_charge_power_w", None),
+            max_grid_charge_power_w=getattr(inputs, "max_grid_charge_power_w", None),
+            max_discharge_power_w=getattr(inputs, "max_discharge_power_w", None),
+            charge_target_soc=(night_target if is_night else 95.0),
         )
         # ``grid_w`` and ``unserved_w`` are exposed in
         # the plan for the dashboard; we keep the
@@ -1077,53 +1076,46 @@ def plan_night_charge(
     inputs: PlannerInputs,
     target_morning: float,
 ) -> tuple[float, float, str]:
-    """Plan optimal night charging window.
+    """Schedule enough cheap hours to reach the requested energy target.
 
-    Returns:
-        (charge_start_hour, charge_end_hour, reason)
-
-    Idea:
-        - Don't always start at 21:00 — if tomorrow is sunny, start later
-        - Use cheapest night hours (23-06) when possible
-        - Avoid charging past target (waste of electricity)
+    A daily PV threshold cannot override an explicit SOC target. Unknown
+    charge rate keeps the full window; it never invents a two-hour charge.
     """
-    tomorrow_pv = inputs.forecast_tomorrow_kwh or 0.0
-    soc_corrected = getattr(inputs, "soc_corrected", inputs.soc)
+    soc = getattr(inputs, "soc_corrected", inputs.soc)
     start, end = normalize_night_window(getattr(inputs, "night_charge_window", (23, 7)))
-    duration = (end - start) % 24
-
-    def late_window(hours):
-        return (end - min(hours, duration)) % 24, end
-
-    # T01 follow-up: if the SOC is unknown we cannot decide whether
-    # to skip a night charge. Return the conservative default
-    # (the configured window, full charge) so the baseline engine
-    # remains the source of truth for tonight's behaviour; the
-    # planner simply abstains from saving the user money on a
-    # guess. The audit's "unreadable meter = no recommendations"
-    # rule is the planner-level counterpart of the coordinator's
-    # control-command gate.
-    if soc_corrected is None:
+    if soc is None or getattr(inputs, "soc_unknown", False):
         return start, end, "soc_unknown: planner abstains, baseline governs"
-
-    if tomorrow_pv > 3.0:
-        # Sunny tomorrow — only charge enough for safety reserve
-        if soc_corrected >= 40:
-            # Skip night charge entirely
-            return -1, -1, "skip_night_charge: tomorrow sunny, SOC≥40%"
-        # Partial charge
-        return *late_window(2), "partial_night: late charge only"
-
-    if tomorrow_pv > 1.0:
-        # Moderate — half-charge
-        if soc_corrected >= 60:
-            return -1, -1, "skip_night_charge: tomorrow moderate, SOC≥60%"
-        return *late_window(4), "half_night_charge"
-
-    # Low PV tomorrow — full charge
-    if soc_corrected >= target_morning - 5:
+    if not math.isfinite(soc) or not 0 <= soc <= 100 or not math.isfinite(target_morning) or not 0 <= target_morning <= 100:
+        raise ValueError("Invalid SOC or target")
+    if soc >= target_morning:
         return -1, -1, "skip_night_charge: already at target"
-    return start, end, "full_night_charge"
+    total = getattr(inputs, "max_charge_power_w", None)
+    utility = getattr(inputs, "max_grid_charge_power_w", None)
+    if total is None or utility is None:
+        return start, end, "charge_rate_unknown: use full configured window"
+    if any(type(v) not in (int, float) or not math.isfinite(v) or v < 0 for v in (total, utility)):
+        raise ValueError("Invalid charging power limit")
+    power = min(total, utility)
+    if power == 0:
+        return -1, -1, "grid_charging_unavailable: configured power limit is zero"
+    capacity = inputs.battery_capacity_kwh
+    if not math.isfinite(capacity) or capacity <= 0:
+        raise ValueError("Battery capacity must be positive")
+    needed_wh = (target_morning - soc) / 100 * capacity * 1000
+    duration = (end - start) % 24
+    end_at = inputs.now.replace(hour=end, minute=0, second=0, microsecond=0, fold=0)
+    if inputs.now.hour >= end:
+        end_at += timedelta(days=1)
+    start_at = end_at - timedelta(hours=duration)
+    available_from = max(inputs.now, start_at)
+    if inputs.now.tzinfo is not None:
+        available_hours = (end_at.astimezone(timezone.utc) - available_from.astimezone(timezone.utc)).total_seconds()/3600
+    else:
+        available_hours = (end_at - available_from).total_seconds()/3600
+    hours = max(1, math.ceil(needed_wh / power))
+    if needed_wh > max(0.0, available_hours) * power + 1e-6:
+        return start, end, "target_unreachable_in_night_window: use full configured window"
+    return (end - min(hours, duration)) % 24, end, "energy_budget_night_charge"
 
 
 def normalize_night_window(window):
@@ -1172,7 +1164,15 @@ class PredictiveHemsController:
         if self.night_charge_window is not None:
             inputs.night_charge_window = normalize_night_window(self.night_charge_window)
         # Day-ahead targets
-        target_morning, target_evening = plan_soc_targets(inputs)
+        try:
+            target_morning, target_evening = plan_soc_targets(inputs)
+        except PlanningForecastUnavailable:
+            return PredictiveHint(
+                target_soc_morning=None, target_soc_evening=None,
+                night_charge_start_hour=-1, night_charge_end_hour=-1,
+                storm_preemption=False, storm_reason=None,
+                reason="ML: forecast_unknown; planner abstains", confidence=0.0,
+            )
 
         # Storm preemption check
         storm = check_storm_preemption(inputs)
@@ -1316,16 +1316,30 @@ class PredictiveHemsController:
             return storm, plan
 
         # 2. Plan day-ahead SOC targets
-        target_morning, target_evening = plan_soc_targets(inputs)
+        try:
+            target_morning, target_evening = plan_soc_targets(inputs)
+        except PlanningForecastUnavailable:
+            skip = HemsDecision(reason="[ML] forecast_unknown: planner abstains", skip=True)
+            self.last_decision = skip
+            self.last_plan = self._build_plan(inputs, [], reason=skip.reason)
+            self.last_plan.confidence = 0.0
+            return skip, self.last_plan
 
         # 3. Simulate the station-trained hourly forecast.
-        plans = simulate_24h(
-            inputs,
-            target_morning,
-            target_evening,
-            self.consumption_predictor,
-            calibrator=getattr(self, "calibrator", None),
-        )
+        try:
+            plans = simulate_24h(
+                inputs,
+                target_morning,
+                target_evening,
+                self.consumption_predictor,
+                calibrator=getattr(self, "calibrator", None),
+            )
+        except PlanningForecastUnavailable:
+            skip = HemsDecision(reason="[ML] forecast_unknown: planner abstains", skip=True)
+            self.last_decision = skip
+            self.last_plan = self._build_plan(inputs, [], reason=skip.reason)
+            self.last_plan.confidence = 0.0
+            return skip, self.last_plan
 
         # T01 follow-up: an unreadable SOC means the planner
         # cannot make a per-hour claim. ``simulate_24h`` already

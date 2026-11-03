@@ -1728,6 +1728,7 @@ class HemsEngine:
                 # validated by ``build_planner_inputs``
                 # at the boundary.
                 reserve_soc=planner_reserve,
+                **getattr(self, "_battery_power_limits", {}),
             )
             hint = controller.suggest(pi)
             try:

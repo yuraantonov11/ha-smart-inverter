@@ -169,6 +169,9 @@ class _Fixture:
             timezone_id="Europe/Kyiv",
         )
         page = ctx.new_page()
+        # The harness uses fixed October 2026 outage fixtures. Freeze only the
+        # browser wall clock so future test runs do not filter them as past.
+        page.clock.set_fixed_time("2026-10-20T08:00:00Z")
         errors: list[str] = []
         page.on(
             "pageerror",
@@ -914,6 +917,7 @@ class KOutageScenariosCardBrowserTests(unittest.TestCase):
                     timezone_id="UTC",
                 )
                 page = ctx.new_page()
+                page.clock.set_fixed_time("2026-10-20T08:00:00Z")
                 page.goto(
                     self._fx.harness_url, wait_until="load"
                 )

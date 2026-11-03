@@ -1109,10 +1109,15 @@ class BleDiagnosticRunner:
                 self.state["response_timeout_s"] = self.response_timeout
                 # Exactly one request in flight: read_once holds self._lock, and
                 # the provider holds its own lock around the transaction.
+                read_started = self._clock()
                 await self.read_once()
+                self.state["last_read_work_s"] = round(self._clock() - read_started, 3)
                 # A stranded connection is only released when the reads prove
                 # the link is gone -- never on the first failure.
+                recovery_started = self._clock()
                 await self._maybe_recover()
+                self.state["last_recovery_work_s"] = round(self._clock() - recovery_started, 3)
+                self.state["last_work_cycle"] = self.state.get("cycle")
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the loop must survive anything

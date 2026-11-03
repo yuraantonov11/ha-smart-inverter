@@ -492,9 +492,11 @@ class PvLearningCoordinatorMixin:
             return
         previous = deepcopy(store.pairs)
         store.migrate(state)
-        for offset, value in enumerate(forecasts, 1):
-            day = (local_now.date()+timedelta(days=offset)).isoformat()
-            store.snapshot(day, value, local_now, forecast_model=state.calibration_model)
+        # The journal measures day-ahead forecasts. Do not freeze the same
+        # date at the longer two-day horizon before tomorrow's forecast exists.
+        # Existing snapshots remain immutable and are never rewritten.
+        day = (local_now.date() + timedelta(days=1)).isoformat()
+        store.snapshot(day, forecasts[0], local_now, forecast_model=state.calibration_model)
         actual = dict(self._pv_actual)
         pending = [d for d, p in store.pairs.items() if not p["used"] and d < local_now.date().isoformat()]
         if pending:
@@ -705,7 +707,7 @@ class PvLearningCoordinatorMixin:
                             for h in range(int((end-start).total_seconds()/3600))}
                 if {h.get("timestamp") for h in hours} == expected and day in daily:
                     complete[day] = daily[day]
-                    if self._pv_learning.snapshot(day, daily[day].energy_kwh, local_now,
+                    if offset == 1 and self._pv_learning.snapshot(day, daily[day].energy_kwh, local_now,
                             forecast_model=self._forecast_model_for_day(datetime.fromisoformat(day).date())):
                         self._pv_state_dirty = True
             tomorrow, after = [(local_now.date()+timedelta(days=d)).isoformat() for d in (1, 2)]

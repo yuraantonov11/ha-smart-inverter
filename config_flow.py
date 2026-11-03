@@ -892,6 +892,11 @@ vol.Optional(
                         vol.Coerce(float),
                         vol.Range(min=100.0, max=50000.0),
                     ),
+                    **{
+                        vol.Optional(key, **({"default": current[key]} if key in current else {})):
+                        vol.All(vol.Coerce(float), vol.Range(min=0.0, max=100000.0))
+                        for key in ("max_charge_power_w", "max_grid_charge_power_w", "max_discharge_power_w")
+                    },
                     vol.Optional(
                         "inverter_max_power_w",
                         default=current.get("inverter_max_power_w", 5000.0),

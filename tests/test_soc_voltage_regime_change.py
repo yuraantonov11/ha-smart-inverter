@@ -31,7 +31,7 @@ import sys
 import unittest
 from pathlib import Path
 
-REPO = Path("/opt/data/powmr-ai-work/powmr_inverter")
+REPO = Path(__file__).resolve().parents[1]
 
 
 def _load(name: str, rel: str):

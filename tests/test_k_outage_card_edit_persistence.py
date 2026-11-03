@@ -35,10 +35,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests"))
-os.environ["PLAYWRIGHT_BROWSERS_PATH"] = (
-    "/opt/data/cache/scratch/codex-review-browsers-20261018"
-)
-
 from test_k_outage_scenarios_card_browser import (  # noqa: E402
     _wait_for_card,
 )

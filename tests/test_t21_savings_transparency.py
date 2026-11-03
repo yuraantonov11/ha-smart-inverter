@@ -229,14 +229,9 @@ def test_daily_savings_translation_has_description() -> None:
             "entity.sensor.daily_savings "
             "missing 'name'"
         )
-        assert "description" in entity, (
-            f"translations/{locale}.json "
-            "entity.sensor.daily_savings missing "
-            f"'description' key. Got: {list(entity.keys())!r}. "
-            "The audit requires the translation to "
-            "explain what the sensor represents."
-        )
-        desc = entity["description"]
+        # HA translation schema does not allow an entity description here;
+        # the displayed name must itself convey the estimate's meaning.
+        desc = entity["name"]
         assert (
             "gross" in desc.lower()
             or "import" in desc.lower()
@@ -269,11 +264,11 @@ def test_monthly_savings_translation_has_description() -> None:
             f"translations/{locale}.json missing "
             "entity.sensor.monthly_savings"
         )
-        assert "description" in entity, (
-            f"translations/{locale}.json "
-            "entity.sensor.monthly_savings missing "
-            f"'description' key. Got: {list(entity.keys())!r}"
-        )
+        label = entity["name"].lower()
+        assert "gross" in label or "оцінк" in label
+    readme = _load("README.md").lower()
+    assert "gross estimates" in readme
+    assert "charging costs" in readme and "losses" in readme
 
 
 def test_coordinator_formula_carries_documented_limitations() -> None:

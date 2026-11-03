@@ -40,15 +40,17 @@ controller = c._hems._predictive_controller
 hint = controller.suggest(pi)
 _check(pi.night_charge_window == (21,6),'configured window reaches real telemetry inputs without engine edits')
 _check((hint.night_charge_start_hour,hint.night_charge_end_hour) == (21,6),'full recommendation uses configured window')
-_check(plan_night_charge(inputs(4,20),80)[:2] == (5,7),'default late two-hour charge')
+_check(plan_night_charge(inputs(4,20),80)[:2] == (23,7),'unknown power requires full configured window')
 custom = inputs(4,20)
+custom.max_charge_power_w = 2000
+custom.max_grid_charge_power_w = 2000
 custom.night_charge_window = (21,6)
-_check(plan_night_charge(custom,80)[:2] == (4,6),'configured late two-hour charge')
+_check(plan_night_charge(custom,80)[:2] == (2,6),'energy deficit needs four hours at known charge power')
 custom.forecast_tomorrow_kwh = 2
-_check(plan_night_charge(custom,80)[:2] == (2,6),'configured late four-hour charge')
+_check(plan_night_charge(custom,80)[:2] == (2,6),'PV does not replace the explicit charge target')
 custom.night_charge_window = (5,6)
 _check(plan_night_charge(custom,80)[:2] == (5,6),'partial window clipped to permitted duration')
-_check(plan_night_charge(inputs(4,60),80)[:2] == (-1,-1),'skip charge preserved')
+_check(plan_night_charge(inputs(4,80),80)[:2] == (-1,-1),'skip only when target already reached')
 _check(all(normalize_night_window(w) == (23,7) for w in [(1,1),(-1,7),(23,24),('23',7),(True,7),None]),'invalid windows fallback')
 decision,plan = controller.decide(pi)
 _check(all(p.charger != 'SNU' for p in plan.hourly if 6 <= p.hour < 21),'rollout never grid-charges outside configured night')

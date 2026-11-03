@@ -1189,11 +1189,12 @@ class PlannerGuardsTests(unittest.TestCase):
             hours_from_now_start=4, hours_from_now_end=8,
         )
         t = _live_typical_telemetry(
-            soc_pct=30.0, grid_available=False,
+            soc_pct=30.0, grid_available=False, pv_forecast_tomorrow_kwh=0.0,
         )
         plan = self.planner.plan_outage(t, ev)
         d = plan.to_dict()
         self.assertTrue(d["blocked"])
+        self.assertGreater(d["plan"]["needs_charging_from_grid_kwh"], 0.0)
         self.assertIn(
             "grid",
             (d["reason_if_blocked"] or "").lower(),
@@ -1315,7 +1316,7 @@ class ExecutionGuardsOnFakeTransportTests(
             hours_from_now_start=4, hours_from_now_end=8,
         )
         t_grid_ok = _live_typical_telemetry(
-            soc_pct=30.0, grid_available=True
+            soc_pct=30.0, grid_available=True, pv_forecast_tomorrow_kwh=0.0
         )
         plan_t = self.planner.plan_outage(t_grid_ok, ev)
         d_t = plan_t.to_dict()
@@ -1326,11 +1327,12 @@ class ExecutionGuardsOnFakeTransportTests(
                 f"{d_t['reason_if_blocked']!r}"
             )
         t_no_grid = _live_typical_telemetry(
-            soc_pct=30.0, grid_available=False
+            soc_pct=30.0, grid_available=False, pv_forecast_tomorrow_kwh=0.0
         )
         plan_now = self.planner.plan_outage(t_no_grid, ev)
         d_now = plan_now.to_dict()
         self.assertTrue(d_now["blocked"])
+        self.assertGreater(d_now["plan"]["needs_charging_from_grid_kwh"], 0.0)
         self.assertIn(
             "grid",
             (d_now["reason_if_blocked"] or "").lower(),
@@ -1728,7 +1730,9 @@ class EnergyBalanceAccountingTests(unittest.IsolatedAsyncioTestCase):
         tarpit=None,
     ):
         return self.planner.Telemetry(
-            now_iso=_now_utc_plus(0),
+            # These cases use fixed October 2026 events and fixtures. Pin the
+            # simulated clock so they do not turn into past-event tests later.
+            now_iso="2026-10-20T20:00:00+00:00",
             telemetry_freshness_seconds=5,
             battery_capacity_kwh=cap,
             battery_capacity_ok_for_planning=True,

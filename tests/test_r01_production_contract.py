@@ -2240,12 +2240,12 @@ def test_r01_maybe_refresh_forecast_sets_day_after_kwh_and_model_tags() -> None:
     # _fetch_hourly rows do not carry it; the coordinator
     # resolves it via _forecast_model_for_day).
     # We assert via the journal snapshots.
-    # 5) Journal has snapshots for the days >= today+1
-    # (snapshot() refuses today and earlier).
-    future_days = [d for d in published_dates if d > fixed_now.date().isoformat()]
+    # 5) The journal freezes only the next calendar day's prediction. The
+    # day-after forecast remains published above but is not frozen too early.
+    future_days = ["2026-10-09"]
     snap_days = set(c._pv_learning.snapshots.keys())
-    assert set(future_days).issubset(snap_days), (
-        f"PvLearningState snapshots must cover {future_days}; "
+    assert snap_days == set(future_days), (
+        f"PvLearningState snapshots must contain only {future_days}; "
         f"got {snap_days}"
     )
     for day in future_days:

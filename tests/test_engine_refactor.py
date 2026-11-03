@@ -225,7 +225,7 @@ class TestEngineRefactor(unittest.TestCase):
             # normaliser assigned UTC to a local-naive timestamp).
             self.assertEqual(
                 e._blocked_until,
-                (NOW + timedelta(seconds=delay)).replace(tzinfo=timezone.utc),
+                (NOW + timedelta(seconds=delay)).astimezone(timezone.utc),
             )
             self.assertEqual(evaluate(e, soc=10.).reason, 'circuit_breaker')
         e.report_control_success()

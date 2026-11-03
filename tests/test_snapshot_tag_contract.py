@@ -342,7 +342,7 @@ class ProductionTagChainContractTests(unittest.TestCase):
             # Step 1: snapshot 2026-10-14 with station_gain_v2.
             host._pv_learning.snapshot(
                 "2026-10-14", 0.24,
-                datetime(2026, 10, 13, 10, 50, 56),
+                datetime(2026, 10, 13, 10, 50, 56, tzinfo=timezone.utc),
                 forecast_model=host._forecast_model_for_day(
                     date(2026, 10, 14)
                 ),
@@ -369,7 +369,7 @@ class ProductionTagChainContractTests(unittest.TestCase):
             # --- Step 3: new snapshot on 2026-10-15 ---
             host._pv_learning.snapshot(
                 "2026-10-15", 0.11,
-                datetime(2026, 10, 14, 0, 15, 0),
+                datetime(2026, 10, 14, 0, 15, 0, tzinfo=timezone.utc),
                 forecast_model=host._forecast_model_for_day(
                     date(2026, 10, 15)
                 ),
