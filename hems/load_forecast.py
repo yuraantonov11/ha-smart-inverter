@@ -67,13 +67,16 @@ def _quantile(values, p):
 
 
 @lru_cache(maxsize=16)
-def _evaluate(rows):
+def _evaluate(rows, lead_days):
     """Predict each test date using only earlier dates; never refit its score."""
     errors = []
     for index in range(MIN_TRAIN_DAYS, len(rows)):
         target, actual = rows[index]
-        train = rows[:index]
-        yesterday = next((v for d, v in train if d == target - timedelta(days=1)), None)
+        issue_date = target - timedelta(days=lead_days)
+        train = tuple(r for r in rows[:index] if r[0] < issue_date)
+        if len(train) < MIN_TRAIN_DAYS:
+            continue
+        yesterday = next((v for d, v in train if d == issue_date - timedelta(days=1)), None)
         if yesterday is None:
             continue  # identical dates and denominator for every compared model
         candidate = _predict(train, target, candidate=True)
@@ -91,7 +94,10 @@ def forecast_load(history, issued_on, target):
     future coverage probability. Selection and intervals use only past days.
     """
     rows = measured_days(history, issued_on)
-    errors = _evaluate(rows)
+    lead_days = (target - issued_on).days
+    if lead_days < 0:
+        raise ValueError("Cannot issue a forecast for a past date")
+    errors = _evaluate(rows, lead_days)
     count = len(errors)
     maes = [sum(abs(e[h]) for row in errors for e in [row[i]] for h in range(24)) / (count * 24)
             if count else None for i in (1, 2, 3)]
@@ -118,6 +124,8 @@ def forecast_load(history, issued_on, target):
             "insufficient_test_days" if count < MIN_TEST_DAYS else "baseline_not_beaten",
         "training_days": len(rows), "validation_days": count,
         "validation_basis": "walk_forward_complete_measured_days",
+        "validation_lead_days": lead_days,
+        "baseline": "last_complete_day_before_issuance",
         "candidate_mae_w": round(candidate_mae, 1) if count else None,
         "legacy_mae_w": round(legacy_mae, 1) if count else None,
         "yesterday_mae_w": round(yesterday_mae, 1) if count else None,

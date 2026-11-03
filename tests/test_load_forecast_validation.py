@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from hems.load_forecast import forecast_load, measured_days
+from hems.load_forecast import forecast_load, measured_days, _evaluate
 from hems.forecast_evaluation import day_ahead_error_range
 from hems.predictive import ConsumptionPredictor
 
@@ -69,6 +69,26 @@ class LoadForecastTests(unittest.TestCase):
     def test_input_order_is_irrelevant(self):
         self.assertEqual(forecast_load(history(), date(2026, 2, 1), date(2026, 2, 1)),
                          forecast_load(list(reversed(history())), date(2026, 2, 1), date(2026, 2, 1)))
+
+    def test_day_ahead_validation_cannot_see_issuance_days_actual(self):
+        rows = measured_days(history(), date(2026, 2, 1))
+        target = date(2026, 1, 21)
+        before = next(r for r in _evaluate(rows, 1) if r[0] == target)
+        changed = tuple((d, (19999.,) * 24 if d == target - timedelta(days=1) else values)
+                        for d, values in rows)
+        after = next(r for r in _evaluate(changed, 1) if r[0] == target)
+        self.assertEqual(before, after)
+
+    def test_daily_range_uses_daily_errors_not_sum_of_hourly_ranges(self):
+        start = date(2026, 1, 1)
+        rows = [(start + timedelta(days=i),
+                 [300 + (100 if (h + i) % 2 else -100) for h in range(24)], False)
+                for i in range(30)]
+        result = forecast_load(rows, date(2026, 1, 31), date(2026, 2, 1))
+        lower, upper = result["daily_error_range_kwh"]
+        self.assertAlmostEqual(lower, 7.2)
+        self.assertAlmostEqual(upper, 7.2)
+        self.assertGreater(sum(r[1] for r in result["hourly_error_range_w"]) / 1000, upper)
 
 
 class PvErrorRangeTests(unittest.TestCase):
