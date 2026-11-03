@@ -32,7 +32,7 @@ def measured_days(history, issued_on):
             continue
         if not isinstance(values, (list, tuple)) or len(values) != 24:
             continue
-        if any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 20000 for v in values):
+        if any(type(v) not in (int, float) or not math.isfinite(v) or not 0 <= v <= 60000 for v in values):
             continue
         rows[day] = tuple(float(v) for v in values)
     return tuple((d, rows[d]) for d in sorted(rows) if d not in duplicates)[-90:]

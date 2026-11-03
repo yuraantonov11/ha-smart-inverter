@@ -49,7 +49,7 @@ class LoadForecastTests(unittest.TestCase):
 
     def test_invalid_or_filled_days_are_not_evidence(self):
         rows = history(3)
-        for i, value in enumerate((True, float("nan"), float("inf"), -1, 20001)):
+        for i, value in enumerate((True, float("nan"), float("inf"), -1, 60001)):
             rows.append((date(2026, 1, 5) + timedelta(days=i), [value] * 24, False))
         rows.append((date(2026, 1, 12), [300] * 24, True))
         self.assertEqual(len(measured_days(rows, date(2026, 2, 1))), 3)

@@ -220,10 +220,9 @@ class ConsumptionPredictor:
 
     Uses historical pattern matching + day-of-week priors + smoothing.
 
-    Why this works for solar HEMS:
-        Юра's pattern is regular (200-300W baseline, peaks 1-1.8kW for kettle).
-        Pattern repeats: weekday vs weekend differs slightly.
-        Weather impacts: cold = more heating; hot = more AC.
+    Dated forecasts compare a recency/day-type candidate with the existing
+    weekday profile on strictly earlier measured days. Forecast evaluation
+    and model selection do not bypass battery control guards.
 
     Audit T19: the predictor now distinguishes
     three history shapes:
@@ -339,7 +338,7 @@ class ConsumptionPredictor:
             return None
         try:
             value = float(payload[hour])
-            return value if not isinstance(payload[hour], bool) and math.isfinite(value) and 0 <= value <= 20000 else None
+            return value if not isinstance(payload[hour], bool) and math.isfinite(value) and 0 <= value <= 60000 else None
         except (TypeError, ValueError):
             return None
 
