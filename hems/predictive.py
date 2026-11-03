@@ -356,7 +356,7 @@ class ConsumptionPredictor:
         status = self.forecast_status(target)
         values = status["hourly_w"]
         if values is None:
-            if self._has_dates:
+            if self._has_dates and any(isinstance(row, tuple) and row[0] is not None for row in self._hist):
                 return ConsumptionPredictor().predict(hour, target.weekday())
             return self.predict(hour, target.weekday())
         return values[hour], self.predict(hour, target.weekday())[1]

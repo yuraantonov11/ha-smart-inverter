@@ -1603,8 +1603,9 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
         attributes = dict(self.coordinator._hems.predictive_decision_state)
         controller = getattr(self.coordinator._hems, "_predictive_controller", None)
         predictor = getattr(controller, "consumption_predictor", None)
-        if predictor is not None:
-            today = self.coordinator._pv_local_now().date()
+        local_clock = getattr(self.coordinator, "_pv_local_now", None)
+        if predictor is not None and callable(local_clock):
+            today = local_clock().date()
             attributes["load_forecast"] = predictor.forecast_status(today + timedelta(days=1))
         learning = getattr(self.coordinator, "_pv_learning", None)
         if learning is not None:

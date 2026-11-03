@@ -202,6 +202,8 @@ def _drive_archive(method_name: str, payload, site_tz_name: str,
     )
     method_ns = dict(ns)
     exec(compile(class_src, "<r01_contract_driver>", "exec"), method_ns)
+    from hems.forecast import ForecastService
+    method_ns["_Driver"]._has_location = ForecastService._has_location
     driver = method_ns["_Driver"]()
     method = getattr(driver, method_name)
     return asyncio.run(method(start_day=start_day, end_day=end_day))
@@ -1562,6 +1564,8 @@ def test_r01_http_end_date_falls_on_utc_midnight() -> None:
     )
     method_ns = dict(ns)
     exec(compile(class_src, "<r01_end_date_driver>", "exec"), method_ns)
+    from hems.forecast import ForecastService
+    method_ns["_Driver"]._has_location = ForecastService._has_location
     driver = method_ns["_Driver"]()
     method = getattr(driver, "get_archive_radiation")
     asyncio.run(method(start_day=start_day, end_day=end_day))

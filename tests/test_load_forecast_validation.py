@@ -58,6 +58,10 @@ class LoadForecastTests(unittest.TestCase):
         p = ConsumptionPredictor(history(), issued_on=date(2025, 12, 1))
         self.assertEqual(p.predict_for_date(12, date(2025, 12, 1)), ConsumptionPredictor().predict(12, 0))
 
+    def test_undated_legacy_history_keeps_real_load_instead_of_cold_start(self):
+        p = ConsumptionPredictor([(None, [1000.] * 24, False)] * 7, issued_on=date(2026, 1, 1))
+        self.assertEqual(p.predict_for_date(12, date(2026, 1, 2))[0], 1000.)
+
     def test_promotion_requires_both_baselines(self):
         issue = date(2026, 1, 31)
         result = forecast_load(history(), issue, issue)
