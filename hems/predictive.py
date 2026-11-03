@@ -254,7 +254,7 @@ class ConsumptionPredictor:
     remaining rows.
     """
 
-    def __init__(self, history=None):
+    def __init__(self, history=None, *, issued_on=None):
         """history: any of the three shapes
         documented in the class docstring.
         ``None`` becomes an empty history.
@@ -262,10 +262,13 @@ class ConsumptionPredictor:
         self._hist: list = []
         self._has_dates: bool = False
         self._gap_filled_flags: list[bool] = []
+        self._issued_on = issued_on
+        self._dated_forecasts = {}
         if history:
             self._set_history(history)
 
     def _set_history(self, history) -> None:
+        self._dated_forecasts.clear()
         self._hist = list(history)
         self._has_dates = bool(self._hist) and isinstance(
             self._hist[0], tuple
@@ -309,6 +312,7 @@ class ConsumptionPredictor:
         """
         if len(hourly_load) != 24:
             return
+        self._dated_forecasts.clear()
         self._hist.append((None, list(hourly_load), False))
         self._gap_filled_flags.append(False)
         # Keep the same 30-day depth
@@ -334,9 +338,28 @@ class ConsumptionPredictor:
         ):
             return None
         try:
-            return float(payload[hour])
+            value = float(payload[hour])
+            return value if not isinstance(payload[hour], bool) and math.isfinite(value) and 0 <= value <= 20000 else None
         except (TypeError, ValueError):
             return None
+
+    def forecast_status(self, target):
+        from .load_forecast import forecast_load
+
+        key = (self._issued_on or target, target)
+        if key not in self._dated_forecasts:
+            self._dated_forecasts[key] = forecast_load(self._hist, key[0], target)
+        return self._dated_forecasts[key]
+
+    def predict_for_date(self, hour, target):
+        """Use the validated dated model; retain legacy fallback without dates."""
+        status = self.forecast_status(target)
+        values = status["hourly_w"]
+        if values is None:
+            if self._has_dates:
+                return ConsumptionPredictor().predict(hour, target.weekday())
+            return self.predict(hour, target.weekday())
+        return values[hour], self.predict(hour, target.weekday())[1]
 
     def predict(self, hour: int, day_of_week: int) -> tuple[float, float]:
         """Predict load at ``hour`` on
@@ -743,14 +766,14 @@ def plan_soc_targets(inputs: PlannerInputs, *, planning_date=None) -> tuple[floa
     pv = inputs.forecast_today_kwh if offset == 0 else inputs.forecast_tomorrow_kwh
     if pv is None or not math.isfinite(pv) or pv < 0:
         raise PlanningForecastUnavailable("PV forecast for the planning date is unknown")
-    predictor = ConsumptionPredictor(inputs.consumption_history)
+    predictor = ConsumptionPredictor(inputs.consumption_history, issued_on=inputs.now.date())
     dow = day.weekday()
     expensive_hours = [(end + i) % 24 for i in range((start - end) % 24)]
-    demand_kwh = sum(predictor.predict(h, dow)[0] for h in expensive_hours) / 1000.0
+    demand_kwh = sum(predictor.predict_for_date(h, day)[0] for h in expensive_hours) / 1000.0
     # Evening is the tail from 18:00 to the next cheap window, limited to
     # expensive hours. No daily PV credit is applied to this post-sunset reserve.
     evening_hours = [h for h in expensive_hours if (h - 18) % 24 < (start - 18) % 24]
-    evening_kwh = sum(predictor.predict(h, dow)[0] for h in evening_hours) / 1000.0
+    evening_kwh = sum(predictor.predict_for_date(h, day)[0] for h in evening_hours) / 1000.0
     ceiling = max(95.0, reserve)
     morning = min(ceiling, reserve + 100 * max(0.0, demand_kwh - pv) / efficiency / capacity)
     evening = min(ceiling, reserve + 100 * evening_kwh / efficiency / capacity)
@@ -834,7 +857,7 @@ def simulate_24h(
         # Coordinator distributes daily bias over the station forecast shape.
         # The planner must not apply that correction a second time.
 
-        load_forecast = predictor.predict(h, ts.weekday())[0]
+        load_forecast = predictor.predict_for_date(h, ts.date())[0]
 
         # R05: tariff recovery contract. When the caller
         # supplied a 24-element schedule we use it as-is.
@@ -1305,7 +1328,7 @@ class PredictiveHemsController:
             inputs.storm_hours_away = None
         if self.night_charge_window is not None:
             inputs.night_charge_window = normalize_night_window(self.night_charge_window)
-        self.consumption_predictor = ConsumptionPredictor(inputs.consumption_history)
+        self.consumption_predictor = ConsumptionPredictor(inputs.consumption_history, issued_on=inputs.now.date())
         # 1. Storm check (highest priority)
         storm = check_storm_preemption(inputs)
         if storm is not None:

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -1601,6 +1601,11 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         attributes = dict(self.coordinator._hems.predictive_decision_state)
+        controller = getattr(self.coordinator._hems, "_predictive_controller", None)
+        predictor = getattr(controller, "consumption_predictor", None)
+        if predictor is not None:
+            today = self.coordinator._pv_local_now().date()
+            attributes["load_forecast"] = predictor.forecast_status(today + timedelta(days=1))
         learning = getattr(self.coordinator, "_pv_learning", None)
         if learning is not None:
             attributes["forecast_calibration"] = learning.calibration_status(

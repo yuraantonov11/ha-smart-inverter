@@ -49,9 +49,7 @@ class PvLearningCoordinatorMixin:
         # ``hass.config.latitude`` / ``hass.config.longitude``
         # (production default for any HA instance
         # outside the Kyiv region) →
-        # ``DEFAULT_SITE_LATITUDE`` /
-        # ``DEFAULT_SITE_LONGITUDE`` as the absolute
-        # last-resort fallback. ``None`` is never a
+        # no location if neither source is configured. ``None`` is never a
         # valid coordinate. The active source is
         # recorded on ``self._identity_source`` so
         # the sensor can surface it to the UI and the

@@ -3564,6 +3564,8 @@ class HistoryCoordinator(DataUpdateCoordinator):
             return {}
 
         lat, lon = self._history_coords
+        if lat is None or lon is None:
+            return {}
         end = datetime.now().date()
         start = end - timedelta(days=7)
         url = (

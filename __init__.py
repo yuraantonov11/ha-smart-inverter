@@ -2,14 +2,8 @@
 
 from __future__ import annotations
 
-__version__ = "1.9.1"
-"""Bumped to align with manifest.json (1.9.0).
+__version__ = "1.9.2"
 
-The HACS-distributed release and the
-local patch set both surface as 1.9.0
-in the HA Devices panel. No release
-tag is created by this commit.
-"""
 
 import hashlib
 import logging
@@ -81,30 +75,11 @@ async def _async_options_updated(
     hass: HomeAssistant,
     entry: ConfigEntry,
 ) -> None:
-    """Selective-apply hook for ``entry.options``.
+    """Reload setup-bound options; apply capacity/tariff changes in place.
 
-    Audit T16: when the user changes an option
-    that is *not* in
-    ``_RELOAD_REQUIRED_OPTION_KEYS``, we do
-    not need to recreate the coordinator. The
-    coordinator re-reads ``entry.options`` on
-    every cycle, so the change takes effect on
-    the next update. This listener therefore
-    is a no-op for the common case. The
-    options flow is responsible for calling
-    ``entry.async_reload()`` when the user
-    changes a reload-required key.
-
-    R04+R05: the capacity and tariff caches on
-    the coordinator are NOT recomputed on the
-    next cycle (they live in
-    ``_battery_capacity_kwh``, ``_day_tariff_uah``,
-    ``_night_tariff_uah``). For those, we call
-    a runtime updater that re-derives the
-    capacity and re-builds the tariff schedule
-    in place. This is the verified update path
-    (no coordinator reload required for these
-    two families of options).
+    The options flow saves the entry; it does not recreate services. The
+    setup snapshot tracks only keys that require reload, so internal journal
+    persistence and unrelated options cannot trigger a reload loop.
     """
     bundle: dict | None = (
         getattr(hass, "data", {}).get(DOMAIN, {}).get(entry.entry_id)
@@ -113,6 +88,22 @@ async def _async_options_updated(
     coordinator: InverterCoordinator | None = (
         bundle.get("coordinator") if isinstance(bundle, dict) else None
     )
+    previous = bundle.get("reload_options") if isinstance(bundle, dict) else None
+    if previous is not None:
+        current = {key: entry.options.get(key) for key in previous}
+        if current != previous:
+            # Returning an options-flow entry saves options; this listener
+            # must explicitly recreate services that captured them at setup.
+            bundle["reload_options"] = current
+            try:
+                reloaded = await hass.config_entries.async_reload(entry.entry_id)
+            except Exception:
+                bundle["reload_options"] = previous
+                raise
+            if not reloaded:
+                bundle["reload_options"] = previous
+                _LOGGER.error("Inverter options saved but entry reload failed")
+            return
     if coordinator is not None:
         try:
             coordinator.apply_capacity_and_tariff_options(entry.options)
@@ -259,6 +250,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         # Store coordinator
         hass.data[DOMAIN][entry.entry_id] = {
+            "reload_options": {key: entry.options.get(key) for key in _RELOAD_REQUIRED_OPTION_KEYS},
             "api": api,
             "coordinator": coordinator,
             "history_coordinator": history_coordinator,

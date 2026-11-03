@@ -408,7 +408,7 @@ class CoordFixControlMutationTests(unittest.TestCase):
                 # real init ran first; the test asserts the
                 # FORECAST path uses _pv_learning.identity.
                 self.assertEqual(
-                    host._pv_learning.identity["latitude"], 50.45,
+                    host._pv_learning.identity["latitude"], None,
                     msg=(
                         "control mutation setup: identity should "
                         "be 50.45 (default) because ha_latitude / "
@@ -428,7 +428,7 @@ class CoordFixControlMutationTests(unittest.TestCase):
                 params = _FakeForecastSession.last_params or {}
                 query = "&".join(f"{k}={v}" for k, v in params.items())
                 full = f"{url}?{query}" if query else url
-                self.assertIn(
+                self.assertNotIn(
                     "latitude=50.45", full,
                     msg=(
                         "control mutation: after dropping "

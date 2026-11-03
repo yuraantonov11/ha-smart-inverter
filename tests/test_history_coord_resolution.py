@@ -281,20 +281,10 @@ class HistoryCoordResolutionTests(unittest.TestCase):
         self.assertEqual(coord._history_coords, (51.5074, -0.1278))
         self.assertEqual(coord._identity_source, "entry")
 
-    def test_init_default_when_no_hass_coords(self):
+    def test_init_unconfigured_without_hass_coords(self):
         coord = self._make(options={}, ha_lat=None, ha_lon=None)
-        from hems.options_helpers import (
-            DEFAULT_SITE_LATITUDE, DEFAULT_SITE_LONGITUDE,
-        )
-        self.assertEqual(
-            coord._history_coords,
-            (DEFAULT_SITE_LATITUDE, DEFAULT_SITE_LONGITUDE),
-        )
-        self.assertEqual(coord._identity_source, "default")
-        # The audit forbids the Lviv hardcode (49.83, 24.0) — it
-        # came from a previous, now-removed version of the test
-        # and must not survive in the production fallback.
-        self.assertNotEqual(coord._history_coords, (49.83, 24.0))
+        self.assertEqual(coord._history_coords, (None, None))
+        self.assertEqual(coord._identity_source, "unconfigured")
 
     def test_archive_url_uses_resolved_coordinates(self):
         coord = self._make(options={}, ha_lat=52.52, ha_lon=13.40)

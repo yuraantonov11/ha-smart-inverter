@@ -133,8 +133,8 @@ class CoordResolutionTests(unittest.TestCase):
         """
         from hems.options_helpers import compute_site_coordinates
         lat, lon = compute_site_coordinates(None)
-        self.assertAlmostEqual(lat, 50.45)
-        self.assertAlmostEqual(lon, 30.52)
+        self.assertIsNone(lat)
+        self.assertIsNone(lon)
 
     def test_invalid_entry_falls_through_to_ha(self) -> None:
         """A partial entry override (only
@@ -189,8 +189,8 @@ class CoordResolutionTests(unittest.TestCase):
             {"site_latitude": 91.0, "site_longitude": 181.0},
             ha_latitude=float("nan"), ha_longitude=None,
         )
-        self.assertAlmostEqual(lat, 50.45)
-        self.assertAlmostEqual(lon, 30.52)
+        self.assertIsNone(lat)
+        self.assertIsNone(lon)
         # Boolean entry is not a number.
         lat, lon = compute_site_coordinates(
             {"site_latitude": True, "site_longitude": False},
@@ -232,7 +232,7 @@ class CoordResolutionTests(unittest.TestCase):
         )
         self.assertEqual(
             resolve_site_identity(None)["source"],
-            "default",
+            "unconfigured",
         )
         # The dict shape must include
         # ``latitude``, ``longitude`` and

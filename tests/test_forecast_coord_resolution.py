@@ -281,20 +281,10 @@ class ForecastCoordResolutionTests(unittest.TestCase):
             msg="HA coords leaked into the forecast URL despite user override")
         self.assertNotIn("latitude=50.45", url)
 
-    def test_forecast_url_uses_default_when_no_hass_no_entry(self):
-        """When HA is at 0/0 (defensively) and the user did
-        not set site_latitude/site_longitude, the canonical
-        DEFAULT_SITE_LATITUDE / DEFAULT_SITE_LONGITUDE win.
-        This is the last-resort fallback.
-        """
-        from hems.options_helpers import (
-            DEFAULT_SITE_LATITUDE, DEFAULT_SITE_LONGITUDE,
-        )
-        url = self._drive_forecast(
-            ha_lat=None, ha_lon=None, entry_options={},
-        )
-        self.assertIn(f"latitude={DEFAULT_SITE_LATITUDE}", url)
-        self.assertIn(f"longitude={DEFAULT_SITE_LONGITUDE}", url)
+    def test_no_weather_request_without_resolved_location(self):
+        """Missing station and HA location must not silently request any city."""
+        url = self._drive_forecast(ha_lat=None, ha_lon=None, entry_options={})
+        self.assertEqual(url, "")
 
     def test_forecast_endpoint_is_v1_forecast(self):
         """Production contract: forecast path uses the
