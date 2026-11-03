@@ -9,7 +9,7 @@ Custom integration for **solar inverters** with battery storage and HEMS control
 Currently supports the `solar.siseli.com` cloud platform (POW-HUB, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
 Architecture is designed to support additional data sources in the future (direct inverter connection, other cloud platforms).
 
-The current integration version is **1.9.1**, matching `manifest.json` and the
+The current integration version is **1.9.2**, matching `manifest.json` and the
 root `__init__.py`. Release tags and GitHub Releases are created manually by the
 maintainer after review; the `develop` branch does not receive an automatic
 `-dev` suffix or release tag.
@@ -172,3 +172,12 @@ MIT License — see [LICENSE](LICENSE)
 ## Credits
 
 Ported from the [Smart Inverter App](https://github.com/yuraantonov11/siseli-app) (Flutter/Dart) by Yura Antonov.
+
+
+### Forecast location and demand validation
+
+Station coordinates belong to each integration entry. If neither is specified, the forecast uses Home Assistant location. An untouched options form does not create an override for a predefined city. Without a complete valid station or HA location, weather requests abstain. Changing the station location reloads its services and preserves old-location journals in identity-mismatch backups; old forecasts are not reused for calibration at the new location. Existing overrides are preserved, so check them if they were saved by an older options form.
+
+The dated demand candidate uses recency weighting with weekday/weekend fallback. Rolling validation predicts each completed test day using only earlier complete measured days. At least seven training days and seven common test days are required. The candidate is selected only when hourly MAE is at least 5% lower than the existing weekday profile and no worse than yesterday's profile on the same dates. Otherwise the existing predictor remains active. This comparison does not raise AI confidence or bypass battery power-limit checks.
+
+The AI card displays model comparison and historical residual ranges. Daily load ranges come from daily residual totals, not the sum of hourly range endpoints. These ranges describe past errors and are not guaranteed future coverage. Pending solar forecasts receive ranges only from comparable day-ahead facts predating issuance; a new location needs new completed forecast/actual pairs.

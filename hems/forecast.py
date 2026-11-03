@@ -107,8 +107,8 @@ class ForecastService:
 
     def __init__(
         self,
-        latitude: float = 50.45,
-        longitude: float = 30.52,
+        latitude: float | None = None,
+        longitude: float | None = None,
         pv_capacity_w: float = 3000.0,
         timezone_name: str = "UTC",
     ) -> None:
@@ -137,6 +137,11 @@ class ForecastService:
             )
         return self._session
 
+    def _has_location(self) -> bool:
+        from .options_helpers import _is_valid_latitude, _is_valid_longitude
+
+        return _is_valid_latitude(self._latitude) and _is_valid_longitude(self._longitude)
+
     async def close(self) -> None:
         # T17 audit: cancel any in-flight
         # requests so the underlying HTTP session
@@ -161,6 +166,8 @@ class ForecastService:
 
     async def get_hourly_forecast(self) -> list[dict[str, Any]]:
         """Return hourly weather and station power for three local calendar days."""
+        if not self._has_location():
+            return []
         now = time.monotonic()
         if self._hourly_cache and (now - self._hourly_cache[0]) < LOCAL_CACHE_TTL_SEC:
             return self._hourly_cache[1]
@@ -178,6 +185,8 @@ class ForecastService:
 
     async def get_daily_forecasts(self, days: int = 2) -> dict[str, SolarForecast]:
         """Return {date_str: SolarForecast} for the next `days` days."""
+        if not self._has_location():
+            return {}
         now = time.monotonic()
         if self._daily_cache and (now - self._daily_cache[0]) < DAILY_CACHE_TTL_SEC:
             return self._daily_cache[1]
@@ -235,6 +244,8 @@ class ForecastService:
         aggregation then attributes each value to the local day in
         which the interval begins (the documented contract).
         """
+        if not self._has_location():
+            return {}
         tz = ZoneInfo(self.timezone_name)
         first, _ = day_bounds(start_day, tz)
         _, last = day_bounds(end_day, tz)
@@ -283,6 +294,8 @@ class ForecastService:
         hourly response training aligns these intervals with measured
         PV intervals (which are also keyed by interval start).
         """
+        if not self._has_location():
+            return []
         tz = ZoneInfo(self.timezone_name)
         first, _ = day_bounds(start_day, tz)
         _, last = day_bounds(end_day, tz)
@@ -291,6 +304,8 @@ class ForecastService:
         # needed because the last interval ends at exactly ``last``.
         stop = last.date()
         session = await self._ensure_session()
+        if not self._has_location():
+            return []
         await self._rate_limit()
         params = {"latitude": self._latitude, "longitude": self._longitude,
                   "start_date": first.date().isoformat(),

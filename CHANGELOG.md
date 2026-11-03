@@ -1,3 +1,10 @@
+## 1.9.2 — station location and validated demand forecasts
+
+- Do not prefill a city into station options; use entry coordinates or HA location. Without either, do not request a fictitious weather forecast.
+- Explicitly reload setup-bound options so a saved coordinate change actually updates forecast and learning services. Preserve mismatched-location journals in backups.
+- Compare recency/day-type demand predictions chronologically with the existing weekday mean and yesterday, and use the candidate only after enough measured test days and demonstrated improvement.
+- Expose demand comparison and historical load/PV error ranges on the AI dashboard. Confidence and battery power-limit gates remain independent.
+
 # Changelog
 
 All notable changes to **Smart Solar Inverter** will be documented in this file.

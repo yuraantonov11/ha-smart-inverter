@@ -11,6 +11,45 @@ from zoneinfo import ZoneInfo
 from .battery_limits import nonnegative_number
 
 
+def day_ahead_error_range(pairs, snapshots, *, issued_at, forecast_kwh, timezone_name):
+    """Historical residual range using only facts complete before issuance.
+
+    Not a guaranteed coverage probability. A warm-up status replaces a made-up
+    range when fewer than seven comparable day-ahead forecasts are available.
+    """
+    zone = ZoneInfo(timezone_name)
+    value = nonnegative_number(forecast_kwh)
+    try:
+        issue = datetime.fromisoformat(issued_at)
+        if issue.tzinfo is None or value is None:
+            raise ValueError("unverifiable issuance")
+        cutoff = issue.astimezone(zone).date()
+    except (TypeError, ValueError):
+        return {"status": "invalid_issuance", "samples": 0}
+    residuals = []
+    for key, pair in sorted(pairs.items()):
+        try:
+            day = date.fromisoformat(key)
+            past_issue = datetime.fromisoformat(snapshots.get(key, {}).get("issued_at") or pair.get("captured_at"))
+            if past_issue.tzinfo is None or day >= cutoff or (day - past_issue.astimezone(zone).date()).days != 1:
+                continue
+        except (TypeError, ValueError):
+            continue
+        forecast = nonnegative_number(pair.get("forecast_kwh"))
+        actual = nonnegative_number(pair.get("actual_kwh"))
+        if forecast is not None and actual is not None:
+            residuals.append(actual - forecast)
+    residuals = residuals[-30:]
+    if len(residuals) < 7:
+        return {"status": "insufficient_samples", "samples": len(residuals), "required_samples": 7}
+    from .load_forecast import _quantile
+    return {"status": "available", "samples": len(residuals),
+            "lower_kwh": round(max(0., value + _quantile(residuals, .1)), 3),
+            "upper_kwh": round(max(0., value + _quantile(residuals, .9)), 3),
+            "method": "historical_p10_p90_day_ahead_residuals",
+            "probability_guarantee": False, "facts_before": cutoff.isoformat()}
+
+
 def evaluate_daily_forecasts(pairs, snapshots=None, actual_history=None, *, timezone_name=None):
     snapshots = snapshots or {}
     actual_history = actual_history or pairs

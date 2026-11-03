@@ -241,6 +241,8 @@ def _drive_method(method_name: str, payload_or_factory, site_tz_name: str,
     )
     method_ns = dict(ns)
     exec(compile(class_src, "<r01_driver>", "exec"), method_ns)
+    from hems.forecast import ForecastService
+    method_ns["_Driver"]._has_location = ForecastService._has_location
     driver = method_ns["_Driver"]()
     method = getattr(driver, method_name)
     daily = asyncio.run(method(start_day=start_day, end_day=end_day))

@@ -324,6 +324,47 @@ views:
               action: more-info
               entity: select.smart_solar_inverter_predictive_target_soc
           - type: markdown
+            title: AI · прогноз споживання
+            content: |
+              {% set d = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'load_forecast') or {} %}
+              {% set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'forecast_calibration') or {} %}
+              {% if d %}
+              **Модель споживання:** {{ 'Профіль останніх тижнів' if d.get('candidate_selected') else 'Чинний погодинний профіль' }}.
+
+              **Перевірено на {{ d.get('validation_days', 0) }} завершених добах.** Кожен тестовий день прогнозувався лише за попередніми днями.
+              {% if d.get('candidate_mae_w') is not none %}
+              Середня погодинна помилка: нова модель **{{ d.candidate_mae_w }} Вт**, чинна **{{ d.legacy_mae_w }} Вт**, остання завершена доба **{{ d.yesterday_mae_w }} Вт**.
+              {% endif %}
+              {% if d.get('selection_reason') == 'insufficient_test_days' %}
+              Для вибору нової моделі потрібно щонайменше 7 тестових діб після 7 діб історії.
+              {% elif not d.get('candidate_selected') %}
+              Нова модель поки не показала достатнього покращення; використовується чинний профіль.
+              {% endif %}
+              {% if d.get('hourly_w') %}
+              **Споживання на {{ d.target_date }}:** {{ '%.2f' | format((d.hourly_w | sum) / 1000) }} кВт·год.
+              {% if d.get('daily_error_range_kwh') %}
+              Діапазон за минулими помилками: **{{ '%.2f' | format(d.daily_error_range_kwh[0]) }}–{{ '%.2f' | format(d.daily_error_range_kwh[1]) }} кВт·год**.
+              {% endif %}
+              {% else %}
+              Ще немає достатньої історії завершених виміряних діб.
+              {% endif %}
+              {% else %}
+              Очікуємо першого розрахунку прогнозу споживання.
+              {% endif %}
+
+              **Сонячний прогноз · очікувані доби**
+              {% for p in c.get('pending', []) %}
+              {% set r = p.get('error_range', {}) %}
+              {{ p.date }}: **{{ p.forecast_kwh }} кВт·год**.
+              {% if r.get('status') == 'available' %}
+              Діапазон за минулими помилками: {{ r.lower_kwh }}–{{ r.upper_kwh }} кВт·год.
+              {% else %}
+              Діапазон ще не оцінений: {{ r.get('samples', 0) }}/7 порівнюваних завершених прогнозів на момент видачі.
+              {% endif %}
+              {% endfor %}
+
+              Діапазони описують минулі помилки; вони не гарантують майбутню точність. Допуск автоматичного керування перевіряється окремо.
+          - type: markdown
             title: AI · навчання і точність
             content: |
               {%- set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'forecast_calibration') or {} -%}

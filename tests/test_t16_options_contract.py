@@ -178,109 +178,15 @@ class T16OptionsContractTests(unittest.TestCase):
 
     # ── 2. site_latitude/site_longitude defaults are consistent ──
 
-    def test_16_02_site_coordinates_default_is_consistent(self) -> None:
-        """The default ``site_latitude`` /
-        ``site_longitude`` shown in
-        ``config_flow.py`` must equal the
-        default in ``hems/pv_coordinator.py``.
-        """
-        config_flow_src = _read(CONFIG_FLOW_PATH)
-        pv_coordinator_src = _read(
-            REPO_ROOT / "hems" / "pv_coordinator.py"
-        )
-        const_src = _read(CONST_PATH)
-        # Extract the constants from const.py
-        # — they are the single source of
-        # truth for the audit.
-        ui_lat = _extract_const(const_src, "DEFAULT_SITE_LATITUDE")
-        ui_lon = _extract_const(const_src, "DEFAULT_SITE_LONGITUDE")
-        self.assertIsNotNone(
-            ui_lat,
-            msg="DEFAULT_SITE_LATITUDE must be defined in const.py",
-        )
-        self.assertIsNotNone(
-            ui_lon,
-            msg="DEFAULT_SITE_LONGITUDE must be defined in const.py",
-        )
-        # The config flow must reference
-        # those constants (not duplicate the
-        # literal).
-        m_lat = re.search(
-            r"site_latitude.*?DEFAULT_SITE_LATITUDE",
-            config_flow_src,
-            re.DOTALL,
-        )
-        m_lon = re.search(
-            r"site_longitude.*?DEFAULT_SITE_LONGITUDE",
-            config_flow_src,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(
-            m_lat,
-            msg=(
-                "config_flow site_latitude must reference "
-                "DEFAULT_SITE_LATITUDE (no duplicated literal)"
-            ),
-        )
-        self.assertIsNotNone(
-            m_lon,
-            msg=(
-                "config_flow site_longitude must reference "
-                "DEFAULT_SITE_LONGITUDE (no duplicated literal)"
-            ),
-        )
-        # The runtime must reach the
-        # canonical defaults. After the
-        # T16 refactor, ``pv_coordinator``
-        # delegates to
-        # ``resolve_site_identity`` (and
-        # ``compute_site_coordinates``)
-        # from ``hems.options_helpers`` —
-        # which in turn references the
-        # canonical ``DEFAULT_SITE_LATITUDE``
-        # / ``DEFAULT_SITE_LONGITUDE``.
-        # ``config_flow`` references the
-        # canonical constants directly for
-        # the UI defaults. Both paths must
-        # reach the same source of truth.
-        self.assertIn(
-            "resolve_site_identity",
-            pv_coordinator_src,
-            msg=(
-                "pv_coordinator must call "
-                "resolve_site_identity (from "
-                "hems.options_helpers) to read "
-                "site_latitude/site_longitude "
-                "with the correct resolution order "
-                "(entry → HA → default)"
-            ),
-        )
-        # The config flow references the
-        # canonical constants directly. We
-        # also assert that
-        # ``hems.options_helpers`` is
-        # imported somewhere in the package
-        # (the contract is that the UI
-        # defaults and runtime defaults
-        # both trace back to
-        # ``hems.defaults``).
-        options_helpers_src = _read(
-            REPO_ROOT / "hems" / "options_helpers.py"
-        )
-        for canonical in (
-            "DEFAULT_SITE_LATITUDE",
-            "DEFAULT_SITE_LONGITUDE",
-        ):
-            self.assertIn(
-                canonical,
-                options_helpers_src,
-                msg=(
-                    f"{canonical} must be defined in "
-                    "hems/options_helpers.py so both "
-                    "UI and runtime defaults trace back "
-                    "to the same source"
-                ),
-            )
+    def test_16_02_options_do_not_create_a_city_override(self):
+        """An untouched form must preserve HA-derived location, not insert Kyiv."""
+        source = _read(CONFIG_FLOW_PATH)
+        self.assertNotIn("DEFAULT_SITE_LATITUDE", source)
+        self.assertNotIn("DEFAULT_SITE_LONGITUDE", source)
+        from hems.options_helpers import resolve_site_identity
+        self.assertEqual(resolve_site_identity(None)["source"], "unconfigured")
+        self.assertEqual(resolve_site_identity(None, ha_latitude=12.3, ha_longitude=45.6),
+                         {"latitude": 12.3, "longitude": 45.6, "source": "ha"})
 
     # ── 3. option flow reload trigger on key change ──────────────
 

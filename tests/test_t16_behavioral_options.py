@@ -177,8 +177,8 @@ class T16BehaviouralOptionsTests(unittest.TestCase):
         # Defaults: Kyiv (only when entry
         # is empty AND HA is missing).
         lat, lon = compute_site_coordinates(None)
-        self.assertAlmostEqual(lat, 50.45)
-        self.assertAlmostEqual(lon, 30.52)
+        self.assertIsNone(lat)
+        self.assertIsNone(lon)
         # User override (both keys set):
         # the entry wins over HA.
         lat, lon = compute_site_coordinates(

@@ -69,8 +69,6 @@ from .const import (
     DEFAULT_POLL_INTERVAL_SEC,
     DEFAULT_PV_SURPLUS_ENTER_W,
     DEFAULT_RESERVE_SOC,
-    DEFAULT_SITE_LATITUDE,
-    DEFAULT_SITE_LONGITUDE,
     DOMAIN,
     MAX_POLL_INTERVAL_SEC,
     MIN_POLL_INTERVAL_SEC,
@@ -753,11 +751,8 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                     new_data, self.config_entry.options
                 ):
                     # A reload-required key changed.
-                    # ``async_create_entry`` triggers
-                    # HA's automatic reload, which
-                    # recreates the coordinator with
-                    # the new ``update_interval`` /
-                    # API client.
+                    # Save options. The registered update listener compares
+                    # setup-bound keys and explicitly reloads the entry.
                     return self.async_create_entry(data=new_data)
                 # No reload-required key changed —
                 # apply the change in-place via
@@ -851,18 +846,14 @@ vol.Optional(
                     ),
                     vol.Optional(
                         "site_latitude",
-                        default=current.get(
-                            "site_latitude", DEFAULT_SITE_LATITUDE
-                        ),
+                        **({"default": current["site_latitude"]} if "site_latitude" in current else {}),
                     ): vol.All(
                         vol.Coerce(float),
                         vol.Range(min=-90.0, max=90.0),
                     ),
                     vol.Optional(
                         "site_longitude",
-                        default=current.get(
-                            "site_longitude", DEFAULT_SITE_LONGITUDE
-                        ),
+                        **({"default": current["site_longitude"]} if "site_longitude" in current else {}),
                     ): vol.All(
                         vol.Coerce(float),
                         vol.Range(min=-180.0, max=180.0),

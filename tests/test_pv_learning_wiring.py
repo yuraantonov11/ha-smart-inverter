@@ -199,7 +199,7 @@ async def exercise():
     forecast_mod.datetime = _FrozenDateTime
     forecast_mod.ZoneInfo = lambda _name: tz
     try:
-        f = ForecastService(timezone_name='Test/Kyiv2026')
+        f = ForecastService(latitude=50.45, longitude=30.52, timezone_name='Test/Kyiv2026')
         f._hourly_cache,f._daily_cache = (1,[]),(1,{})
         _check(f.set_station_gain(2) and f._hourly_cache is None and f._daily_cache is None,'gain invalidates both forecast caches')
         data = {'hourly':{'time':[int(datetime(2026,10,2,10,tzinfo=timezone.utc).timestamp())],
