@@ -242,6 +242,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry=entry,
         )
 
+        # Observation journal is optional and must never prevent setup.
+        try:
+            await coordinator.async_setup_autonomy_observation()
+        except Exception:
+            _LOGGER.exception("Autonomy observation setup failed")
+
         # First refresh
         await coordinator.async_config_entry_first_refresh()
 

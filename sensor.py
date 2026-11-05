@@ -1601,6 +1601,9 @@ class PredictiveDecisionStateSensor(CoordinatorEntity, SensorEntity):
     @property
     def extra_state_attributes(self):
         attributes = dict(self.coordinator._hems.predictive_decision_state)
+        autonomy = getattr(self.coordinator, "_autonomy_monitor", None)
+        if autonomy is not None:
+            attributes["autonomy_observation"] = autonomy.status()
         controller = getattr(self.coordinator._hems, "_predictive_controller", None)
         predictor = getattr(controller, "consumption_predictor", None)
         local_clock = getattr(self.coordinator, "_pv_local_now", None)

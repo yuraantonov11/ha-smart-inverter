@@ -19,6 +19,18 @@ def history(n=30):
 
 
 class LoadForecastTests(unittest.TestCase):
+    def test_validation_windows_exclude_future_and_label_replay(self):
+        rows = history(30)
+        issue = rows[-1][0] + timedelta(days=1)
+        result = forecast_load(rows, issue, issue + timedelta(days=1))
+        windows = result["validation_windows"]
+        self.assertLessEqual(windows["7"]["samples"], 7)
+        self.assertLessEqual(windows["30"]["samples"], 28)
+        self.assertEqual(windows["7"]["basis"], "retrospective_walk_forward_not_recorded_forecasts")
+        self.assertIsNotNone(windows["30"]["daily_mae_kwh"])
+        changed = forecast_load(rows + [(issue, [50000] * 24, False)], issue, issue + timedelta(days=1))
+        self.assertEqual(windows, changed["validation_windows"])
+
     def test_never_trains_on_issue_day_or_future(self):
         rows = history()
         issue = rows[20][0]

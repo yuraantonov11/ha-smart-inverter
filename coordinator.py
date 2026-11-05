@@ -950,6 +950,55 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
     # MAIN UPDATE LOOP
     # ═══════════════════════════════════════════════════════════════════
 
+    async def async_setup_autonomy_observation(self):
+        """Load the observation journal before the first real-time poll."""
+        from homeassistant.helpers.storage import Store
+        from .hems.autonomy_evaluation import AutonomyMonitor
+        self._autonomy_store = Store(self.hass, 1, f"{DOMAIN}_autonomy_{self._entry.entry_id}")
+        try:
+            saved = await self._autonomy_store.async_load()
+            self._autonomy_monitor = AutonomyMonitor(saved)
+        except Exception:
+            _LOGGER.exception("Autonomy observation journal could not be loaded")
+            return
+        self._autonomy_last_saved = None
+
+    async def _async_observe_autonomy(self, raw, reported_soc, grid_available):
+        """Collect diagnostics only; failures cannot interrupt inverter polling."""
+        monitor = getattr(self, "_autonomy_monitor", None)
+        store = getattr(self, "_autonomy_store", None)
+        if monitor is None or store is None:
+            return
+        try:
+            voltage = raw.get("gridVoltage")
+            if isinstance(voltage, bool) or not isinstance(voltage, (int, float)) or not math.isfinite(voltage):
+                return
+            if getattr(self.api, "last_realtime_outcome", None) != "fresh_success":
+                return
+            # Hysteresis takes two polls. Do not capture a pre-outage estimate
+            # from the first low-voltage poll while grid_available is still True.
+            if (grid_available and voltage < 130) or (not grid_available and voltage > 90):
+                return
+            now = datetime.now(timezone.utc)
+            interval = self.update_interval.total_seconds() if self.update_interval else 60
+            gap = min(1800.0, max(180.0, interval * 3.0))
+            measured = getattr(self.api, "last_realtime_measurement_at", None)
+            if isinstance(measured, datetime):
+                if measured.utcoffset() is None or not 0 <= (now - measured).total_seconds() <= gap:
+                    return
+            changed = monitor.observe(
+                now, bool(grid_available), capacity=self._battery_capacity_kwh,
+                soc=None if isinstance(raw.get("batterySoc"), bool) else reported_soc,
+                reserve=compute_reserve_soc(self._entry.options),
+                load=raw.get("loadPower"), pv=raw.get("pvPower"), max_gap_seconds=gap,
+            )
+            saved = getattr(self, "_autonomy_last_saved", None)
+            if changed or saved is None or (now - saved).total_seconds() >= 60:
+                store.async_delay_save(monitor.snapshot, 1)
+                self._autonomy_last_saved = now
+        except Exception:
+            _LOGGER.exception("Autonomy observation failed; normal polling continues")
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch latest data, compute derived values, and run HEMS engine."""
         now = datetime.now()
@@ -1067,6 +1116,7 @@ class InverterCoordinator(PvLearningCoordinatorMixin, DataUpdateCoordinator):
         # ── Grid outage detection ────────────────────────────────────
         grid_v = raw.get("gridVoltage", 230.0)
         grid_available, grid_transition = self._evaluate_grid(grid_v)
+        await self._async_observe_autonomy(raw, reported_soc, grid_available)
 
         # ── Grid outage auto-Storm ───────────────────────────────────
         # T10: drive the dedicated outage cause
