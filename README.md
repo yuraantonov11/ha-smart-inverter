@@ -9,7 +9,7 @@ Custom integration for **solar inverters** with battery storage and HEMS control
 Currently supports the `solar.siseli.com` cloud platform (POW-HUB, SmartESS, Easun, and other brands using ECO/MAX-730 Wi-Fi modules).
 Architecture is designed to support additional data sources in the future (direct inverter connection, other cloud platforms).
 
-The current integration version is **1.9.2**, matching `manifest.json` and the
+The current integration version is **1.9.3**, matching `manifest.json` and the
 root `__init__.py`. Release tags and GitHub Releases are created manually by the
 maintainer after review; the `develop` branch does not receive an automatic
 `-dev` suffix or release tag.
