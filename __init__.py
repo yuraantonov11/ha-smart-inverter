@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-__version__ = "1.9.2"
+__version__ = "1.9.3"
 
 
 import hashlib
@@ -241,6 +241,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             api=api,
             entry=entry,
         )
+
+        # Observation journal is optional and must never prevent setup.
+        try:
+            await coordinator.async_setup_autonomy_observation()
+        except Exception:
+            _LOGGER.exception("Autonomy observation setup failed")
 
         # First refresh
         await coordinator.async_config_entry_first_refresh()

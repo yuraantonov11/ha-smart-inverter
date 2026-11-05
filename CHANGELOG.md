@@ -1,3 +1,9 @@
+## 1.9.3 — forecast evaluation and autonomy observation
+
+- Show seven- and thirty-day solar forecast evaluation and retrospective load-model validation.
+- Add an observation-only estimate of time to battery reserve and preserve grid-outage observations in a per-entry journal. Estimates assume constant net load and ideal conversion; grid restoration is not evidence of actual battery exhaustion.
+- Keep cloud as the control source; this diagnostic does not change inverter control. Outage handling has not been validated against an actual exhaustion event.
+
 ## 1.9.2 — station location and validated demand forecasts
 
 - Do not prefill a city into station options; use entry coordinates or HA location. Without either, do not request a fictitious weather forecast.

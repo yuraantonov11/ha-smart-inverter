@@ -545,7 +545,7 @@ class PvLearningState:
             self.calibrator.load_from_list(desired)
 
     def calibration_status(self, today):
-        from .forecast_evaluation import evaluate_daily_forecasts, day_ahead_error_range
+        from .forecast_evaluation import evaluate_daily_forecasts, day_ahead_error_range, completed_window_scores
         m = self.calibrator.metrics()
         pending = [{"date": d, **s, "awaiting": "completed_day" if d >= today else "daily_fact"}
                    for d, s in sorted(self.snapshots.items()) if d not in self.pairs]
@@ -563,6 +563,8 @@ class PvLearningState:
                 "evaluation": evaluate_daily_forecasts(
                     model_pairs, self.snapshots, self.pairs,
                     timezone_name=self.identity["timezone"]),
+                "completed_windows": completed_window_scores(
+                    model_pairs, self.snapshots, today=today, timezone_name=self.identity["timezone"]),
                 "excluded_model_pairs": len(self.pairs)-len(model_pairs),
                 "excluded_horizon_pairs": len(model_pairs)-len(self.calibration_pairs()),
                 "pending_count": len(pending), "pending": pending[-7:],

@@ -118,7 +118,18 @@ def forecast_load(history, issued_on, target):
         daily_forecast = sum(values) / 1000
         daily_bounds = (max(0., daily_forecast + _quantile(daily_residuals, .1)),
                         max(0., daily_forecast + _quantile(daily_residuals, .9)))
+    windows = {}
+    for days in (7, 30):
+        subset = [row for row in errors if issued_on - timedelta(days=days) <= row[0] < issued_on]
+        residuals = [sum(row[error_index]) / 1000 for row in subset]
+        windows[str(days)] = {
+            "samples": len(subset),
+            "daily_mae_kwh": round(sum(abs(v) for v in residuals) / len(residuals), 3) if residuals else None,
+            "basis": "retrospective_walk_forward_not_recorded_forecasts",
+            "max_test_days": 28,
+        }
     return {
+        "validation_windows": windows,
         "model": model, "candidate_model": MODEL, "candidate_selected": selected,
         "selection_reason": "validated_improvement" if selected else
             "insufficient_test_days" if count < MIN_TEST_DAYS else "baseline_not_beaten",

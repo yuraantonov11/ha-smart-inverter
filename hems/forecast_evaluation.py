@@ -107,3 +107,27 @@ def evaluate_daily_forecasts(pairs, snapshots=None, actual_history=None, *, time
     result["basis"] = "stored_forecast_actual_pairs"
     result["baseline"] = "previous_calendar_day_actual"
     return result
+
+
+def completed_window_scores(pairs, snapshots, *, today, timezone_name):
+    """Score issued day-ahead forecasts against completed days in calendar windows."""
+    cutoff = date.fromisoformat(today) if isinstance(today, str) else today
+    zone = ZoneInfo(timezone_name)
+    eligible = {}
+    for day, pair in pairs.items():
+        try:
+            target = date.fromisoformat(day)
+            issue = datetime.fromisoformat(snapshots.get(day, {}).get("issued_at") or pair.get("captured_at"))
+            if issue.tzinfo is None or (target - issue.astimezone(zone).date()).days != 1 or target >= cutoff:
+                continue
+        except (TypeError, ValueError, AttributeError):
+            continue
+        eligible[day] = pair
+    result = {}
+    for days in (7, 30):
+        start = cutoff - timedelta(days=days)
+        selected = {day: pair for day, pair in eligible.items() if date.fromisoformat(day) >= start}
+        score = evaluate_daily_forecasts(selected, snapshots, pairs, timezone_name=timezone_name)
+        result[str(days)] = {**score, "start_date": start.isoformat(),
+                             "end_date": (cutoff - timedelta(days=1)).isoformat()}
+    return result
