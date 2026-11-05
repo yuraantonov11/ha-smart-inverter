@@ -5,6 +5,8 @@ from __future__ import annotations
 __version__ = "1.9.3"
 
 
+import asyncio
+import aiohttp
 import hashlib
 import logging
 import json
@@ -18,6 +20,7 @@ from typing import NamedTuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
@@ -200,8 +203,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     try:
-        # Authenticate
-        if not await api.authenticate():
+        # A network outage is temporary; let HA retry instead of leaving
+        # the entry permanently failed after a restart.
+        try:
+            authenticated = await api.authenticate()
+        except Exception as exc:
+            cause = exc.__cause__ or exc
+            if isinstance(cause, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
+                raise ConfigEntryNotReady("Inverter cloud is unreachable") from exc
+            raise
+        if not authenticated:
             _LOGGER.error("Failed to authenticate with inverter API")
             return False
 
@@ -459,6 +470,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         return True
 
+    except ConfigEntryNotReady:
+        try:
+            await api.close()
+        except Exception:
+            pass
+        raise
     except Exception:
         _LOGGER.error("CRITICAL: Failed to set up inverter integration", exc_info=True)
         try:
