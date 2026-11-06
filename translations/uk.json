@@ -43,36 +43,86 @@
   "options": {
     "step": {
       "init": {
-        "title": "Smart Solar Inverter Options",
-        "description": "Adjust polling interval and HEMS settings",
+        "title": "Налаштування Smart Solar",
+        "description": "Виберіть категорію. Зміна однієї категорії зберігає решту параметрів.",
+        "menu_options": {
+          "connection": "Зв’язок",
+          "station": "Станція",
+          "battery": "Батарея",
+          "tariffs": "Тарифи",
+          "automation": "Автоматика",
+          "predictive": "Прогнозна допомога"
+        }
+      },
+      "connection": {
+        "title": "Зв’язок",
+        "description": "Частота звернень до хмари відрізняється від віку вимірів виробника. Bluetooth — лише діагностика. Поля Bluetooth показують ефективні значення options/data/conf/marker; незмінені значення fallback залишаються у своєму джерелі. Conf-файл або marker можуть підтримувати Bluetooth увімкненим навіть за вимкненого прапорця options.",
         "data": {
-          "poll_interval": "Polling interval (seconds)",
-          "reserve_soc": "Reserve SOC (%)",
-          "pv_surplus_threshold_w": "PV surplus threshold (W)",
-          "tariff_day": "Day tariff (UAH/kWh)",
-          "tariff_night": "Night tariff (UAH/kWh)",
-          "site_latitude": "Широта станції (порожньо — місце Home Assistant)",
-          "site_longitude": "Довгота станції (порожньо — місце Home Assistant)",
-          "auto_storm_by_forecast": "Auto-Storm by weather forecast",
-          "battery_capacity_ah": "Battery capacity (Ah)",
+          "poll_interval": "Інтервал звернень до хмари (с)",
+          "ble_diagnostic": "Увімкнути діагностику Bluetooth",
+          "ble_dtu_id": "Ідентифікатор DTU Bluetooth",
+          "ble_read_interval": "Інтервал читання Bluetooth (с)"
+        }
+      },
+      "station": {
+        "title": "Станція",
+        "description": "Залиште обидві координати порожніми, щоб використовувати місце Home Assistant. Для власного місця задайте обидві координати. Потужності описують встановлене обладнання.",
+        "data": {
+          "site_latitude": "Широта станції",
+          "site_longitude": "Довгота станції",
+          "pv_total_capacity_w": "Потужність сонячних панелей (Вт)",
+          "inverter_max_power_w": "Максимальна потужність інвертора (Вт)"
+        }
+      },
+      "battery": {
+        "title": "Батарея",
+        "description": "Розрахункова ємність за збереженими параметрами: {battery_energy_kwh} кВт·год. Ємність задана вручну, а не отримана від BMS. Вкажіть підтверджені ліміти DC-потужності на боці батареї. Непідтверджені ліміти залиште порожніми; паспортне число не є виміром BMS.",
+        "data": {
+          "battery_capacity_ah": "Ємність батареї (А·год)",
           "nominal_voltage_v": "Номінальна напруга батареї (В)",
-          "max_charge_power_w": "Ліміт заряду батареї (DC Вт; порожньо — невідомий)",
+          "max_charge_power_w": "Ліміт заряду батареї (DC Вт)",
           "max_grid_charge_power_w": "Ліміт заряду від мережі (DC Вт на боці батареї)",
-          "max_discharge_power_w": "Ліміт розряду батареї (DC Вт; за обмеженнями BMS/інвертора)",
-          "pv_total_capacity_w": "Total PV capacity (W)",
-          "inverter_max_power_w": "Inverter max power (W)",
-          "night_start_hour": "Night start hour (0-23)",
-          "day_start_hour": "Day start hour (0-23)",
+          "max_discharge_power_w": "Ліміт розряду батареї (DC Вт)"
+        }
+      },
+      "tariffs": {
+        "title": "Тарифи",
+        "description": "Задайте вартість електроенергії та години переходу тарифів у часовій зоні Home Assistant. Ці години відокремлені від нічного вікна прогнозної допомоги.",
+        "data": {
+          "tariff_day": "Денний тариф (₴/кВт·год)",
+          "tariff_night": "Нічний тариф (₴/кВт·год)",
+          "night_start_hour": "Початок нічного тарифу (година, 0–23)",
+          "day_start_hour": "Початок денного тарифу (година, 0–23)"
+        }
+      },
+      "automation": {
+        "title": "Автоматика",
+        "description": "Автоматичне керування застосовує вибрану стратегію. Ці параметри відокремлені від ручної команди інвертору.",
+        "data": {
+          "hems_enabled": "Увімкнути автоматичне керування",
+          "reserve_soc": "Резерв батареї (%)",
+          "pv_surplus_threshold_w": "Поріг надлишку сонця (Вт)",
+          "auto_storm_by_forecast": "Готувати резерв за прогнозом негоди"
+        }
+      },
+      "predictive": {
+        "title": "Прогнозна допомога",
+        "description": "Чинний і початковий режим — окремі параметри. Нічне вікно прогнозної допомоги відрізняється від тарифного. Впевненість — внутрішній показник, а не відсоток точності прогнозу.",
+        "data": {
           "predictive_default_mode": "Початковий режим прогнозної допомоги",
-          "predictive_night_window_start_hour": "Початок нічного вікна AI (0–23)",
-          "predictive_night_window_end_hour": "Кінець нічного вікна AI (0–23)",
-          "predictive_min_confidence_for_assist": "Мінімальна впевненість Assist (не нижче 0.2)"
+          "predictive_mode": "Чинний режим прогнозної допомоги",
+          "predictive_night_window_start_hour": "Початок нічного вікна AI (година, 0–23)",
+          "predictive_night_window_end_hour": "Кінець нічного вікна AI (година, 0–23)",
+          "predictive_min_confidence_for_assist": "Мінімальна впевненість для допомоги (0–1)"
         }
       }
     },
     "error": {
-      "invalid_poll_interval": "Poll interval must be between 3 and 30 seconds.",
+      "invalid_poll_interval": "Інтервал звернень має бути від 3 до 30 секунд.",
       "invalid_predictive_options": "Некоректний режим AI, нічне вікно або впевненість."
+    },
+    "abort": {
+      "options_updated": "Налаштування збережено. Вони застосовуються з наступного оновлення інтеграції."
     }
   },
   "entity": {

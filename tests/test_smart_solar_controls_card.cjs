@@ -1,0 +1,52 @@
+// Exercise the production command boundary without a browser or inverter.
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+let Card;
+class Element {attachShadow(){this.shadowRoot={};}}
+vm.runInNewContext(fs.readFileSync('frontend/smart-solar-controls-card.js','utf8'),{HTMLElement:Element,customElements:{get:()=>false,define:(n,c)=>Card=c},window:{},Number,Set,Object,String,Math});
+const rows=[{entity:'select.output',name:'Output'},{entity:'number.current',name:'Current'},{entity:'switch.export',name:'Export'}];
+const states={'select.output':{state:'SBU',attributes:{options:['SBU','USB']}},'number.current':{state:'40',attributes:{min:0,max:100,step:1}},'switch.export':{state:'off',attributes:{}}};
+function setup(callService){const card=new Card();card._build=()=>{};card.setConfig({entities:rows});card.hass={states,callService};return card;}
+(async()=>{
+ const calls=[];const card=setup(async(...args)=>calls.push(args));
+ card.hass={states:{...states},callService:card._hass.callService};
+ assert.equal(calls.length,0,'Rendering and telemetry cannot send commands');
+ card._draft={'select.output':'USB','number.current':'40'};
+ await card._apply();
+ assert.equal(calls.length,1,'Only the changed field is sent');
+ assert.equal(calls[0][0],'select');assert.equal(calls[0][1],'select_option');assert.equal(calls[0][2].option,'USB');
+ assert.equal(card._pending['select.output'].phase,'awaiting','Service success is not telemetry confirmation');
+ await card._apply();assert.equal(calls.length,1,'Awaiting identical command must not be sent twice');
+ card.hass={...card._hass,states:{...states,'select.output':{state:'USB',attributes:states['select.output'].attributes}}};
+ assert.equal(card._pending['select.output'].phase,'confirmed');
+ assert.equal(card._draft['select.output'],'USB','Telemetry preserves local drafts');
+ card._draft={'number.current':'150'};await card._apply();assert.equal(calls.length,1,'Invalid hardware limit must never be sent');
+ const failed=setup(async()=>{throw new Error('offline');});failed._draft={'number.current':'50'};await failed._apply();
+ assert.equal(failed._pending['number.current'].phase,'failed');assert.equal(failed._pending['number.current'].error,'offline');
+ let finish;const pending=setup(()=>new Promise(resolve=>finish=resolve));pending._draft={'switch.export':'on'};
+ const task=pending._apply();await pending._apply();assert.equal(pending._busy,true);finish();await task;
+ assert.equal(pending._pending['switch.export'].phase,'awaiting');
+ const recovering=setup(async()=>{});
+ recovering._hass={states:{'select.output':{state:'unavailable',attributes:{}}}};
+ const select={dataset:{},ownerDocument:{createElement:()=>({})},replaceChildren(...children){this.options=children;}};
+ recovering._syncConstraints(select,'select.output');
+ assert.equal(select.options.length,1,'Unavailable initial state has only a placeholder');
+ recovering._hass={states:{'select.output':{state:'SBU',attributes:{options:['SBU','USB']}}}};
+ recovering._syncConstraints(select,'select.output');
+ assert.deepEqual(select.options.map(o=>o.value),['','SBU','USB'],'Late options become selectable without rebuilding the form');
+ recovering._draft={'select.output':'USB'};
+ recovering._hass={states:{'select.output':{state:'SBU',attributes:{options:['SBU','USB','SUB']}}}};
+ recovering._syncConstraints(select,'select.output');
+ assert.equal(select.value,'USB','Late option refresh retains the local draft');
+ recovering._hass.states['select.output'].attributes.options=['SBU'];
+ recovering._syncConstraints(select,'select.output');
+ assert.equal(select.value,'USB','Removed choice remains visible as an invalid draft');
+ assert.equal(select.options.at(-1).disabled,true);
+ const number={attributes:{},setAttribute(k,v){this.attributes[k]=v;},removeAttribute(k){delete this.attributes[k];}};
+ recovering._hass={states:{'number.current':{state:'40',attributes:{min:10,max:60,step:5}}}};
+ recovering._syncConstraints(number,'number.current');
+ assert.deepEqual(number.attributes,{min:'10',max:'60',step:'5'});
+ recovering._hass.states['number.current'].attributes={};
+ recovering._syncConstraints(number,'number.current');
+ assert.deepEqual(number.attributes,{step:'any'},'Removed hardware constraints do not remain stale in the input');
+ console.log('Manual controls: no render commands, changed-only Apply, duplicate guard, confirmation, draft persistence, invalid limits and failure passed');
+})().catch(error=>{console.error(error);process.exitCode=1;});

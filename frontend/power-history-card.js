@@ -19,6 +19,7 @@
 //     disconnect.
 class PowerHistoryCard extends HTMLElement {
   connectedCallback() {
+    if(this.style){this.style.display="block";this.style.minWidth="0";}
     if (typeof ResizeObserver === 'undefined') return;
     this._resizeObserver = new ResizeObserver(entries => {
       const width = entries[0]?.contentRect.width;
@@ -38,10 +39,19 @@ class PowerHistoryCard extends HTMLElement {
   setConfig(config) {
     if (!config.entity && !config.series) throw new Error('entity or series is required');
     this._config = config;
+    this._renderedStates=null;
+    this._render();
   }
   set hass(hass) {
-    this._hass = hass;
+    const cfg=this._config;
+    this._hass=hass;
+    if(!cfg) return;
+    const entities=cfg.series?.map(s=>s.entity) || [cfg.entity];
+    const states=entities.map(id=>hass.states[id]);
+    if(this._renderedStates && states.length===this._renderedStates.length
+      && states.every((s,i)=>s===this._renderedStates[i])) return;
     this._render();
+    this._renderedStates=states;
   }
   getCardSize() { return 4; }
 
@@ -218,8 +228,9 @@ class PowerHistoryCard extends HTMLElement {
     const lbls = resolved[0].points.map(
       p => p.label || '',
     );
-    const compact = Boolean(window.matchMedia?.('(max-width: 450px)')?.matches);
-    const W = 500, H = compact ? 225 : 180, padL = 45, padR = 10;
+    const width=this.clientWidth || 500;
+    const compact = width < 600;
+    const W = Math.max(160,width-16), H = compact ? 240 : 300, padL = 48, padR = 18;
     const padT = compact ? 35 : 10, padB = compact ? 50 : 30;
     const chartW = W - padL - padR, chartH = H - padT - padB;
 
@@ -240,11 +251,11 @@ class PowerHistoryCard extends HTMLElement {
     for (let i = 0; i <= 4; i++) {
       const y = padT + chartH - (chartH * i / 4);
       const val = maxVal * i / 4;
-      svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="#333" stroke-width="0.5"/>`;
+      svg += `<line x1="${padL}" y1="${y}" x2="${W - padR}" y2="${y}" stroke="var(--divider-color,#333)" stroke-width="0.5"/>`;
       const yLabel = this._isFiniteNumber(val)
         ? (val < 1 ? val.toFixed(2) : val.toFixed(1))
         : '0';
-      svg += `<text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="#999" font-size="${compact ? 15 : 9}">${yLabel}</text>`;
+      svg += `<text x="${padL - 4}" y="${y + 3}" text-anchor="end" fill="var(--secondary-text-color,#999)" font-size="12">${yLabel}</text>`;
     }
 
     // X labels: only for points on the
@@ -255,7 +266,7 @@ class PowerHistoryCard extends HTMLElement {
     // gap position (use the gap's expected
     // label from the raw input).
     const xLabelStep = compact
-      ? Math.max(2, Math.ceil(canonicalN / 6))
+      ? Math.max(2, Math.ceil(canonicalN / 4))
       : Math.max(1, Math.floor(canonicalN / 8));
     const xLabelIndices = [];
     for (let i = 0; i < canonicalN; i += xLabelStep) {
@@ -287,9 +298,9 @@ class PowerHistoryCard extends HTMLElement {
       const isFinalLabel = i > 0 && i + xLabelStep >= canonicalN;
       const anchor = compact ? 'end' : isFinalLabel ? 'end' : 'middle';
       if (compact && lblAt) {
-        svg += `<text x="${x}" y="${H - 26}" text-anchor="${anchor}" textLength="${compactLabelLength}" lengthAdjust="spacingAndGlyphs" fill="#999" font-size="15">${this._escape(lblAt)}</text>`;
+        svg += `<text x="${x}" y="${H - 26}" text-anchor="${anchor}" fill="var(--secondary-text-color,#999)" font-size="12">${this._escape(lblAt)}</text>`;
       } else {
-        svg += `<text x="${x}" y="${compact ? H - 26 : H - 4}" text-anchor="${anchor}" fill="#999" font-size="${compact ? 15 : 8}">${this._escape(lblAt)}</text>`;
+        svg += `<text x="${x}" y="${compact ? H - 26 : H - 4}" text-anchor="${anchor}" fill="var(--secondary-text-color,#999)" font-size="12">${this._escape(lblAt)}</text>`;
       }
     }
 
@@ -372,20 +383,8 @@ class PowerHistoryCard extends HTMLElement {
       }
     }
 
-    // Legend
-    let legend = '';
-    if (resolved.length > 1) {
-      let lx = padL;
-      for (const r of resolved) {
-        const legendY = compact ? 20 : 2;
-        const legendTextY = compact ? 30 : 8;
-        const legendFont = compact ? 15 : 8;
-        const labelWidth = r.name.length * (compact ? 9 : 5.5) + (compact ? 35 : 25);
-        legend += `<rect x="${lx}" y="${legendY}" width="10" height="6" fill="${this._escape(r.color)}"/>`;
-        legend += `<text x="${lx + 13}" y="${legendTextY}" fill="#ccc" font-size="${legendFont}">${this._escape(r.name)}</text>`;
-        lx += labelWidth;
-      }
-    }
+    // Keep legends in normal HTML flow so long / multiple series wrap on phones.
+    const legend=resolved.length>1 ? `<div class="ph-legend">${resolved.map(r=>`<span><i style="background:${this._escape(r.color)}"></i>${this._escape(r.name)}</span>`).join('')}</div>` : '';
 
     // Tooltip / legend with actual source, cadence
     // and smoothing. R06 audit requires the card
@@ -407,12 +406,14 @@ class PowerHistoryCard extends HTMLElement {
 
     const unit = cfg.unit || '';
     this.innerHTML = `<ha-card>
+      <style>power-history-card .ph-legend{display:flex;flex-wrap:wrap;gap:8px 16px;padding:8px 16px;font-size:12px;color:var(--secondary-text-color)}power-history-card .ph-legend span{display:flex;align-items:center;gap:6px}power-history-card .ph-legend i{width:12px;height:3px;display:inline-block}</style>
+      ${legend}
       <div style="padding:12px 16px 4px;font-size:14px;font-weight:500">${this._escape(title)}</div>
-      <div style="padding:0 16px 4px;font-size:10px;color:#666">${metaLine}</div>
+      <div style="padding:0 16px 4px;font-size:12px;color:var(--secondary-text-color,#666)">${metaLine}</div>
       <div style="padding:0 8px 8px">
         <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto">
-          ${svg}${legend}
-          <text x="${padL + chartW / 2}" y="${compact ? H - 5 : H - 4}" text-anchor="middle" fill="#666" font-size="${compact ? 15 : 8}">${this._escape(unit)}</text>
+          ${svg}
+          <text x="${padL + chartW / 2}" y="${compact ? H - 5 : H - 4}" text-anchor="middle" fill="var(--secondary-text-color,#666)" font-size="12">${this._escape(unit)}</text>
         </svg>
       </div>
     </ha-card>`;

@@ -773,6 +773,21 @@ class KFlowCard extends HTMLElement {
     };
   }
 
+  connectedCallback() {
+    this._motionPreference=window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    this._onMotionChange=()=>this._applyMotionPreference();
+    this._motionPreference?.addEventListener?.('change',this._onMotionChange);
+    this._applyMotionPreference();
+  }
+  disconnectedCallback() {
+    this._motionPreference?.removeEventListener?.('change',this._onMotionChange);
+  }
+  _applyMotionPreference() {
+    const svg=this.shadowRoot?.querySelector?.('#flowSvg');
+    if(this._motionPreference?.matches) svg?.pauseAnimations?.();
+    else svg?.unpauseAnimations?.();
+  }
+  getGridOptions() { return {columns:12,rows:'auto'}; }
   getCardSize() { return 8; }
   static getConfigElement() { return document.createElement('k-flow-card-editor'); }
 
@@ -786,6 +801,7 @@ class KFlowCard extends HTMLElement {
     defaults.pv_max_power = '';
     this.config = { ...defaults, ...config };
     this._buildStaticSVG();
+    this._applyMotionPreference();
   }
 
   set hass(hass) { this._hass = hass; this._updateDynamic(); }
@@ -1012,27 +1028,27 @@ class KFlowCard extends HTMLElement {
     );
 
     this.shadowRoot.innerHTML = `<style>
-      :host{display:block} @keyframes svgPulseOrange{0%,100%{filter:drop-shadow(0 0 5px #f39c4b)}50%{filter:drop-shadow(0 0 8px #f5b06a)}}
-      .st{background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:7px 9px}
+      :host{display:block;min-width:0;font-family:var(--primary-font-family,Roboto,sans-serif)} .compact .readings,.compact .flow-totals,.compact .dv{display:none}.compact #flowSvg{max-height:520px}.ct{color:var(--secondary-text-color,#8b949e)}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}} @keyframes svgPulseOrange{0%,100%{filter:drop-shadow(0 0 5px #f39c4b)}50%{filter:drop-shadow(0 0 8px #f5b06a)}}
+      .st{background:var(--secondary-background-color,#0d1117);border:1px solid var(--divider-color,#21262d);border-radius:8px;padding:7px 9px}
       .st .l{font-size:.48rem;color:#8b949e;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px}
-      .st .v{font-size:.8rem;font-weight:600;color:#c9d1d9}
+      .st .v{font-size:.8rem;font-weight:600;color:var(--primary-text-color,#c9d1d9)}
       .dv{height:1px;background:#21262d;margin:8px 0}
       .ct{font-size:.56rem;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#8b949e;margin-bottom:10px;display:flex;align-items:center;gap:7px}
       .ct::after{content:'';flex:1;height:1px;background:#21262d}
       .pvf{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:2px}
-      .pvi{text-align:center;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:6px 2px}
+      .pvi{text-align:center;background:var(--secondary-background-color,#0d1117);border:1px solid var(--divider-color,#21262d);border-radius:8px;padding:6px 2px}
       .pvi .ico{font-size:.95rem;margin-bottom:2px}
       .pvi .lbl{font-size:.44rem;color:#8b949e;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px}
-      .pvi .val{font-size:.76rem;font-weight:700;color:#c9d1d9}
+      .pvi .val{font-size:.76rem;font-weight:700;color:var(--primary-text-color,#c9d1d9)}
       .pvi .val.yw{color:#f4d03f} text{font-family:'Segoe UI',Arial,sans-serif}
       .readings{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}
-      .reading{min-width:0;background:#0d1117;border:1px solid #21262d;border-radius:8px;padding:9px 10px}
-      .reading .name{font-size:12px;line-height:1.4;color:#9da7b3;overflow-wrap:anywhere}
-      .reading .value{font-size:16px;line-height:1.5;font-weight:650;color:#e6edf3;font-variant-numeric:tabular-nums}
-      .data-note{font-size:12px;line-height:1.5;color:#9da7b3;margin-top:8px;overflow-wrap:anywhere}
+      .reading{min-width:0;background:var(--secondary-background-color,#0d1117);border:1px solid var(--divider-color,#21262d);border-radius:8px;padding:9px 10px}
+      .reading .name{font-size:12px;line-height:1.4;color:var(--secondary-text-color,#9da7b3);overflow-wrap:anywhere}
+      .reading .value{font-size:16px;line-height:1.5;font-weight:650;color:var(--primary-text-color,#e6edf3);font-variant-numeric:tabular-nums}
+      .data-note{font-size:12px;line-height:1.5;color:var(--secondary-text-color,#9da7b3);margin-top:8px;overflow-wrap:anywhere}
       .ct{font-size:12px;letter-spacing:.5px}.pvi .lbl{font-size:12px;letter-spacing:0;text-transform:none}.pvi .val{font-size:16px}
     </style>
-    <div style="background:#161b22;border:1px solid #21262d;border-radius:12px;padding:13px;box-shadow:0 4px 20px rgba(0,0,0,.4);width:100%;box-sizing:border-box;">
+    <div class="flow-card ${this.config.compact ? 'compact' : ''}" style="background:var(--ha-card-background,var(--card-background-color,#161b22));border:1px solid var(--divider-color,#21262d);border-radius:var(--ha-card-border-radius,12px);padding:13px;width:100%;box-sizing:border-box;">
       <div class="ct">⚡ Потік енергії <span id="battStatusBadge" style="margin-left:auto;font-size:12px;font-weight:700;letter-spacing:0;padding:1px 8px;border-radius:8px;background:#21262d;color:#8b949e">—</span></div>
       <div style="width:100%;margin:0 auto"><svg id="flowSvg" viewBox="0 0 520 510" style="width:100%;display:block">
       <defs>
@@ -1129,7 +1145,7 @@ class KFlowCard extends HTMLElement {
       </div>
       <div id="estimateNote" class="data-note" style="display:none">≈ — розрахункова потужність за даними хмари. Напрямок потоку не визначає джерело заряджання.</div>
       <div class="dv"></div>
-      <div style="display:flex;justify-content:center;gap:8px;margin-top:10px">
+      <div class="flow-totals" style="display:flex;justify-content:center;gap:8px;margin-top:10px">
         <div class="pvi" style="flex:1;max-width:200px"><div class="ico">☀️</div><div class="lbl">PV сьогодні</div><div class="val yw" id="invTodayPv">—</div></div>
         <div class="pvi" style="flex:1;max-width:200px" title="Оцінка вартості енергії розряду АКБ. Витрати заряджання та втрати не відняті."><div class="ico">💰</div><div class="lbl">Валова оцінка</div><div class="val" id="invDailySavings" style="color:#4ade80">—</div></div>
       </div>
