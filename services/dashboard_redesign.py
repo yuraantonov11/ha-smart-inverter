@@ -46,15 +46,20 @@ def _section(title: str, *cards: dict, wide: bool = False) -> dict:
     return result
 
 
-def _entities(title: str, rows: list[tuple[str, str]]) -> dict:
+def _entities(title: str | None, rows: list[tuple[str, str]]) -> dict:
     entities = [{"entity": entity, "name": name} for entity, name in rows if entity]
-    return {"type": "entities", "title": title, "show_header_toggle": False,
-            "entities": entities} if entities else {}
+    if not entities:
+        return {}
+    card = {"type": "entities", "show_header_toggle": False, "entities": entities}
+    if title:
+        card["title"] = title
+    return card
 
 
 def _link(title: str, path: str, icon: str = "mdi:arrow-right") -> dict:
     return {"type": "button", "name": title, "icon": icon,
-            "show_state": False, "tap_action": {
+            "show_icon": False, "show_name": True, "show_state": False,
+            "grid_options": {"columns": 12, "rows": 1}, "tap_action": {
                 "action": "navigate", "navigation_path": path,
             }}
 
@@ -294,7 +299,7 @@ def build_redesigned_dashboard(
             {"condition": "state", "entity": live_status, "state_not": "unavailable"},
             {"condition": "state", "entity": live_status, "state_not": "unknown"},
         ], "card": {"type": "vertical-stack", "cards": [
-            _entities("Показники інвертора · лише перегляд", live_rows),
+            _entities(None, live_rows),
             _freshness(live_status),
         ]}})
         live_cards.append({"type": "conditional", "conditions": [
@@ -302,9 +307,9 @@ def build_redesigned_dashboard(
                 {"condition": "state", "entity": live_status, "state": value}
                 for value in ("disabled", "unavailable", "unknown")
             ]},
-        ], "card": _entities("Показники інвертора · хмара", cloud_rows)})
+        ], "card": _entities(None, cloud_rows)})
     else:
-        live_cards.append(_entities("Показники інвертора · хмара", cloud_rows))
+        live_cards.append(_entities(None, cloud_rows))
     live_cards.append(_soc_note(entities))
     auto_cards = [_decision(entities), _link("Автоматика →", route("powmr-automation"), "mdi:robot")]
     overview_sections = [
@@ -358,8 +363,8 @@ def build_redesigned_dashboard(
         for key, label in [
             ("output_priority", "Живлення будинку"),
             ("charger_priority", "Джерело заряду"),
-            ("max_charging_current", "Загальний струм заряду, А"),
-            ("max_utility_charging_current", "Струм заряду від мережі, А"),
+            ("max_charging_current", "Загальний струм заряду"),
+            ("max_utility_charging_current", "Струм заряду від мережі"),
             ("grid_feed_in", "Віддача в мережу"),
         ] if entities.get(key)
     ]
@@ -400,7 +405,7 @@ def build_redesigned_dashboard(
         (live_status, "Стан читання Bluetooth"),
         (entities.get("ble_proxy", ""), "Bluetooth-проксі"),
     ]), _freshness(live_status) if live_status else {},
-        _markdown("**Керування:** хмарні дані. Bluetooth використовується для перегляду.")),
+        _markdown("**Керування:** хмарні дані. Bluetooth використовується для перегляду.") if not live_status else {}),
         _section("Налаштування", _link("Параметри інтеграції", "/config/integrations/integration/powmr_inverter", "mdi:cog")),
         _section("Батарея та обладнання", _entities("Поточні виміри · хмара", [
             (entities.get("battery_voltage", ""), "Напруга батареї"),

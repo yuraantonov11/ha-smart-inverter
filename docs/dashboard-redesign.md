@@ -18,15 +18,23 @@ Updates do not replace customized dashboards automatically. To request one
 migration, create `/config/powmr_dashboard_redesign.request` containing:
 
 ```json
-{"entry_id":"YOUR_CONFIG_ENTRY_ID","dashboard_path":"YOUR_BOUND_DASHBOARD_URL"}
+{"entry_id":"YOUR_CONFIG_ENTRY_ID","dashboard_path":"YOUR_DASHBOARD_URL"}
 ```
 
-The entry and dashboard binding must match exactly. On the next integration
-setup, the migration reads and saves through HA's live Lovelace API, backs up the
+The request must name the entry exactly. Normally its dashboard matches the
+stored binding. An explicitly requested legacy custom dashboard may differ from
+the stored sidecar binding only when every configured energy-flow card has
+registry-proven entity bindings exclusively owned by that entry. Foreign,
+mixed-owner, unregistered and unrelated flow bindings are refused, as is a
+dashboard claimed by another entry. This compatibility path does not change the
+entry's stored binding. On the next integration setup, the migration reads and
+saves through HA's live Lovelace API, backs up the
 current configuration and resource URLs under `/config/backups/smart_solar/`,
 verifies read-back, and removes the request only after success. A failed save or
 verification attempts to restore the original panel and resource URLs. See
-`powmr_dashboard_redesign.result.json` for the successful migration result.
+`powmr_dashboard_redesign.result.json` for the successful migration result,
+including the actual dashboard, preserved binding and whether legacy ownership
+was verified. A pending request by itself does not prove the setup hook ran.
 
 Every original integration view remains reachable as a detail subview; unrelated
 user views remain unchanged. An idempotent version marker preserves later user

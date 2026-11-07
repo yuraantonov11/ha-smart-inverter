@@ -120,9 +120,33 @@ class DashboardRedesignTests(unittest.TestCase):
         cloud_only = {k: v for k, v in ENTITIES.items() if not k.startswith("ble_")}
         output, _ = build(fixture(), cloud_only)
         text = repr(output["views"][0])
-        self.assertIn("Показники інвертора · хмара", text)
+        self.assertIn("Сонце · хмара", text)
         self.assertNotIn("Показники інвертора · лише перегляд", text)
         self.assertNotIn("'entity': ''", text)
+
+    def test_navigation_is_short_full_width_and_does_not_duplicate_overview_heading(self):
+        output, _ = build(fixture(), ENTITIES)
+        for card in module._cards(output):
+            if card.get("type") == "button" and card.get("tap_action", {}).get("action") == "navigate":
+                self.assertFalse(card["show_icon"])
+                self.assertTrue(card["show_name"])
+                self.assertEqual(card["grid_options"], {"columns": 12, "rows": 1})
+                self.assertIn("icon", card)
+        overview_entities = [card for card in module._cards(output["views"][0]["sections"][1])
+                             if card.get("type") == "entities"]
+        self.assertTrue(overview_entities)
+        self.assertTrue(all("title" not in card for card in overview_entities))
+
+    def test_system_connection_has_one_source_disclaimer_with_ble(self):
+        output, _ = build(fixture(), ENTITIES)
+        system = next(view for view in output["views"] if view["path"] == "powmr-system")
+        markdown = [card["content"] for card in module._cards(system["sections"][0])
+                    if card.get("type") == "markdown"]
+        self.assertEqual(len(markdown), 1)
+        self.assertIn("Джерело керування — хмара", markdown[0])
+        no_ble, _ = build(fixture(), {k: v for k, v in ENTITIES.items() if not k.startswith("ble_")})
+        system = next(view for view in no_ble["views"] if view["path"] == "powmr-system")
+        self.assertIn("Керування", repr(system["sections"][0]))
 
     def test_refuses_missing_animation_or_invalid_config_without_mutation(self):
         for config in ({}, {"views": []}, {"views": [{"path": "user-only"}]}):
@@ -178,6 +202,8 @@ class DashboardRedesignTests(unittest.TestCase):
         self.assertEqual(bound, {"select.renamed_output", "select.renamed_charge",
                                  "number.charge_limit", "switch.grid_export"})
         self.assertNotIn("switch.duplicate_sbu", repr(automation))
+        self.assertEqual(next(row["name"] for row in editors[0]["entities"]
+                              if row["entity"] == "number.charge_limit"), "Загальний струм заряду")
 
     def test_summary_templates_render_missing_data_without_raw_keys_or_false_success(self):
         from jinja2 import Environment

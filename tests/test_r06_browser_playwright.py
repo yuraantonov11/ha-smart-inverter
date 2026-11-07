@@ -1080,10 +1080,21 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
             r"\.on[a-z]+\s*=|\.animate\s*\("
         )
 
-        for name, source in (("k-flow-card", kflow), ("energy-flow-card", energy)):
-            self.assertNotRegex(source, lifecycle_api, f"unexpected lifecycle-owned resource in {name}")
-            self.assertNotIn("connectedCallback()", source)
-            self.assertNotIn("disconnectedCallback()", source)
+        self.assertNotRegex(energy, lifecycle_api, "unexpected lifecycle-owned resource in energy-flow-card")
+        self.assertNotIn("connectedCallback()", energy)
+        self.assertNotIn("disconnectedCallback()", energy)
+
+        # K-flow now owns one matchMedia change subscription so the existing
+        # native SVG animation respects the HA user's reduced-motion setting.
+        # It still owns no observer, animation timer or JS animation loop.
+        self.assertIn("connectedCallback()", kflow)
+        self.assertIn("disconnectedCallback()", kflow)
+        self.assertIn("(prefers-reduced-motion: reduce)", kflow)
+        self.assertRegex(kflow, r"\.addEventListener\?\.\('change',this\._onMotionChange\)")
+        self.assertRegex(kflow, r"\.removeEventListener\?\.\('change',this\._onMotionChange\)")
+        self.assertEqual(len(re.findall(r"\.addEventListener(?:\?\.)?\(", kflow)), 1)
+        self.assertEqual(len(re.findall(r"\.removeEventListener(?:\?\.)?\(", kflow)), 1)
+        self.assertNotRegex(kflow, re.compile(r"\b(?:new\s+(?:Resize|Mutation|Intersection)Observer|setTimeout|setInterval|requestAnimationFrame|cancelAnimationFrame)\s*\("))
 
         # The bundled editor is a distinct element, not part of KFlowCard's
         # lifecycle. Its listeners are attached to generated local controls;
@@ -1099,7 +1110,7 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
         self.assertIn("<animate attributeName=", kflow)
         self.assertIn("transition:width .4s,background .4s", kflow)
         self.assertIn("@keyframes svgPulseOrange", kflow)
-        self.assertNotIn("animation:", kflow)
+        self.assertNotRegex(kflow, r"animation\s*:(?!\s*none\b)")
 
         # Energy-flow owns only its shadow-DOM data/render state. Its pulse is
         # a browser-native CSS animation attached to each rendered flow line.
@@ -1120,6 +1131,46 @@ class TestR06BrowserCardLifecycle(unittest.TestCase):
         self.assertNotRegex(pv, re.compile(r"\b(?:addEventListener|setTimeout|setInterval|requestAnimationFrame)\s*\("))
         self.assertNotIn("animation:", pv)
         self.assertNotIn("<animate", pv)
+
+    def test_k_flow_reduced_motion_listener_is_released_on_real_reconnects(self) -> None:
+        page, errors = self._load_page("k-flow-card")
+        page.emulate_media(reduced_motion="reduce")
+        page.evaluate("""() => {
+          const nativeMatchMedia=window.matchMedia.bind(window);
+          window.__motionSubscriptions=[];
+          window.matchMedia=query=>{
+            const media=nativeMatchMedia(query);
+            if(query!=='(prefers-reduced-motion: reduce)') return media;
+            const record={active:new Set()};window.__motionSubscriptions.push(record);
+            const add=media.addEventListener.bind(media),remove=media.removeEventListener.bind(media);
+            media.addEventListener=(type,callback,...args)=>{
+              if(type==='change') record.active.add(callback);
+              return add(type,callback,...args);
+            };
+            media.removeEventListener=(type,callback,...args)=>{
+              if(type==='change') record.active.delete(callback);
+              return remove(type,callback,...args);
+            };
+            return media;
+          };
+          const card=document.createElement('k-flow-card');card.setConfig({});
+          window.__motionCard=card;document.body.appendChild(card);
+          window.__activeMotionListeners=()=>__motionSubscriptions.reduce((n,r)=>n+r.active.size,0);
+        }""")
+        self.assertEqual(page.evaluate("__activeMotionListeners()"), 1)
+        self.assertTrue(page.evaluate("__motionCard.shadowRoot.querySelector('svg').animationsPaused()"))
+        page.emulate_media(reduced_motion="no-preference")
+        page.wait_for_function("!__motionCard.shadowRoot.querySelector('svg').animationsPaused()")
+        for cycle in range(5):
+            page.evaluate("__motionCard.remove()")
+            self.assertEqual(page.evaluate("__activeMotionListeners()"), 0, f"listener leaked after removal {cycle}")
+            page.evaluate("document.body.appendChild(__motionCard)")
+            self.assertEqual(page.evaluate("__activeMotionListeners()"), 1, f"listener duplicated after reconnect {cycle}")
+        page.emulate_media(reduced_motion="reduce")
+        page.wait_for_function("__motionCard.shadowRoot.querySelector('svg').animationsPaused()")
+        page.evaluate("__motionCard.remove()")
+        self.assertEqual(page.evaluate("__activeMotionListeners()"), 0)
+        self.assertEqual(errors, [])
 
     def test_k_flow_current_preserves_missing_zero_and_charge_discharge_values(self) -> None:
         page, errors = self._load_page("k-flow-card")

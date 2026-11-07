@@ -246,8 +246,8 @@ class TestR09ResourceExtraction(unittest.IsolatedAsyncioTestCase):
                 f"being in lovelace_resources: {pc_calls}",
             )
 
-    async def test_all_five_pinned_skipped(self):
-        # Operator has pinned all 5 cards. The
+    async def test_all_bundled_cards_pinned_skipped(self):
+        # Operator has pinned all bundled cards. The
         # integration MUST NOT register any of them.
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
@@ -274,9 +274,10 @@ class TestR09ResourceExtraction(unittest.IsolatedAsyncioTestCase):
                             # outage scenario UI. The test
                             # pins the operator's
                             # lovelace resources for all
-                            # 6 cards; if more are
+                            # cards; if more are
                             # added, update this list.
                             "k-outage-scenarios-card.js",
+                            "smart-solar-controls-card.js",
                         ]
                     )
                 ],
@@ -290,7 +291,7 @@ class TestR09ResourceExtraction(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 captured, [],
                 f"no URL should be re-registered when operator "
-                f"pinned all 6: {captured}",
+                f"pinned all bundled cards: {captured}",
             )
 
 

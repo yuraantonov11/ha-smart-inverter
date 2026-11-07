@@ -56,7 +56,7 @@
       },
       "connection": {
         "title": "Connection",
-        "description": "Cloud request cadence is different from the age of measurements supplied by the manufacturer. Bluetooth is diagnostic only. Bluetooth fields show effective options/data/conf/marker values; unchanged fallback values remain in their existing source. A conf file or marker can keep Bluetooth enabled even when the options checkbox is off.",
+        "description": "More frequent cloud requests do not make the manufacturer’s measurements newer. Bluetooth is for viewing diagnostics only. The fields show the active Bluetooth configuration. If Bluetooth was enabled elsewhere, it can remain active when this checkbox is off. Remove that external setting to disable it.",
         "data": {
           "poll_interval": "Polling interval (seconds)",
           "ble_diagnostic": "Enable Bluetooth diagnostics",

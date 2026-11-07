@@ -32,7 +32,6 @@ views:
       heading: Показники інвертора
       heading_style: title
     - type: entities
-      title: Показники інвертора · хмара
       show_header_toggle: false
       entities:
       - entity: sensor.smart_solar_inverter_pv_power
@@ -74,7 +73,12 @@ views:
     - type: button
       name: Автоматика →
       icon: mdi:robot
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /powmr-energy/powmr-automation
@@ -84,17 +88,22 @@ views:
       heading: Сьогодні та завтра
       heading_style: title
     - type: entities
-      title: Підсумки
       show_header_toggle: false
       entities:
       - entity: sensor.smart_solar_inverter_daily_savings
         name: Валова оцінка сьогодні
       - entity: sensor.smart_solar_inverter_forecast_tomorrow
         name: Сонце завтра · прогноз
+      title: Підсумки
     - type: button
       name: Аналітика →
       icon: mdi:chart-line
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /powmr-energy/powmr-analytics
@@ -115,13 +124,13 @@ views:
       heading: Вартість
       heading_style: title
     - type: entities
-      title: Валова оцінка
       show_header_toggle: false
       entities:
       - entity: sensor.smart_solar_inverter_daily_savings
         name: Сьогодні
       - entity: sensor.smart_solar_inverter_monthly_savings
         name: За місяць
+      title: Валова оцінка
     - type: markdown
       content: Оцінка вартості енергії розряду батареї. Витрати заряджання та втрати
         не відняті.
@@ -133,7 +142,12 @@ views:
     - type: button
       name: Потужність, SOC та історія
       icon: mdi:chart-timeline-variant
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /powmr-energy/powmr-power
@@ -181,7 +195,12 @@ views:
     - type: button
       name: Налаштування батареї
       icon: mdi:battery-cog
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /config/integrations/integration/powmr_inverter
@@ -191,13 +210,13 @@ views:
       heading: Режим
       heading_style: title
     - type: entities
-      title: Автоматичне керування
       show_header_toggle: false
       entities:
       - entity: switch.smart_solar_inverter_hems_auto_mode
         name: Автоматичне керування
       - entity: select.smart_solar_inverter_smart_mode
         name: Стратегія
+      title: Автоматичне керування
   - type: grid
     cards:
     - type: heading
@@ -211,9 +230,9 @@ views:
       - entity: select.smart_solar_inverter_charger_priority
         name: Джерело заряду
       - entity: number.smart_solar_inverter_max_charging_current
-        name: Загальний струм заряду, А
+        name: Загальний струм заряду
       - entity: number.smart_solar_inverter_max_utility_charging_current
-        name: Струм заряду від мережі, А
+        name: Струм заряду від мережі
       - entity: switch.smart_solar_inverter_grid_feed_in
         name: Віддача в мережу
   - type: grid
@@ -224,7 +243,12 @@ views:
     - type: button
       name: Прогнози та їхня якість
       icon: mdi:weather-partly-cloudy
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /powmr-energy/powmr-forecasts
@@ -234,11 +258,11 @@ views:
       heading: Прогноз
       heading_style: title
     - type: entities
-      title: Сонячна генерація
       show_header_toggle: false
       entities:
       - entity: sensor.smart_solar_inverter_forecast_tomorrow
         name: Завтра
+      title: Сонячна генерація
 - title: Система
   path: powmr-system
   type: sections
@@ -260,7 +284,12 @@ views:
     - type: button
       name: Параметри інтеграції
       icon: mdi:cog
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /config/integrations/integration/powmr_inverter
@@ -270,7 +299,6 @@ views:
       heading: Батарея та обладнання
       heading_style: title
     - type: entities
-      title: Поточні виміри · хмара
       show_header_toggle: false
       entities:
       - entity: sensor.smart_solar_inverter_battery_voltage
@@ -279,6 +307,7 @@ views:
         name: Струм батареї
       - entity: sensor.smart_solar_inverter_grid_voltage
         name: Напруга мережі
+      title: Поточні виміри · хмара
   - type: grid
     cards:
     - type: heading
@@ -287,14 +316,24 @@ views:
     - type: button
       name: Потужність
       icon: mdi:information-outline
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /powmr-energy/powmr-power
     - type: button
       name: HEMS
       icon: mdi:information-outline
+      show_icon: false
+      show_name: true
       show_state: false
+      grid_options:
+        columns: 12
+        rows: 1
       tap_action:
         action: navigate
         navigation_path: /powmr-energy/powmr-hems
@@ -310,11 +349,11 @@ views:
       heading: Сонячна генерація
       heading_style: title
     - type: entities
-      title: Оновлений прогноз
       show_header_toggle: false
       entities:
       - entity: sensor.smart_solar_inverter_forecast_tomorrow
         name: Завтра
+      title: Оновлений прогноз
     - type: markdown
       content: Прогноз, не фактична генерація. Дата та дані моделі — у властивостях
         показника.

@@ -328,6 +328,50 @@ class R06BrowserAddedCoverage(unittest.TestCase):
                         self.assertTrue(shot.is_file() and shot.stat().st_size>0,str(shot))
                     page.context.close()
 
+    def test_k_flow_compact_hides_duplicate_totals_but_preserves_animated_scene(self) -> None:
+        page, errors = self._page(360)
+        page.evaluate(self._visual_setup("k-flow-card", LONG_TITLE),
+                      {"tag": "k-flow-card", "title": LONG_TITLE})
+        for compact in (False, True):
+            with self.subTest(compact=compact):
+                page.evaluate("""compact => {
+                  const c=window.__visualCard;
+                  c.setConfig({...c.config,compact,pv_max_power:3000,
+                    inverter_max_power:5000,grid_power_estimated:true,
+                    battery_power_estimated:true});
+                  c.hass={...c._hass,states:{...c._hass.states}};
+                  // A second telemetry update calls setDisplay('capacityBars',
+                  // true) again. Compact must still override the inline style.
+                  c.hass={...c._hass,states:{...c._hass.states}};
+                }""", compact)
+                state=page.evaluate("""() => {
+                  const r=window.__visualCard.shadowRoot;
+                  const display=selector=>getComputedStyle(r.querySelector(selector)).display;
+                  const svg=r.querySelector('#flowSvg');
+                  return {totals:display('.flow-totals'),bars:display('#capacityBars'),
+                    readings:display('.readings'),estimate:display('#estimateNote'),
+                    today:r.querySelector('#invTodayPv').textContent,
+                    savings:r.querySelector('#invDailySavings').textContent,
+                    animations:svg.querySelectorAll('animate,animateMotion,animateTransform').length,
+                    imagePaths:Array.from(svg.querySelectorAll('image'),e=>e.href.baseVal),
+                    svgHeight:svg.getBoundingClientRect().height};
+                }""")
+                for key in ("totals", "bars", "readings"):
+                    if compact:
+                        self.assertEqual(state[key], "none", state)
+                    else:
+                        self.assertNotEqual(state[key], "none", state)
+                self.assertNotEqual(state["estimate"], "none", state)
+                # Hidden display does not remove live-update nodes or values.
+                self.assertEqual(state["today"], "8.75 kWh", state)
+                self.assertEqual(state["savings"], "12.40 ₴", state)
+                self.assertGreater(state["animations"], 0, state)
+                self.assertGreater(state["svgHeight"], 0, state)
+                self.assertEqual({urlparse(path).path for path in state["imagePaths"]},
+                                 {f"/local/community/powmr-inverter/{name}.png"
+                                  for name in ("ev-charger-icon", "grid-icon", "home-icon")})
+        self.assertEqual(errors, [])
+
     def test_k_flow_icon_png_resources_are_served_and_loaded_by_svg(self) -> None:
         page,errors=self._page(360)
         setup_js=self._visual_setup("k-flow-card",LONG_TITLE)

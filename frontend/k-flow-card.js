@@ -1028,7 +1028,7 @@ class KFlowCard extends HTMLElement {
     );
 
     this.shadowRoot.innerHTML = `<style>
-      :host{display:block;min-width:0;font-family:var(--primary-font-family,Roboto,sans-serif)} .compact .readings,.compact .flow-totals,.compact .dv{display:none}.compact #flowSvg{max-height:520px}.ct{color:var(--secondary-text-color,#8b949e)}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}} @keyframes svgPulseOrange{0%,100%{filter:drop-shadow(0 0 5px #f39c4b)}50%{filter:drop-shadow(0 0 8px #f5b06a)}}
+      :host{display:block;min-width:0;font-family:var(--primary-font-family,Roboto,sans-serif)} .compact .readings,.compact .dv{display:none}.compact .flow-totals,.compact #capacityBars{display:none!important}.compact #flowSvg{max-height:520px}.ct{color:var(--secondary-text-color,#8b949e)}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}} @keyframes svgPulseOrange{0%,100%{filter:drop-shadow(0 0 5px #f39c4b)}50%{filter:drop-shadow(0 0 8px #f5b06a)}}
       .st{background:var(--secondary-background-color,#0d1117);border:1px solid var(--divider-color,#21262d);border-radius:8px;padding:7px 9px}
       .st .l{font-size:.48rem;color:#8b949e;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px}
       .st .v{font-size:.8rem;font-weight:600;color:var(--primary-text-color,#c9d1d9)}
