@@ -92,7 +92,7 @@ def execute(module, hass, entry):
 
 @pytest.mark.parametrize("requested", [None, {"entry_id": "other", "dashboard_path": "powmr-energy"},
                                       {"entry_id": "entry-a", "dashboard_path": "someone-elses-panel"}])
-def test_only_exact_entry_and_dashboard_can_apply(tmp_path, requested):
+def test_missing_request_wrong_entry_and_missing_dashboard_never_apply(tmp_path, requested):
     module = load_apply()
     hass, entry, panel, original, candidate = setup(tmp_path, requested)
     module.build_redesigned_dashboard = lambda *a, **k: pytest.fail("wrong owner must never build")
@@ -266,3 +266,71 @@ def test_already_content_hashed_resource_is_not_updated_again(tmp_path):
     assert resources.updates == []
     assert panel.config == candidate
     assert not (tmp_path / "powmr_dashboard_redesign.request").exists()
+
+
+def legacy_setup(tmp_path, flow_entities=None, other_entries=()):
+    hass, entry, panel, original, candidate = setup(tmp_path, VALID_REQUEST)
+    entry.options = {"lovelace_dashboard_url_path": "powmr-entry-sidecar"}
+    flow = original["views"][0]["cards"][0]
+    flow.update(flow_entities if flow_entities is not None else {"pv_total_power": "sensor.ours", "sun": "sun.sun"})
+    panel.original = copy.deepcopy(original)
+    panel.config = copy.deepcopy(original)
+    hass.config_entries = types.SimpleNamespace(async_entries=lambda domain: [entry, *other_entries])
+    return hass, entry, panel, original, candidate
+
+
+def test_explicit_owned_legacy_dashboard_can_apply_without_changing_binding(tmp_path):
+    module = load_apply()
+    hass, entry, panel, original, candidate = legacy_setup(tmp_path)
+    binding_before = copy.deepcopy(entry.options)
+    module.build_redesigned_dashboard = lambda *a, **k: (candidate, {"changed": True})
+    execute(module, hass, entry)
+    assert panel.saved == [candidate]
+    assert panel.loads == 2
+    assert entry.options == binding_before
+    assert not (tmp_path / "powmr_dashboard_redesign.request").exists()
+    result = json.loads((tmp_path / "powmr_dashboard_redesign.result.json").read_text(encoding="utf-8"))
+    assert result["legacy_dashboard_verified"] is True
+    assert result["dashboard_path"] == "powmr-energy"
+    assert result["binding_dashboard_path"] == "powmr-entry-sidecar"
+
+
+@pytest.mark.parametrize("bindings", [
+    {"pv_total_power": "sensor.foreign"},
+    {"pv_total_power": "sensor.ours", "battery_soc": "sensor.foreign"},
+    {"pv_total_power": "sensor.not_in_registry"},
+    {},
+])
+def test_legacy_foreign_unknown_or_unrelated_flow_is_refused(tmp_path, bindings):
+    module = load_apply()
+    hass, entry, panel, original, candidate = legacy_setup(tmp_path, bindings)
+    # Our sensor elsewhere is not proof that this entry owns the configured flow.
+    panel.config["views"][0]["cards"].append({"type": "tile", "entity": "sensor.ours"})
+    panel.original = copy.deepcopy(panel.config)
+    module.build_redesigned_dashboard = lambda *a, **k: pytest.fail("unowned flow must not migrate")
+    execute(module, hass, entry)
+    assert panel.saved == []
+    assert (tmp_path / "powmr_dashboard_redesign.request").exists()
+    assert entry.options["lovelace_dashboard_url_path"] == "powmr-entry-sidecar"
+
+
+def test_legacy_dashboard_claimed_by_other_entry_is_refused(tmp_path):
+    module = load_apply()
+    other = types.SimpleNamespace(entry_id="entry-b", options={"lovelace_dashboard_url_path": "powmr-energy"})
+    hass, entry, panel, original, candidate = legacy_setup(tmp_path, other_entries=[other])
+    module.build_redesigned_dashboard = lambda *a, **k: pytest.fail("other owner's dashboard must not migrate")
+    execute(module, hass, entry)
+    assert panel.saved == []
+    assert (tmp_path / "powmr_dashboard_redesign.request").exists()
+
+
+def test_legacy_owned_dashboard_still_rolls_back_on_failed_readback(tmp_path):
+    module = load_apply()
+    hass, entry, panel, original, candidate = legacy_setup(tmp_path)
+    panel.mismatch = True
+    module.build_redesigned_dashboard = lambda *a, **k: (candidate, {"changed": True})
+    execute(module, hass, entry)
+    assert panel.saved == [candidate, original]
+    assert panel.config == original
+    assert (tmp_path / "powmr_dashboard_redesign.request").exists()
+    assert entry.options["lovelace_dashboard_url_path"] == "powmr-entry-sidecar"

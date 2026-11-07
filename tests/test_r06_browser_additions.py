@@ -270,17 +270,29 @@ class R06BrowserAddedCoverage(unittest.TestCase):
                     elif tag=="power-history-card":
                         dom=page.evaluate("""() => {const labels=Array.from(__visualCard.querySelectorAll('svg text'))
                           .filter(e=>/^\\d{2}:\\d{2}$/.test(e.textContent.trim())).map(e=>{const b=e.getBBox();return {text:e.textContent.trim(),x:b.x,right:b.x+b.width}});
-                          const bars=Array.from(__visualCard.querySelectorAll('svg rect'));
+                          const svg=__visualCard.querySelector('svg'),vb=svg.viewBox.baseVal;
+                          const grid=svg.querySelector('line'),bars=Array.from(svg.querySelectorAll('rect'));
                           return {text:__visualCard.textContent,bars:bars.length,barPositions:bars.map(e=>Number(e.getAttribute('x'))),labels,
+                            barWidths:bars.map(e=>Number(e.getAttribute('width'))),viewBoxWidth:vb.width,
+                            plotLeft:Number(grid.getAttribute('x1')),plotRight:Number(grid.getAttribute('x2')),
                             data:bars.map(e=>e.querySelector('title')?.textContent.trim())};}""")
                         self.assertIn(LONG_TITLE,dom["text"]);self.assertIn("Source: sensor.visual_history",dom["text"]);self.assertIn("kW",dom["text"]);self.assertEqual(dom["bars"],12)
-                        expected_ticks=(["06:00","08:00","10:00","12:00","14:00","17:00"] if width==360
+                        expected_ticks=(["06:00","09:00","12:00","17:00"] if width==360
                                         else [f"{h:02}:00" for h in range(6,18)])
                         self.assertEqual([x["text"] for x in dom["labels"]],expected_ticks,dom["labels"])
                         self.assertEqual(dom["data"],[f"{h:02}:00: {v:.3f}" for h,v in zip(range(6,18),[.1,.3,.7,1.1,1.6,2.1,2.6,2.2,1.8,1.3,.9,.5])])
-                        self.assertEqual([round(x,5) for x in dom["barPositions"]],
-                                         [round(45+i*445/12,5) for i in range(12)],dom["barPositions"])
-                        self.assertTrue(all(x["x"]>=0 and x["right"]<=500 for x in dom["labels"]),f"clipped power-history time label(s): {dom['labels']}")
+                        # The plot uses the card's real width, rather than a
+                        # fixed 500-unit SVG scaled down on phones. Keep every
+                        # raw sample in its original slot on that actual axis.
+                        self.assertGreater(dom["plotRight"], dom["plotLeft"], dom)
+                        self.assertLessEqual(dom["plotRight"], dom["viewBoxWidth"], dom)
+                        slot=(dom["plotRight"]-dom["plotLeft"])/12
+                        for i,(position,bar_width) in enumerate(zip(dom["barPositions"],dom["barWidths"])):
+                            self.assertAlmostEqual(position,dom["plotLeft"]+i*slot,places=5,msg=str(dom))
+                            self.assertGreater(bar_width,0,dom)
+                            self.assertLessEqual(bar_width,slot,dom)
+                            self.assertLessEqual(position+bar_width,dom["plotRight"]+0.01,dom)
+                        self.assertTrue(all(x["x"]>=0 and x["right"]<=dom["viewBoxWidth"] for x in dom["labels"]),f"clipped power-history time label(s): {dom['labels']}")
                         self._assert_svg_text_layout(page,"power-history-card svg")
                     elif tag=="pv-comparison-card":
                         dom=page.evaluate("""() => ({title:__visualCard.querySelector('h2')?.textContent.trim(),values:Array.from(__visualCard.querySelectorAll('.stats .value'),e=>e.textContent.trim()),
@@ -288,7 +300,7 @@ class R06BrowserAddedCoverage(unittest.TestCase):
                           hourTicks:Array.from(__visualCard.querySelectorAll('svg text')).filter(e=>/^\\d{2}:00$/.test(e.textContent.trim())).map(e=>e.textContent.trim()),
                           yTicks:Array.from(__visualCard.querySelectorAll('svg text')).map(e=>e.textContent.trim()).filter(t=>/^\\d+$/.test(t))})""")
                         self.assertEqual(dom["title"],LONG_TITLE);self.assertIn("777,00 Вт",dom["values"]);self.assertIn("7,20 кВт·год",dom["values"]);self.assertEqual(dom["points"],26)
-                        self.assertEqual(dom["hourTicks"],[f"{h:02}:00" for h in range(0,25,3)] if width==360 else [f"{h:02}:00" for h in range(25)],dom)
+                        self.assertEqual(dom["hourTicks"],[f"{h:02}:00" for h in range(0,25,6)] if width==360 else [f"{h:02}:00" for h in range(0,25,2)],dom)
                         self.assertEqual(dom["yTicks"],["0","160","320","480","640","800"],dom)
                         self._assert_svg_text_layout(page,"pv-comparison-card svg")
                         legend_overlap=page.evaluate("""() => {const s=__visualCard.querySelector('svg').getBoundingClientRect();

@@ -44,60 +44,33 @@ views:
       - entity: binary_sensor.smart_solar_inverter_grid_available
         name: Мережа · хмара
     - type: markdown
-      content: '{% set reported = states(''sensor.smart_solar_inverter_battery_soc'')
-        | float(none) %}
-
-        {% set control = states(''sensor.smart_solar_inverter_battery_soc_corrected'')
-        | float(none) %}
-
-        {% if reported is not none and control is not none and reported != control
-        %}
-
-        **SOC різниться:** інвертор {{ reported | round(1) }}%, керування використовує
-        {{ control | round(1) }}%.
-
+      content: |-
+        {% set reported = states('sensor.smart_solar_inverter_battery_soc') | float(none) %}
+        {% set control = states('sensor.smart_solar_inverter_battery_soc_corrected') | float(none) %}
+        {% if reported is not none and control is not none and reported != control %}
+        **SOC різниться:** інвертор {{ reported | round(1) }}%, керування використовує {{ control | round(1) }}%.
         {% elif control is not none %}
-
         SOC керування: {{ control | round(1) }}%.
-
         {% else %}
-
         Ще немає показника SOC керування.
-
-        {% endif %}'
+        {% endif %}
   - type: grid
     cards:
     - type: heading
       heading: Автоматика зараз
       heading_style: title
     - type: markdown
-      content: '{% set mode = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''mode'') %}
+      content: |-
+        {% set mode = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'mode') %}
+        **Прогнозна допомога:** {{ {'Off':'Вимкнено', 'off':'Вимкнено', 'Shadow':'Спостереження', 'shadow':'Спостереження', 'Assist':'Допомога', 'assist':'Допомога'}.get(mode, 'Очікуємо дані') }}.
 
-        **Прогнозна допомога:** {{ {''Off'':''Вимкнено'', ''off'':''Вимкнено'', ''Shadow'':''Спостереження'',
-        ''shadow'':''Спостереження'', ''Assist'':''Допомога'', ''assist'':''Допомога''}.get(mode,
-        ''Очікуємо дані'') }}.
+        {% set applied = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'applied') %}
+        {% if applied is sameas true %}Рекомендацію прийнято HEMS.{% elif applied is sameas false %}Рекомендацію не застосовано.{% else %}Стан застосування ще не отримано.{% endif %}
 
+        {% set reason = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'execution_reason') %}
+        {{ {'battery_drives_load':'Батарея живить будинок — підзарядка не потрібна.', 'already_in_target':'Поточний заряд відповідає цілі.', 'evening_reserve_protection':'Зберігаємо вечірній резерв.', 'forecast_good_use_battery':'За прогнозом можна використовувати батарею.'}.get(reason, 'Причина та історія рішення — у подробицях автоматики.') }}
 
-        {% set applied = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''applied'') %}
-
-        {% if applied is sameas true %}Рекомендацію прийнято HEMS.{% elif applied
-        is sameas false %}Рекомендацію не застосовано.{% else %}Стан застосування
-        ще не отримано.{% endif %}
-
-
-        {% set reason = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''execution_reason'') %}
-
-        {{ {''battery_drives_load'':''Батарея живить будинок — підзарядка не потрібна.'',
-        ''already_in_target'':''Поточний заряд відповідає цілі.'', ''evening_reserve_protection'':''Зберігаємо
-        вечірній резерв.'', ''forecast_good_use_battery'':''За прогнозом можна використовувати
-        батарею.''}.get(reason, ''Причина та історія рішення — у подробицях автоматики.'')
-        }}
-
-
-        Поточні параметри не є підтвердженням виконання команди інвертором.'
+        Поточні параметри не є підтвердженням виконання команди інвертором.
     - type: button
       name: Автоматика →
       icon: mdi:robot
@@ -176,64 +149,35 @@ views:
       heading: Рішення та стан
       heading_style: title
     - type: markdown
-      content: '{% set mode = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''mode'') %}
+      content: |-
+        {% set mode = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'mode') %}
+        **Прогнозна допомога:** {{ {'Off':'Вимкнено', 'off':'Вимкнено', 'Shadow':'Спостереження', 'shadow':'Спостереження', 'Assist':'Допомога', 'assist':'Допомога'}.get(mode, 'Очікуємо дані') }}.
 
-        **Прогнозна допомога:** {{ {''Off'':''Вимкнено'', ''off'':''Вимкнено'', ''Shadow'':''Спостереження'',
-        ''shadow'':''Спостереження'', ''Assist'':''Допомога'', ''assist'':''Допомога''}.get(mode,
-        ''Очікуємо дані'') }}.
+        {% set applied = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'applied') %}
+        {% if applied is sameas true %}Рекомендацію прийнято HEMS.{% elif applied is sameas false %}Рекомендацію не застосовано.{% else %}Стан застосування ще не отримано.{% endif %}
 
+        {% set reason = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'execution_reason') %}
+        {{ {'battery_drives_load':'Батарея живить будинок — підзарядка не потрібна.', 'already_in_target':'Поточний заряд відповідає цілі.', 'evening_reserve_protection':'Зберігаємо вечірній резерв.', 'forecast_good_use_battery':'За прогнозом можна використовувати батарею.'}.get(reason, 'Причина та історія рішення — у подробицях автоматики.') }}
 
-        {% set applied = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''applied'') %}
-
-        {% if applied is sameas true %}Рекомендацію прийнято HEMS.{% elif applied
-        is sameas false %}Рекомендацію не застосовано.{% else %}Стан застосування
-        ще не отримано.{% endif %}
-
-
-        {% set reason = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''execution_reason'') %}
-
-        {{ {''battery_drives_load'':''Батарея живить будинок — підзарядка не потрібна.'',
-        ''already_in_target'':''Поточний заряд відповідає цілі.'', ''evening_reserve_protection'':''Зберігаємо
-        вечірній резерв.'', ''forecast_good_use_battery'':''За прогнозом можна використовувати
-        батарею.''}.get(reason, ''Причина та історія рішення — у подробицях автоматики.'')
-        }}
-
-
-        Поточні параметри не є підтвердженням виконання команди інвертором.'
+        Поточні параметри не є підтвердженням виконання команди інвертором.
   - type: grid
     cards:
     - type: heading
       heading: Готовність прогнозного керування
       heading_style: title
     - type: markdown
-      content: '{% set ready = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''readiness'') %}
-
-        {% set limits = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''battery_limits_known'') %}
-
+      content: |-
+        {% set ready = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'readiness') %}
+        {% set limits = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'battery_limits_known') %}
         {% if ready is sameas true %}
-
         **Прогнозне керування готове.**
-
         {% elif limits is sameas false %}
-
-        **Потрібні обмеження батареї.** Підтвердьте допустимі потужності заряджання
-        й розряду в налаштуваннях.
-
+        **Потрібні обмеження батареї.** Підтвердьте допустимі потужності заряджання й розряду в налаштуваннях.
         {% elif ready is sameas false %}
-
-        **Поки що лише прогноз.** Очікуємо достатньої якості даних та завершених пар
-        прогноз–факт.
-
+        **Поки що лише прогноз.** Очікуємо достатньої якості даних та завершених пар прогноз–факт.
         {% else %}
-
         Очікуємо стану готовності прогнозного керування.
-
-        {% endif %}'
+        {% endif %}
     - type: button
       name: Налаштування батареї
       icon: mdi:battery-cog
@@ -380,77 +324,44 @@ views:
       heading: Споживання
       heading_style: title
     - type: markdown
-      content: '{% set d = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''load_forecast'') or {} %}
-
-        {% if d.get(''hourly_w'') %}
-
-        **{{ d.target_date }}:** {{ ''%.2f'' | format((d.hourly_w | sum) / 1000) }}
-        кВт·год.
-
-        {% if d.get(''daily_error_range_kwh'') %}
-
-        Діапазон за минулими помилками: {{ ''%.2f'' | format(d.daily_error_range_kwh[0])
-        }}–{{ ''%.2f'' | format(d.daily_error_range_kwh[1]) }} кВт·год.
-
+      content: |-
+        {% set d = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'load_forecast') or {} %}
+        {% if d.get('hourly_w') %}
+        **{{ d.target_date }}:** {{ '%.2f' | format((d.hourly_w | sum) / 1000) }} кВт·год.
+        {% if d.get('daily_error_range_kwh') %}
+        Діапазон за минулими помилками: {{ '%.2f' | format(d.daily_error_range_kwh[0]) }}–{{ '%.2f' | format(d.daily_error_range_kwh[1]) }} кВт·год.
         {% endif %}
-
         {% else %}
-
         Ще немає достатньої історії завершених виміряних діб.
-
+        {% endif %}
+        {% set w = d.get('validation_windows', {}).get('30', {}) %}
+        {% if w.get('samples', 0) > 0 %}
+        Перевірка на історії: {{ w.samples }} діб, середня добова помилка {{ w.daily_mae_kwh }} кВт·год.
         {% endif %}
 
-        {% set w = d.get(''validation_windows'', {}).get(''30'', {}) %}
-
-        {% if w.get(''samples'', 0) > 0 %}
-
-        Перевірка на історії: {{ w.samples }} діб, середня добова помилка {{ w.daily_mae_kwh
-        }} кВт·год.
-
-        {% endif %}
-
-
-        Історична перевірка — окрема оцінка, не журнал раніше виданих прогнозів.'
+        Історична перевірка — окрема оцінка, не журнал раніше виданих прогнозів.
   - type: grid
     cards:
     - type: heading
       heading: Якість сонячного прогнозу
       heading_style: title
     - type: markdown
-      content: '{% set pairs = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''real_pairs'') | int(0) %}
-
-        {% set c = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''forecast_calibration'') or {} %}
-
+      content: |-
+        {% set pairs = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'real_pairs') | int(0) %}
+        {% set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'forecast_calibration') or {} %}
         {% if pairs == 0 %}
-
-        **Точність поточної моделі ще не виміряна.** Очікуємо завершених порівнюваних
-        діб.
-
+        **Точність поточної моделі ще не виміряна.** Очікуємо завершених порівнюваних діб.
         {% else %}
-
         Завершених пар поточної моделі: **{{ pairs }}**.
-
         {% endif %}
-
-        {% for days in [''7'', ''30''] %}
-
-        {% set w = c.get(''completed_windows'', {}).get(days, {}) %}
-
-        {% if w.get(''samples'', 0) > 0 %}
-
-        За {{ days }} днів: {{ w.samples }} діб; середня абсолютна помилка **{{ w.mae_kwh
-        }} кВт·год/добу**.
-
+        {% for days in ['7', '30'] %}
+        {% set w = c.get('completed_windows', {}).get(days, {}) %}
+        {% if w.get('samples', 0) > 0 %}
+        За {{ days }} днів: {{ w.samples }} діб; середня абсолютна помилка **{{ w.mae_kwh }} кВт·год/добу**.
         {% endif %}
-
         {% endfor %}
 
-
-        Якість вимірюється за зафіксованими прогнозами та фактом після завершення
-        доби. Внутрішня впевненість не є відсотком точності.'
+        Якість вимірюється за зафіксованими прогнозами та фактом після завершення доби. Внутрішня впевненість не є відсотком точності.
   - type: grid
     cards:
     - type: heading
@@ -484,11 +395,9 @@ views:
   - type: grid
     cards:
     - type: markdown
-      content: '# Smart Solar Inverter
-
+      content: |
+        # Smart Solar Inverter
         Живий потік потужності, стан мережі та батареї в одному місці.
-
-        '
     - type: tile
       entity: binary_sensor.smart_solar_inverter_grid_available
       name: Стан мережі
@@ -688,109 +597,109 @@ views:
     cards:
     - type: markdown
       title: AI · рекомендація та виконання
-      content: "{%- set STATE = 'sensor.smart_solar_inverter_predictive_decision_state'\
-        \ -%}\n{%- set SELECT = 'select.smart_solar_inverter_predictive_target_soc'\
-        \ -%}\n{%- set mode = state_attr(STATE, 'mode') -%}\n{%- set confidence =\
-        \ state_attr(STATE, 'confidence') -%}\n{%- set applied = state_attr(STATE,\
-        \ 'applied') -%}\n{%- set reason = state_attr(STATE, 'reason') -%}\n{%- set\
-        \ execution_reason = state_attr(STATE, 'execution_reason') -%}\n{%- set samples\
-        \ = state_attr(STATE, 'samples') -%}\n{%- set pause_until = state_attr(STATE,\
-        \ 'override_pending_until') -%}\n{%- set target_soc_attr = state_attr(SELECT,\
-        \ 'target_soc') -%}\n{%- set MODE_LABELS = {'Off': 'Вимкнено', 'Shadow': 'Спостереження',\
-        \ 'Assist': 'Підтримка'} -%}\n{%- set APPLIED_LABELS = {true: 'AI рекомендація\
-        \ прийнята HEMS', false: 'Рекомендацію AI не застосовано'} -%}\n{%- set REASON_LABELS\
-        \ = {\n  'already_in_target': 'Уже в цілі — зміни не потрібні',\n  'battery_drives_load':\
-        \ 'Батарея живить навантаження — підзарядка не потрібна',\n  'day_pv_low':\
-        \ 'PV нижче споживання — берегти заряд',\n  'hysteresis_recovery': 'Відновлення\
-        \ після паузи',\n  'night_window_usb': 'Нічна USB-стратегія',\n  'critical_recovery':\
-        \ 'Критичний SOC — відновити заряд',\n  'surplus_enter_sbu': 'Надлишок PV\
-        \ — перейти в SBU',\n  'reserve_soc_protection': 'SOC нижче резерву — захист',\n\
-        \  'evening_reserve_protection': 'Вечірній резерв',\n  'emergency_low_soc_daytime':\
-        \ 'Аварійно низький SOC удень',\n  'storm_mode': 'Штормовий режим — берегти\
-        \ заряд',\n  'predictive_assist_evening': 'Підготувати SOC до вечора',\n \
-        \ 'no_hint': 'Планувальник ще не сформував рекомендацію',\n  'hems_auto_off':\
-        \ 'HEMS авто-режим вимкнено',\n  'unknown_mode': 'Невідомий режим',\n  'invalid_telemetry':\
-        \ 'Невалідні дані телеметрії',\n  'soc_unknown': 'SOC невідомий — планувальник\
-        \ утримується',\n  'day_default': 'Стандартна денна стратегія',\n  'arbitrage_night':\
-        \ 'Арбітраж вночі',\n  'arbitrage_day_sbu': 'Арбітраж удень (SBU)',\n  'arbitrage_day_usb':\
-        \ 'Арбітраж удень (USB)',\n  'forecast_good_use_battery': 'Прогноз сприятливий\
-        \ — використати батарею',\n  'circuit_breaker': 'Захисне блокування HEMS',\n\
-        \  'reserve_floor': 'SOC на резервній межі',\n  'dwell_lock': 'Утримання поточного\
-        \ режиму — мінімальний інтервал між змінами не минув',\n} -%}\n{%- macro fmt_pct(value)\
-        \ -%}\n  {%- if value is none -%}Немає даних\n  {%- else -%}{{ '{:.0f}'.format((value\
-        \ | float) * 100) }} %\n  {%- endif -%}\n{%- endmacro -%}\n{%- macro short_reason(value)\
-        \ -%}\n  {%- if value is none -%}Немає даних\n  {%- elif value in REASON_LABELS\
-        \ -%}{{ REASON_LABELS[value] }}\n  {%- else -%}\n    {%- set raw = (value\
-        \ | string) -%}\n    {%- set stripped = raw | regex_replace('^\\\\[ML\\\\\
-        ]\\\\s*', '') -%}\n    {%- set head = stripped.split(':', 1)[0].strip() if\
-        \ ':' in stripped else stripped.strip() -%}\n    {{ REASON_LABELS.get(head,\
-        \ 'Невідомий reason') }}\n  {%- endif -%}\n{%- endmacro -%}\n\n**Режим AI:**\
-        \ {{ MODE_LABELS.get(mode, 'Невідомо') }}\n\n**Впевненість:** {{ fmt_pct(confidence)\
-        \ }}\n\n**Застосування:** {{ APPLIED_LABELS.get(applied, 'Немає даних') }}\n\
-        \n**Причина рекомендації:** {{ short_reason(reason) }}\n\n**Причина виконання:**\
-        \ {{ short_reason(execution_reason) }}\n\n**Пари факт ↔ прогноз:** {% if samples\
-        \ is none %}Немає даних{% else %}{{ samples }}{% endif %}\n\n**Ручна пауза:**\
-        \ {{ ('Активна до ' ~ pause_until) if pause_until else 'Пауза не активна'\
-        \ }}\n\n{%- set target_soc_attr_rec = state_attr(SELECT, 'target_soc') -%}\n\
-        {%- set has_manual_rec = state_attr(SELECT, 'has_manual_target') -%}\n**Ручна\
-        \ ціль SOC:** {% if has_manual_rec is true and target_soc_attr_rec is number\
-        \ %}{{ target_soc_attr_rec | int }} % · ручну ціль задано · HEMS на паузі\
-        \ 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.{%\
-        \ elif has_manual_rec is sameas false %}Автоматично — ручну ціль не задано.\
-        \ Натисни кнопку «Задати ручну ціль SOC», щоб тимчасово скоригувати рекомендацію.{%\
-        \ elif has_manual_rec is none %}Контрол ще не завантажився — зачекай першого\
-        \ циклу.{% else %}Ручна ціль: {{ states(SELECT) }} % · HEMS на паузі 30 хв.\
-        \ Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.{%\
-        \ endif %}\n\n**Діагностика машинного коду:**\n{%- if mode is not none %}`mode\
-        \ = \"{{ mode }}\"`{% endif %}\n{%- if confidence is not none %}`confidence\
-        \ = {{ confidence }}`{% endif %}\n{%- if applied is not none %}`applied =\
-        \ {{ applied | string | lower }}`{% endif %}\n{%- if reason is not none %}`reason\
-        \ = \"{{ reason }}\"`{% endif %}\n{%- if execution_reason is not none %}`execution_reason\
-        \ = \"{{ execution_reason }}\"`{% endif %}\n{%- if samples is not none %}`samples\
-        \ = {{ samples }}`{% endif %}\n{%- if pause_until is not none %}`override_pending_until\
-        \ = \"{{ pause_until }}\"`{% endif %}\n{%- if target_soc_attr is not none\
-        \ %}`select.target_soc = {{ target_soc_attr }}`{% else %}`select.target_soc\
-        \ = null`{% endif %}\n\n_AI лише рекомендує; HEMS вирішує, чи застосувати.\
-        \ «Застосовано» означає прийняття AI-рекомендації HEMS, а не фізичну дію інвертора._\n"
+      content: |
+        {%- set STATE = 'sensor.smart_solar_inverter_predictive_decision_state' -%}
+        {%- set SELECT = 'select.smart_solar_inverter_predictive_target_soc' -%}
+        {%- set mode = state_attr(STATE, 'mode') -%}
+        {%- set confidence = state_attr(STATE, 'confidence') -%}
+        {%- set applied = state_attr(STATE, 'applied') -%}
+        {%- set reason = state_attr(STATE, 'reason') -%}
+        {%- set execution_reason = state_attr(STATE, 'execution_reason') -%}
+        {%- set samples = state_attr(STATE, 'samples') -%}
+        {%- set pause_until = state_attr(STATE, 'override_pending_until') -%}
+        {%- set target_soc_attr = state_attr(SELECT, 'target_soc') -%}
+        {%- set MODE_LABELS = {'Off': 'Вимкнено', 'Shadow': 'Спостереження', 'Assist': 'Підтримка'} -%}
+        {%- set APPLIED_LABELS = {true: 'AI рекомендація прийнята HEMS', false: 'Рекомендацію AI не застосовано'} -%}
+        {%- set REASON_LABELS = {
+          'already_in_target': 'Уже в цілі — зміни не потрібні',
+          'battery_drives_load': 'Батарея живить навантаження — підзарядка не потрібна',
+          'day_pv_low': 'PV нижче споживання — берегти заряд',
+          'hysteresis_recovery': 'Відновлення після паузи',
+          'night_window_usb': 'Нічна USB-стратегія',
+          'critical_recovery': 'Критичний SOC — відновити заряд',
+          'surplus_enter_sbu': 'Надлишок PV — перейти в SBU',
+          'reserve_soc_protection': 'SOC нижче резерву — захист',
+          'evening_reserve_protection': 'Вечірній резерв',
+          'emergency_low_soc_daytime': 'Аварійно низький SOC удень',
+          'storm_mode': 'Штормовий режим — берегти заряд',
+          'predictive_assist_evening': 'Підготувати SOC до вечора',
+          'no_hint': 'Планувальник ще не сформував рекомендацію',
+          'hems_auto_off': 'HEMS авто-режим вимкнено',
+          'unknown_mode': 'Невідомий режим',
+          'invalid_telemetry': 'Невалідні дані телеметрії',
+          'soc_unknown': 'SOC невідомий — планувальник утримується',
+          'day_default': 'Стандартна денна стратегія',
+          'arbitrage_night': 'Арбітраж вночі',
+          'arbitrage_day_sbu': 'Арбітраж удень (SBU)',
+          'arbitrage_day_usb': 'Арбітраж удень (USB)',
+          'forecast_good_use_battery': 'Прогноз сприятливий — використати батарею',
+          'circuit_breaker': 'Захисне блокування HEMS',
+          'reserve_floor': 'SOC на резервній межі',
+          'dwell_lock': 'Утримання поточного режиму — мінімальний інтервал між змінами не минув',
+        } -%}
+        {%- macro fmt_pct(value) -%}
+          {%- if value is none -%}Немає даних
+          {%- else -%}{{ '{:.0f}'.format((value | float) * 100) }} %
+          {%- endif -%}
+        {%- endmacro -%}
+        {%- macro short_reason(value) -%}
+          {%- if value is none -%}Немає даних
+          {%- elif value in REASON_LABELS -%}{{ REASON_LABELS[value] }}
+          {%- else -%}
+            {%- set raw = (value | string) -%}
+            {%- set stripped = raw | regex_replace('^\\[ML\\]\\s*', '') -%}
+            {%- set head = stripped.split(':', 1)[0].strip() if ':' in stripped else stripped.strip() -%}
+            {{ REASON_LABELS.get(head, 'Невідомий reason') }}
+          {%- endif -%}
+        {%- endmacro -%}
+
+        **Режим AI:** {{ MODE_LABELS.get(mode, 'Невідомо') }}
+
+        **Впевненість:** {{ fmt_pct(confidence) }}
+
+        **Застосування:** {{ APPLIED_LABELS.get(applied, 'Немає даних') }}
+
+        **Причина рекомендації:** {{ short_reason(reason) }}
+
+        **Причина виконання:** {{ short_reason(execution_reason) }}
+
+        **Пари факт ↔ прогноз:** {% if samples is none %}Немає даних{% else %}{{ samples }}{% endif %}
+
+        **Ручна пауза:** {{ ('Активна до ' ~ pause_until) if pause_until else 'Пауза не активна' }}
+
+        {%- set target_soc_attr_rec = state_attr(SELECT, 'target_soc') -%}
+        {%- set has_manual_rec = state_attr(SELECT, 'has_manual_target') -%}
+        **Ручна ціль SOC:** {% if has_manual_rec is true and target_soc_attr_rec is number %}{{ target_soc_attr_rec | int }} % · ручну ціль задано · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.{% elif has_manual_rec is sameas false %}Автоматично — ручну ціль не задано. Натисни кнопку «Задати ручну ціль SOC», щоб тимчасово скоригувати рекомендацію.{% elif has_manual_rec is none %}Контрол ще не завантажився — зачекай першого циклу.{% else %}Ручна ціль: {{ states(SELECT) }} % · HEMS на паузі 30 хв. Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.{% endif %}
+
+        **Діагностика машинного коду:**
+        {%- if mode is not none %}`mode = "{{ mode }}"`{% endif %}
+        {%- if confidence is not none %}`confidence = {{ confidence }}`{% endif %}
+        {%- if applied is not none %}`applied = {{ applied | string | lower }}`{% endif %}
+        {%- if reason is not none %}`reason = "{{ reason }}"`{% endif %}
+        {%- if execution_reason is not none %}`execution_reason = "{{ execution_reason }}"`{% endif %}
+        {%- if samples is not none %}`samples = {{ samples }}`{% endif %}
+        {%- if pause_until is not none %}`override_pending_until = "{{ pause_until }}"`{% endif %}
+        {%- if target_soc_attr is not none %}`select.target_soc = {{ target_soc_attr }}`{% else %}`select.target_soc = null`{% endif %}
+
+        _AI лише рекомендує; HEMS вирішує, чи застосувати. «Застосовано» означає прийняття AI-рекомендації HEMS, а не фізичну дію інвертора._
     - type: markdown
       title: AI · SOC-стан
-      content: '{%- set SELECT = ''select.smart_solar_inverter_predictive_target_soc''
-        -%}
-
-        {%- set target_soc_attr = state_attr(SELECT, ''target_soc'') -%}
-
-        {%- set has_manual = state_attr(SELECT, ''has_manual_target'') -%}
-
+      content: |
+        {%- set SELECT = 'select.smart_solar_inverter_predictive_target_soc' -%}
+        {%- set target_soc_attr = state_attr(SELECT, 'target_soc') -%}
+        {%- set has_manual = state_attr(SELECT, 'has_manual_target') -%}
         {%- set raw_target = states(SELECT) -%}
-
         {%- set target_str = (raw_target | string | trim) -%}
 
+        **Стан SOC-контролу:** {% if has_manual is true and target_soc_attr is number %}{{ target_soc_attr | int }} % · ручну ціль задано · HEMS на паузі 30 хв.{% elif has_manual is sameas false %}Автоматично — ручну ціль не задано. Планувальник сам обирає ціль. Обери 20–100 у more-info, щоб тимчасово скоригувати рекомендацію.{% elif has_manual is none %}Контрол ще не завантажився — зачекай першого циклу.{% else %}Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв.{% endif %}
 
-        **Стан SOC-контролу:** {% if has_manual is true and target_soc_attr is number
-        %}{{ target_soc_attr | int }} % · ручну ціль задано · HEMS на паузі 30 хв.{%
-        elif has_manual is sameas false %}Автоматично — ручну ціль не задано. Планувальник
-        сам обирає ціль. Обери 20–100 у more-info, щоб тимчасово скоригувати рекомендацію.{%
-        elif has_manual is none %}Контрол ще не завантажився — зачекай першого циклу.{%
-        else %}Ручна ціль: {{ target_str }} % · HEMS на паузі 30 хв.{% endif %}
-
-
-        Обери значення 20–100 у more-info, щоб тимчасово скоригувати рекомендацію
-        (HEMS на паузі 30 хв). Скинути ручну ціль — схвали поточну AI-рекомендацію
-        або скасуй паузу.
-
+        Обери значення 20–100 у more-info, щоб тимчасово скоригувати рекомендацію (HEMS на паузі 30 хв). Скинути ручну ціль — схвали поточну AI-рекомендацію або скасуй паузу.
 
         {%- if has_manual is true or target_soc_attr is number %}
-
-        **Діагностика:** `target_soc = {{ target_soc_attr }}`, `has_manual_target
-        = {{ (has_manual | default(false)) | string | lower }}`.
-
+        **Діагностика:** `target_soc = {{ target_soc_attr }}`, `has_manual_target = {{ (has_manual | default(false)) | string | lower }}`.
         {%- else %}
-
         **Діагностика:** `target_soc = null`, `has_manual_target = false`.
-
         {%- endif %}
-
-        '
     - type: button
       name: Задати ручну ціль SOC
       icon: mdi:battery-edit
@@ -801,263 +710,221 @@ views:
         entity: select.smart_solar_inverter_predictive_target_soc
     - type: markdown
       title: AI · прогноз споживання
-      content: '{% set d = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''load_forecast'') or {} %}
-
-        {% set c = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''forecast_calibration'') or {} %}
-
+      content: |
+        {% set d = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'load_forecast') or {} %}
+        {% set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'forecast_calibration') or {} %}
         {% if d %}
+        **Модель споживання:** {{ 'Профіль останніх тижнів' if d.get('candidate_selected') else 'Чинний погодинний профіль' }}.
 
-        **Модель споживання:** {{ ''Профіль останніх тижнів'' if d.get(''candidate_selected'')
-        else ''Чинний погодинний профіль'' }}.
-
-
-        **Перевірено на {{ d.get(''validation_days'', 0) }} завершених добах.** Кожен
-        тестовий день прогнозувався лише за попередніми днями.
-
-        {% if d.get(''candidate_mae_w'') is not none %}
-
-        Середня погодинна помилка: нова модель **{{ d.candidate_mae_w }} Вт**, чинна
-        **{{ d.legacy_mae_w }} Вт**, остання завершена доба **{{ d.yesterday_mae_w
-        }} Вт**.
-
+        **Перевірено на {{ d.get('validation_days', 0) }} завершених добах.** Кожен тестовий день прогнозувався лише за попередніми днями.
+        {% if d.get('candidate_mae_w') is not none %}
+        Середня погодинна помилка: нова модель **{{ d.candidate_mae_w }} Вт**, чинна **{{ d.legacy_mae_w }} Вт**, остання завершена доба **{{ d.yesterday_mae_w }} Вт**.
         {% endif %}
-
-        {% if d.get(''selection_reason'') == ''insufficient_test_days'' %}
-
+        {% if d.get('selection_reason') == 'insufficient_test_days' %}
         Для вибору нової моделі потрібно щонайменше 7 тестових діб після 7 діб історії.
-
-        {% elif not d.get(''candidate_selected'') %}
-
-        Нова модель поки не показала достатнього покращення; використовується чинний
-        профіль.
-
+        {% elif not d.get('candidate_selected') %}
+        Нова модель поки не показала достатнього покращення; використовується чинний профіль.
         {% endif %}
-
-        {% if d.get(''hourly_w'') %}
-
-        **Споживання на {{ d.target_date }}:** {{ ''%.2f'' | format((d.hourly_w |
-        sum) / 1000) }} кВт·год.
-
-        {% if d.get(''daily_error_range_kwh'') %}
-
-        Діапазон за минулими помилками: **{{ ''%.2f'' | format(d.daily_error_range_kwh[0])
-        }}–{{ ''%.2f'' | format(d.daily_error_range_kwh[1]) }} кВт·год**.
-
+        {% if d.get('hourly_w') %}
+        **Споживання на {{ d.target_date }}:** {{ '%.2f' | format((d.hourly_w | sum) / 1000) }} кВт·год.
+        {% if d.get('daily_error_range_kwh') %}
+        Діапазон за минулими помилками: **{{ '%.2f' | format(d.daily_error_range_kwh[0]) }}–{{ '%.2f' | format(d.daily_error_range_kwh[1]) }} кВт·год**.
         {% endif %}
-
         {% else %}
-
         Ще немає достатньої історії завершених виміряних діб.
-
         {% endif %}
-
         {% else %}
-
         Очікуємо першого розрахунку прогнозу споживання.
-
         {% endif %}
-
 
         **Сонячний прогноз · очікувані доби**
-
-        {% for p in c.get(''pending'', []) %}
-
-        {% set r = p.get(''error_range'', {}) %}
-
+        {% for p in c.get('pending', []) %}
+        {% set r = p.get('error_range', {}) %}
         {{ p.date }}: **{{ p.forecast_kwh }} кВт·год**.
-
-        {% if r.get(''status'') == ''available'' %}
-
+        {% if r.get('status') == 'available' %}
         Діапазон за минулими помилками: {{ r.lower_kwh }}–{{ r.upper_kwh }} кВт·год.
-
         {% else %}
-
-        Діапазон ще не оцінений: {{ r.get(''samples'', 0) }}/7 порівнюваних завершених
-        прогнозів на момент видачі.
-
+        Діапазон ще не оцінений: {{ r.get('samples', 0) }}/7 порівнюваних завершених прогнозів на момент видачі.
         {% endif %}
-
         {% endfor %}
 
-
-        Діапазони описують минулі помилки; вони не гарантують майбутню точність. Допуск
-        автоматичного керування перевіряється окремо.
-
+        Діапазони описують минулі помилки; вони не гарантують майбутню точність. Допуск автоматичного керування перевіряється окремо.
 
         **Сонячна генерація · прогноз на наступну добу і факт**
-
-        {% for days in [''7'', ''30''] %}
-
-        {% set w = c.get(''completed_windows'', {}).get(days, {}) %}
-
-        {% if w.get(''samples'', 0) > 0 %}
-
-        За {{ days }} днів: {{ w.samples }} діб, середня абсолютна помилка {{ w.mae_kwh
-        }} кВт·год/добу.
-
+        {% for days in ['7', '30'] %}
+        {% set w = c.get('completed_windows', {}).get(days, {}) %}
+        {% if w.get('samples', 0) > 0 %}
+        За {{ days }} днів: {{ w.samples }} діб, середня абсолютна помилка {{ w.mae_kwh }} кВт·год/добу.
         {% else %}
-
         За {{ days }} днів: ще немає порівнюваних завершених діб.
-
         {% endif %}
-
         {% endfor %}
-
 
         **Споживання · перевірка на історії**
-
-        {% for days in [''7'', ''30''] %}
-
-        {% set w = d.get(''validation_windows'', {}).get(days, {}) %}
-
-        {% if w.get(''samples'', 0) > 0 %}
-
-        За {{ days }} днів: {{ w.samples }} діб, середня добова помилка {{ w.daily_mae_kwh
-        }} кВт·год.
-
+        {% for days in ['7', '30'] %}
+        {% set w = d.get('validation_windows', {}).get(days, {}) %}
+        {% if w.get('samples', 0) > 0 %}
+        За {{ days }} днів: {{ w.samples }} діб, середня добова помилка {{ w.daily_mae_kwh }} кВт·год.
         {% else %}
-
         За {{ days }} днів: недостатньо даних.
-
         {% endif %}
-
         {% endfor %}
-
-        Це відтворення моделі на історії, не журнал раніше виданих прогнозів. Максимум
-        28 тестових діб.
-
+        Це відтворення моделі на історії, не журнал раніше виданих прогнозів. Максимум 28 тестових діб.
 
         **Автономність · спостереження**
-
-        {% set o = state_attr(''sensor.smart_solar_inverter_predictive_decision_state'',
-        ''autonomy_observation'') or {} %}
-
-        {% set e = o.get(''current_estimate'') %}
-
+        {% set o = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'autonomy_observation') or {} %}
+        {% set e = o.get('current_estimate') %}
         {% if e %}
-
-        Орієнтовно до резерву: **{{ e.minutes }} хв** за поточного навантаження мінус
-        PV {{ e.net_load_w }} Вт.
-
-        Припущення: навантаження і PV сталі; втрати не враховано. Це не перевірений
-        прогноз.
-
+        Орієнтовно до резерву: **{{ e.minutes }} хв** за поточного навантаження мінус PV {{ e.net_load_w }} Вт.
+        Припущення: навантаження і PV сталі; втрати не враховано. Це не перевірений прогноз.
         {% else %}
-
         Оцінка з’явиться, коли є придатні дані батареї, навантаження, PV і мережі.
-
         {% endif %}
-
-        {% if o.get(''active'') %}
-
-        Відключення зафіксовано; збережена до нього оцінка: {{ o.active.predicted_minutes
-        }} хв.
-
+        {% if o.get('active') %}
+        Відключення зафіксовано; збережена до нього оцінка: {{ o.active.predicted_minutes }} хв.
         {% endif %}
-
-        {% for r in o.get(''recent'', []) %}
-
-        {{ r.started_at }}: інтервал спостереження {{ r.observed_minutes }} хв, {{
-        ''мережа повернулась'' if r.outcome == ''grid_restored'' else ''зв’язок втрачено''
-        }}.
-
+        {% for r in o.get('recent', []) %}
+        {{ r.started_at }}: інтервал спостереження {{ r.observed_minutes }} хв, {{ 'мережа повернулась' if r.outcome == 'grid_restored' else 'зв’язок втрачено' }}.
         {% endfor %}
-
-        Дані надходять із хмари із затримкою. Тривалість відключення не підтверджує
-        фактичний час автономної роботи.
-
-        '
+        Дані надходять із хмари із затримкою. Тривалість відключення не підтверджує фактичний час автономної роботи.
     - type: markdown
       title: AI · навчання і точність
-      content: "{%- set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state',\
-        \ 'forecast_calibration') or {} -%}\n{%- set MODE_LABELS = {'Off': 'Вимкнено',\
-        \ 'Shadow': 'Спостереження', 'Assist': 'Підтримка'} -%}\n{%- set APPLIED_LABELS\
-        \ = {true: 'AI рекомендація прийнята HEMS', false: 'Рекомендацію AI не застосовано'}\
-        \ -%}\n{%- set REASON_LABELS = {\n  'already_in_target': 'Уже в цілі — зміни\
-        \ не потрібні',\n  'battery_drives_load': 'Батарея живить навантаження — підзарядка\
-        \ не потрібна',\n  'day_pv_low': 'PV нижче споживання — берегти заряд',\n\
-        \  'hysteresis_recovery': 'Відновлення після паузи',\n  'night_window_usb':\
-        \ 'Нічна USB-стратегія',\n  'critical_recovery': 'Критичний SOC — відновити\
-        \ заряд',\n  'surplus_enter_sbu': 'Надлишок PV — перейти в SBU',\n  'reserve_soc_protection':\
-        \ 'SOC нижче резерву — захист',\n  'evening_reserve_protection': 'Вечірній\
-        \ резерв',\n  'emergency_low_soc_daytime': 'Аварійно низький SOC удень',\n\
-        \  'storm_mode': 'Штормовий режим — берегти заряд',\n  'predictive_assist_evening':\
-        \ 'Підготувати SOC до вечора',\n  'no_hint': 'Планувальник ще не сформував\
-        \ рекомендацію',\n  'hems_auto_off': 'HEMS авто-режим вимкнено',\n  'unknown_mode':\
-        \ 'Невідомий режим',\n  'invalid_telemetry': 'Невалідні дані телеметрії',\n\
-        \  'soc_unknown': 'SOC невідомий — планувальник утримується',\n  'day_default':\
-        \ 'Стандартна денна стратегія',\n  'arbitrage_night': 'Арбітраж вночі',\n\
-        \  'arbitrage_day_sbu': 'Арбітраж удень (SBU)',\n  'arbitrage_day_usb': 'Арбітраж\
-        \ удень (USB)',\n  'forecast_good_use_battery': 'Прогноз сприятливий — використати\
-        \ батарею',\n  'circuit_breaker': 'Захисне блокування HEMS',\n  'reserve_floor':\
-        \ 'SOC на резервній межі',\n  'dwell_lock': 'Утримання поточного режиму —\
-        \ мінімальний інтервал між змінами не минув',\n} -%}\n{%- macro short_reason(value)\
-        \ -%}\n  {%- if value is none -%}\n    Немає даних\n  {%- elif value in REASON_LABELS\
-        \ -%}\n    {{ REASON_LABELS[value] }}\n  {%- else -%}\n    {%- set raw = (value\
-        \ | string) -%}\n    {%- set stripped = raw | regex_replace('^\\\\[ML\\\\\
-        ]\\\\s*', '') -%}\n    {%- set head = stripped.split(':', 1)[0].strip() if\
-        \ ':' in stripped else stripped.strip() -%}\n    {{ REASON_LABELS.get(head,\
-        \ 'Невідомий reason') }}\n  {%- endif -%}\n{%- endmacro -%}\n{%- macro fmt2(value)\
-        \ -%}\n  {%- if value is none -%}\n    Немає даних\n  {%- else -%}\n    {{\
-        \ '{:.2f}'.format(value | float) }}\n  {%- endif -%}\n{%- endmacro -%}\n{%-\
-        \ macro fmt_pct(value) -%}\n  {%- if value is none -%}\n    Немає даних\n\
-        \  {%- else -%}\n    {{ '{:.0f}'.format((value | float) * 100) }} %\n  {%-\
-        \ endif -%}\n{%- endmacro -%}\n{%- set model_key = c.get('forecast_model')\
-        \ -%}\n{%- set MODEL_LABELS = {\n  'hourly_response_v1': 'Погодинна модель\
-        \ станції (v1)',\n  'station_gain_v1': 'Добова модель станції (v1)',\n  'hourly_response_v2':\
-        \ 'Погодинна модель станції (v2)',\n  'station_gain_v2': 'Добова модель станції\
-        \ (v2)',\n} -%}\n\n**Модель:** {{ MODEL_LABELS.get(model_key, 'ще не визначена')\
-        \ }}\n\n{%- if has_value('sensor.smart_solar_inverter_predictive_decision_state')\
-        \ %}\n{%- set pause_until = state_attr('sensor.smart_solar_inverter_predictive_decision_state',\
-        \ 'override_pending_until') %}\n**Пауза:** {{ ('Пауза активна до ' ~ pause_until)\
-        \ if pause_until else 'Пауза не активна' }}\n{%- else %}\n**Пауза:** Немає\
-        \ даних\n{%- endif %}\n\n{%- set mode = state_attr('sensor.smart_solar_inverter_predictive_decision_state',\
-        \ 'mode') %}\n{%- set confidence = state_attr('sensor.smart_solar_inverter_predictive_decision_state',\
-        \ 'confidence') %}\n{%- set applied = state_attr('sensor.smart_solar_inverter_predictive_decision_state',\
-        \ 'applied') %}\n{%- set reason = state_attr('sensor.smart_solar_inverter_predictive_decision_state',\
-        \ 'reason') %}\n{%- set execution_reason = state_attr('sensor.smart_solar_inverter_predictive_decision_state',\
-        \ 'execution_reason') %}\n\n**Режим AI:** {{ MODE_LABELS.get(mode, 'Невідомо')\
-        \ }}\n**Впевненість:** {{ fmt_pct(confidence) }}\n**Застосовано:** {{ APPLIED_LABELS.get(applied,\
-        \ 'Немає даних') }}\n**Причина рекомендації:** {{ short_reason(reason) }}\n\
-        **Причина виконання:** {{ short_reason(execution_reason) }}\n\n**Пари поточної\
-        \ моделі:** {{ c.get('samples', 0) }} · **Очікують факту:** {{ c.get('pending_count',\
-        \ 0) }}\n\n{%- if c.get('samples', 0) %}\n**MAE:** {{ fmt2(c.mae_kwh) }} кВт·год\
-        \ · **Зсув (факт − прогноз):** {{ fmt2(c.bias_kwh) }} кВт·год\n{%- else %}\n\
-        **Точність ще не виміряна:** очікуємо завершених пар цієї моделі.\n{%- endif\
-        \ %}\n\nПарі інших моделей збережено окремо: {{ c.get('excluded_model_pairs',\
-        \ 0) }}. Архівна перевірка не підвищує live confidence.\n\n**Поточний оновлений\
-        \ прогноз** (live sensor value, оновлюється що 15 хв):\n{%- set ft = states('sensor.smart_solar_inverter_forecast_tomorrow')\
-        \ %}\n{%- set fa = state_attr('sensor.smart_solar_inverter_forecast_tomorrow',\
-        \ 'forecast_diagnostic') or {} %}\n{%- set loc = state_attr('sensor.smart_solar_inverter_forecast_tomorrow',\
-        \ 'forecast_location') or {} %}\n{%- if ft in ['unknown', 'unavailable', 'None',\
-        \ 'none', ''] %}\n  — **Немає даних.** Перезапусти інтеграцію або зачекай\
-        \ першого циклу.\n{%- else %}\n  — {{ fmt2(ft) }} кВт·год (на завтра).\n \
-        \ {%- if loc.get('latitude') is not none and loc.get('longitude') is not none\
-        \ %}\n    Місцевість: {{ '{:.4f}'.format(loc.get('latitude') | float) }}°,\
-        \ {{ '{:.4f}'.format(loc.get('longitude') | float) }}° · {{ loc.get('timezone')\
-        \ or '—' }} · джерело: {{ loc.get('source') or '—' }}.\n  {%- endif %}\n{%-\
-        \ endif %}\n\n**Зафіксовані прогнози та факти** (snapshot pipeline, незмінні):\n\
-        \n| Дата | Прогноз, кВт·год | Факт, кВт·год | Δ факт−прогноз, кВт·год | Калібрує\
-        \ модель |\n| --- | ---: | ---: | ---: | --- |\n{%- for p in c.get('recent_pairs',\
-        \ []) %}\n| {{ p.date }} | {{ fmt2(p.forecast_kwh) }} | {{ fmt2(p.actual_kwh)\
-        \ }} | {% if p.actual_kwh is not none and p.forecast_kwh is not none %}{{\
-        \ fmt2((p.actual_kwh | float) - (p.forecast_kwh | float)) }}{% else %}—{%\
-        \ endif %} | {{ 'так' if p.used_for_current_model else 'ні' }} |\n{%- endfor\
-        \ %}\n{%- for p in c.get('pending', []) %}\n| {{ p.date }} | {{ fmt2(p.forecast_kwh)\
-        \ }} | {% if p.awaiting == 'completed_day' %}Очікуємо завершення доби{% elif\
-        \ p.actual_kwh is none %}Немає даних{% else %}{{ fmt2(p.actual_kwh) }} / {{\
-        \ fmt2((p.actual_kwh | float) - (p.forecast_kwh | float)) }}{% endif %} |\
-        \ — | ні |\n{%- endfor %}\n{%- if c.get('recent_pairs') or c.get('pending')\
-        \ %}\n{%- else %}\n_Поки що немає завершених пар. Таблиця оновиться після\
-        \ першої пари прогноз↔факт._\n{%- endif %}\n\n**Діагностика машинного коду:**\n\
-        {%- if reason is not none %}\n`decision.reason = \"{{ reason }}\"`\n{%- endif\
-        \ %}\n{%- if execution_reason is not none %}\n`decision.execution_reason =\
-        \ \"{{ execution_reason }}\"`\n{%- endif %}\n{%- if model_key is not none\
-        \ %}\n`forecast_model = \"{{ model_key }}\"`\n{%- endif %}\n\n_AI лише рекомендує;\
-        \ HEMS вирішує, чи застосувати. «Застосовано» означає прийняття AI-рекомендації\
-        \ HEMS, а не фізичну дію інвертора._\n"
+      content: |
+        {%- set c = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'forecast_calibration') or {} -%}
+        {%- set MODE_LABELS = {'Off': 'Вимкнено', 'Shadow': 'Спостереження', 'Assist': 'Підтримка'} -%}
+        {%- set APPLIED_LABELS = {true: 'AI рекомендація прийнята HEMS', false: 'Рекомендацію AI не застосовано'} -%}
+        {%- set REASON_LABELS = {
+          'already_in_target': 'Уже в цілі — зміни не потрібні',
+          'battery_drives_load': 'Батарея живить навантаження — підзарядка не потрібна',
+          'day_pv_low': 'PV нижче споживання — берегти заряд',
+          'hysteresis_recovery': 'Відновлення після паузи',
+          'night_window_usb': 'Нічна USB-стратегія',
+          'critical_recovery': 'Критичний SOC — відновити заряд',
+          'surplus_enter_sbu': 'Надлишок PV — перейти в SBU',
+          'reserve_soc_protection': 'SOC нижче резерву — захист',
+          'evening_reserve_protection': 'Вечірній резерв',
+          'emergency_low_soc_daytime': 'Аварійно низький SOC удень',
+          'storm_mode': 'Штормовий режим — берегти заряд',
+          'predictive_assist_evening': 'Підготувати SOC до вечора',
+          'no_hint': 'Планувальник ще не сформував рекомендацію',
+          'hems_auto_off': 'HEMS авто-режим вимкнено',
+          'unknown_mode': 'Невідомий режим',
+          'invalid_telemetry': 'Невалідні дані телеметрії',
+          'soc_unknown': 'SOC невідомий — планувальник утримується',
+          'day_default': 'Стандартна денна стратегія',
+          'arbitrage_night': 'Арбітраж вночі',
+          'arbitrage_day_sbu': 'Арбітраж удень (SBU)',
+          'arbitrage_day_usb': 'Арбітраж удень (USB)',
+          'forecast_good_use_battery': 'Прогноз сприятливий — використати батарею',
+          'circuit_breaker': 'Захисне блокування HEMS',
+          'reserve_floor': 'SOC на резервній межі',
+          'dwell_lock': 'Утримання поточного режиму — мінімальний інтервал між змінами не минув',
+        } -%}
+        {%- macro short_reason(value) -%}
+          {%- if value is none -%}
+            Немає даних
+          {%- elif value in REASON_LABELS -%}
+            {{ REASON_LABELS[value] }}
+          {%- else -%}
+            {%- set raw = (value | string) -%}
+            {%- set stripped = raw | regex_replace('^\\[ML\\]\\s*', '') -%}
+            {%- set head = stripped.split(':', 1)[0].strip() if ':' in stripped else stripped.strip() -%}
+            {{ REASON_LABELS.get(head, 'Невідомий reason') }}
+          {%- endif -%}
+        {%- endmacro -%}
+        {%- macro fmt2(value) -%}
+          {%- if value is none -%}
+            Немає даних
+          {%- else -%}
+            {{ '{:.2f}'.format(value | float) }}
+          {%- endif -%}
+        {%- endmacro -%}
+        {%- macro fmt_pct(value) -%}
+          {%- if value is none -%}
+            Немає даних
+          {%- else -%}
+            {{ '{:.0f}'.format((value | float) * 100) }} %
+          {%- endif -%}
+        {%- endmacro -%}
+        {%- set model_key = c.get('forecast_model') -%}
+        {%- set MODEL_LABELS = {
+          'hourly_response_v1': 'Погодинна модель станції (v1)',
+          'station_gain_v1': 'Добова модель станції (v1)',
+          'hourly_response_v2': 'Погодинна модель станції (v2)',
+          'station_gain_v2': 'Добова модель станції (v2)',
+        } -%}
+
+        **Модель:** {{ MODEL_LABELS.get(model_key, 'ще не визначена') }}
+
+        {%- if has_value('sensor.smart_solar_inverter_predictive_decision_state') %}
+        {%- set pause_until = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'override_pending_until') %}
+        **Пауза:** {{ ('Пауза активна до ' ~ pause_until) if pause_until else 'Пауза не активна' }}
+        {%- else %}
+        **Пауза:** Немає даних
+        {%- endif %}
+
+        {%- set mode = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'mode') %}
+        {%- set confidence = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'confidence') %}
+        {%- set applied = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'applied') %}
+        {%- set reason = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'reason') %}
+        {%- set execution_reason = state_attr('sensor.smart_solar_inverter_predictive_decision_state', 'execution_reason') %}
+
+        **Режим AI:** {{ MODE_LABELS.get(mode, 'Невідомо') }}
+        **Впевненість:** {{ fmt_pct(confidence) }}
+        **Застосовано:** {{ APPLIED_LABELS.get(applied, 'Немає даних') }}
+        **Причина рекомендації:** {{ short_reason(reason) }}
+        **Причина виконання:** {{ short_reason(execution_reason) }}
+
+        **Пари поточної моделі:** {{ c.get('samples', 0) }} · **Очікують факту:** {{ c.get('pending_count', 0) }}
+
+        {%- if c.get('samples', 0) %}
+        **MAE:** {{ fmt2(c.mae_kwh) }} кВт·год · **Зсув (факт − прогноз):** {{ fmt2(c.bias_kwh) }} кВт·год
+        {%- else %}
+        **Точність ще не виміряна:** очікуємо завершених пар цієї моделі.
+        {%- endif %}
+
+        Парі інших моделей збережено окремо: {{ c.get('excluded_model_pairs', 0) }}. Архівна перевірка не підвищує live confidence.
+
+        **Поточний оновлений прогноз** (live sensor value, оновлюється що 15 хв):
+        {%- set ft = states('sensor.smart_solar_inverter_forecast_tomorrow') %}
+        {%- set fa = state_attr('sensor.smart_solar_inverter_forecast_tomorrow', 'forecast_diagnostic') or {} %}
+        {%- set loc = state_attr('sensor.smart_solar_inverter_forecast_tomorrow', 'forecast_location') or {} %}
+        {%- if ft in ['unknown', 'unavailable', 'None', 'none', ''] %}
+          — **Немає даних.** Перезапусти інтеграцію або зачекай першого циклу.
+        {%- else %}
+          — {{ fmt2(ft) }} кВт·год (на завтра).
+          {%- if loc.get('latitude') is not none and loc.get('longitude') is not none %}
+            Місцевість: {{ '{:.4f}'.format(loc.get('latitude') | float) }}°, {{ '{:.4f}'.format(loc.get('longitude') | float) }}° · {{ loc.get('timezone') or '—' }} · джерело: {{ loc.get('source') or '—' }}.
+          {%- endif %}
+        {%- endif %}
+
+        **Зафіксовані прогнози та факти** (snapshot pipeline, незмінні):
+
+        | Дата | Прогноз, кВт·год | Факт, кВт·год | Δ факт−прогноз, кВт·год | Калібрує модель |
+        | --- | ---: | ---: | ---: | --- |
+        {%- for p in c.get('recent_pairs', []) %}
+        | {{ p.date }} | {{ fmt2(p.forecast_kwh) }} | {{ fmt2(p.actual_kwh) }} | {% if p.actual_kwh is not none and p.forecast_kwh is not none %}{{ fmt2((p.actual_kwh | float) - (p.forecast_kwh | float)) }}{% else %}—{% endif %} | {{ 'так' if p.used_for_current_model else 'ні' }} |
+        {%- endfor %}
+        {%- for p in c.get('pending', []) %}
+        | {{ p.date }} | {{ fmt2(p.forecast_kwh) }} | {% if p.awaiting == 'completed_day' %}Очікуємо завершення доби{% elif p.actual_kwh is none %}Немає даних{% else %}{{ fmt2(p.actual_kwh) }} / {{ fmt2((p.actual_kwh | float) - (p.forecast_kwh | float)) }}{% endif %} | — | ні |
+        {%- endfor %}
+        {%- if c.get('recent_pairs') or c.get('pending') %}
+        {%- else %}
+        _Поки що немає завершених пар. Таблиця оновиться після першої пари прогноз↔факт._
+        {%- endif %}
+
+        **Діагностика машинного коду:**
+        {%- if reason is not none %}
+        `decision.reason = "{{ reason }}"`
+        {%- endif %}
+        {%- if execution_reason is not none %}
+        `decision.execution_reason = "{{ execution_reason }}"`
+        {%- endif %}
+        {%- if model_key is not none %}
+        `forecast_model = "{{ model_key }}"`
+        {%- endif %}
+
+        _AI лише рекомендує; HEMS вирішує, чи застосувати. «Застосовано» означає прийняття AI-рекомендації HEMS, а не фізичну дію інвертора._
     - type: horizontal-stack
       cards:
       - type: button
@@ -1084,25 +951,28 @@ views:
         інверторів у кнопках потрібен entry_id.
     - type: markdown
       title: Прогноз · фактична місцевість
-      content: "{%- set loc = state_attr('sensor.smart_solar_inverter_forecast_tomorrow',\
-        \ 'forecast_location') or {} -%}\n{%- set source = loc.get('source') -%}\n\
-        {%- set SOURCE_LABELS = {\n  'entry': 'Стеція · задане в options flow (site_latitude\
-        \ / site_longitude)',\n  'ha': 'Home Assistant · hass.config.latitude / hass.config.longitude',\n\
-        \  'default': 'Інтеграційний fallback (DEFAULT_SITE_LATITUDE / DEFAULT_SITE_LONGITUDE)',\n\
-        \  'unknown': 'невідомо',\n} -%}\n{%- if loc.get('latitude') is none -%}\n\
-        \  **Координати прогнозу:** дані ще не готові. Перезапусти інтеграцію або\
-        \ зачекай першого циклу оновлення.\n{%- else -%}\n  **Координати прогнозу:**\
-        \ {{ '{:.4f}'.format(loc.get('latitude') | float) }}°, {{ '{:.4f}'.format(loc.get('longitude')\
-        \ | float) }}°\n  **Часовий пояс:** {{ loc.get('timezone') or '—' }}\n  **Джерело:**\
-        \ {{ SOURCE_LABELS.get(source, source) }}\n\n  Якщо джерело — `Home Assistant`,\
-        \ прогноз успадковує локацію HA; щоб задати окрему точку для PV-станції, обери\
-        \ `site_latitude` / `site_longitude` в options flow.\n{%- endif -%}\n"
+      content: |
+        {%- set loc = state_attr('sensor.smart_solar_inverter_forecast_tomorrow', 'forecast_location') or {} -%}
+        {%- set source = loc.get('source') -%}
+        {%- set SOURCE_LABELS = {
+          'entry': 'Стеція · задане в options flow (site_latitude / site_longitude)',
+          'ha': 'Home Assistant · hass.config.latitude / hass.config.longitude',
+          'default': 'Інтеграційний fallback (DEFAULT_SITE_LATITUDE / DEFAULT_SITE_LONGITUDE)',
+          'unknown': 'невідомо',
+        } -%}
+        {%- if loc.get('latitude') is none -%}
+          **Координати прогнозу:** дані ще не готові. Перезапусти інтеграцію або зачекай першого циклу оновлення.
+        {%- else -%}
+          **Координати прогнозу:** {{ '{:.4f}'.format(loc.get('latitude') | float) }}°, {{ '{:.4f}'.format(loc.get('longitude') | float) }}°
+          **Часовий пояс:** {{ loc.get('timezone') or '—' }}
+          **Джерело:** {{ SOURCE_LABELS.get(source, source) }}
+
+          Якщо джерело — `Home Assistant`, прогноз успадковує локацію HA; щоб задати окрему точку для PV-станції, обери `site_latitude` / `site_longitude` в options flow.
+        {%- endif -%}
     - type: markdown
-      content: '# Налаштування HEMS
-
+      content: |
+        # Налаштування HEMS
         Резерв SOC, тарифи та стратегія без редагування YAML.
-
-        '
     - type: entities
       title: Стратегія та режими
       show_header_toggle: false

@@ -1,9 +1,15 @@
-"""Explicit, backed-up migration through HA's live Lovelace storage API."""
+"""Explicit, backed-up migration through HA's live Lovelace storage API.
+
+A requested legacy custom panel may differ from the persisted sidecar binding.
+That exception requires registry-proven flow ownership and never rebinds the
+entry. Foreign, mixed-owner, unknown and unrelated flow cards are refused.
+"""
 from __future__ import annotations
 
 import json
 import logging
 import hashlib
+import re
 from urllib.parse import urlsplit
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +17,47 @@ from pathlib import Path
 from .dashboard_redesign import build_redesigned_dashboard
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _verify_legacy_dashboard_owner(current, registry, entry_id):
+    """Require every existing flow's entity bindings to prove one owner.
+
+    A legacy dashboard may predate the persisted sidecar binding. An explicit
+    request can name that dashboard, but its configured flow must actually use
+    this entry's registry entities. Unknown and foreign bindings are refused;
+    the presence of our entity in an unrelated text/card is not sufficient.
+    """
+    owned = {entity.entity_id for entity in registry.entities.values()
+             if entity.config_entry_id == entry_id}
+    entity_ref = re.compile(r"(?:sensor|binary_sensor|select|switch|number)\.[a-z0-9_]+")
+    flows = []
+
+    def collect(value):
+        if isinstance(value, dict):
+            if value.get("type") == "custom:k-flow-card":
+                flows.append(value)
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    def references(value):
+        if isinstance(value, str):
+            return {value} if entity_ref.fullmatch(value) else set()
+        if isinstance(value, dict):
+            return set().union(*(references(child) for child in value.values())) if value else set()
+        if isinstance(value, list):
+            return set().union(*(references(child) for child in value)) if value else set()
+        return set()
+
+    collect(current)
+    if not flows:
+        raise ValueError("Requested legacy dashboard has no configured energy-flow card")
+    for flow in flows:
+        refs = references(flow)
+        if not refs or not refs <= owned:
+            raise ValueError("Requested legacy dashboard flow bindings are not exclusively owned by this entry")
 
 
 async def async_apply_requested_redesign(hass, entry):
@@ -26,16 +73,18 @@ async def async_apply_requested_redesign(hass, entry):
         request = json.loads(await hass.async_add_executor_job(request_file.read_text, "utf-8"))
         if request.get("entry_id") != entry.entry_id:
             return
-        url = entry.options.get("lovelace_dashboard_url_path")
-        if not url or request.get("dashboard_path") != url:
-            raise ValueError("Redesign request does not match this entry's dashboard binding")
+        bound_url = entry.options.get("lovelace_dashboard_url_path")
+        url = request.get("dashboard_path")
+        if not isinstance(url, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", url):
+            raise ValueError("Redesign request must explicitly name a valid dashboard path")
+        legacy_target = url != bound_url
         lovelace = hass.data.get("lovelace")
         dashboards = getattr(lovelace, "dashboards", None)
         if dashboards is None and isinstance(lovelace, dict):
             dashboards = lovelace.get("dashboards")
         panel = (dashboards or {}).get(url)
         if panel is None or not callable(getattr(panel, "async_save", None)):
-            raise ValueError("Bound storage dashboard is not available")
+            raise ValueError("Requested storage dashboard is not available")
         from homeassistant.helpers import entity_registry as er
         registry = er.async_get(hass)
         mapping = {}
@@ -51,6 +100,17 @@ async def async_apply_requested_redesign(hass, entry):
             if uid.startswith(prefix):
                 mapping["predictive_" + uid[len(prefix):]] = entity.entity_id
         current = await panel.async_load(False)
+        if legacy_target:
+            _verify_legacy_dashboard_owner(current, registry, entry.entry_id)
+            entries = getattr(getattr(hass, "config_entries", None), "async_entries", None)
+            if not callable(entries):
+                raise ValueError("Cannot validate requested legacy dashboard ownership")
+            if any(other.entry_id != entry.entry_id
+                   and other.options.get("lovelace_dashboard_url_path") == url
+                   for other in entries("powmr_inverter")):
+                raise ValueError("Requested legacy dashboard is bound to another entry")
+            _LOGGER.info("Explicit legacy dashboard %s verified for entry %s (binding remains %s)",
+                         url, entry.entry_id, bound_url)
         candidate, summary = build_redesigned_dashboard(current, mapping, dashboard_path=url)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup = Path(hass.config.path("backups", "smart_solar", f"{url}-{stamp}.json"))
@@ -87,7 +147,9 @@ async def async_apply_requested_redesign(hass, entry):
             verified = await panel.async_load(False)
             if verified != candidate:
                 raise RuntimeError("Lovelace read-back differed")
-        result = {"summary": summary, "backup": str(backup), "dashboard_path": url, "completed_at": stamp}
+        result = {"summary": summary, "backup": str(backup), "dashboard_path": url,
+                  "binding_dashboard_path": bound_url, "legacy_dashboard_verified": legacy_target,
+                  "completed_at": stamp}
         result_file = Path(hass.config.path("powmr_dashboard_redesign.result.json"))
         await hass.async_add_executor_job(result_file.write_text, json.dumps(result, ensure_ascii=False, indent=2), "utf-8")
         await hass.async_add_executor_job(request_file.unlink)

@@ -5,6 +5,14 @@ from pathlib import Path
 import re
 import yaml
 
+class DashboardDumper(yaml.SafeDumper):
+    """Keep Jinja/Markdown readable and editable in the manual template."""
+
+def _string(dumper, value):
+    return dumper.represent_scalar("tag:yaml.org,2002:str", value, style="|" if "\n" in value else None)
+
+DashboardDumper.add_representer(str, _string)
+
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("dashboard_redesign", ROOT / "services/dashboard_redesign.py")
 module = importlib.util.module_from_spec(spec)
@@ -31,7 +39,7 @@ def main():
                 flow[config_key] = mapping[entity_key]
         config["views"][0].setdefault("sections", []).insert(0, {"type":"grid", "cards":[flow]})
     result, summary = module.build_redesigned_dashboard(config, mapping)
-    path.write_text(yaml.safe_dump(result, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    path.write_text(yaml.dump(result, Dumper=DashboardDumper, allow_unicode=True, sort_keys=False), encoding="utf-8")
     print(summary)
 
 if __name__ == "__main__":
