@@ -1,6 +1,7 @@
 // PV comparison: one local calendar day, explicit W units and real timestamps.
 class PvComparisonCard extends HTMLElement {
   connectedCallback() {
+    if(this.style){this.style.display="block";this.style.minWidth="0";}
     if(typeof ResizeObserver === 'undefined')return;
     this._resizeObserver=new ResizeObserver(entries=>{
       const width=entries[0]?.contentRect.width;
@@ -12,9 +13,20 @@ class PvComparisonCard extends HTMLElement {
   setConfig(config) {
     if (!config.entity || !config.forecast_entity) throw new Error('entity and forecast_entity are required');
     this._config = config;
+    this._renderedDate=null;
     this._showPrevious ??= true;
+    this._render();
   }
-  set hass(value) { this._hass = value; this._render(); }
+  set hass(value) {
+    const c=this._config;
+    this._hass=value;
+    if(!c) return;
+    const date=this._today(), actual=value.states[c.entity],forecast=value.states[c.forecast_entity],tz=value.config?.time_zone;
+    if(this._renderedDate===date && this._renderedActual===actual
+      && this._renderedForecast===forecast && this._renderedTimezone===tz) return;
+    this._render();
+    this._renderedDate=date;this._renderedActual=actual;this._renderedForecast=forecast;this._renderedTimezone=tz;
+  }
   getCardSize() { return 6; }
   getGridOptions() { return { columns: 12, rows: 'auto' }; }
   _escape(v) { return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -68,13 +80,14 @@ class PvComparisonCard extends HTMLElement {
       ? fc.hourly_forecast_w.slice(0,24).flatMap((v,h)=> typeof v === 'number' && Number.isFinite(v) && v>=0
         ? [{hour:h+.5,value:v,label:`${String(h).padStart(2,'0')}:00–${String(h+1).padStart(2,'0')}:00`,date:today}] : []) : [];
     const top=Math.max(100, Math.ceil(Math.max(...facts.map(p=>p.value),...prior.map(p=>p.value),...forecast.map(p=>p.value),0)/100)*100);
-    const W=Math.max(420,Math.min(1200,this.clientWidth?this.clientWidth-40:820)),H=320,L=48,R=16,T=20,B=28, cw=W-L-R,ch=H-T-B;
+    const width=this.clientWidth || 820, padding=width<450?32:40;
+    const W=Math.max(160,Math.min(1600,width-padding)),H=width<600?240:300,L=48,R=22,T=20,B=30, cw=W-L-R,ch=H-T-B;
     const x=h=>+(L+h/24*cw).toFixed(2), y=v=>+(T+ch-v/top*ch).toFixed(2);
     let grid='';
     for(let i=0;i<=5;i++) grid+=`<line x1="${L}" x2="${W-R}" y1="${y(top*i/5)}" y2="${y(top*i/5)}" class="grid"/><text x="${L-8}" y="${y(top*i/5)+4}" text-anchor="end">${top*i/5}</text>`;
-    const tickStep=W>=900?1:W>=600?2:3;
+    const tickStep=W>=900?2:W>=600?3:6;
     for(let h=0;h<=24;h+=tickStep) {
-      grid+=`<text x="${x(h)}" y="${H-7}" text-anchor="middle" textLength="32" lengthAdjust="spacingAndGlyphs">${String(h).padStart(2,'0')}:00</text>`;
+      grid+=`<text x="${x(h)}" y="${H-7}" text-anchor="middle">${String(h).padStart(2,'0')}:00</text>`;
     }
     const numbers=new Intl.NumberFormat('uk-UA',{minimumFractionDigits:2,maximumFractionDigits:2});
     const tip=(name,p)=>`${name} · ${p.date} ${p.label} · ${numbers.format(p.value)} Вт`;
@@ -85,13 +98,13 @@ class PvComparisonCard extends HTMLElement {
     const latest=facts.at(-1);
     this.innerHTML=`<ha-card>
       <style>
-        ha-card{padding:20px;box-sizing:border-box;overflow:hidden;font-family:var(--paper-font-body1_-_font-family,Arial);color:var(--primary-text-color)}
-        h2{margin:0;font-size:18px;line-height:1.4}.sub,.hint{color:var(--secondary-text-color);font-size:12px;line-height:1.5}.sub{margin:5px 0 16px}
-        .stats{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:15px}.value{font-size:25px;font-weight:600}.caption{font-size:12px;color:var(--secondary-text-color)}
-        .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin-bottom:16px}.legend span::before{content:'';display:inline-block;width:18px;border-top:2px solid var(--line);margin-right:6px;vertical-align:middle}
-        svg{width:100%;height:auto;min-height:240px;display:block;overflow:visible}svg text{font-size:12px;fill:var(--secondary-text-color)}.grid{stroke:var(--divider-color,#444);stroke-width:.7;stroke-dasharray:2 5;opacity:.65}.point{cursor:pointer;opacity:.4}.point:hover,.point:focus{opacity:1;outline:none;stroke:var(--primary-text-color);stroke-width:2}
-        button{background:none;border:1px solid var(--divider-color,#555);border-radius:8px;color:var(--primary-text-color);padding:7px 10px;cursor:pointer;font:inherit;font-size:12px;margin-top:12px}.hint{margin-top:10px;min-height:36px}
-        @media(max-width:450px){ha-card{padding:16px}.value{font-size:23px}}
+        pv-comparison-card ha-card{padding:20px;box-sizing:border-box;overflow:hidden;font-family:var(--paper-font-body1_-_font-family,Arial);color:var(--primary-text-color)}
+        pv-comparison-card h2{margin:0;font-size:18px;line-height:1.4}pv-comparison-card .sub,pv-comparison-card .hint{color:var(--secondary-text-color);font-size:12px;line-height:1.5}pv-comparison-card .sub{margin:5px 0 16px}
+        pv-comparison-card .stats{display:flex;gap:24px;flex-wrap:wrap;margin-bottom:15px}pv-comparison-card .value{font-size:25px;font-weight:600}pv-comparison-card .caption{font-size:12px;color:var(--secondary-text-color)}
+        pv-comparison-card .legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;margin-bottom:16px}pv-comparison-card .legend span::before{content:'';display:inline-block;width:18px;border-top:2px solid var(--line);margin-right:6px;vertical-align:middle}
+        pv-comparison-card svg{width:100%;height:auto;display:block;overflow:visible}pv-comparison-card svg text{font-size:12px;fill:var(--secondary-text-color)}pv-comparison-card .grid{stroke:var(--divider-color,#444);stroke-width:.7;stroke-dasharray:2 5;opacity:.65}pv-comparison-card .point{cursor:pointer;opacity:.4}pv-comparison-card .point:hover,pv-comparison-card .point:focus{opacity:1;outline:none;stroke:var(--primary-text-color);stroke-width:2}
+        pv-comparison-card button{background:none;border:1px solid var(--divider-color,#555);border-radius:8px;color:var(--primary-text-color);padding:10px 12px;min-height:44px;cursor:pointer;font:inherit;font-size:12px;margin-top:12px}pv-comparison-card .hint{margin-top:10px;min-height:36px}
+       @media(max-width:450px){pv-comparison-card ha-card{padding:16px}pv-comparison-card .value{font-size:23px}}
       </style>
       <h2>${esc(c.title || 'Генерація та прогноз PV')}</h2>
       <div class="sub">${esc(today)} · ${esc(this._hass.config?.time_zone || 'UTC')} · потужність PV</div>

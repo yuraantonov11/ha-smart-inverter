@@ -468,6 +468,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # never clobbered).
         await _ensure_outages_view(hass, entry)
 
+        # Existing dashboards are changed only by an explicit per-entry request.
+        from .services.dashboard_redesign_apply import async_apply_requested_redesign
+        await async_apply_requested_redesign(hass, entry)
+
         return True
 
     except ConfigEntryNotReady:
@@ -709,6 +713,9 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
         comparison_src = os.path.join(src_dir, "pv-comparison-card.js")
         if os.path.exists(comparison_src):
             shutil.copy2(comparison_src, os.path.join(www_dir, "pv-comparison-card.js"))
+        controls_src = os.path.join(src_dir, "smart-solar-controls-card.js")
+        if os.path.exists(controls_src):
+            shutil.copy2(controls_src, os.path.join(www_dir, "smart-solar-controls-card.js"))
         fc_src = os.path.join(src_dir, "forecast-card.js")
         if os.path.exists(fc_src):
             shutil.copy2(fc_src, os.path.join(www_dir, "forecast-card.js"))
@@ -810,6 +817,9 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
                 "flow": _compute_assets_cache_bust(
                     installed_www, ["k-flow-card.js"]
                 ),
+                "controls": _compute_assets_cache_bust(
+                    installed_www, ["smart-solar-controls-card.js"]
+                ),
                 "forecast": _compute_assets_cache_bust(
                     installed_www, ["forecast-card.js"]
                 ),
@@ -891,6 +901,8 @@ async def _install_flow_card(hass: HomeAssistant) -> None:
             return True
 
         _register(resource_url, _flow_bust)
+        if os.path.exists(os.path.join(installed_www, "smart-solar-controls-card.js")):
+            _register("/local/community/powmr-inverter/smart-solar-controls-card.js", hashes["controls"])
         # Forecast sparkline card
         fc_url = "/local/community/powmr-inverter/forecast-card.js"
         _register(fc_url, _forecast_bust)
@@ -1431,6 +1443,8 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         uid = ent.unique_id
         if not uid:
             continue
+        if "_ble_diag_" in uid:
+            eid.setdefault("ble_" + uid.split("_ble_diag_", 1)[1], ent.entity_id)
         prefix = f"{entry.entry_id}_predictive_"
         if uid.startswith(prefix):
             suffix = uid[len(prefix):]
@@ -1479,12 +1493,13 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         ("pv_weather_history_7d", "Погода (7 днів)", "mdi:weather-partly-cloudy"),
     ]:
         weather_eid = f"sensor.{tk}"
-        weather_tiles.append({
-            "type": "tile",
-            "entity": weather_eid,
-            "name": nm,
-            "icon": ic,
-        })
+        if hass.states.get(weather_eid) is not None:
+            weather_tiles.append({
+                "type": "tile",
+                "entity": weather_eid,
+                "name": nm,
+                "icon": ic,
+            })
     if weather_tiles:
         overview_cards.append({"type": "grid", "cards": weather_tiles})
 
@@ -1534,7 +1549,8 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
             return False
         flow_cfg["grid_power_estimated"] = not reported_power_matches(("gridPower", "acInputPower"), flow_data.get("gridPower"))
         flow_cfg["battery_power_estimated"] = not reported_power_matches(("batteryPower",), flow_data.get("batteryPower"))
-    overview_cards.append({"type": "grid", "cards": [flow_cfg]})
+    # Keep the animated energy flow as the first section on narrow screens.
+    overview_cards.insert(0, {"type": "grid", "cards": [flow_cfg]})
 
     # ── Combined energy flow + voltage + SOC graphs ──
     graph_cards: list[dict] = []
@@ -1816,6 +1832,9 @@ async def _auto_install_dashboard(hass: HomeAssistant, entry: ConfigEntry) -> No
         "title": "Smart Solar Енергопанель",
         "views": views,
     }
+
+    from .services.dashboard_redesign import build_redesigned_dashboard
+    dashboard_config, _ = build_redesigned_dashboard(dashboard_config, eid)
 
     # Hash for change detection
     config_hash = hashlib.md5(json.dumps(dashboard_config, sort_keys=True).encode()).hexdigest()[:8]

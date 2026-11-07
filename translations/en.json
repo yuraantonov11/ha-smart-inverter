@@ -43,27 +43,74 @@
   "options": {
     "step": {
       "init": {
-        "title": "Smart Solar Inverter Options",
-        "description": "Adjust polling interval and HEMS settings",
+        "title": "Smart Solar settings",
+        "description": "Choose a category. Saving one category preserves all other settings.",
+        "menu_options": {
+          "connection": "Connection",
+          "station": "Station",
+          "battery": "Battery",
+          "tariffs": "Tariffs",
+          "automation": "Automation",
+          "predictive": "Predictive assistance"
+        }
+      },
+      "connection": {
+        "title": "Connection",
+        "description": "More frequent cloud requests do not make the manufacturer’s measurements newer. Bluetooth is for viewing diagnostics only. The fields show the active Bluetooth configuration. If Bluetooth was enabled elsewhere, it can remain active when this checkbox is off. Remove that external setting to disable it.",
         "data": {
           "poll_interval": "Polling interval (seconds)",
-          "reserve_soc": "Reserve SOC (%)",
-          "pv_surplus_threshold_w": "PV surplus threshold (W)",
-          "tariff_day": "Day tariff (UAH/kWh)",
-          "tariff_night": "Night tariff (UAH/kWh)",
+          "ble_diagnostic": "Enable Bluetooth diagnostics",
+          "ble_dtu_id": "Bluetooth DTU identifier",
+          "ble_read_interval": "Bluetooth reading interval (seconds)"
+        }
+      },
+      "station": {
+        "title": "Station",
+        "description": "Leave both coordinates empty to use the Home Assistant location. Set both coordinates when overriding the location. Power ratings describe installed equipment.",
+        "data": {
           "site_latitude": "Station latitude (blank = Home Assistant location)",
           "site_longitude": "Station longitude (blank = Home Assistant location)",
-          "auto_storm_by_forecast": "Auto-Storm by weather forecast",
+          "pv_total_capacity_w": "Total PV capacity (W)",
+          "inverter_max_power_w": "Inverter max power (W)"
+        }
+      },
+      "battery": {
+        "title": "Battery",
+        "description": "Calculated capacity from saved settings: {battery_energy_kwh} kWh. Capacity is configured manually, not read from BMS. Enter confirmed battery-side DC power limits. Leave unconfirmed limits empty; do not substitute a device rating for a BMS measurement.",
+        "data": {
           "battery_capacity_ah": "Battery capacity (Ah)",
           "nominal_voltage_v": "Nominal battery voltage (V)",
           "max_charge_power_w": "Battery charge limit (DC W; blank = unknown)",
           "max_grid_charge_power_w": "Utility charge limit (battery-side DC W)",
-          "max_discharge_power_w": "Battery discharge limit (DC W; use BMS/inverter limits)",
-          "pv_total_capacity_w": "Total PV capacity (W)",
-          "inverter_max_power_w": "Inverter max power (W)",
+          "max_discharge_power_w": "Battery discharge limit (DC W; use BMS/inverter limits)"
+        }
+      },
+      "tariffs": {
+        "title": "Tariffs",
+        "description": "Set the electricity prices and tariff transition hours in the Home Assistant time zone. These hours are separate from the predictive assistance window.",
+        "data": {
+          "tariff_day": "Day tariff (UAH/kWh)",
+          "tariff_night": "Night tariff (UAH/kWh)",
           "night_start_hour": "Night start hour (0-23)",
-          "day_start_hour": "Day start hour (0-23)",
-          "predictive_default_mode": "Default predictive mode (new installation)",
+          "day_start_hour": "Day start hour (0-23)"
+        }
+      },
+      "automation": {
+        "title": "Automation",
+        "description": "Automatic energy management applies the selected strategy. These settings are distinct from a manual inverter command.",
+        "data": {
+          "hems_enabled": "Enable automatic energy management",
+          "reserve_soc": "Reserve SOC (%)",
+          "pv_surplus_threshold_w": "PV surplus threshold (W)",
+          "auto_storm_by_forecast": "Auto-Storm by weather forecast"
+        }
+      },
+      "predictive": {
+        "title": "Predictive assistance",
+        "description": "The current mode and initial mode are separate settings. The predictive night window is distinct from the tariff window. Confidence is an internal indicator, not a forecast accuracy percentage.",
+        "data": {
+          "predictive_default_mode": "Initial predictive mode",
+          "predictive_mode": "Current predictive mode",
           "predictive_night_window_start_hour": "Predictive night window start (0-23)",
           "predictive_night_window_end_hour": "Predictive night window end (0-23)",
           "predictive_min_confidence_for_assist": "Minimum confidence for Assist (safety minimum 0.2)"
@@ -73,6 +120,9 @@
     "error": {
       "invalid_poll_interval": "Poll interval must be between 3 and 30 seconds.",
       "invalid_predictive_options": "Invalid predictive mode, night window or confidence."
+    },
+    "abort": {
+      "options_updated": "Settings saved. They apply on the next integration update."
     }
   },
   "entity": {

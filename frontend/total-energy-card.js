@@ -13,14 +13,21 @@
 //   getCardSize() — returns 3 rows.
 class TotalEnergyCard extends HTMLElement {
   set hass(hass) {
-    this._hass = hass;
+    this._hass=hass;
+    if(!this._config) return;
+    const state=hass.states[this._config.entity];
+    if(this._rendered && this._renderedState===state) return;
     this._render();
+    this._rendered=true;
+    this._renderedState=state;
   }
   setConfig(config) {
     if (!config || !config.entity) {
       throw new Error('entity is required');
     }
     this._config = Object.assign({}, config);
+    this._rendered=false;
+    this._render();
   }
   getCardSize() {
     return 3;
@@ -98,17 +105,17 @@ class TotalEnergyCard extends HTMLElement {
           <span class="te-chip">Year: ${this._fmtKwh(year)}</span>
         </div>
         <style>
-          .te-title { font-size: 14px; opacity: 0.7; padding: 8px 12px 0; }
-          .te-total { font-size: 28px; font-weight: 600; padding: 4px 12px 8px; }
-          .te-row { display: flex; gap: 8px; padding: 0 12px 12px; }
-          .te-chip {
-            flex: 1; text-align: center;
+          total-energy-card .te-title { font-size: 14px; opacity: 0.7; padding: 8px 12px 0; }
+          total-energy-card .te-total { font-size: 28px; font-weight: 600; padding: 4px 12px 8px; }
+          total-energy-card .te-row { display: flex; gap: 8px; flex-wrap:wrap; padding: 0 12px 12px; }
+          total-energy-card .te-chip {
+            flex: 1 1 110px; text-align: center;
             background: var(--secondary-background-color, #f5f5f5);
             color: var(--primary-text-color, #222);
             border-radius: 4px; padding: 6px 8px;
             font-size: 12px;
           }
-          .te-empty { padding: 12px; opacity: 0.6; }
+          total-energy-card .te-empty { padding: 12px; opacity: 0.6; }
         </style>
       </ha-card>
     `;

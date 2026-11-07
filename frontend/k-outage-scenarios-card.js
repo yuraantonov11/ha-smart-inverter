@@ -1313,20 +1313,24 @@ class KOutageScenariosCard extends HTMLElement {
           color: var(--primary-text-color);
         }
         .card {
-          padding: 12px 16px 16px;
+          padding: 16px;
+          box-sizing: border-box;
+          border: 1px solid var(--divider-color,#444);
           background: var(--card-background-color, #1c1c1c);
-          border-radius: 8px;
+          border-radius: var(--ha-card-border-radius,12px);
+          container-type: inline-size;
         }
         h2 { margin: 0 0 4px; font-size: 1.15rem; }
         .subtitle { color: var(--secondary-text-color); font-size: 0.85rem; margin-bottom: 12px; }
         .form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
         .form--inline { grid-template-columns: 1fr 1fr 1fr; }
-        .form label { display: flex; flex-direction: column; font-size: 0.8rem; color: var(--secondary-text-color); }
-        .form input { font-size: 0.9rem; padding: 4px 6px; }
+        .form label { min-width:0; display: flex; flex-direction: column; font-size: 0.8rem; color: var(--secondary-text-color); }
+        .form input { width:100%;min-width:0;box-sizing:border-box;min-height:44px;font-size:1rem;padding:8px 10px;border:1px solid var(--divider-color,#444);border-radius:8px;background:var(--secondary-background-color);color:var(--primary-text-color); }
         .form__actions { grid-column: 1 / -1; display: flex; gap: 8px; }
         .btn {
           font: inherit;
-          padding: 6px 12px;
+          min-height:44px;
+          padding: 10px 12px;
           border-radius: 4px;
           border: 1px solid var(--divider-color, #444);
           background: var(--secondary-background-color, #2a2a2a);
@@ -1357,6 +1361,9 @@ class KOutageScenariosCard extends HTMLElement {
         .plan__row--warn { color: #f1c40f; }
         .plan__row--unknown { color: var(--secondary-text-color); font-style: italic; }
         .plan__warn { color: #f1c40f; margin-top: 4px; font-size: 0.8rem; }
+        @container(max-width:520px){.form,.form--inline{grid-template-columns:minmax(0,1fr)}.plan__row{flex-wrap:wrap}.plan__label{min-width:0}.event__header{flex-wrap:wrap}}
+        @media(max-width:520px){.form,.form--inline{grid-template-columns:minmax(0,1fr)}.plan__row{flex-wrap:wrap}.plan__label{min-width:0}.event__header{flex-wrap:wrap}}
+        .btn:focus-visible,.form input:focus-visible{outline:2px solid var(--primary-color);outline-offset:3px}
         .empty { color: var(--secondary-text-color); font-size: 0.9rem; padding: 12px 0; }
       </style>
       <div class="card">
@@ -1402,7 +1409,7 @@ class KOutageScenariosCard extends HTMLElement {
       );
     return upcoming.length
       ? upcoming.map((ev) => this._renderEventRow(ev)).join("")
-      : `<div class="empty">Немає запланованих відключень. Додайте перше за допомогою форми нижче.</div>`;
+      : `<div class="empty">Немає запланованих відключень. Додайте відключення за допомогою форми вище.</div>`;
   }
 
   // Patch the events list section in place. Called

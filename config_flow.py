@@ -717,20 +717,86 @@ class InverterConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class InverterOptionsFlow(config_entries.OptionsFlow):
-    """Handle options."""
+    """Edit one category while preserving options owned by other categories."""
+
+    _GROUPS = {
+        "connection": ("poll_interval", "ble_diagnostic", "ble_dtu_id", "ble_read_interval"),
+        "station": ("site_latitude", "site_longitude", "pv_total_capacity_w", "inverter_max_power_w"),
+        "battery": ("battery_capacity_ah", "nominal_voltage_v", "max_charge_power_w", "max_grid_charge_power_w", "max_discharge_power_w"),
+        "tariffs": ("tariff_day", "tariff_night", "night_start_hour", "day_start_hour"),
+        "automation": ("hems_enabled", "reserve_soc", "pv_surplus_threshold_w", "auto_storm_by_forecast"),
+        "predictive": ("predictive_default_mode", "predictive_mode", "predictive_night_window_start_hour", "predictive_night_window_end_hour", "predictive_min_confidence_for_assist"),
+    }
+
+    async def _async_group(self, group, user_input=None):
+        self._group = group
+        if group == "connection" and user_input is None:
+            from .ble_diagnostic import (
+                ble_configured_interval, ble_is_enabled, entry_option,
+                read_ble_conf_async,
+            )
+            conf = await read_ble_conf_async(self.hass)
+            try:
+                interval = float(conf.get("interval") or 10)
+            except (TypeError, ValueError):
+                interval = 10
+            if not math.isfinite(interval):
+                interval = 10
+            self._connection_defaults = {
+                "ble_diagnostic": ble_is_enabled(self.hass, self.config_entry)
+                    or conf.get("enabled") in ("1", "true", "yes", "on"),
+                "ble_dtu_id": str(entry_option(self.config_entry, "ble_dtu_id") or conf.get("dtu_id") or ""),
+                "ble_read_interval": int(ble_configured_interval(self.config_entry, default=interval)),
+            }
+        return await self.async_step_init(user_input)
+
+    async def async_step_connection(self, user_input=None):
+        return await self._async_group("connection", user_input)
+
+    async def async_step_station(self, user_input=None):
+        return await self._async_group("station", user_input)
+
+    async def async_step_battery(self, user_input=None):
+        return await self._async_group("battery", user_input)
+
+    async def async_step_tariffs(self, user_input=None):
+        return await self._async_group("tariffs", user_input)
+
+    async def async_step_automation(self, user_input=None):
+        return await self._async_group("automation", user_input)
+
+    async def async_step_predictive(self, user_input=None):
+        return await self._async_group("predictive", user_input)
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Manage options."""
+        group = getattr(self, "_group", None)
+        if user_input is None and group is None:
+            return self.async_show_menu(step_id="init", menu_options=list(self._GROUPS))
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            # Grouped forms submit only their own keys. Validate cross-field
+            # contracts against the saved options, not unrelated defaults.
+            user_input = dict(user_input)
+            if group is not None:
+                user_input = {key: value for key, value in user_input.items()
+                              if key in self._GROUPS[group]}
+            if group == "connection":
+                # Showing an effective conf/marker value must not turn it into
+                # a new options override when the operator leaves it unchanged.
+                defaults = getattr(self, "_connection_defaults", {})
+                for key in defaults:
+                    if key not in self.config_entry.options and user_input.get(key) == defaults[key]:
+                        user_input.pop(key, None)
+            candidate = {**self.config_entry.options, **user_input}
             try:
-                parse_predictive_options(user_input)
+                parse_predictive_options(candidate)
             except ValueError:
                 errors["base"] = "invalid_predictive_options"
-            poll = user_input.get("poll_interval", DEFAULT_POLL_INTERVAL_SEC)
+            poll = candidate.get("poll_interval", DEFAULT_POLL_INTERVAL_SEC)
             if poll < MIN_POLL_INTERVAL_SEC or poll > MAX_POLL_INTERVAL_SEC:
                 errors["poll_interval"] = "invalid_poll_interval"
             elif not errors:
@@ -770,10 +836,11 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                 )
                 return self.async_abort(reason="options_updated")
 
-        current = self.config_entry.options
-        return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
+        current = {**self.config_entry.options}
+        if group == "connection":
+            current.update(getattr(self, "_connection_defaults", {}))
+        current.update(user_input or {})
+        data_schema = vol.Schema(
                 {
                     # RWB1 BLE diagnostics: opt-in, read-only, observation-only.
                     # Disabled unless this box is ticked (or the marker file
@@ -801,7 +868,7 @@ class InverterOptionsFlow(config_entries.OptionsFlow):
                         vol.Coerce(int),
                         vol.Range(min=5, max=86400),
                     ),
-vol.Optional(
+                    vol.Optional(
                         "hems_enabled",
                         default=current.get("hems_enabled", DEFAULT_HEMS_ENABLED),
                     ): bool,
@@ -916,6 +983,18 @@ vol.Optional(
                         default=current.get("predictive_mode", PREDICTIVE_MODE_DEFAULT),
                     ): vol.In(list(PREDICTIVE_MODES)),
                 }
-            ),
-            errors=errors,
+        )
+        if group is not None:
+            data_schema = vol.Schema({key: value for key, value in data_schema.schema.items()
+                                      if key.schema in self._GROUPS[group]})
+        placeholders = {}
+        if group == "battery":
+            try:
+                capacity = float(current.get("battery_capacity_ah", 230.0)) * float(current.get("nominal_voltage_v", 51.2)) / 1000
+                placeholders["battery_energy_kwh"] = f"{capacity:.2f}" if math.isfinite(capacity) else "—"
+            except (TypeError, ValueError):
+                placeholders["battery_energy_kwh"] = "—"
+        return self.async_show_form(
+            step_id=group or "init", data_schema=data_schema, errors=errors,
+            description_placeholders=placeholders,
         )
